@@ -2,6 +2,18 @@ version: "1.0"
 namespace: userspace.dataflow.session.views
 
 entries:
+  # userspace.dataflow.session.views:env_mapping
+  - name: env_mapping
+    kind: registry.entry
+    meta:
+      type: view.env_mapping
+      description: Default environment variable mappings
+      category: dataflow
+      priority: 20
+      template_set: userspace.dataflow.session.views:templates
+    mappings:
+      web_host_origin: userspace.dataflow.env:web_host_origin
+
   # userspace.dataflow.session.views:alpine.js
   - name: alpine.js
     kind: registry.entry
@@ -53,15 +65,3 @@ entries:
     kind: template.set
     meta:
       description: Template set for dataflow views
-
-  # userspace.dataflow.session.views:wippy-api
-  - name: wippy-api
-    kind: registry.entry
-    meta:
-      name: WippyAPI
-      type: view.resource
-      order: 10
-      resource_type: script
-      template_set: userspace.dataflow.session.views:templates
-      url: https://front.wippy.ai/proxy.js
-
