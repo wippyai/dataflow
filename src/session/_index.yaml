@@ -1,0 +1,53 @@
+version: "1.0"
+namespace: userspace.dataflow.session
+
+entries:
+  # userspace.dataflow.session:artifact
+  - name: artifact
+    kind: function.lua
+    meta:
+      name: Create Workflow View Artifact
+      comment: Creates workflow state view artifact for session
+      tags:
+        - dataflow
+        - artifact
+        - view
+      description: |
+        Creates and announces a workflow state view artifact to the current session.
+        Uses the existing userspace.dataflow.views:state view to display live workflow status.
+    source: file://artifact.lua
+    modules:
+      - json
+      - ctx
+    imports:
+      artifact_repo: wippy.session.persist:artifact_repo
+    method: handle
+    
+  # userspace.dataflow.session:delegate
+  - name: delegate
+    kind: function.lua
+    meta:
+      type: tool
+      title: Delegate To Agent
+      comment: Handles delegation by running the target agent in a dataflow workflow within the session context
+      tags:
+        - delegation
+        - session
+        - workflow
+        - agent
+        - dataflow
+      description: Creates and executes a dataflow workflow for the target agent, running in isolation without access to session context or conversation history. Encapsulated function for standalone delegation.
+      input_schema: "{\n  \"type\": \"object\",\n  \"properties\": {            \n    \"message\": {\n      \"type\": \"string\",\n      \"description\": \"The message to forward to the target agent\"\n    }      \n  },\n  \"required\": [\"message\"]\n}\n"
+      llm_description: Delegate a task to another agent by running them in an isolated dataflow workflow. The target agent will run independently without access to your conversation history. Ensure you include all necessary context in your delegation message.
+    source: file://delegate.lua
+    modules:
+      - json
+      - uuid
+      - ctx
+      - security
+    imports:
+      agent_registry: wippy.agent.discovery:registry
+      client: userspace.dataflow:client
+      consts: userspace.dataflow:consts
+    method: handle
+    

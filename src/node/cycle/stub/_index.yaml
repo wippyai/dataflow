@@ -1,0 +1,147 @@
+version: "1.0"
+namespace: userspace.dataflow.node.cycle.stub
+
+entries:
+  # userspace.dataflow.node.cycle.stub:cycle_context_test_func
+  - name: cycle_context_test_func
+    kind: function.lua
+    meta:
+      name: Cycle Context Test Function
+      comment: Template function for testing cycle context handling
+      tags:
+        - cycle
+        - template
+        - test
+        - context
+    source: file://cycle_context_test_func.lua
+    modules:
+      - ctx
+    method: run
+    
+  # userspace.dataflow.node.cycle.stub:cycle_template_test_func
+  - name: cycle_template_test_func
+    kind: function.lua
+    meta:
+      name: Cycle Template Test Function
+      comment: Basic template function for cycle detection tests
+      tags:
+        - cycle
+        - template
+        - test
+        - increment
+    source: file://cycle_template_test_func.lua
+    modules:
+      - ctx
+    method: run
+    
+  # userspace.dataflow.node.cycle.stub:failing_template_func
+  - name: failing_template_func
+    kind: function.lua
+    meta:
+      name: Failing Template Function
+      comment: Template function that fails on specified iterations for error handling tests
+      tags:
+        - cycle
+        - template
+        - test
+        - error
+        - failure
+    source: file://failing_template_func.lua
+    modules:
+      - ctx
+    method: run
+    
+  # userspace.dataflow.node.cycle.stub:inner_refine_test_func
+  - name: inner_refine_test_func
+    kind: function.lua
+    meta:
+      name: Inner Refinement Test Function
+      comment: Processes individual refinement steps within cycle iterations
+      tags:
+        - dataflow
+        - cycle
+        - refinement
+        - inner
+        - processing
+        - test
+      description: |
+        Function that processes individual refinement steps. Used as child function
+        within refinement cycles to perform actual improvement work on data.
+    source: file://inner_refine_test_func.lua
+    modules:
+      - json
+    method: run
+    
+  # userspace.dataflow.node.cycle.stub:multiply_template_func
+  - name: multiply_template_func
+    kind: function.lua
+    meta:
+      name: Multiply Template Function
+      comment: Template function that multiplies values in cycle context
+      tags:
+        - cycle
+        - template
+        - test
+        - multiplication
+    source: file://multiply_template_func.lua
+    modules:
+      - ctx
+    method: run
+    
+  # userspace.dataflow.node.cycle.stub:refine_test_func
+  - name: refine_test_func
+    kind: function.lua
+    meta:
+      name: Refinement Test Function
+      comment: Demonstrates iterative refinement pattern with state management
+      tags:
+        - dataflow
+        - cycle
+        - refinement
+        - test
+        - state
+      description: |
+        Test function that demonstrates iterative refinement by improving a result
+        over multiple cycles. Maintains state for convergence tracking and
+        creates child nodes for processing in each iteration.
+    source: file://refine_test_func.lua
+    modules:
+      - uuid
+      - ctx
+    imports:
+      consts: userspace.dataflow:consts
+    method: run
+    
+  # userspace.dataflow.node.cycle.stub:state_persistence_template_func
+  - name: state_persistence_template_func
+    kind: function.lua
+    meta:
+      name: State Persistence Template Function
+      comment: Template function for testing state persistence across iterations
+      tags:
+        - cycle
+        - template
+        - test
+        - state
+        - persistence
+    source: file://state_persistence_template_func.lua
+    modules:
+      - ctx
+    method: run
+    
+  # userspace.dataflow.node.cycle.stub:validate_template_func
+  - name: validate_template_func
+    kind: function.lua
+    meta:
+      name: Validate Template Function
+      comment: Template function that validates threshold completion
+      tags:
+        - cycle
+        - template
+        - test
+        - validation
+    source: file://validate_template_func.lua
+    modules:
+      - ctx
+    method: run
+    

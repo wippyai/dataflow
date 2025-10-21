@@ -1,0 +1,58 @@
+version: "1.0"
+namespace: userspace.dataflow.flow
+
+entries:
+  # userspace.dataflow.flow:compiler
+  - name: compiler
+    kind: library.lua
+    meta:
+      name: Flow Compiler
+      comment: Pure compilation logic for converting flow graphs to dataflow commands
+      tags:
+        - dataflow
+        - flow
+        - compiler
+        - pure
+        - graph
+      description: |
+        Pure functions for compiling flow builder operations into dataflow command sequences.
+        Handles graph construction, forward reference resolution, acyclicity validation,
+        and command generation without side effects. Used by flow.lua for execution.
+    source: file://compiler.lua
+    modules:
+      - uuid
+      - json
+      - expr
+    imports:
+      consts: userspace.dataflow:consts
+    
+  # userspace.dataflow.flow:flow
+  - name: flow
+    kind: library.lua
+    meta:
+      name: Flow Builder
+      comment: Fluent interface for composing dataflow workflows with acyclic graph semantics
+      tags:
+        - dataflow
+        - flow
+        - builder
+        - fluent
+        - workflow
+        - composition
+      description: |
+        Provides fluent interface for composing dataflow workflows as acyclic graphs.
+        Supports input-first semantics, transform operations, conditional routing,
+        parallel execution, template reuse, and works in both session and standalone contexts.
+        Compiles to standard dataflow commands using pure compilation logic.
+    source: file://flow.lua
+    modules:
+      - uuid
+      - json
+      - ctx
+      - registry
+    imports:
+      client: userspace.dataflow:client
+      compiler: userspace.dataflow.flow:compiler
+      consts: userspace.dataflow:consts
+    method: flow
+    

@@ -1,0 +1,67 @@
+version: "1.0"
+namespace: userspace.dataflow.session.views
+
+entries:
+  # userspace.dataflow.session.views:alpine.js
+  - name: alpine.js
+    kind: registry.entry
+    meta:
+      name: Alpine.js
+      type: view.resource
+      order: 6
+      defer: true
+      resource_type: script
+      template_set: userspace.dataflow.session.views:templates
+      url: https://unpkg.com/alpinejs@3.13.0/dist/cdn.min.js
+
+  # userspace.dataflow.session.views:state
+  - name: state
+    kind: template.jet
+    meta:
+      name: userspace.dataflow.session.views.state
+      type: view.page
+      title: Workflow State
+      icon: tabler:chart-dots
+      description: View current state of a dataflow and its nodes
+      content_type: text/html
+      secure: true
+    source: file://state.jet
+    set: userspace.dataflow.session.views:templates
+    data_func: userspace.dataflow.session.views:state.data
+
+  # userspace.dataflow.session.views:state.data
+  - name: state.data
+    kind: function.lua
+    meta:
+      type: view.data
+    source: file://state.data.lua
+    method: handler
+
+  # userspace.dataflow.session.views:tailwindcss
+  - name: tailwindcss
+    kind: registry.entry
+    meta:
+      name: TailwindCSS
+      type: view.resource
+      order: 5
+      resource_type: script
+      template_set: userspace.dataflow.session.views:templates
+      url: https://cdn.tailwindcss.com
+
+  # userspace.dataflow.session.views:templates
+  - name: templates
+    kind: template.set
+    meta:
+      description: Template set for dataflow views
+
+  # userspace.dataflow.session.views:wippy-api
+  - name: wippy-api
+    kind: registry.entry
+    meta:
+      name: WippyAPI
+      type: view.resource
+      order: 10
+      resource_type: script
+      template_set: userspace.dataflow.session.views:templates
+      url: https://front.wippy.ai/proxy.js
+

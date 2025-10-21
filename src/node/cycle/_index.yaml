@@ -1,0 +1,67 @@
+version: "1.0"
+namespace: userspace.dataflow.node.cycle
+
+entries:
+  # userspace.dataflow.node.cycle:cycle
+  - name: cycle
+    kind: process.lua
+    meta:
+      name: Cycle Node
+      comment: Iterative function executor with state persistence, recovery, and template support
+      tags:
+        - dataflow
+        - node
+        - cycle
+        - iterative
+        - state
+        - refinement
+        - template
+      description: |
+        Executes functions or templates in iterative cycles with persistent state management.
+        Each cycle passes: original input (first only), current state, last result, iteration number.
+        Functions/templates control continuation and can create child workflows via control commands.
+        State is persisted as data objects for recovery. Supports both function and template modes.
+      default_host: app:processes
+    source: file://cycle.lua
+    modules:
+      - funcs
+      - json
+      - uuid
+    imports:
+      consts: userspace.dataflow:consts
+      data_reader: userspace.dataflow.persist:data_reader
+      node: userspace.dataflow:node
+      template_graph: userspace.dataflow.template:graph
+    method: run
+    
+  # userspace.dataflow.node.cycle:cycle_test
+  - name: cycle_test
+    kind: function.lua
+    meta:
+      name: Cycle Node Tests
+      type: test
+      comment: Comprehensive tests for iterative cycle node with template support
+      group: Workflow / Cycle Node
+      tags:
+        - dataflow
+        - node
+        - cycle
+        - tests
+        - state
+        - recovery
+        - template
+      description: |
+        Tests cycle node including state persistence, recovery, termination,
+        control command handling, iterative refinement patterns, and template execution.
+    source: file://cycle_test.lua
+    modules:
+      - uuid
+      - json
+    imports:
+      client: userspace.dataflow:client
+      consts: userspace.dataflow:consts
+      cycle: userspace.dataflow.node.cycle:cycle
+      data_reader: userspace.dataflow.persist:data_reader
+      test: wippy.test:test
+    method: run_tests
+    

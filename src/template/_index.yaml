@@ -1,0 +1,52 @@
+version: "1.0"
+namespace: userspace.dataflow.template
+
+entries:
+  # userspace.dataflow.template:graph
+  - name: graph
+    kind: library.lua
+    meta:
+      name: Template Graph Builder
+      comment: Pure library for discovering and building template dependency graphs
+      tags:
+        - dataflow
+        - template
+        - graph
+        - dependency
+        - pure
+        - shared
+      description: |
+        Pure function library for discovering template nodes and building dependency graphs.
+        Handles template discovery, dependency analysis, and root node identification
+        for use across different node types (map-reduce, cycle, etc). Highly testable with no side effects.
+    source: file://graph.lua
+    imports:
+      consts: userspace.dataflow:consts
+      node_reader: userspace.dataflow.persist:node_reader
+    
+  # userspace.dataflow.template:graph_test
+  - name: graph_test
+    kind: function.lua
+    meta:
+      name: Template Graph Tests
+      type: test
+      comment: Unit tests for template graph building and dependency analysis
+      group: Workflow / Template System
+      tags:
+        - dataflow
+        - template
+        - graph
+        - tests
+        - shared
+      description: |
+        Comprehensive tests for template discovery, dependency graph construction,
+        root node identification, and circular dependency detection.
+    source: file://graph_test.lua
+    modules:
+      - uuid
+    imports:
+      consts: userspace.dataflow:consts
+      template_graph: userspace.dataflow.template:graph
+      test: wippy.test:test
+    method: run_tests
+    

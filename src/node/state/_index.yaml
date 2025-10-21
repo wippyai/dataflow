@@ -1,0 +1,57 @@
+version: "1.0"
+namespace: userspace.dataflow.node.state
+
+entries:
+  # userspace.dataflow.node.state:state
+  - name: state
+    kind: process.lua
+    meta:
+      name: State Node
+      comment: Multi-input collection node with expr-based input transformation
+      tags:
+        - dataflow
+        - node
+        - state
+        - multi-input
+        - collection
+        - parallel
+      description: "Collects multiple inputs and structures them using expr transformations.\nWaits for all required inputs before proceeding. Used internally by \nFlow Builder for parallel operations and diamond patterns.\nSupports standard input_transform and data_targets routing.\n"
+      default_host: app:processes
+    source: file://state.lua
+    modules:
+      - json
+      - uuid
+    imports:
+      consts: userspace.dataflow:consts
+      node: userspace.dataflow:node
+    method: run
+    
+  # userspace.dataflow.node.state:state_test
+  - name: state_test
+    kind: function.lua
+    meta:
+      name: State Node Tests
+      type: test
+      comment: Comprehensive tests for multi-input state collection node
+      group: Workflow / State Node
+      tags:
+        - dataflow
+        - node
+        - state
+        - tests
+        - multi-input
+        - collection
+      description: |
+        Tests state node including multi-input waiting, input transformation,
+        output routing, error handling, and integration with Flow Builder patterns.
+    source: file://state_test.lua
+    modules:
+      - uuid
+      - json
+    imports:
+      client: userspace.dataflow:client
+      consts: userspace.dataflow:consts
+      data_reader: userspace.dataflow.persist:data_reader
+      test: wippy.test:test
+    method: run_tests
+    

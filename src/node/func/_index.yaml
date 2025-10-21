@@ -1,0 +1,128 @@
+version: "1.0"
+namespace: userspace.dataflow.node.func
+
+entries:
+  # userspace.dataflow.node.func:control_test_func
+  - name: control_test_func
+    kind: function.lua
+    meta:
+      name: Control Command Test Function
+      comment: Test function that returns control commands to create sub-workflows
+      tags:
+        - dataflow
+        - node
+        - function
+        - control
+        - test
+        - workflow
+      description: |
+        Test function that demonstrates control command functionality by creating
+        various types of sub-workflows (simple, chain, parallel) based on input.
+        Used to test func node's ability to handle _control commands properly.
+    source: file://control_test_func.lua
+    modules:
+      - uuid
+      - ctx
+    method: run
+    
+  # userspace.dataflow.node.func:func_test
+  - name: func_test
+    kind: function.lua
+    meta:
+      name: Function Node Tests
+      type: test
+      comment: Unit tests for the function executor node
+      group: Workflow / Function Node
+      tags:
+        - dataflow
+        - node
+        - function
+        - executor
+        - tests
+      description: |
+        Comprehensive unit tests for the function executor node including
+        configuration validation, input handling, function execution,
+        cancellation support, and error handling scenarios.
+    source: file://func_test.lua
+    modules:
+      - uuid
+      - json
+    imports:
+      client: userspace.dataflow:client
+      consts: userspace.dataflow:consts
+      data_reader: userspace.dataflow.persist:data_reader
+      func: userspace.dataflow.node.func:node
+      test: wippy.test:test
+    method: run_tests
+    
+  # userspace.dataflow.node.func:node
+  - name: node
+    kind: process.lua
+    meta:
+      name: Function Executor Node
+      comment: Generic node for executing functions within dataflow workflows
+      tags:
+        - dataflow
+        - node
+        - function
+        - executor
+        - cancellable
+      description: "A generic dataflow node that executes functions using the funcs module.\nSupports input data processing, function context configuration, and \ngraceful cancellation handling. Can execute any registered function\nwith proper error handling and result routing.\n"
+      default_host: app:processes
+    source: file://node.lua
+    modules:
+      - funcs
+      - json
+    imports:
+      consts: userspace.dataflow:consts
+      node: userspace.dataflow:node
+    method: run
+    
+  # userspace.dataflow.node.func:node_test
+  - name: node_test
+    kind: function.lua
+    meta:
+      name: Function Node Tests
+      type: test
+      comment: Unit tests for the function executor node
+      group: Workflow / Function Node
+      tags:
+        - dataflow
+        - node
+        - function
+        - executor
+        - tests
+      description: |
+        Comprehensive unit tests for the function executor node including
+        configuration validation, input handling, function execution,
+        cancellation support, and error handling scenarios.
+    source: file://node_test.lua
+    modules:
+      - uuid
+      - json
+    imports:
+      client: userspace.dataflow:client
+      consts: userspace.dataflow:consts
+      data_reader: userspace.dataflow.persist:data_reader
+      func: userspace.dataflow.node.func:node
+      test: wippy.test:test
+    method: run_tests
+    
+  # userspace.dataflow.node.func:test_func
+  - name: test_func
+    kind: function.lua
+    meta:
+      name: Test Node Function
+      comment: Simple test node for dataflow testing and integration tests
+      tags:
+        - dataflow
+        - node
+        - test
+        - integration
+      description: |
+        A simple test node that processes input data with configurable delay and failure modes.
+    source: file://test_func.lua
+    modules:
+      - time
+    method: run
+    

@@ -1,0 +1,1343 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Workflow Status</title>
+    <base href="{{ env.hostname }}">
+    <meta name="description" content="Current dataflow status">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@2.37.0/tabler-icons.min.css">
+    {{ if isset(resources.style) }}
+    {{ range resources.style }}
+    {{ if isset(.url) }}
+    <link rel="stylesheet" href="{{ .url }}" {{ if isset(.crossorigin) }} crossorigin="{{ .crossorigin }}" {{ end }}>
+    {{ end }}
+    {{ if isset(.inline) }}
+    <style>{
+    {
+    .inline
+
+    }
+    }</style>
+    {{ end }}
+    {{ end }}
+    {{ end }}
+    {{ if isset(resources.script) }}
+    {{ range resources.script }}
+    {{ if isset(.url) }}
+    <script src="{{ .url }}" {{ if isset(.defer) }} defer{{ end }}{{ if isset(.async) }} async{{ end }}></script>
+    {{ end }}
+    {{ end }}
+    {{ end }}
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        }
+
+        .dataflow-tree {
+            position: relative;
+        }
+
+        .tree-node {
+            position: relative;
+            margin-bottom: 0.5rem;
+            transition: all 0.3s ease;
+        }
+
+        .tree-node:last-child {
+            margin-bottom: 0;
+        }
+
+        .tree-node.child-level-1 {
+            margin-left: 1.5rem;
+        }
+
+        .tree-node.child-level-2 {
+            margin-left: 3rem;
+        }
+
+        .tree-node.child-level-3 {
+            margin-left: 4.5rem;
+        }
+
+        .tree-node.child-level-4 {
+            margin-left: 6rem;
+        }
+
+        .tree-node.child-level-5 {
+            margin-left: 7.5rem;
+        }
+
+        .tree-node.child-level-6 {
+            margin-left: 9rem;
+        }
+
+        .tree-node.child-level-7 {
+            margin-left: 10.5rem;
+        }
+
+        .tree-node.child-level-8 {
+            margin-left: 12rem;
+        }
+
+        .node-row {
+            display: flex;
+            align-items: center;
+            min-height: 24px;
+            padding: 2px 0;
+        }
+
+        .icon-wrapper {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 20px;
+            height: 20px;
+            margin-right: 8px;
+            flex-shrink: 0;
+        }
+
+        .content-wrapper {
+            display: flex;
+            align-items: center;
+            flex: 1;
+            gap: 12px;
+        }
+
+        .node-icon {
+            width: 16px;
+            height: 16px;
+            font-size: 14px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .node-icon.completed {
+            color: rgb(5 150 105);
+        }
+
+        .dark .node-icon.completed {
+            color: rgb(74 222 128);
+        }
+
+        .node-icon.failed {
+            color: rgb(220 38 38);
+        }
+
+        .dark .node-icon.failed {
+            color: rgb(248 113 113);
+        }
+
+        .node-icon.cancelled {
+            color: rgb(156 163 175);
+        }
+
+        .dark .node-icon.cancelled {
+            color: rgb(107 114 128);
+        }
+
+        .node-icon.running {
+            color: rgb(37 99 235);
+        }
+
+        .dark .node-icon.running {
+            color: rgb(147 197 253);
+        }
+
+        .svg-spinner {
+            width: 14px;
+            height: 14px;
+        }
+
+        .nested-items {
+            margin-left: 1.5rem;
+            margin-top: 0.2rem;
+        }
+
+        .collapse-toggle {
+            background: none;
+            border: none;
+            color: rgb(107 114 128);
+            cursor: pointer;
+            padding: 2px 4px;
+            border-radius: 3px;
+            display: flex;
+            align-items: center;
+            font-size: 12px;
+            margin-left: 8px;
+        }
+
+        .dark .collapse-toggle {
+            color: rgb(156 163 175);
+        }
+
+        .collapse-toggle:hover {
+            background: rgba(0, 0, 0, 0.05);
+        }
+
+        .dark .collapse-toggle:hover {
+            background: rgba(255, 255, 255, 0.05);
+        }
+
+        .collapse-icon {
+            width: 12px;
+            height: 12px;
+            margin-right: 4px;
+            transition: transform 0.2s;
+        }
+
+        .collapse-icon.expanded {
+            transform: rotate(90deg);
+        }
+
+        .nested-content {
+            overflow: hidden;
+        }
+
+        .nested-content.collapsed {
+            display: none;
+        }
+
+        .iteration-group {
+            margin-bottom: 0.25rem;
+            padding: 0 0 0 8px;
+            border-left: 2px solid rgba(59, 130, 246, 0.3);
+            margin-left: 4px;
+        }
+
+        .dark .iteration-group {
+            border-left-color: rgba(59, 130, 246, 0.25);
+        }
+
+        .tree-node.iteration-node {
+            font-size: max(0.75rem, 11px);
+            margin-bottom: 0.1rem;
+            padding: 1px 0;
+            background: none;
+        }
+
+        .iteration-node .content-wrapper {
+            gap: 6px;
+        }
+
+        .iteration-node .icon-wrapper {
+            width: 14px;
+            height: 14px;
+        }
+
+        .iteration-node .node-icon {
+            width: 12px;
+            height: 12px;
+            font-size: 11px;
+        }
+
+        .iteration-node .metric-item {
+            font-size: max(0.625rem, 9px);
+        }
+
+        .iteration-node .metric-icon {
+            width: 7px;
+            height: 7px;
+            font-size: 7px;
+        }
+
+        .iteration-node .status-message {
+            font-size: max(0.625rem, 9px);
+        }
+
+        .progress-container {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .progress-text {
+            font-size: 11px;
+            color: rgb(107 114 128);
+            font-weight: 500;
+        }
+
+        .dark .progress-text {
+            color: rgb(156 163 175);
+        }
+
+        .agent-metrics {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .metric-item {
+            display: flex;
+            align-items: center;
+            gap: 2px;
+            font-size: 11px;
+            font-weight: 600;
+            line-height: 1;
+        }
+
+        .metric-icon {
+            width: 9px;
+            height: 9px;
+            font-size: 9px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .metric-prompt {
+            color: rgb(59 130 246);
+        }
+
+        .dark .metric-prompt {
+            color: rgb(147 197 253);
+        }
+
+        .metric-completion {
+            color: rgb(147 51 234);
+        }
+
+        .dark .metric-completion {
+            color: rgb(196 181 253);
+        }
+
+        .metric-thinking {
+            color: rgb(217 119 6);
+        }
+
+        .dark .metric-thinking {
+            color: rgb(253 186 116);
+        }
+
+        .metric-tools {
+            color: rgb(14 165 233);
+        }
+
+        .dark .metric-tools {
+            color: rgb(56 189 248);
+        }
+
+        .metric-cache {
+            color: rgb(5 150 105);
+        }
+
+        .dark .metric-cache {
+            color: rgb(74 222 128);
+        }
+
+        .tool-sizes {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 11px;
+            font-weight: 500;
+        }
+
+        .size-item {
+            display: flex;
+            align-items: center;
+            gap: 2px;
+        }
+
+        .size-input {
+            color: rgb(59 130 246);
+        }
+
+        .dark .size-input {
+            color: rgb(147 197 253);
+        }
+
+        .size-output {
+            color: rgb(5 150 105);
+        }
+
+        .dark .size-output {
+            color: rgb(74 222 128);
+        }
+
+        .size-icon {
+            width: 9px;
+            height: 9px;
+            font-size: 9px;
+        }
+
+        .metrics-container {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .metrics-toggle {
+            background: none;
+            border: none;
+            color: rgb(107 114 128);
+            cursor: pointer;
+            padding: 2px;
+            border-radius: 2px;
+            display: flex;
+            align-items: center;
+            font-size: 10px;
+        }
+
+        .dark .metrics-toggle {
+            color: rgb(156 163 175);
+        }
+
+        .metrics-toggle:hover {
+            background: rgba(0, 0, 0, 0.05);
+        }
+
+        .dark .metrics-toggle:hover {
+            background: rgba(255, 255, 255, 0.05);
+        }
+
+        .metrics-expanded {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-top: 4px;
+        }
+
+        .metrics-collapsed {
+            display: none;
+        }
+
+        .status-message {
+            font-size: 11px;
+            color: rgb(107 114 128);
+            font-style: italic;
+        }
+
+        .dark .status-message {
+            color: rgb(156 163 175);
+        }
+
+        .loading-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: rgba(30, 41, 59, 0.8);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 10;
+        }
+
+        .tree-node.new-node {
+            animation: newNodeFade 2s ease-out;
+        }
+
+        @keyframes newNodeFade {
+            0% {
+                background-color: rgba(59, 130, 246, 0.1);
+                border-radius: 4px;
+            }
+            100% {
+                background-color: transparent;
+            }
+        }
+    </style>
+</head>
+<body class="bg-surface-50 dark:bg-surface-900">
+<div class="min-h-screen" x-data="dataflowStateApp">
+    <svg width="0" height="0" class="hidden">
+        <symbol id="svg-spinners--gooey-balls-2" viewBox="0 0 24 24">
+            <defs>
+                <filter id="svgSpinnersGooeyBalls20">
+                    <feGaussianBlur in="SourceGraphic" result="y" stdDeviation="1"/>
+                    <feColorMatrix in="y" result="z" values="1 0 0 0 0 0 1 0 0 0 0 0 1 0 0 0 0 0 18 -7"/>
+                    <feBlend in="SourceGraphic" in2="z"/>
+                </filter>
+            </defs>
+            <g filter="url(#svgSpinnersGooeyBalls20)">
+                <circle cx="5" cy="12" r="4" fill="currentColor">
+                    <animate attributeName="cx" calcMode="spline" dur="2s" keySplines=".36,.62,.43,.99;.79,0,.58,.57"
+                             repeatCount="indefinite" values="5;8;5"/>
+                </circle>
+                <circle cx="19" cy="12" r="4" fill="currentColor">
+                    <animate attributeName="cx" calcMode="spline" dur="2s" keySplines=".36,.62,.43,.99;.79,0,.58,.57"
+                             repeatCount="indefinite" values="19;16;19"/>
+                </circle>
+                <animateTransform attributeName="transform" dur="0.75s" repeatCount="indefinite" type="rotate"
+                                  values="0 12 12;360 12 12"/>
+            </g>
+        </symbol>
+    </svg>
+    <main class="w-full">
+        <div class="bg-surface-50 dark:bg-surface-800 shadow-sm relative">
+            <div x-show="initialLoading" class="loading-overlay">
+                <div class="flex flex-col items-center">
+                    <div class="w-8 h-8 text-blue-500">
+                        <svg class="w-full h-full">
+                            <use href="#svg-spinners--gooey-balls-2"></use>
+                        </svg>
+                    </div>
+                    <p class="mt-2 text-sm text-gray-400">Loading dataflow...</p>
+                </div>
+            </div>
+            <div x-show="error" class="p-4 border-l-4 border-red-500 bg-red-50 dark:bg-red-900/20 dark:border-red-700">
+                <div class="flex">
+                    <div class="flex-shrink-0">
+                        <i class="ti ti-alert-circle text-red-600 dark:text-red-400 text-lg"></i>
+                    </div>
+                    <div class="ml-3">
+                        <p class="text-sm text-red-600 dark:text-red-400" x-text="error"></p>
+                    </div>
+                </div>
+            </div>
+            <div x-show="!initialLoading && !error" class="p-3 dataflow-tree">
+                <template x-for="node in flatNodes" :key="node.node_id">
+                    <div x-html="renderNode(node)"></div>
+                </template>
+            </div>
+        </div>
+    </main>
+</div>
+<script>
+    document.addEventListener('alpine:init', () => {
+        Alpine.data('dataflowStateApp', () => ({
+            initialLoading: true,
+            isUpdating: false,
+            dataflow: {},
+            flatNodes: [],
+            error: null,
+            dataflowId: '{{ data.dataflow_id }}',
+            wippyApi: null,
+            eventsSubscribed: false,
+            nodeMap: {},
+            expandedMetrics: {},
+            collapsedSections: {},
+
+            init() {
+                this.initWippyApi();
+                this.$nextTick(() => {
+                    this.$watch('$store.app', (app) => {
+                        if (!app) {
+                            this.unsubscribeFromWorkflowEvents();
+                        }
+                    });
+                });
+            },
+            async initWippyApi() {
+                try {
+                    this.wippyApi = await window.initWippyApi();
+                    console.log('Workflow state app initialized');
+                    if (!this.dataflowId) {
+                        this.error = "No dataflow ID found";
+                        this.initialLoading = false;
+                        return;
+                    }
+                    await this.fetchWorkflowData();
+                    this.subscribeToWorkflowEvents();
+                } catch (error) {
+                    console.error('Failed to initialize:', error);
+                    this.error = "Failed to initialize application";
+                    this.initialLoading = false;
+                }
+            },
+            async fetchWorkflowData() {
+                try {
+                    if (!this.initialLoading) {
+                        this.isUpdating = true;
+                    }
+                    this.error = null;
+                    const response = await fetch(`/api/v1/dataflows/${this.dataflowId}/nodes`, {
+                        headers: {
+                            'Authorization': `Bearer ${this.wippyApi.config.auth.token}`
+                        }
+                    });
+                    const result = await response.json();
+                    if (!response.ok || !result.success) {
+                        throw new Error(result.error || 'Failed to fetch dataflow nodes');
+                    }
+                    this.dataflow = result.dataflow || {};
+                    this.processNodes(result.nodes || []);
+                } catch (error) {
+                    console.error('Failed to fetch dataflow data:', error);
+                    this.error = error.message || "Failed to load dataflow data";
+                } finally {
+                    this.initialLoading = false;
+                    setTimeout(() => {
+                        this.isUpdating = false;
+                    }, 300);
+                }
+            },
+            shouldShowNode(node) {
+                return node.status !== 'template';
+            },
+            processNodes(nodes) {
+                this.nodeMap = {};
+                nodes.forEach(node => {
+                    if (node.status === 'template') {
+                        return;
+                    }
+                    this.nodeMap[node.node_id] = {
+                        ...node,
+                        level: 0,
+                        isNew: false
+                    };
+                });
+
+                const calculateAndSetLevels = () => {
+                    let changed = true;
+                    let maxIterations = 10;
+                    while (changed && maxIterations > 0) {
+                        changed = false;
+                        maxIterations--;
+                        Object.values(this.nodeMap).forEach(node => {
+                            if (!node.parent_node_id) {
+                                if (node.level !== 0) {
+                                    node.level = 0;
+                                    changed = true;
+                                }
+                            } else {
+                                const parent = this.nodeMap[node.parent_node_id];
+                                if (parent) {
+                                    const expectedLevel = parent.level + 1;
+                                    if (node.level !== expectedLevel) {
+                                        node.level = expectedLevel;
+                                        changed = true;
+                                    }
+                                }
+                            }
+                        });
+                    }
+                };
+
+                calculateAndSetLevels();
+
+                const buildTreeOrder = () => {
+                    const result = [];
+                    const visited = new Set();
+                    const addNodeAndChildren = (nodeId) => {
+                        if (visited.has(nodeId) || !this.nodeMap[nodeId]) return;
+                        const node = this.nodeMap[nodeId];
+                        if (!this.shouldShowNode(node)) return;
+
+                        visited.add(nodeId);
+                        result.push(node);
+                        const children = Object.values(this.nodeMap)
+                            .filter(n => n.parent_node_id === nodeId &&
+                                !this.isMapReduceParent(this.nodeMap[nodeId]) &&
+                                !this.isCycleParent(this.nodeMap[nodeId]))
+                            .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+                        children.forEach(child => addNodeAndChildren(child.node_id));
+                    };
+                    const rootNodes = Object.values(this.nodeMap)
+                        .filter(n => !n.parent_node_id)
+                        .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+                    rootNodes.forEach(root => addNodeAndChildren(root.node_id));
+                    return result;
+                };
+                this.flatNodes = buildTreeOrder();
+
+                setTimeout(() => {
+                    this.flatNodes.forEach(node => {
+                        node.isNew = false;
+                    });
+                    this.flatNodes = [...this.flatNodes];
+                }, 2000);
+            },
+            getNodeTypeAndStatus(node) {
+                let iconClass = 'ti ti-circle-dot';
+
+                if (!node || !node.type) {
+                    if (node.status === 'completed') {
+                        iconClass = 'ti ti-circle-check';
+                    } else if (node.status === 'failed') {
+                        iconClass = 'ti ti-circle-x';
+                    } else if (node.status === 'cancelled') {
+                        iconClass = 'ti ti-circle-minus';
+                    } else {
+                        iconClass = 'ti ti-circle-dot';
+                    }
+                } else if (node.type.includes('agent')) {
+                    iconClass = 'ti ti-brain';
+                } else if (node.type.includes('map_reduce')) {
+                    iconClass = 'ti ti-topology-star-ring-3';
+                } else if (node.type.includes('cycle')) {
+                    iconClass = 'ti ti-refresh';
+                } else if (node.type.includes('func')) {
+                    iconClass = 'ti ti-function';
+                } else {
+                    if (node.status === 'completed') {
+                        iconClass = 'ti ti-circle-check';
+                    } else if (node.status === 'failed') {
+                        iconClass = 'ti ti-circle-x';
+                    } else if (node.status === 'cancelled') {
+                        iconClass = 'ti ti-circle-minus';
+                    } else {
+                        iconClass = 'ti ti-circle-dot';
+                    }
+                }
+
+                const statusClass = node.status || 'running';
+
+                return {iconClass, statusClass};
+            },
+            isMapReduceParent(node) {
+                return node && node.type && node.type.includes('map_reduce');
+            },
+            isCycleParent(node) {
+                return node && node.type && node.type.includes('cycle');
+            },
+            getMapReduceChildren(parentId) {
+                return Object.values(this.nodeMap)
+                    .filter(n => n.parent_node_id === parentId && this.shouldShowNode(n))
+                    .sort((a, b) => {
+                        const aIter = (a.metadata && a.metadata.iteration) || 0;
+                        const bIter = (b.metadata && b.metadata.iteration) || 0;
+                        return aIter - bIter;
+                    });
+            },
+            getCycleChildren(parentId) {
+                return Object.values(this.nodeMap)
+                    .filter(n => n.parent_node_id === parentId && this.shouldShowNode(n))
+                    .sort((a, b) => {
+                        const aIter = (a.metadata && (a.metadata.iteration || a.metadata.created_in_iteration)) || 0;
+                        const bIter = (b.metadata && (b.metadata.iteration || b.metadata.created_in_iteration)) || 0;
+                        return aIter - bIter;
+                    });
+            },
+            getNodeChildren(nodeId) {
+                return Object.values(this.nodeMap)
+                    .filter(n => n.parent_node_id === nodeId && this.shouldShowNode(n))
+                    .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+            },
+            getMapReduceIterations(parentId) {
+                const children = this.getMapReduceChildren(parentId);
+                const iterations = {};
+
+                children.forEach(child => {
+                    const iterNum = (child.metadata && child.metadata.iteration) || 0;
+                    if (!iterations[iterNum]) {
+                        iterations[iterNum] = [];
+                    }
+                    iterations[iterNum].push(child);
+                });
+
+                return iterations;
+            },
+            getCycleIterations(parentId) {
+                const children = this.getCycleChildren(parentId);
+                const iterations = {};
+
+                children.forEach(child => {
+                    const iterNum = (child.metadata && (child.metadata.iteration || child.metadata.created_in_iteration)) || 0;
+                    if (!iterations[iterNum]) {
+                        iterations[iterNum] = [];
+                    }
+                    iterations[iterNum].push(child);
+                });
+
+                return iterations;
+            },
+            getMapReduceProgress(parentId) {
+                const parent = this.nodeMap[parentId];
+                if (parent && parent.metadata && parent.metadata.map_reduce_progress) {
+                    const progress = parent.metadata.map_reduce_progress;
+                    return {
+                        completed: progress.items_completed || 0,
+                        total: progress.items_total || 0,
+                        percentage: progress.percentage_complete || 0
+                    };
+                }
+
+                const iterations = this.getMapReduceIterations(parentId);
+                const iterationCount = Object.keys(iterations).length;
+
+                if (iterationCount === 0) {
+                    return {completed: 0, total: 0, percentage: 0};
+                }
+
+                let completedIterations = 0;
+                Object.values(iterations).forEach(iterNodes => {
+                    const allCompleted = iterNodes.every(node => node.status === 'completed');
+                    if (allCompleted) {
+                        completedIterations++;
+                    }
+                });
+
+                const percentage = Math.round((completedIterations / iterationCount) * 100);
+
+                return {
+                    completed: completedIterations,
+                    total: iterationCount,
+                    percentage
+                };
+            },
+            getCycleProgress(parentId) {
+                const iterations = this.getCycleIterations(parentId);
+                const iterationCount = Object.keys(iterations).length;
+
+                if (iterationCount === 0) {
+                    return {completed: 0, total: 0, percentage: 0};
+                }
+
+                let completedIterations = 0;
+                Object.values(iterations).forEach(iterNodes => {
+                    const allCompleted = iterNodes.every(node => node.status === 'completed');
+                    if (allCompleted) {
+                        completedIterations++;
+                    }
+                });
+
+                const percentage = Math.round((completedIterations / iterationCount) * 100);
+
+                return {
+                    completed: completedIterations,
+                    total: iterationCount,
+                    percentage
+                };
+            },
+            renderIterationNodeChildren(nodeId) {
+                const children = this.getNodeChildren(nodeId);
+                if (children.length === 0) return '';
+
+                let html = '<div class="nested-items">';
+                children.forEach(child => {
+                    const {iconClass: childIconClass, statusClass: childStatusClass} = this.getNodeTypeAndStatus(child);
+                    const childTitle = this.getNodeTitle(child);
+                    const childMetrics = this.getMetrics(child);
+
+                    let childIconHtml;
+                    if (childStatusClass === 'running') {
+                        childIconHtml = `<div class="node-icon ${childStatusClass}"><svg class="svg-spinner"><use href="#svg-spinners--gooey-balls-2"></use></svg></div>`;
+                    } else {
+                        childIconHtml = `<i class="node-icon ${childStatusClass} ${childIconClass}"></i>`;
+                    }
+
+                    html += `
+                        <div class="tree-node iteration-node">
+                            <div class="node-row">
+                                <div class="icon-wrapper">${childIconHtml}</div>
+                                <div class="content-wrapper">
+                                    <span class="text-sm font-medium text-surface-700 dark:text-surface-300">
+                                        ${childTitle}
+                                    </span>
+                                    ${childMetrics}
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                });
+                html += '</div>';
+                return html;
+            },
+            renderNode(node) {
+                if (!this.shouldShowNode(node)) {
+                    return '';
+                }
+
+                const levelClass = node.level > 0 ? `child-level-${Math.min(node.level, 8)}` : '';
+                const newClass = node.isNew ? 'new-node' : '';
+                const titleColorClass = node.level > 0 ?
+                    'text-surface-700 dark:text-surface-300' :
+                    'text-surface-900 dark:text-surface-50';
+
+                const {iconClass, statusClass} = this.getNodeTypeAndStatus(node);
+                const nodeTitle = this.getNodeTitle(node);
+                const metrics = this.getMetrics(node);
+                const toolSizes = this.getToolSizes(node);
+                const statusMsg = this.getStatusMessage(node);
+
+                let nodeHtml = `
+                    <div class="tree-node ${levelClass} ${newClass}">
+                        <div class="node-row">
+                            <div class="icon-wrapper">
+                `;
+
+                if (statusClass === 'running') {
+                    nodeHtml += `<div class="node-icon ${statusClass}"><svg class="svg-spinner"><use href="#svg-spinners--gooey-balls-2"></use></svg></div>`;
+                } else {
+                    nodeHtml += `<i class="node-icon ${statusClass} ${iconClass}"></i>`;
+                }
+
+                nodeHtml += `
+                            </div>
+                            <div class="content-wrapper">
+                                <span class="text-sm font-medium ${titleColorClass}">${nodeTitle}</span>
+                                ${metrics}
+                                ${toolSizes}
+                                ${statusMsg}
+                `;
+
+                if (this.isMapReduceParent(node)) {
+                    const progress = this.getMapReduceProgress(node.node_id);
+                    const iterations = this.getMapReduceIterations(node.node_id);
+                    const iterationCount = Object.keys(iterations).length;
+                    const isCollapsed = this.collapsedSections[node.node_id] !== false;
+
+                    if (progress.total > 0) {
+                        nodeHtml += `
+                                <div class="progress-container">
+                                    <span class="progress-text">${progress.completed}/${progress.total}</span>
+                                </div>
+                        `;
+                    }
+
+                    if (iterationCount > 0) {
+                        nodeHtml += `
+                                <button class="collapse-toggle" onclick="this.dispatchEvent(new CustomEvent('toggle-section', { detail: '${node.node_id}', bubbles: true }))">
+                                    <i class="collapse-icon ti ti-chevron-right ${isCollapsed ? '' : 'expanded'}"></i>
+                                    <span>${iterationCount} iterations</span>
+                                </button>
+                        `;
+                    }
+
+                    nodeHtml += `
+                            </div>
+                        </div>
+                    `;
+
+                    if (iterationCount > 0) {
+                        nodeHtml += `
+                        <div class="nested-items">
+                            <div class="nested-content ${isCollapsed ? 'collapsed' : ''}">
+                        `;
+
+                        Object.keys(iterations).sort((a, b) => parseInt(a) - parseInt(b)).forEach(iterNum => {
+                            const iterNodes = iterations[iterNum];
+
+                            nodeHtml += `<div class="iteration-group" data-iteration="${iterNum}">`;
+
+                            iterNodes.forEach(child => {
+                                const {
+                                    iconClass: childIconClass,
+                                    statusClass: childStatusClass
+                                } = this.getNodeTypeAndStatus(child);
+                                const childTitle = this.getNodeTitle(child);
+                                const childMetrics = this.getMetrics(child);
+
+                                let childIconHtml;
+                                if (childStatusClass === 'running') {
+                                    childIconHtml = `<div class="node-icon ${childStatusClass}"><svg class="svg-spinner"><use href="#svg-spinners--gooey-balls-2"></use></svg></div>`;
+                                } else {
+                                    childIconHtml = `<i class="node-icon ${childStatusClass} ${childIconClass}"></i>`;
+                                }
+
+                                nodeHtml += `
+                                    <div class="tree-node iteration-node">
+                                        <div class="node-row">
+                                            <div class="icon-wrapper">${childIconHtml}</div>
+                                            <div class="content-wrapper">
+                                                <span class="text-sm font-medium text-surface-700 dark:text-surface-300">
+                                                    ${childTitle}
+                                                </span>
+                                                ${childMetrics}
+                                            </div>
+                                        </div>
+                                        ${this.renderIterationNodeChildren(child.node_id)}
+                                    </div>
+                                `;
+                            });
+
+                            nodeHtml += `</div>`;
+                        });
+
+                        nodeHtml += `
+                            </div>
+                        </div>
+                        `;
+                    }
+                } else if (this.isCycleParent(node)) {
+                    const progress = this.getCycleProgress(node.node_id);
+                    const iterations = this.getCycleIterations(node.node_id);
+                    const iterationCount = Object.keys(iterations).length;
+                    const isCollapsed = this.collapsedSections[node.node_id] !== false;
+
+                    if (iterationCount > 0) {
+                        nodeHtml += `
+                                <button class="collapse-toggle" onclick="this.dispatchEvent(new CustomEvent('toggle-section', { detail: '${node.node_id}', bubbles: true }))">
+                                    <i class="collapse-icon ti ti-chevron-right ${isCollapsed ? '' : 'expanded'}"></i>
+                                    <span>${iterationCount} iterations</span>
+                                </button>
+                        `;
+                    }
+
+                    nodeHtml += `
+                            </div>
+                        </div>
+                    `;
+
+                    if (iterationCount > 0) {
+                        nodeHtml += `
+                        <div class="nested-items">
+                            <div class="nested-content ${isCollapsed ? 'collapsed' : ''}">
+                        `;
+
+                        Object.keys(iterations).sort((a, b) => parseInt(a) - parseInt(b)).forEach(iterNum => {
+                            const iterNodes = iterations[iterNum];
+
+                            nodeHtml += `<div class="iteration-group" data-iteration="${iterNum}">`;
+
+                            iterNodes.forEach(child => {
+                                const {
+                                    iconClass: childIconClass,
+                                    statusClass: childStatusClass
+                                } = this.getNodeTypeAndStatus(child);
+                                const childTitle = this.getNodeTitle(child);
+                                const childMetrics = this.getMetrics(child);
+
+                                let childIconHtml;
+                                if (childStatusClass === 'running') {
+                                    childIconHtml = `<div class="node-icon ${childStatusClass}"><svg class="svg-spinner"><use href="#svg-spinners--gooey-balls-2"></use></svg></div>`;
+                                } else {
+                                    childIconHtml = `<i class="node-icon ${childStatusClass} ${childIconClass}"></i>`;
+                                }
+
+                                nodeHtml += `
+                                    <div class="tree-node iteration-node">
+                                        <div class="node-row">
+                                            <div class="icon-wrapper">${childIconHtml}</div>
+                                            <div class="content-wrapper">
+                                                <span class="text-sm font-medium text-surface-700 dark:text-surface-300">
+                                                    ${childTitle}
+                                                </span>
+                                                ${childMetrics}
+                                            </div>
+                                        </div>
+                                        ${this.renderIterationNodeChildren(child.node_id)}
+                                    </div>
+                                `;
+                            });
+
+                            nodeHtml += `</div>`;
+                        });
+
+                        nodeHtml += `
+                            </div>
+                        </div>
+                        `;
+                    }
+                } else {
+                    nodeHtml += `
+                            </div>
+                        </div>
+                    `;
+                }
+
+                nodeHtml += `</div>`;
+
+                return nodeHtml;
+            },
+            getNodeTitle(node) {
+                if (!node) return "Unknown Node";
+                if (node.metadata && node.metadata.title) {
+                    return node.metadata.title;
+                }
+                if (node.type) {
+                    return node.type.charAt(0).toUpperCase() +
+                        node.type.slice(1).replace(/_/g, ' ');
+                }
+                return "Node";
+            },
+            getMetrics(node) {
+                if (!this.isAgentNode(node)) return '';
+                if (this.hasTokenMetadata(node)) {
+                    const tokens = this.getAgentTokens(node);
+                    const toolCalls = this.getAgentToolCalls(node);
+                    const hasSignificantCache = (tokens.cache_read > 0) || (tokens.cache_write > 0);
+                    const shouldCollapse = hasSignificantCache || (tokens.prompt + tokens.completion + tokens.thinking) > 10000;
+
+                    let primaryMetrics = [];
+                    let cacheMetrics = [];
+
+                    if (tokens.prompt > 0) {
+                        primaryMetrics.push(`
+                            <div class="metric-item metric-prompt">
+                                <i class="metric-icon ti ti-arrow-down"></i>
+                                <span>${this.formatTokenCount(tokens.prompt)}</span>
+                            </div>
+                        `);
+                    }
+                    if (tokens.completion > 0) {
+                        primaryMetrics.push(`
+                            <div class="metric-item metric-completion">
+                                <i class="metric-icon ti ti-arrow-up"></i>
+                                <span>${this.formatTokenCount(tokens.completion)}</span>
+                            </div>
+                        `);
+                    }
+                    if (tokens.thinking > 0) {
+                        primaryMetrics.push(`
+                            <div class="metric-item metric-thinking">
+                                <i class="metric-icon ti ti-brain"></i>
+                                <span>${this.formatTokenCount(tokens.thinking)}</span>
+                            </div>
+                        `);
+                    }
+                    if (toolCalls > 0) {
+                        primaryMetrics.push(`
+                            <div class="metric-item metric-tools">
+                                <i class="metric-icon ti ti-tool"></i>
+                                <span>${toolCalls}</span>
+                            </div>
+                        `);
+                    }
+
+                    if (tokens.cache_read > 0) {
+                        cacheMetrics.push(`
+                            <div class="metric-item metric-cache">
+                                <i class="metric-icon ti ti-database"></i>
+                                <span>R: ${this.formatTokenCount(tokens.cache_read)}</span>
+                            </div>
+                        `);
+                    }
+                    if (tokens.cache_write > 0) {
+                        cacheMetrics.push(`
+                            <div class="metric-item metric-cache">
+                                <i class="metric-icon ti ti-database-plus"></i>
+                                <span>W: ${this.formatTokenCount(tokens.cache_write)}</span>
+                            </div>
+                        `);
+                    }
+
+                    if (primaryMetrics.length === 0 && cacheMetrics.length === 0) return '';
+
+                    if (!shouldCollapse || cacheMetrics.length === 0) {
+                        return `<div class="agent-metrics">${primaryMetrics.concat(cacheMetrics).join('')}</div>`;
+                    }
+
+                    const nodeId = node.node_id;
+                    const isExpanded = this.expandedMetrics[nodeId];
+                    const toggleIcon = isExpanded ? 'ti ti-chevron-up' : 'ti ti-chevron-down';
+
+                    return `
+                        <div class="metrics-container">
+                            <div class="agent-metrics">${primaryMetrics.join('')}</div>
+                            <button class="metrics-toggle" onclick="this.dispatchEvent(new CustomEvent('toggle-metrics', { detail: '${nodeId}', bubbles: true }))">
+                                <i class="ti ${toggleIcon}" style="width: 10px; height: 10px;"></i>
+                            </button>
+                            <div class="metrics-${isExpanded ? 'expanded' : 'collapsed'}">
+                                ${cacheMetrics.join('')}
+                            </div>
+                        </div>
+                    `;
+                }
+                return '';
+            },
+            getToolSizes(node) {
+                if (!node.metadata) return '';
+                const inputSize = node.metadata.input_size_bytes;
+                const outputSize = node.metadata.output_size_bytes;
+
+                const threshold = 2048;
+                const showInput = inputSize !== undefined && inputSize >= threshold;
+                const showOutput = outputSize !== undefined && outputSize >= threshold;
+
+                if (!showInput && !showOutput) return '';
+
+                let sizes = [];
+
+                if (showOutput) {
+                    sizes.push(`
+                        <div class="size-item size-output">
+                            <i class="size-icon ti ti-arrow-down"></i>
+                            <span>${this.formatBytes(Math.floor(outputSize / 4))}</span>
+                        </div>
+                    `);
+                }
+
+                if (showInput) {
+                    sizes.push(`
+                        <div class="size-item size-input">
+                            <i class="size-icon ti ti-arrow-up"></i>
+                            <span>${this.formatBytes(Math.floor(inputSize / 4))}</span>
+                        </div>
+                    `);
+                }
+
+                return sizes.length > 0 ? `<div class="tool-sizes">${sizes.join('')}</div>` : '';
+            },
+            getStatusMessage(node) {
+                if (!this.isAgentNode(node)) return '';
+                if (node.metadata && node.metadata.status_message) {
+                    return `<span class="status-message">${node.metadata.status_message}</span>`;
+                }
+                return '';
+            },
+            isAgentNode(node) {
+                return node && node.metadata && node.metadata.state && node.metadata.state.total_tokens;
+            },
+            hasTokenMetadata(node) {
+                const tokens = this.getAgentTokens(node);
+                return tokens.total > 0 || tokens.prompt > 0 || tokens.completion > 0 || tokens.thinking > 0 || tokens.cache_read > 0 || tokens.cache_write > 0;
+            },
+            getAgentTokens(node) {
+                if (node.metadata && node.metadata.state && node.metadata.state.total_tokens) {
+                    const tokens = node.metadata.state.total_tokens;
+                    return {
+                        prompt: tokens.prompt_tokens || 0,
+                        completion: tokens.completion_tokens || 0,
+                        thinking: tokens.thinking_tokens || 0,
+                        cache_read: tokens.cache_read_tokens || 0,
+                        cache_write: tokens.cache_write_tokens || 0,
+                        total: tokens.total_tokens || 0
+                    };
+                }
+                return {prompt: 0, completion: 0, thinking: 0, cache_read: 0, cache_write: 0, total: 0};
+            },
+            getAgentToolCalls(node) {
+                if (node.metadata && node.metadata.state && node.metadata.state.tool_calls) {
+                    return node.metadata.state.tool_calls;
+                }
+                return 0;
+            },
+            formatTokenCount(count) {
+                if (count >= 1000) {
+                    return `${(count / 1000).toFixed(1)}K`;
+                }
+                return count.toString();
+            },
+            formatBytes(bytes) {
+                if (bytes === 0) return '0B';
+                if (bytes < 1024) return `${bytes}B`;
+                if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}K`;
+                return `${(bytes / (1024 * 1024)).toFixed(1)}M`;
+            },
+            subscribeToWorkflowEvents() {
+                if (this.eventsSubscribed) return;
+                console.log(`Subscribing to dataflow events for ${this.dataflowId}`);
+                this.wippyApi.on(`dataflow:${this.dataflowId}`, this.handleWorkflowEvent.bind(this));
+                this.eventsSubscribed = true;
+
+                document.addEventListener('toggle-metrics', (e) => {
+                    const nodeId = e.detail;
+                    this.expandedMetrics[nodeId] = !this.expandedMetrics[nodeId];
+                    this.expandedMetrics = {...this.expandedMetrics};
+                    const nodeIndex = this.flatNodes.findIndex(n => n.node_id === nodeId);
+                    if (nodeIndex >= 0) {
+                        this.flatNodes = [...this.flatNodes];
+                    }
+                });
+
+                document.addEventListener('toggle-section', (e) => {
+                    const nodeId = e.detail;
+                    this.collapsedSections[nodeId] = !this.collapsedSections[nodeId];
+                    this.collapsedSections = {...this.collapsedSections};
+                    this.flatNodes = [...this.flatNodes];
+                });
+            },
+            unsubscribeFromWorkflowEvents() {
+                if (!this.eventsSubscribed) return;
+                console.log(`Unsubscribing from dataflow events for ${this.dataflowId}`);
+                this.wippyApi.off(`dataflow:${this.dataflowId}`, this.handleWorkflowEvent.bind(this));
+                this.eventsSubscribed = false;
+            },
+            addNewNode(nodeData) {
+                if (nodeData.status === 'template' || nodeData.status === 'pending') {
+                    return false;
+                }
+
+                if (this.nodeMap[nodeData.node_id]) return false;
+                nodeData.isNew = true;
+                let level = 0;
+                if (nodeData.parent_node_id && this.nodeMap[nodeData.parent_node_id]) {
+                    level = this.nodeMap[nodeData.parent_node_id].level + 1;
+                }
+                nodeData.level = level;
+                this.nodeMap[nodeData.node_id] = nodeData;
+                const buildTreeOrder = () => {
+                    const result = [];
+                    const visited = new Set();
+                    const addNodeAndChildren = (nodeId) => {
+                        if (visited.has(nodeId) || !this.nodeMap[nodeId]) return;
+                        const node = this.nodeMap[nodeId];
+                        if (!this.shouldShowNode(node)) return;
+
+                        visited.add(nodeId);
+                        result.push(node);
+                        const children = Object.values(this.nodeMap)
+                            .filter(n => n.parent_node_id === nodeId &&
+                                !this.isMapReduceParent(this.nodeMap[nodeId]) &&
+                                !this.isCycleParent(this.nodeMap[nodeId]))
+                            .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+                        children.forEach(child => addNodeAndChildren(child.node_id));
+                    };
+                    const rootNodes = Object.values(this.nodeMap)
+                        .filter(n => !n.parent_node_id)
+                        .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+                    rootNodes.forEach(root => addNodeAndChildren(root.node_id));
+                    return result;
+                };
+                this.flatNodes = buildTreeOrder();
+                return true;
+            },
+            updateNode(nodeId, updateData) {
+                if (!nodeId || !updateData || !this.nodeMap[nodeId]) return false;
+                const node = this.nodeMap[nodeId];
+                if (updateData.status) {
+                    node.status = updateData.status;
+                }
+                if (updateData.metadata) {
+                    node.metadata = {
+                        ...node.metadata,
+                        ...updateData.metadata
+                    };
+                }
+                const nodeIndex = this.flatNodes.findIndex(n => n.node_id === nodeId);
+                if (nodeIndex >= 0) {
+                    this.flatNodes[nodeIndex] = {...node};
+                    this.flatNodes = [...this.flatNodes];
+                }
+                return true;
+            },
+            handleWorkflowEvent(data) {
+                console.log('Workflow event received:', data);
+                if (!data || !data.data) return;
+                const eventData = data.data;
+                if (eventData.dataflow_id === this.dataflowId) {
+                    let needsUpdate = false;
+                    if (eventData.node_id) {
+                        if (eventData.op_type === 'CREATE_NODE') {
+                            if (eventData.status === 'template' || eventData.status === 'pending') {
+                                return;
+                            }
+                            const newNodeAdded = this.addNewNode({
+                                node_id: eventData.node_id,
+                                parent_node_id: eventData.parent_node_id,
+                                type: eventData.node_type,
+                                status: eventData.status || 'running',
+                                metadata: eventData.metadata || {},
+                                config: eventData.config || {},
+                                created_at: new Date().toISOString(),
+                                updated_at: new Date().toISOString(),
+                                dataflow_id: this.dataflowId
+                            });
+                            needsUpdate = !newNodeAdded;
+                        } else if (eventData.op_type === 'UPDATE_NODE') {
+                            const updateSuccess = this.updateNode(eventData.node_id, {
+                                status: eventData.status,
+                                metadata: eventData.metadata
+                            });
+                            needsUpdate = !updateSuccess;
+                        } else {
+                            needsUpdate = true;
+                        }
+                    } else if (eventData.op_type === 'UPDATE_WORKFLOW') {
+                        if (eventData.status) {
+                            this.dataflow.status = eventData.status;
+                        }
+                    } else {
+                        needsUpdate = true;
+                    }
+                    if (needsUpdate) {
+                        this.fetchWorkflowData();
+                    }
+                }
+            }
+        }));
+    });
+</script>
+</body>
+</html>
