@@ -25,7 +25,7 @@ entries:
       consts: userspace.dataflow:consts
       data_reader: userspace.dataflow.persist:data_reader
       dataflow_repo: userspace.dataflow.persist:dataflow_repo
-    
+
   # userspace.dataflow:client_test
   - name: client_test
     kind: function.lua
@@ -54,7 +54,7 @@ entries:
       consts: userspace.dataflow:consts
       test: wippy.test:test
     method: run_tests
-    
+
   # userspace.dataflow:consts
   - name: consts
     kind: library.lua
@@ -67,7 +67,7 @@ entries:
         - configuration
       description: "Defines constants for dataflow operations including command types, data types, \ncontent types, status values, and message topics.\n"
     source: file://consts.lua
-    
+
   # userspace.dataflow:integration_test
   - name: integration_test
     kind: function.lua
@@ -96,7 +96,7 @@ entries:
       data_reader: userspace.dataflow.persist:data_reader
       test: wippy.test:test
     method: run_tests
-    
+
   # userspace.dataflow:node
   - name: node
     kind: library.lua
@@ -125,7 +125,7 @@ entries:
       commit: userspace.dataflow.persist:commit
       consts: userspace.dataflow:consts
       data_reader: userspace.dataflow.persist:data_reader
-    
+
   # userspace.dataflow:node_test
   - name: node_test
     kind: function.lua
@@ -155,4 +155,13 @@ entries:
       node: userspace.dataflow:node
       test: wippy.test:test
     method: run_tests
-    
+
+  # Requirements
+  - name: web_host_origin_env
+    kind: ns.requirement
+    meta:
+    description: "Environment variable that defines the public web host origin URL"
+    default: "userspace.dataflow.env:web_host_origin"
+    targets:
+      - entry: userspace.dataflow.session.views:env_mapping
+        path: ".mappings.web_host_origin"

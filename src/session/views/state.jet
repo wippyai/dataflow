@@ -29,6 +29,7 @@
     {{ end }}
     {{ end }}
     {{ end }}
+    <script src="{{ env.web_host_origin }}/proxy.js"></script>
     <style>
         * {
             box-sizing: border-box;
