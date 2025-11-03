@@ -24,8 +24,8 @@ entries:
       - json
       - expr
     imports:
-      consts: userspace.dataflow:consts
-    
+      df_consts: userspace.dataflow:consts
+
   # userspace.dataflow.flow:flow
   - name: flow
     kind: library.lua
@@ -51,8 +51,7 @@ entries:
       - ctx
       - registry
     imports:
-      client: userspace.dataflow:client
-      compiler: userspace.dataflow.flow:compiler
-      consts: userspace.dataflow:consts
+      df_client: userspace.dataflow:client
+      df_compiler: userspace.dataflow.flow:compiler
+      df_consts: userspace.dataflow:consts
     method: flow
-    
