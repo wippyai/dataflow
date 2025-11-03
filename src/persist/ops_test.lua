@@ -75,7 +75,7 @@ local function define_tests()
             local node_id = uuid.v7()
 
             success, err_insert = tx:execute([[
-                INSERT INTO nodes (
+                INSERT INTO dataflow_nodes (
                     node_id, dataflow_id, type, status, config, metadata, created_at, updated_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ]], {
@@ -131,7 +131,7 @@ local function define_tests()
                 expect(#result.results).to_equal(1)
                 expect(result.results[1].data_id).to_equal(data_id)
 
-                local query = "SELECT * FROM data WHERE data_id = ?"
+                local query = "SELECT * FROM dataflow_data WHERE data_id = ?"
                 local rows, err_query = tx:query(query, { data_id })
 
                 expect(err_query).to_be_nil()
@@ -182,7 +182,7 @@ local function define_tests()
                 expect(result.results[1].data_id).to_equal(data_id_1)
                 expect(result.results[2].data_id).to_equal(data_id_2)
 
-                local query = "SELECT * FROM data WHERE data_id IN (?, ?) ORDER BY key ASC"
+                local query = "SELECT * FROM dataflow_data WHERE data_id IN (?, ?) ORDER BY key ASC"
                 local rows, err_query = tx:query(query, { data_id_1, data_id_2 })
 
                 expect(err_query).to_be_nil()
@@ -736,7 +736,7 @@ local function define_tests()
                 expect(#result.results).to_equal(1)
                 expect(result.results[1].node_id).to_equal(node_id)
 
-                local query = "SELECT * FROM nodes WHERE node_id = ?"
+                local query = "SELECT * FROM dataflow_nodes WHERE node_id = ?"
                 local rows, err_query = tx:query(query, { node_id })
 
                 expect(err_query).to_be_nil()
@@ -781,7 +781,7 @@ local function define_tests()
                 expect(#result.results).to_equal(1)
                 expect(result.results[1].node_id).to_equal(node_id)
 
-                local query = "SELECT * FROM nodes WHERE node_id = ?"
+                local query = "SELECT * FROM dataflow_nodes WHERE node_id = ?"
                 local rows, err_query = tx:query(query, { node_id })
 
                 expect(err_query).to_be_nil()
@@ -827,7 +827,7 @@ local function define_tests()
                 expect(#result.results).to_equal(1)
                 expect(result.results[1].node_id).to_equal(node_id)
 
-                local query = "SELECT config FROM nodes WHERE node_id = ?"
+                local query = "SELECT config FROM dataflow_nodes WHERE node_id = ?"
                 local rows, err_query = tx:query(query, { node_id })
 
                 expect(err_query).to_be_nil()
@@ -859,7 +859,7 @@ local function define_tests()
                 expect(err).not_to_be_nil()
                 expect(err).to_contain("Node type is required")
 
-                local query = "SELECT COUNT(*) AS node_count FROM nodes WHERE node_id = ?"
+                local query = "SELECT COUNT(*) AS node_count FROM dataflow_nodes WHERE node_id = ?"
                 local rows, err_query = tx:query(query, { node_id })
 
                 expect(err_query).to_be_nil()
@@ -870,7 +870,7 @@ local function define_tests()
                 local resources = setup_test_resources()
                 local tx = get_test_transaction()
 
-                local initial_query = "SELECT config FROM nodes WHERE node_id = ?"
+                local initial_query = "SELECT config FROM dataflow_nodes WHERE node_id = ?"
                 local initial_rows, err_initial = tx:query(initial_query, { resources.node_id })
 
                 expect(err_initial).to_be_nil()
@@ -921,7 +921,7 @@ local function define_tests()
                 local resources = setup_test_resources()
                 local tx = get_test_transaction()
 
-                local initial_query = "SELECT metadata FROM nodes WHERE node_id = ?"
+                local initial_query = "SELECT metadata FROM dataflow_nodes WHERE node_id = ?"
                 local initial_rows, err_initial = tx:query(initial_query, { resources.node_id })
 
                 expect(err_initial).to_be_nil()
@@ -952,7 +952,7 @@ local function define_tests()
                 expect(result.results[1].node_id).to_equal(resources.node_id)
                 expect(result.results[1].changes_made).to_be_true()
 
-                local query = "SELECT metadata FROM nodes WHERE node_id = ?"
+                local query = "SELECT metadata FROM dataflow_nodes WHERE node_id = ?"
                 local rows, err_query = tx:query(query, { resources.node_id })
 
                 expect(err_query).to_be_nil()
@@ -972,7 +972,7 @@ local function define_tests()
                 local resources = setup_test_resources()
                 local tx = get_test_transaction()
 
-                local initial_query = "SELECT status FROM nodes WHERE node_id = ?"
+                local initial_query = "SELECT status FROM dataflow_nodes WHERE node_id = ?"
                 local initial_rows, err_initial = tx:query(initial_query, { resources.node_id })
 
                 expect(err_initial).to_be_nil()
@@ -996,7 +996,7 @@ local function define_tests()
                 expect(result.results[1].node_id).to_equal(resources.node_id)
                 expect(result.results[1].changes_made).to_be_true()
 
-                local query = "SELECT status FROM nodes WHERE node_id = ?"
+                local query = "SELECT status FROM dataflow_nodes WHERE node_id = ?"
                 local rows, err_query = tx:query(query, { resources.node_id })
 
                 expect(err_query).to_be_nil()
@@ -1008,7 +1008,7 @@ local function define_tests()
                 local resources = setup_test_resources()
                 local tx = get_test_transaction()
 
-                local initial_query = "SELECT type FROM nodes WHERE node_id = ?"
+                local initial_query = "SELECT type FROM dataflow_nodes WHERE node_id = ?"
                 local initial_rows, err_initial = tx:query(initial_query, { resources.node_id })
 
                 expect(err_initial).to_be_nil()
@@ -1032,7 +1032,7 @@ local function define_tests()
                 expect(result.results[1].node_id).to_equal(resources.node_id)
                 expect(result.results[1].changes_made).to_be_true()
 
-                local query = "SELECT type FROM nodes WHERE node_id = ?"
+                local query = "SELECT type FROM dataflow_nodes WHERE node_id = ?"
                 local rows, err_query = tx:query(query, { resources.node_id })
 
                 expect(err_query).to_be_nil()
@@ -1064,7 +1064,7 @@ local function define_tests()
                 expect(result.results[1].node_id).to_equal(resources.node_id)
                 expect(result.results[1].changes_made).to_be_true()
 
-                local query = "SELECT * FROM nodes WHERE node_id = ?"
+                local query = "SELECT * FROM dataflow_nodes WHERE node_id = ?"
                 local rows, err_query = tx:query(query, { resources.node_id })
 
                 expect(err_query).to_be_nil()
@@ -1105,7 +1105,7 @@ local function define_tests()
                 expect(result.results[1].node_id).to_equal(resources.node_id)
                 expect(result.results[1].changes_made).to_be_true()
 
-                local query = "SELECT config FROM nodes WHERE node_id = ?"
+                local query = "SELECT config FROM dataflow_nodes WHERE node_id = ?"
                 local rows, err_query = tx:query(query, { resources.node_id })
 
                 expect(err_query).to_be_nil()
@@ -1146,7 +1146,7 @@ local function define_tests()
                 local resources = setup_test_resources()
                 local tx = get_test_transaction()
 
-                local initial_query = "SELECT 1 AS exists_flag FROM nodes WHERE node_id = ?"
+                local initial_query = "SELECT 1 AS exists_flag FROM dataflow_nodes WHERE node_id = ?"
                 local initial_rows, err_initial = tx:query(initial_query, { resources.node_id })
 
                 expect(err_initial).to_be_nil()
@@ -1169,7 +1169,7 @@ local function define_tests()
                 expect(result.results[1].node_id).to_equal(resources.node_id)
                 expect(result.results[1].changes_made).to_be_true()
 
-                local query = "SELECT COUNT(*) AS node_count FROM nodes WHERE node_id = ?"
+                local query = "SELECT COUNT(*) AS node_count FROM dataflow_nodes WHERE node_id = ?"
                 local rows, err_query = tx:query(query, { resources.node_id })
 
                 expect(err_query).to_be_nil()

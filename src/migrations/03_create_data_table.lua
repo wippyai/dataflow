@@ -3,7 +3,7 @@ return require("migration").define(function()
         database("postgres", function()
             up(function(db)
                 local success, err = db:execute([[
-                    CREATE TABLE data (
+                    CREATE TABLE dataflow_data (
                         data_id UUID PRIMARY KEY,
                         dataflow_id UUID NOT NULL,
                         node_id UUID,
@@ -23,39 +23,39 @@ return require("migration").define(function()
                     error(err)
                 end
 
-                success, err = db:execute("CREATE INDEX idx_data_dataflow ON data(dataflow_id)")
+                success, err = db:execute("CREATE INDEX idx_data_dataflow ON dataflow_data(dataflow_id)")
                 if err then
                     error(err)
                 end
 
-                success, err = db:execute("CREATE INDEX idx_data_node ON data(node_id) WHERE node_id IS NOT NULL")
+                success, err = db:execute("CREATE INDEX idx_data_node ON dataflow_data(node_id) WHERE node_id IS NOT NULL")
                 if err then
                     error(err)
                 end
 
-                success, err = db:execute("CREATE INDEX idx_data_type ON data(type)")
+                success, err = db:execute("CREATE INDEX idx_data_type ON dataflow_data(type)")
                 if err then
                     error(err)
                 end
 
-                success, err = db:execute("CREATE INDEX idx_data_discriminator ON data(discriminator)")
+                success, err = db:execute("CREATE INDEX idx_data_discriminator ON dataflow_data(discriminator)")
                 if err then
                     error(err)
                 end
 
-                success, err = db:execute("CREATE INDEX idx_data_key ON data(key)")
+                success, err = db:execute("CREATE INDEX idx_data_key ON dataflow_data(key)")
                 if err then
                     error(err)
                 end
 
-                success, err = db:execute("CREATE INDEX idx_data_dataflow_type_discriminator ON data(dataflow_id, type, discriminator)")
+                success, err = db:execute("CREATE INDEX idx_data_dataflow_type_discriminator ON dataflow_data(dataflow_id, type, discriminator)")
                 if err then
                     error(err)
                 end
 
                 success, err = db:execute([[
                     CREATE INDEX idx_data_unique_node_specific
-                    ON data (dataflow_id, node_id, type, discriminator, key)
+                    ON dataflow_data (dataflow_id, node_id, type, discriminator, key)
                     WHERE node_id IS NOT NULL
                 ]])
                 if err then
@@ -64,7 +64,7 @@ return require("migration").define(function()
 
                 success, err = db:execute([[
                     CREATE INDEX idx_data_unique_dataflow_specific
-                    ON data (dataflow_id, type, discriminator, key)
+                    ON dataflow_data (dataflow_id, type, discriminator, key)
                     WHERE node_id IS NULL
                 ]])
                 if err then
@@ -113,7 +113,7 @@ return require("migration").define(function()
                     error(err)
                 end
 
-                success, err = db:execute("DROP TABLE IF EXISTS data")
+                success, err = db:execute("DROP TABLE IF EXISTS dataflow_data")
                 if err then
                     error(err)
                 end
@@ -123,7 +123,7 @@ return require("migration").define(function()
         database("sqlite", function()
             up(function(db)
                 local success, err = db:execute([[
-                    CREATE TABLE data (
+                    CREATE TABLE dataflow_data (
                         data_id TEXT NOT NULL UNIQUE,
                         dataflow_id TEXT NOT NULL,
                         node_id TEXT,
@@ -143,44 +143,44 @@ return require("migration").define(function()
                     error(err)
                 end
 
-                success, err = db:execute("CREATE INDEX idx_data_data_id ON data(data_id)")
+                success, err = db:execute("CREATE INDEX idx_data_data_id ON dataflow_data(data_id)")
                 if err then
                     error(err)
                 end
 
-                success, err = db:execute("CREATE INDEX idx_data_dataflow ON data(dataflow_id)")
+                success, err = db:execute("CREATE INDEX idx_data_dataflow ON dataflow_data(dataflow_id)")
                 if err then
                     error(err)
                 end
 
-                success, err = db:execute("CREATE INDEX idx_data_node ON data(node_id) WHERE node_id IS NOT NULL")
+                success, err = db:execute("CREATE INDEX idx_data_node ON dataflow_data(node_id) WHERE node_id IS NOT NULL")
                 if err then
                     error(err)
                 end
 
-                success, err = db:execute("CREATE INDEX idx_data_type ON data(type)")
+                success, err = db:execute("CREATE INDEX idx_data_type ON dataflow_data(type)")
                 if err then
                     error(err)
                 end
 
-                success, err = db:execute("CREATE INDEX idx_data_discriminator ON data(discriminator)")
+                success, err = db:execute("CREATE INDEX idx_data_discriminator ON dataflow_data(discriminator)")
                 if err then
                     error(err)
                 end
 
-                success, err = db:execute("CREATE INDEX idx_data_key ON data(key)")
+                success, err = db:execute("CREATE INDEX idx_data_key ON dataflow_data(key)")
                 if err then
                     error(err)
                 end
 
-                success, err = db:execute("CREATE INDEX idx_data_dataflow_type_discriminator ON data(dataflow_id, type, discriminator)")
+                success, err = db:execute("CREATE INDEX idx_data_dataflow_type_discriminator ON dataflow_data(dataflow_id, type, discriminator)")
                 if err then
                     error(err)
                 end
 
                 success, err = db:execute([[
                     CREATE INDEX idx_data_unique_node_specific
-                    ON data (dataflow_id, node_id, type, discriminator, key)
+                    ON dataflow_data (dataflow_id, node_id, type, discriminator, key)
                     WHERE node_id IS NOT NULL
                 ]])
                 if err then
@@ -189,7 +189,7 @@ return require("migration").define(function()
 
                 success, err = db:execute([[
                     CREATE INDEX idx_data_unique_dataflow_specific
-                    ON data (dataflow_id, type, discriminator, key)
+                    ON dataflow_data (dataflow_id, type, discriminator, key)
                     WHERE node_id IS NULL
                 ]])
                 if err then
@@ -243,7 +243,7 @@ return require("migration").define(function()
                     error(err)
                 end
 
-                success, err = db:execute("DROP TABLE IF EXISTS data")
+                success, err = db:execute("DROP TABLE IF EXISTS dataflow_data")
                 if err then
                     error(err)
                 end

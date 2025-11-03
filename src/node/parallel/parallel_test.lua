@@ -4,10 +4,10 @@ local json = require("json")
 local client = require("client")
 local consts = require("consts")
 local data_reader = require("data_reader")
-local map_reduce = require("map_reduce")
+local parallel = require("parallel")
 
 local function define_tests()
-    describe("Map-Reduce Tests", function()
+    describe("Parallel Tests", function()
         describe("Unit Tests - Configuration Validation", function()
             it("should validate failure strategies", function()
                 local mock_node = {
@@ -33,15 +33,15 @@ local function define_tests()
                     end
                 }
 
-                map_reduce._deps.node = {
+                parallel._deps.node = {
                     new = function(args)
                         return mock_node, nil
                     end
                 }
 
-                local result = map_reduce.run({})
+                local result = parallel.run({})
                 expect(result.success).to_be_false()
-                expect(result.error.code).to_equal(map_reduce.ERRORS.INVALID_FAILURE_STRATEGY)
+                expect(result.error.code).to_equal(parallel.ERRORS.INVALID_FAILURE_STRATEGY)
             end)
 
             it("should validate batch size", function()
@@ -68,15 +68,15 @@ local function define_tests()
                     end
                 }
 
-                map_reduce._deps.node = {
+                parallel._deps.node = {
                     new = function(args)
                         return mock_node, nil
                     end
                 }
 
-                local result = map_reduce.run({})
+                local result = parallel.run({})
                 expect(result.success).to_be_false()
-                expect(result.error.code).to_equal(map_reduce.ERRORS.INVALID_BATCH_SIZE)
+                expect(result.error.code).to_equal(parallel.ERRORS.INVALID_BATCH_SIZE)
             end)
 
             it("should require source_array_key", function()
@@ -93,15 +93,15 @@ local function define_tests()
                     end
                 }
 
-                map_reduce._deps.node = {
+                parallel._deps.node = {
                     new = function(args)
                         return mock_node, nil
                     end
                 }
 
-                local result = map_reduce.run({})
+                local result = parallel.run({})
                 expect(result.success).to_be_false()
-                expect(result.error.code).to_equal(map_reduce.ERRORS.MISSING_SOURCE_ARRAY_KEY)
+                expect(result.error.code).to_equal(parallel.ERRORS.MISSING_SOURCE_ARRAY_KEY)
             end)
 
             it("should require input data", function()
@@ -123,15 +123,15 @@ local function define_tests()
                     end
                 }
 
-                map_reduce._deps.node = {
+                parallel._deps.node = {
                     new = function(args)
                         return mock_node, nil
                     end
                 }
 
-                local result = map_reduce.run({})
+                local result = parallel.run({})
                 expect(result.success).to_be_false()
-                expect(result.error.code).to_equal(map_reduce.ERRORS.NO_INPUT_DATA)
+                expect(result.error.code).to_equal(parallel.ERRORS.NO_INPUT_DATA)
             end)
 
             it("should validate input structure", function()
@@ -157,15 +157,15 @@ local function define_tests()
                     end
                 }
 
-                map_reduce._deps.node = {
+                parallel._deps.node = {
                     new = function(args)
                         return mock_node, nil
                     end
                 }
 
-                local result = map_reduce.run({})
+                local result = parallel.run({})
                 expect(result.success).to_be_false()
-                expect(result.error.code).to_equal(map_reduce.ERRORS.INVALID_INPUT_STRUCTURE)
+                expect(result.error.code).to_equal(parallel.ERRORS.INVALID_INPUT_STRUCTURE)
             end)
 
             it("should require non-empty array", function()
@@ -191,15 +191,15 @@ local function define_tests()
                     end
                 }
 
-                map_reduce._deps.node = {
+                parallel._deps.node = {
                     new = function(args)
                         return mock_node, nil
                     end
                 }
 
-                local result = map_reduce.run({})
+                local result = parallel.run({})
                 expect(result.success).to_be_false()
-                expect(result.error.code).to_equal(map_reduce.ERRORS.INVALID_INPUT_STRUCTURE)
+                expect(result.error.code).to_equal(parallel.ERRORS.INVALID_INPUT_STRUCTURE)
             end)
 
             it("should validate item_steps configuration", function()
@@ -226,15 +226,15 @@ local function define_tests()
                     end
                 }
 
-                map_reduce._deps.node = {
+                parallel._deps.node = {
                     new = function(args)
                         return mock_node, nil
                     end
                 }
 
-                local result = map_reduce.run({})
+                local result = parallel.run({})
                 expect(result.success).to_be_false()
-                expect(result.error.code).to_equal(map_reduce.ERRORS.INVALID_PIPELINE_STEP)
+                expect(result.error.code).to_equal(parallel.ERRORS.INVALID_PIPELINE_STEP)
             end)
 
             it("should validate item step structure", function()
@@ -263,15 +263,15 @@ local function define_tests()
                     end
                 }
 
-                map_reduce._deps.node = {
+                parallel._deps.node = {
                     new = function(args)
                         return mock_node, nil
                     end
                 }
 
-                local result = map_reduce.run({})
+                local result = parallel.run({})
                 expect(result.success).to_be_false()
-                expect(result.error.code).to_equal(map_reduce.ERRORS.INVALID_PIPELINE_STEP)
+                expect(result.error.code).to_equal(parallel.ERRORS.INVALID_PIPELINE_STEP)
             end)
 
             it("should validate extractor names", function()
@@ -298,15 +298,15 @@ local function define_tests()
                     end
                 }
 
-                map_reduce._deps.node = {
+                parallel._deps.node = {
                     new = function(args)
                         return mock_node, nil
                     end
                 }
 
-                local result = map_reduce.run({})
+                local result = parallel.run({})
                 expect(result.success).to_be_false()
-                expect(result.error.code).to_equal(map_reduce.ERRORS.INVALID_EXTRACTOR)
+                expect(result.error.code).to_equal(parallel.ERRORS.INVALID_EXTRACTOR)
             end)
 
             it("should validate reduction pipeline compatibility", function()
@@ -333,21 +333,21 @@ local function define_tests()
                     end
                 }
 
-                map_reduce._deps.node = {
+                parallel._deps.node = {
                     new = function(args)
                         return mock_node, nil
                     end
                 }
 
-                local result = map_reduce.run({})
+                local result = parallel.run({})
                 expect(result.success).to_be_false()
-                expect(result.error.code).to_equal(map_reduce.ERRORS.INVALID_EXTRACTOR)
+                expect(result.error.code).to_equal(parallel.ERRORS.INVALID_EXTRACTOR)
             end)
         end)
 
         describe("Unit Tests - Extractors", function()
             it("should extract successes correctly", function()
-                local map_reduce_result = {
+                local parallel_result = {
                     successes = {
                         { iteration = 1, item = "a", result = "result_a" },
                         { iteration = 2, item = "b", result = "result_b" }
@@ -360,8 +360,8 @@ local function define_tests()
                     total_iterations = 3
                 }
 
-                local extractor = map_reduce.extractors[map_reduce.EXTRACTORS.SUCCESSES]
-                local result = extractor(map_reduce_result)
+                local extractor = parallel.extractors[parallel.EXTRACTORS.SUCCESSES]
+                local result = extractor(parallel_result)
 
                 expect(#result).to_equal(2)
                 expect(result[1]).to_equal("result_a")
@@ -369,7 +369,7 @@ local function define_tests()
             end)
 
             it("should extract failures correctly", function()
-                local map_reduce_result = {
+                local parallel_result = {
                     successes = {
                         { iteration = 1, item = "a", result = "result_a" }
                     },
@@ -382,8 +382,8 @@ local function define_tests()
                     total_iterations = 3
                 }
 
-                local extractor = map_reduce.extractors[map_reduce.EXTRACTORS.FAILURES]
-                local result = extractor(map_reduce_result)
+                local extractor = parallel.extractors[parallel.EXTRACTORS.FAILURES]
+                local result = extractor(parallel_result)
 
                 expect(#result).to_equal(2)
                 expect(result[1].item).to_equal("b")
@@ -423,21 +423,21 @@ local function define_tests()
                     end
                 }
 
-                map_reduce._deps.node = {
+                parallel._deps.node = {
                     new = function(args)
                         return mock_node, nil
                     end
                 }
 
-                map_reduce._deps.template_graph = {
+                parallel._deps.template_graph = {
                     build_for_node = function(node)
                         return mock_template_graph, nil
                     end
                 }
 
-                local result = map_reduce.run({})
+                local result = parallel.run({})
                 expect(result.success).to_be_false()
-                expect(result.error.code).to_equal(map_reduce.ERRORS.NO_TEMPLATES)
+                expect(result.error.code).to_equal(parallel.ERRORS.NO_TEMPLATES)
             end)
 
             it("should handle template discovery errors", function()
@@ -463,21 +463,21 @@ local function define_tests()
                     end
                 }
 
-                map_reduce._deps.node = {
+                parallel._deps.node = {
                     new = function(args)
                         return mock_node, nil
                     end
                 }
 
-                map_reduce._deps.template_graph = {
+                parallel._deps.template_graph = {
                     build_for_node = function(node)
                         return nil, "Template discovery failed"
                     end
                 }
 
-                local result = map_reduce.run({})
+                local result = parallel.run({})
                 expect(result.success).to_be_false()
-                expect(result.error.code).to_equal(map_reduce.ERRORS.TEMPLATE_DISCOVERY_FAILED)
+                expect(result.error.code).to_equal(parallel.ERRORS.TEMPLATE_DISCOVERY_FAILED)
             end)
         end)
 
@@ -535,21 +535,21 @@ local function define_tests()
                     end
                 }
 
-                map_reduce._deps.node = {
+                parallel._deps.node = {
                     new = function(args)
                         return mock_node, nil
                     end
                 }
 
-                map_reduce._deps.template_graph = {
+                parallel._deps.template_graph = {
                     build_for_node = function(node)
                         return mock_template_graph, nil
                     end
                 }
 
-                map_reduce._deps.iterator = mock_iterator
+                parallel._deps.iterator = mock_iterator
 
-                local result = map_reduce.run({})
+                local result = parallel.run({})
                 expect(result.success).to_be_true()
                 expect(batches_processed).to_equal(2) -- 3 items in batches of 2
                 expect(yield_called).to_be_true()
@@ -560,7 +560,7 @@ local function define_tests()
                     config = function(self)
                         return {
                             source_array_key = "items",
-                            failure_strategy = map_reduce.FAILURE_STRATEGIES.FAIL_FAST
+                            failure_strategy = parallel.FAILURE_STRATEGIES.FAIL_FAST
                         }
                     end,
                     inputs = function(self)
@@ -594,23 +594,23 @@ local function define_tests()
                     end
                 }
 
-                map_reduce._deps.node = {
+                parallel._deps.node = {
                     new = function(args)
                         return mock_node, nil
                     end
                 }
 
-                map_reduce._deps.template_graph = {
+                parallel._deps.template_graph = {
                     build_for_node = function(node)
                         return mock_template_graph, nil
                     end
                 }
 
-                map_reduce._deps.iterator = mock_iterator
+                parallel._deps.iterator = mock_iterator
 
-                local result = map_reduce.run({})
+                local result = parallel.run({})
                 expect(result.success).to_be_false()
-                expect(result.error.code).to_equal(map_reduce.ERRORS.ITERATION_FAILED)
+                expect(result.error.code).to_equal(parallel.ERRORS.ITERATION_FAILED)
             end)
         end)
 
@@ -683,22 +683,22 @@ local function define_tests()
                     end
                 }
 
-                map_reduce._deps.node = {
+                parallel._deps.node = {
                     new = function(args)
                         return mock_node, nil
                     end
                 }
 
-                map_reduce._deps.template_graph = {
+                parallel._deps.template_graph = {
                     build_for_node = function(node)
                         return mock_template_graph, nil
                     end
                 }
 
-                map_reduce._deps.iterator = mock_iterator
-                map_reduce._deps.funcs = mock_funcs
+                parallel._deps.iterator = mock_iterator
+                parallel._deps.funcs = mock_funcs
 
-                local result = map_reduce.run({})
+                local result = parallel.run({})
                 expect(result.success).to_be_true()
                 expect(item_pipeline_called).to_be_true()
                 expect(item_pipeline_input).to_equal("large_result")
@@ -710,7 +710,7 @@ local function define_tests()
                     config = function(self)
                         return {
                             source_array_key = "items",
-                            failure_strategy = map_reduce.FAILURE_STRATEGIES.FAIL_FAST,
+                            failure_strategy = parallel.FAILURE_STRATEGIES.FAIL_FAST,
                             item_steps = {
                                 { type = "map", func_id = "failing_transform" }
                             }
@@ -776,24 +776,24 @@ local function define_tests()
                     end
                 }
 
-                map_reduce._deps.node = {
+                parallel._deps.node = {
                     new = function(args)
                         return mock_node, nil
                     end
                 }
 
-                map_reduce._deps.template_graph = {
+                parallel._deps.template_graph = {
                     build_for_node = function(node)
                         return mock_template_graph, nil
                     end
                 }
 
-                map_reduce._deps.iterator = mock_iterator
-                map_reduce._deps.funcs = mock_funcs
+                parallel._deps.iterator = mock_iterator
+                parallel._deps.funcs = mock_funcs
 
-                local result = map_reduce.run({})
+                local result = parallel.run({})
                 expect(result.success).to_be_false()
-                expect(result.error.code).to_equal(map_reduce.ERRORS.ITERATION_FAILED)
+                expect(result.error.code).to_equal(parallel.ERRORS.ITERATION_FAILED)
                 expect(result.error.message).to_contain("Item pipeline failed")
             end)
 
@@ -802,7 +802,7 @@ local function define_tests()
                     config = function(self)
                         return {
                             source_array_key = "items",
-                            failure_strategy = map_reduce.FAILURE_STRATEGIES.COLLECT_ERRORS,
+                            failure_strategy = parallel.FAILURE_STRATEGIES.COLLECT_ERRORS,
                             item_steps = {
                                 { type = "map", func_id = "failing_transform" }
                             }
@@ -868,22 +868,22 @@ local function define_tests()
                     end
                 }
 
-                map_reduce._deps.node = {
+                parallel._deps.node = {
                     new = function(args)
                         return mock_node, nil
                     end
                 }
 
-                map_reduce._deps.template_graph = {
+                parallel._deps.template_graph = {
                     build_for_node = function(node)
                         return mock_template_graph, nil
                     end
                 }
 
-                map_reduce._deps.iterator = mock_iterator
-                map_reduce._deps.funcs = mock_funcs
+                parallel._deps.iterator = mock_iterator
+                parallel._deps.funcs = mock_funcs
 
-                local result = map_reduce.run({})
+                local result = parallel.run({})
                 expect(result.success).to_be_true()
                 expect(result.result.failures).not_to_be_nil()
                 expect(result.result.failure_count).to_equal(1)
@@ -964,22 +964,22 @@ local function define_tests()
                     end
                 }
 
-                map_reduce._deps.node = {
+                parallel._deps.node = {
                     new = function(args)
                         return mock_node, nil
                     end
                 }
 
-                map_reduce._deps.template_graph = {
+                parallel._deps.template_graph = {
                     build_for_node = function(node)
                         return mock_template_graph, nil
                     end
                 }
 
-                map_reduce._deps.iterator = mock_iterator
-                map_reduce._deps.funcs = mock_funcs
+                parallel._deps.iterator = mock_iterator
+                parallel._deps.funcs = mock_funcs
 
-                local result = map_reduce.run({})
+                local result = parallel.run({})
                 expect(result.success).to_be_true()
                 expect(#step_calls).to_equal(3)
                 expect(step_calls[1]).to_equal("step1")
@@ -1052,22 +1052,22 @@ local function define_tests()
                     end
                 }
 
-                map_reduce._deps.node = {
+                parallel._deps.node = {
                     new = function(args)
                         return mock_node, nil
                     end
                 }
 
-                map_reduce._deps.template_graph = {
+                parallel._deps.template_graph = {
                     build_for_node = function(node)
                         return mock_template_graph, nil
                     end
                 }
 
-                map_reduce._deps.iterator = mock_iterator
-                map_reduce._deps.funcs = mock_funcs
+                parallel._deps.iterator = mock_iterator
+                parallel._deps.funcs = mock_funcs
 
-                local result = map_reduce.run({})
+                local result = parallel.run({})
                 expect(result.success).to_be_true()
                 expect(result.result.success_count).to_equal(1)                -- Only one item passed filter
                 expect(result.result.successes[1].result).to_equal("result_2") -- Second item
@@ -1144,22 +1144,22 @@ local function define_tests()
                     end
                 }
 
-                map_reduce._deps.node = {
+                parallel._deps.node = {
                     new = function(args)
                         return mock_node, nil
                     end
                 }
 
-                map_reduce._deps.template_graph = {
+                parallel._deps.template_graph = {
                     build_for_node = function(node)
                         return mock_template_graph, nil
                     end
                 }
 
-                map_reduce._deps.iterator = mock_iterator
-                map_reduce._deps.funcs = mock_funcs
+                parallel._deps.iterator = mock_iterator
+                parallel._deps.funcs = mock_funcs
 
-                local result = map_reduce.run({})
+                local result = parallel.run({})
                 expect(result.success).to_be_true()
                 expect(reducer_called).to_be_true()
                 expect(reducer_input).not_to_be_nil()
@@ -1243,22 +1243,22 @@ local function define_tests()
                     end
                 }
 
-                map_reduce._deps.node = {
+                parallel._deps.node = {
                     new = function(args)
                         return mock_node, nil
                     end
                 }
 
-                map_reduce._deps.template_graph = {
+                parallel._deps.template_graph = {
                     build_for_node = function(node)
                         return mock_template_graph, nil
                     end
                 }
 
-                map_reduce._deps.iterator = mock_iterator
-                map_reduce._deps.funcs = mock_funcs
+                parallel._deps.iterator = mock_iterator
+                parallel._deps.funcs = mock_funcs
 
-                local result = map_reduce.run({})
+                local result = parallel.run({})
                 expect(result.success).to_be_true()
                 expect(#pipeline_calls).to_equal(3) -- 2 map calls + 1 aggregate call
                 expect(pipeline_calls[1].func_id).to_equal("extract_score")
@@ -1278,7 +1278,7 @@ local function define_tests()
                 }
 
                 for _, step in ipairs(valid_steps) do
-                    local valid, err = map_reduce.validate_item_pipeline_step(step)
+                    local valid, err = parallel.validate_item_pipeline_step(step)
                     expect(valid).to_be_true()
                     expect(err).to_be_nil()
                 end
@@ -1294,7 +1294,7 @@ local function define_tests()
                 }
 
                 for _, step in ipairs(invalid_steps) do
-                    local valid, err = map_reduce.validate_item_pipeline_step(step)
+                    local valid, err = parallel.validate_item_pipeline_step(step)
                     expect(valid).to_be_false()
                     expect(err).not_to_be_nil()
                 end
@@ -1302,21 +1302,21 @@ local function define_tests()
 
             it("should validate reduction pipeline flow correctly", function()
                 -- Valid: successes extractor with map step
-                local valid, err = map_reduce.validate_reduction_pipeline_flow("successes", {
+                local valid, err = parallel.validate_reduction_pipeline_flow("successes", {
                     { type = "map", func_id = "test" }
                 })
                 expect(valid).to_be_true()
                 expect(err).to_be_nil()
 
                 -- Valid: failures extractor with filter step
-                valid, err = map_reduce.validate_reduction_pipeline_flow("failures", {
+                valid, err = parallel.validate_reduction_pipeline_flow("failures", {
                     { type = "filter", func_id = "test" }
                 })
                 expect(valid).to_be_true()
                 expect(err).to_be_nil()
 
                 -- Valid: any extractor with aggregate step
-                valid, err = map_reduce.validate_reduction_pipeline_flow("successes", {
+                valid, err = parallel.validate_reduction_pipeline_flow("successes", {
                     { type = "aggregate", func_id = "test" }
                 })
                 expect(valid).to_be_true()
@@ -1325,7 +1325,7 @@ local function define_tests()
 
             it("should execute item pipeline map step correctly", function()
                 local call_data = nil
-                map_reduce._deps.funcs = {
+                parallel._deps.funcs = {
                     new = function()
                         return {
                             with_context = function(self, context)
@@ -1342,7 +1342,7 @@ local function define_tests()
                 local step = { type = "map", func_id = "transform" }
                 local data = "single_value"
 
-                local result, err = map_reduce.execute_item_pipeline_step(step, data)
+                local result, err = parallel.execute_item_pipeline_step(step, data)
                 expect(err).to_be_nil()
                 expect(result).to_equal("transformed_single_value")
                 expect(call_data).to_equal("single_value")
@@ -1353,7 +1353,7 @@ local function define_tests()
                 local call_count = 0
 
                 -- Mock the funcs module to track calls across all executor instances
-                map_reduce._deps.funcs = {
+                parallel._deps.funcs = {
                     new = function()
                         return {
                             with_context = function(self, context)
@@ -1371,7 +1371,7 @@ local function define_tests()
                 local step = { type = "map", func_id = "transform" }
                 local data = { "a", "b", "c" }
 
-                local result, err = map_reduce.execute_reduction_pipeline_step(step, data)
+                local result, err = parallel.execute_reduction_pipeline_step(step, data)
                 expect(err).to_be_nil()
                 expect(#result).to_equal(3)
                 expect(result[1]).to_equal("transformed_a")
@@ -1381,7 +1381,7 @@ local function define_tests()
             end)
 
             it("should execute reduction pipeline group step correctly", function()
-                map_reduce._deps.funcs = {
+                parallel._deps.funcs = {
                     new = function()
                         return {
                             with_context = function(self, context)
@@ -1401,7 +1401,7 @@ local function define_tests()
                     { category = "A", value = 3 }
                 }
 
-                local result, err = map_reduce.execute_reduction_pipeline_step(step, data)
+                local result, err = parallel.execute_reduction_pipeline_step(step, data)
                 expect(err).to_be_nil()
                 expect(result["A"]).not_to_be_nil()
                 expect(result["B"]).not_to_be_nil()
@@ -1418,7 +1418,7 @@ local function define_tests()
                     context = "invalid_context" -- Should be table
                 }
 
-                local valid, err = map_reduce.validate_item_pipeline_step(step_with_invalid_context)
+                local valid, err = parallel.validate_item_pipeline_step(step_with_invalid_context)
                 expect(valid).to_be_false()
                 expect(err).to_contain("context must be a table")
             end)
@@ -1430,7 +1430,7 @@ local function define_tests()
                     context = 123 -- Should be table
                 }
 
-                local valid, err = map_reduce.validate_reduction_pipeline_step(step_with_invalid_context, "array")
+                local valid, err = parallel.validate_reduction_pipeline_step(step_with_invalid_context, "array")
                 expect(valid).to_be_false()
                 expect(err).to_contain("context must be a table")
             end)
@@ -1439,7 +1439,7 @@ local function define_tests()
                 local context_received = nil
                 local data_received = nil
 
-                map_reduce._deps.funcs = {
+                parallel._deps.funcs = {
                     new = function()
                         return {
                             with_context = function(self, context)
@@ -1463,7 +1463,7 @@ local function define_tests()
                     }
                 }
 
-                local result, err = map_reduce.execute_item_pipeline_step(step, "test_data")
+                local result, err = parallel.execute_item_pipeline_step(step, "test_data")
 
                 expect(err).to_be_nil()
                 expect(result).to_equal("transformed_test_data")
@@ -1476,7 +1476,7 @@ local function define_tests()
             it("should execute reduction step with per-step context", function()
                 local context_received = nil
 
-                map_reduce._deps.funcs = {
+                parallel._deps.funcs = {
                     new = function()
                         return {
                             with_context = function(self, context)
@@ -1499,7 +1499,7 @@ local function define_tests()
                     }
                 }
 
-                local result, err = map_reduce.execute_reduction_pipeline_step(step, { "value1", "value2" })
+                local result, err = parallel.execute_reduction_pipeline_step(step, { "value1", "value2" })
 
                 expect(err).to_be_nil()
                 expect(result.aggregated).not_to_be_nil()
@@ -1511,7 +1511,7 @@ local function define_tests()
             it("should work without per-step context", function()
                 local context_received = nil
 
-                map_reduce._deps.funcs = {
+                parallel._deps.funcs = {
                     new = function()
                         return {
                             with_context = function(self, context)
@@ -1531,7 +1531,7 @@ local function define_tests()
                     -- No context
                 }
 
-                local result, err = map_reduce.execute_item_pipeline_step(step, "test_data")
+                local result, err = parallel.execute_item_pipeline_step(step, "test_data")
 
                 expect(err).to_be_nil()
                 expect(result).to_equal("processed_test_data")
@@ -1541,7 +1541,7 @@ local function define_tests()
             it("should merge context correctly in reduction map steps", function()
                 local contexts_received = {}
 
-                map_reduce._deps.funcs = {
+                parallel._deps.funcs = {
                     new = function()
                         return {
                             with_context = function(self, context)
@@ -1565,7 +1565,7 @@ local function define_tests()
                 }
                 local data = { "item1", "item2" }
 
-                local result, err = map_reduce.execute_reduction_pipeline_step(step, data)
+                local result, err = parallel.execute_reduction_pipeline_step(step, data)
                 expect(err).to_be_nil()
                 expect(#contexts_received).to_equal(2)
 
@@ -1581,7 +1581,7 @@ local function define_tests()
     end)
 
     describe("Integration Tests", function()
-            describe("Basic Map-Reduce Workflow", function()
+            describe("Basic Parallel Workflow", function()
                 it("should execute simple map-reduce with multiple items", function()
                     print("=== BASIC MAP-REDUCE INTEGRATION TEST START ===")
 
@@ -1589,7 +1589,7 @@ local function define_tests()
                     expect(err).to_be_nil()
                     expect(c).not_to_be_nil()
 
-                    local map_reduce_node_id = uuid.v7()
+                    local parallel_node_id = uuid.v7()
                     local template_node_id = uuid.v7()
                     local input_data_id = uuid.v7()
                     local node_input_id = uuid.v7()
@@ -1606,8 +1606,8 @@ local function define_tests()
                         {
                             type = consts.COMMAND_TYPES.CREATE_NODE,
                             payload = {
-                                node_id = map_reduce_node_id,
-                                node_type = "userspace.dataflow.node.map_reduce:map_reduce",
+                                node_id = parallel_node_id,
+                                node_type = "userspace.dataflow.node.parallel:parallel",
                                 status = consts.STATUS.PENDING,
                                 config = {
                                     source_array_key = "items",
@@ -1617,13 +1617,13 @@ local function define_tests()
                                     data_targets = {
                                         {
                                             data_type = consts.DATA_TYPE.WORKFLOW_OUTPUT,
-                                            key = "map_reduce_result",
+                                            key = "parallel_result",
                                             content_type = consts.CONTENT_TYPE.JSON
                                         }
                                     }
                                 },
                                 metadata = {
-                                    title = "Basic Map-Reduce Node"
+                                    title = "Basic Parallel Node"
                                 }
                             }
                         },
@@ -1632,7 +1632,7 @@ local function define_tests()
                             payload = {
                                 node_id = template_node_id,
                                 node_type = "userspace.dataflow.node.func:node",
-                                parent_node_id = map_reduce_node_id,
+                                parent_node_id = parallel_node_id,
                                 status = consts.STATUS.TEMPLATE,
                                 config = {
                                     func_id = "userspace.dataflow.node.func:test_func",
@@ -1644,7 +1644,7 @@ local function define_tests()
                                     }
                                 },
                                 metadata = {
-                                    title = "Basic Map-Reduce Template Node"
+                                    title = "Basic Parallel Template Node"
                                 }
                             }
                         },
@@ -1662,7 +1662,7 @@ local function define_tests()
                             payload = {
                                 data_id = node_input_id,
                                 data_type = consts.DATA_TYPE.NODE_INPUT,
-                                node_id = map_reduce_node_id,
+                                node_id = parallel_node_id,
                                 key = input_data_id,
                                 content = "",
                                 content_type = "dataflow/reference"
@@ -1672,7 +1672,7 @@ local function define_tests()
 
                     local dataflow_id, create_err = c:create_workflow(workflow_commands, {
                         metadata = {
-                            title = "Basic Map-Reduce Integration Test Workflow"
+                            title = "Basic Parallel Integration Test Workflow"
                         }
                     })
                     expect(create_err).to_be_nil()
@@ -1687,7 +1687,7 @@ local function define_tests()
 
                     local output_data = data_reader.with_dataflow(dataflow_id)
                         :with_data_types(consts.DATA_TYPE.WORKFLOW_OUTPUT)
-                        :with_data_keys("map_reduce_result")
+                        :with_data_keys("parallel_result")
                         :fetch_options({ replace_references = true })
                         :one()
 
@@ -1737,7 +1737,7 @@ local function define_tests()
                     local c, err = client.new()
                     expect(err).to_be_nil()
 
-                    local map_reduce_node_id = uuid.v7()
+                    local parallel_node_id = uuid.v7()
                     local template_node_id = uuid.v7()
                     local input_data_id = uuid.v7()
                     local node_input_id = uuid.v7()
@@ -1756,8 +1756,8 @@ local function define_tests()
                         {
                             type = consts.COMMAND_TYPES.CREATE_NODE,
                             payload = {
-                                node_id = map_reduce_node_id,
-                                node_type = "userspace.dataflow.node.map_reduce:map_reduce",
+                                node_id = parallel_node_id,
+                                node_type = "userspace.dataflow.node.parallel:parallel",
                                 status = consts.STATUS.PENDING,
                                 config = {
                                     source_array_key = "items",
@@ -1771,7 +1771,7 @@ local function define_tests()
                                     }
                                 },
                                 metadata = {
-                                    title = "Batch Processing Map-Reduce Node"
+                                    title = "Batch Processing Parallel Node"
                                 }
                             }
                         },
@@ -1780,7 +1780,7 @@ local function define_tests()
                             payload = {
                                 node_id = template_node_id,
                                 node_type = "userspace.dataflow.node.func:node",
-                                parent_node_id = map_reduce_node_id,
+                                parent_node_id = parallel_node_id,
                                 status = consts.STATUS.TEMPLATE,
                                 config = {
                                     func_id = "userspace.dataflow.node.func:test_func",
@@ -1810,7 +1810,7 @@ local function define_tests()
                             payload = {
                                 data_id = node_input_id,
                                 data_type = consts.DATA_TYPE.NODE_INPUT,
-                                node_id = map_reduce_node_id,
+                                node_id = parallel_node_id,
                                 key = input_data_id,
                                 content = "",
                                 content_type = "dataflow/reference"
@@ -1860,7 +1860,7 @@ local function define_tests()
                     local c, err = client.new()
                     expect(err).to_be_nil()
 
-                    local map_reduce_node_id = uuid.v7()
+                    local parallel_node_id = uuid.v7()
                     local template_node_id = uuid.v7()
                     local input_data_id = uuid.v7()
                     local node_input_id = uuid.v7()
@@ -1876,8 +1876,8 @@ local function define_tests()
                         {
                             type = consts.COMMAND_TYPES.CREATE_NODE,
                             payload = {
-                                node_id = map_reduce_node_id,
-                                node_type = "userspace.dataflow.node.map_reduce:map_reduce",
+                                node_id = parallel_node_id,
+                                node_type = "userspace.dataflow.node.parallel:parallel",
                                 status = consts.STATUS.PENDING,
                                 config = {
                                     source_array_key = "items",
@@ -1885,7 +1885,7 @@ local function define_tests()
                                     item_steps = {
                                         {
                                             type = "map",
-                                            func_id = "userspace.dataflow.node.map_reduce.stub:compress_item",
+                                            func_id = "userspace.dataflow.node.parallel.stub:compress_item",
                                             context = {
                                                 extract_only = true
                                             }
@@ -1908,7 +1908,7 @@ local function define_tests()
                             payload = {
                                 node_id = template_node_id,
                                 node_type = "userspace.dataflow.node.func:node",
-                                parent_node_id = map_reduce_node_id,
+                                parent_node_id = parallel_node_id,
                                 status = consts.STATUS.TEMPLATE,
                                 config = {
                                     func_id = "userspace.dataflow.node.func:test_func",
@@ -1938,7 +1938,7 @@ local function define_tests()
                             payload = {
                                 data_id = node_input_id,
                                 data_type = consts.DATA_TYPE.NODE_INPUT,
-                                node_id = map_reduce_node_id,
+                                node_id = parallel_node_id,
                                 key = input_data_id,
                                 content = "",
                                 content_type = "dataflow/reference"
@@ -1990,7 +1990,7 @@ local function define_tests()
                     local c, err = client.new()
                     expect(err).to_be_nil()
 
-                    local map_reduce_node_id = uuid.v7()
+                    local parallel_node_id = uuid.v7()
                     local template_node_id = uuid.v7()
                     local input_data_id = uuid.v7()
                     local node_input_id = uuid.v7()
@@ -2007,8 +2007,8 @@ local function define_tests()
                         {
                             type = consts.COMMAND_TYPES.CREATE_NODE,
                             payload = {
-                                node_id = map_reduce_node_id,
-                                node_type = "userspace.dataflow.node.map_reduce:map_reduce",
+                                node_id = parallel_node_id,
+                                node_type = "userspace.dataflow.node.parallel:parallel",
                                 status = consts.STATUS.PENDING,
                                 config = {
                                     source_array_key = "items",
@@ -2016,7 +2016,7 @@ local function define_tests()
                                     item_steps = {
                                         {
                                             type = "filter",
-                                            func_id = "userspace.dataflow.node.map_reduce.stub:validate_item",
+                                            func_id = "userspace.dataflow.node.parallel.stub:validate_item",
                                             context = {
                                                 validation_mode = "value_check",
                                                 min_value = 20
@@ -2040,7 +2040,7 @@ local function define_tests()
                             payload = {
                                 node_id = template_node_id,
                                 node_type = "userspace.dataflow.node.func:node",
-                                parent_node_id = map_reduce_node_id,
+                                parent_node_id = parallel_node_id,
                                 status = consts.STATUS.TEMPLATE,
                                 config = {
                                     func_id = "userspace.dataflow.node.func:test_func",
@@ -2070,7 +2070,7 @@ local function define_tests()
                             payload = {
                                 data_id = node_input_id,
                                 data_type = consts.DATA_TYPE.NODE_INPUT,
-                                node_id = map_reduce_node_id,
+                                node_id = parallel_node_id,
                                 key = input_data_id,
                                 content = "",
                                 content_type = "dataflow/reference"
@@ -2124,7 +2124,7 @@ local function define_tests()
                     local c, err = client.new()
                     expect(err).to_be_nil()
 
-                    local map_reduce_node_id = uuid.v7()
+                    local parallel_node_id = uuid.v7()
                     local template_node_id = uuid.v7()
                     local input_data_id = uuid.v7()
                     local node_input_id = uuid.v7()
@@ -2141,8 +2141,8 @@ local function define_tests()
                         {
                             type = consts.COMMAND_TYPES.CREATE_NODE,
                             payload = {
-                                node_id = map_reduce_node_id,
-                                node_type = "userspace.dataflow.node.map_reduce:map_reduce",
+                                node_id = parallel_node_id,
+                                node_type = "userspace.dataflow.node.parallel:parallel",
                                 status = consts.STATUS.PENDING,
                                 config = {
                                     source_array_key = "items",
@@ -2151,14 +2151,14 @@ local function define_tests()
                                     reduction_steps = {
                                         {
                                             type = "map",
-                                            func_id = "userspace.dataflow.node.map_reduce.stub:extract_number",
+                                            func_id = "userspace.dataflow.node.parallel.stub:extract_number",
                                             context = {
                                                 field = "value"
                                             }
                                         },
                                         {
                                             type = "aggregate",
-                                            func_id = "userspace.dataflow.node.map_reduce.stub:calculate_stats"
+                                            func_id = "userspace.dataflow.node.parallel.stub:calculate_stats"
                                         }
                                     },
                                     data_targets = {
@@ -2178,7 +2178,7 @@ local function define_tests()
                             payload = {
                                 node_id = template_node_id,
                                 node_type = "userspace.dataflow.node.func:node",
-                                parent_node_id = map_reduce_node_id,
+                                parent_node_id = parallel_node_id,
                                 status = consts.STATUS.TEMPLATE,
                                 config = {
                                     func_id = "userspace.dataflow.node.func:test_func",
@@ -2208,7 +2208,7 @@ local function define_tests()
                             payload = {
                                 data_id = node_input_id,
                                 data_type = consts.DATA_TYPE.NODE_INPUT,
-                                node_id = map_reduce_node_id,
+                                node_id = parallel_node_id,
                                 key = input_data_id,
                                 content = "",
                                 content_type = "dataflow/reference"
@@ -2260,7 +2260,7 @@ local function define_tests()
                     local c, err = client.new()
                     expect(err).to_be_nil()
 
-                    local map_reduce_node_id = uuid.v7()
+                    local parallel_node_id = uuid.v7()
                     local template_node_id = uuid.v7()
                     local input_data_id = uuid.v7()
                     local node_input_id = uuid.v7()
@@ -2277,8 +2277,8 @@ local function define_tests()
                         {
                             type = consts.COMMAND_TYPES.CREATE_NODE,
                             payload = {
-                                node_id = map_reduce_node_id,
-                                node_type = "userspace.dataflow.node.map_reduce:map_reduce",
+                                node_id = parallel_node_id,
+                                node_type = "userspace.dataflow.node.parallel:parallel",
                                 status = consts.STATUS.PENDING,
                                 config = {
                                     source_array_key = "items",
@@ -2287,21 +2287,21 @@ local function define_tests()
                                     reduction_steps = {
                                         {
                                             type = "map",
-                                            func_id = "userspace.dataflow.node.map_reduce.stub:extract_number",
+                                            func_id = "userspace.dataflow.node.parallel.stub:extract_number",
                                             context = {
                                                 field = "value"
                                             }
                                         },
                                         {
                                             type = "aggregate",
-                                            func_id = "userspace.dataflow.node.map_reduce.stub:calculate_stats",
+                                            func_id = "userspace.dataflow.node.parallel.stub:calculate_stats",
                                             context = {
                                                 include_min_max = true
                                             }
                                         },
                                         {
                                             type = "aggregate",
-                                            func_id = "userspace.dataflow.node.map_reduce.stub:format_report",
+                                            func_id = "userspace.dataflow.node.parallel.stub:format_report",
                                             context = {
                                                 title = "Test Scores Report",
                                                 style = "summary"
@@ -2325,7 +2325,7 @@ local function define_tests()
                             payload = {
                                 node_id = template_node_id,
                                 node_type = "userspace.dataflow.node.func:node",
-                                parent_node_id = map_reduce_node_id,
+                                parent_node_id = parallel_node_id,
                                 status = consts.STATUS.TEMPLATE,
                                 config = {
                                     func_id = "userspace.dataflow.node.func:test_func",
@@ -2355,7 +2355,7 @@ local function define_tests()
                             payload = {
                                 data_id = node_input_id,
                                 data_type = consts.DATA_TYPE.NODE_INPUT,
-                                node_id = map_reduce_node_id,
+                                node_id = parallel_node_id,
                                 key = input_data_id,
                                 content = "",
                                 content_type = "dataflow/reference"
@@ -2419,7 +2419,7 @@ local function define_tests()
                     local c, err = client.new()
                     expect(err).to_be_nil()
 
-                    local map_reduce_node_id = uuid.v7()
+                    local parallel_node_id = uuid.v7()
                     local template_node_id = uuid.v7()
                     local input_data_id = uuid.v7()
                     local node_input_id = uuid.v7()
@@ -2436,8 +2436,8 @@ local function define_tests()
                         {
                             type = consts.COMMAND_TYPES.CREATE_NODE,
                             payload = {
-                                node_id = map_reduce_node_id,
-                                node_type = "userspace.dataflow.node.map_reduce:map_reduce",
+                                node_id = parallel_node_id,
+                                node_type = "userspace.dataflow.node.parallel:parallel",
                                 status = consts.STATUS.PENDING,
                                 config = {
                                     source_array_key = "items",
@@ -2460,7 +2460,7 @@ local function define_tests()
                             payload = {
                                 node_id = template_node_id,
                                 node_type = "userspace.dataflow.node.func:node",
-                                parent_node_id = map_reduce_node_id,
+                                parent_node_id = parallel_node_id,
                                 status = consts.STATUS.TEMPLATE,
                                 config = {
                                     func_id = "userspace.dataflow.node.func:test_func",
@@ -2490,7 +2490,7 @@ local function define_tests()
                             payload = {
                                 data_id = node_input_id,
                                 data_type = consts.DATA_TYPE.NODE_INPUT,
-                                node_id = map_reduce_node_id,
+                                node_id = parallel_node_id,
                                 key = input_data_id,
                                 content = "",
                                 content_type = "dataflow/reference"
@@ -2521,7 +2521,7 @@ local function define_tests()
                     local c, err = client.new()
                     expect(err).to_be_nil()
 
-                    local map_reduce_node_id = uuid.v7()
+                    local parallel_node_id = uuid.v7()
                     local template_node_id = uuid.v7()
                     local input_data_id = uuid.v7()
                     local node_input_id = uuid.v7()
@@ -2538,8 +2538,8 @@ local function define_tests()
                         {
                             type = consts.COMMAND_TYPES.CREATE_NODE,
                             payload = {
-                                node_id = map_reduce_node_id,
-                                node_type = "userspace.dataflow.node.map_reduce:map_reduce",
+                                node_id = parallel_node_id,
+                                node_type = "userspace.dataflow.node.parallel:parallel",
                                 status = consts.STATUS.PENDING,
                                 config = {
                                     source_array_key = "items",
@@ -2562,7 +2562,7 @@ local function define_tests()
                             payload = {
                                 node_id = template_node_id,
                                 node_type = "userspace.dataflow.node.func:node",
-                                parent_node_id = map_reduce_node_id,
+                                parent_node_id = parallel_node_id,
                                 status = consts.STATUS.TEMPLATE,
                                 config = {
                                     func_id = "userspace.dataflow.node.func:test_func",
@@ -2592,7 +2592,7 @@ local function define_tests()
                             payload = {
                                 data_id = node_input_id,
                                 data_type = consts.DATA_TYPE.NODE_INPUT,
-                                node_id = map_reduce_node_id,
+                                node_id = parallel_node_id,
                                 key = input_data_id,
                                 content = "",
                                 content_type = "dataflow/reference"

@@ -64,7 +64,7 @@ local function define_tests()
             test_node_id_2 = uuid.v7()
 
             local node_result, node_err = tx:execute([[
-                INSERT INTO nodes (
+                INSERT INTO dataflow_nodes (
                     node_id, dataflow_id, type, status, metadata, created_at, updated_at
                 ) VALUES
                 (?, ?, ?, ?, ?, ?, ?),
@@ -95,7 +95,7 @@ local function define_tests()
             -- Create target data first to reference later
             test_target_data_id = uuid.v7()
             local target_result, target_err = tx:execute([[
-                INSERT INTO data (
+                INSERT INTO dataflow_data (
                     data_id, dataflow_id, node_id, type, discriminator, key,
                     content, content_type, metadata, created_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)

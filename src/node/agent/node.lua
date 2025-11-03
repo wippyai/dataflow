@@ -10,6 +10,7 @@ local agent_consts = require("agent_consts")
 local consts = require("consts")
 local tools = require("tools")
 local registry = require("registry")
+local funcs = require("funcs")
 
 local function merge_contexts(base_context, input_context)
     local merged = {}
@@ -390,7 +391,7 @@ local function execute_tools(agent_result, caller, session_context)
     return tool_results or {}
 end
 
-local function process_tool_results(n, tool_results, iteration, exit_tool_name, agent_result)
+local function process_tool_results(n, tool_results, iteration, exit_tool_name, agent_result, arena_config, session_context)
     local control_responses = {}
     local control_delegations = {}
     local task_complete = false
@@ -399,11 +400,32 @@ local function process_tool_results(n, tool_results, iteration, exit_tool_name, 
     if exit_tool_name and agent_result.tool_calls then
         for _, original_tool_call in ipairs(agent_result.tool_calls) do
             if original_tool_call.name == exit_tool_name then
-                task_complete = true
-                if original_tool_call.arguments and next(original_tool_call.arguments) then
-                    final_result = original_tool_call.arguments
+                local exit_arguments = original_tool_call.arguments
+
+                if arena_config.exit_func_id then
+                    local validated_result, validation_err = funcs.new()
+                        :with_context(session_context)
+                        :call(arena_config.exit_func_id, exit_arguments)
+
+                    if validation_err then
+                        n:data(agent_consts.DATA_TYPE.AGENT_OBSERVATION, validation_err, {
+                            key = iteration .. "_exit_validation_failed",
+                            content_type = consts.CONTENT_TYPE.TEXT,
+                            node_id = n.node_id,
+                            metadata = {
+                                iteration = iteration,
+                                is_error = true,
+                                exit_validation = true
+                            }
+                        })
+                        task_complete = false
+                    else
+                        task_complete = true
+                        final_result = validated_result
+                    end
                 else
-                    final_result = { success = false, error = "Exit tool called without arguments" }
+                    task_complete = true
+                    final_result = exit_arguments or { success = false, error = "Exit tool called without arguments" }
                 end
                 break
             end
@@ -726,7 +748,7 @@ local function run(args)
         store_agent_action(n, agent_result, iteration, agent_id, model_name, exit_tool_name, control_metadata)
 
         local control_responses, control_delegations, tool_complete, tool_result = process_tool_results(n, tool_results, iteration,
-            exit_tool_name, { tool_calls = regular_tool_calls })
+            exit_tool_name, { tool_calls = regular_tool_calls }, config.arena, session_context)
 
         for _, control_del in ipairs(control_delegations) do
             local delegation = control_del.delegation
@@ -916,6 +938,7 @@ local function run(args)
         })
     end
 
+    local output_content = final_result or { success = false, error = "No result produced" }
     return n:complete(output_content, message)
 end
 

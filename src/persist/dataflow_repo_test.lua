@@ -157,7 +157,7 @@ local function define_tests()
             end
 
             local success, err_insert = tx:execute([[
-                INSERT INTO nodes (
+                INSERT INTO dataflow_nodes (
                     node_id, dataflow_id, parent_node_id, type, status, config, metadata, created_at, updated_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ]], {

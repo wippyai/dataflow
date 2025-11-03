@@ -107,7 +107,6 @@ function commit_repo.create(commit_id, dataflow_id, payload, metadata)
             commit_id = commit_id,
             dataflow_id = dataflow_id,
             op_id = sql.as.null(),
-            execution_id = sql.as.null(),
             payload = payload_json,
             metadata = metadata_json,
             created_at = created_at

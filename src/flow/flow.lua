@@ -1,18 +1,20 @@
 local json = require("json")
 local uuid = require("uuid")
 local ctx = require("ctx")
-local compiler = require("compiler")
-local client = require("client")
-local consts = require("consts")
+local compiler = require("df_compiler")
+local client = require("df_client")
+local consts = require("df_consts")
 local registry = require("registry")
 
 local DEFAULTS = {
     AGENT_MAX_ITERATIONS = 32,
     AGENT_MIN_ITERATIONS = 1,
     AGENT_TOOL_CALLING = "auto",
-    MAP_REDUCE_BATCH_SIZE = 1,
-    MAP_REDUCE_FAILURE_STRATEGY = "fail_fast",
-    MAP_REDUCE_ITERATION_INPUT_KEY = "default"
+    PARALLEL_BATCH_SIZE = 1,
+    PARALLEL_ON_ERROR = "continue",
+    PARALLEL_FILTER = "all",
+    PARALLEL_UNWRAP = false,
+    PARALLEL_ITERATION_INPUT_KEY = "default"
 }
 
 local flow = {}
@@ -75,6 +77,10 @@ function FlowBuilder:with_input(data)
     return self:_add_operation(compiler.OP_TYPES.WITH_INPUT, { data = data })
 end
 
+function FlowBuilder:with_data(data)
+    return self:_add_operation(compiler.OP_TYPES.WITH_DATA, { data = data })
+end
+
 function FlowBuilder:func(func_id, config)
     if not func_id or func_id == "" then
         error("Function ID is required")
@@ -82,6 +88,7 @@ function FlowBuilder:func(func_id, config)
 
     local func_config = {
         func_id = func_id,
+        args = config and config.args,
         inputs = config and config.inputs,
         context = config and config.context,
         metadata = config and config.metadata,
@@ -160,6 +167,7 @@ function FlowBuilder:cycle(config)
     local cycle_config = {
         func_id = config.func_id,
         template = config.template,
+        args = config.args,
         continue_condition = config.continue_condition,
         max_iterations = config.max_iterations,
         initial_state = config.initial_state,
@@ -189,37 +197,45 @@ function FlowBuilder:cycle(config)
     return self:_add_operation(compiler.OP_TYPES.CYCLE, cycle_config)
 end
 
-function FlowBuilder:map_reduce(config)
+function FlowBuilder:parallel(config)
     if not config then
-        error("Map-reduce configuration is required")
+        error("Parallel configuration is required")
     end
 
     if not config.source_array_key then
-        error("Map-reduce requires source_array_key")
+        error("Parallel requires source_array_key")
     end
 
-    local mr_config = {
+    if not config.template then
+        error("Parallel requires template")
+    end
+
+    local parallel_config = {
         source_array_key = config.source_array_key,
-        iteration_input_key = config.iteration_input_key or DEFAULTS.MAP_REDUCE_ITERATION_INPUT_KEY,
-        batch_size = config.batch_size or DEFAULTS.MAP_REDUCE_BATCH_SIZE,
-        failure_strategy = config.failure_strategy or DEFAULTS.MAP_REDUCE_FAILURE_STRATEGY,
+        iteration_input_key = config.iteration_input_key or DEFAULTS.PARALLEL_ITERATION_INPUT_KEY,
+        batch_size = config.batch_size or DEFAULTS.PARALLEL_BATCH_SIZE,
+        on_error = config.on_error or DEFAULTS.PARALLEL_ON_ERROR,
+        filter = config.filter or DEFAULTS.PARALLEL_FILTER,
+        unwrap = config.unwrap,
+        passthrough_keys = config.passthrough_keys,
         template = config.template,
-        item_steps = config.item_steps,
-        reduction_extract = config.reduction_extract,
-        reduction_steps = config.reduction_steps,
         inputs = config.inputs,
         metadata = config.metadata,
         input_transform = config.input_transform
     }
 
-    if not (mr_config.metadata and mr_config.metadata.title) then
-        if not mr_config.metadata then
-            mr_config.metadata = {}
-        end
-        mr_config.metadata.title = "Process Items"
+    if parallel_config.unwrap == nil then
+        parallel_config.unwrap = DEFAULTS.PARALLEL_UNWRAP
     end
 
-    return self:_add_operation(compiler.OP_TYPES.MAP_REDUCE, mr_config)
+    if not (parallel_config.metadata and parallel_config.metadata.title) then
+        if not parallel_config.metadata then
+            parallel_config.metadata = {}
+        end
+        parallel_config.metadata.title = "Process Items"
+    end
+
+    return self:_add_operation(compiler.OP_TYPES.PARALLEL, parallel_config)
 end
 
 function FlowBuilder:join(config)
@@ -228,7 +244,9 @@ function FlowBuilder:join(config)
     local join_config = {
         inputs = config.inputs,
         metadata = config.metadata,
-        input_transform = config.input_transform
+        input_transform = config.input_transform,
+        output_mode = config.output_mode,
+        ignored_keys = config.ignored_keys
     }
 
     if not (join_config.metadata and join_config.metadata.title) then
@@ -336,6 +354,10 @@ function FlowBuilder:run()
 
         if exec_err then
             return nil, "Failed to execute workflow: " .. exec_err
+        end
+
+        if outputs.data then
+            return outputs.data, nil
         end
 
         return outputs, nil

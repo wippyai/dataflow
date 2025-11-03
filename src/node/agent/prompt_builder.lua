@@ -213,10 +213,6 @@ function prompt_builder:_format_delegation(delegation_item, builder)
 end
 
 function prompt_builder:build_prompt(system_prompt, initial_input)
-    if not system_prompt then
-        return nil, "system_prompt is required"
-    end
-
     local input_content = initial_input or self._initial_input
 
     local history_items, err = self:_load_conversation_history()
@@ -226,9 +222,10 @@ function prompt_builder:build_prompt(system_prompt, initial_input)
 
     local builder = prompt_lib.new()
 
-    builder:add_system(system_prompt)
-    print("SYSTEM PROMPT:\n" .. system_prompt .. "\n---")
-    builder:add_cache_marker("system_complete")
+    if system_prompt then
+        builder:add_system(system_prompt)
+        builder:add_cache_marker("system_complete")
+    end
 
     if self._arena_config then
         local tool_calling = self._arena_config.tool_calling
@@ -236,9 +233,11 @@ function prompt_builder:build_prompt(system_prompt, initial_input)
         if tool_calling == "none" then
             builder:add_system("Respond with text only, do not call any tools.")
         elseif tool_calling == "auto" then
-            builder:add_system("Use appropriate tools when needed to advance the task. You may respond with text only if no tools are required.")
+            builder:add_system(
+            "Use appropriate tools when needed to advance the task. You may respond with text only if no tools are required.")
         elseif tool_calling == "any" then
-            builder:add_system("You must use tools to complete tasks. Use the finish tool when you have completed the task.")
+            builder:add_system(
+            "You must use tools to complete tasks. Use the finish tool when you have completed the task.")
         end
     end
 
@@ -256,9 +255,8 @@ function prompt_builder:build_prompt(system_prompt, initial_input)
         end
         builder:add_user(input_text)
     end
-    print("USER PROMPT:\n" .. (input_content or "") .. "\n---")
     builder:add_cache_marker("user_complete")
-    
+
     for i, item in ipairs(history_items) do
         local process_err = nil
 

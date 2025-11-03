@@ -148,7 +148,7 @@ function methods:_build_query()
     end
 
     local query_builder = sql.builder.select(unpack(select_fields))
-        :from("nodes")
+        :from("dataflow_nodes")
 
     query_builder = query_builder:where("dataflow_id = ?", self._dataflow_id)
 
@@ -279,7 +279,7 @@ end
 
 function methods:count()
     local query_builder = sql.builder.select("COUNT(*) as count")
-        :from("nodes")
+        :from("dataflow_nodes")
         :where("dataflow_id = ?", self._dataflow_id)
 
     if self._node_ids and #self._node_ids > 0 then
@@ -345,7 +345,7 @@ end
 -- NEW: Efficient status distribution counting
 function methods:count_by_status()
     local query_builder = sql.builder.select("status", "COUNT(*) as count")
-        :from("nodes")
+        :from("dataflow_nodes")
         :where("dataflow_id = ?", self._dataflow_id)
 
     -- Apply all existing filters except status filters

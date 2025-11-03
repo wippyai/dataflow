@@ -23,7 +23,7 @@ entries:
       - uuid
     imports:
       consts: userspace.dataflow:consts
-      node: userspace.dataflow:node
+      node: userspace.dataflow:node      
     method: run
     
   # userspace.dataflow.node.state:state_test

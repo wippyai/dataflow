@@ -78,7 +78,7 @@ local function define_tests()
                 end
 
                 local _, err = tx:execute([[
-                    INSERT INTO nodes (
+                    INSERT INTO dataflow_nodes (
                         node_id, dataflow_id, parent_node_id, type, status, metadata, created_at, updated_at
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ]], {
@@ -102,7 +102,7 @@ local function define_tests()
             for _, data in ipairs(data_records) do
                 local now_ts = time.now():format(time.RFC3339NANO)
                 local _, err = tx:execute([[
-                    INSERT INTO data (
+                    INSERT INTO dataflow_data (
                         data_id, dataflow_id, node_id, type, discriminator, key, content, content_type, metadata, created_at
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ]], {
