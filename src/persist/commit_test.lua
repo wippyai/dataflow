@@ -438,13 +438,12 @@ local function define_tests()
                 -- Insert commit directly using existing transaction
                 local _, insert_err = tx:execute([[
                     INSERT INTO dataflow_commits (
-                        commit_id, dataflow_id, op_id, execution_id, payload, metadata, created_at
+                        commit_id, dataflow_id, op_id, payload, metadata, created_at
                     ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 ]], {
                     commit_id,
                     resources.dataflow_id,
                     nil, -- op_id
-                    nil, -- execution_id
                     payload_json,
                     "{}",
                     now_ts

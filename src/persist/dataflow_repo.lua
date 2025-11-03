@@ -86,7 +86,7 @@ function dataflow_repo.get_nodes_for_dataflow(dataflow_id)
     if err_db then return nil, err_db end
 
     local nodes_query = sql.builder.select("*")
-        :from("nodes")
+        :from("dataflow_nodes")
         :where("dataflow_id = ?", dataflow_id)
         :order_by("node_id ASC")
 

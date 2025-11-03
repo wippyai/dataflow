@@ -3,7 +3,7 @@ return require("migration").define(function()
         database("postgres", function()
             up(function(db)
                 local success, err = db:execute([[
-                    CREATE TABLE nodes (
+                    CREATE TABLE dataflow_nodes (
                         node_id UUID PRIMARY KEY,
                         dataflow_id UUID NOT NULL,
                         parent_node_id UUID,
@@ -22,18 +22,18 @@ return require("migration").define(function()
                     error(err)
                 end
 
-                success, err = db:execute("CREATE INDEX idx_nodes_dataflow ON nodes(dataflow_id)")
+                success, err = db:execute("CREATE INDEX idx_nodes_dataflow ON dataflow_nodes(dataflow_id)")
                 if err then
                     error(err)
                 end
 
                 success, err = db:execute(
-                "CREATE INDEX idx_nodes_parent ON nodes(parent_node_id) WHERE parent_node_id IS NOT NULL")
+                "CREATE INDEX idx_nodes_parent ON dataflow_nodes(parent_node_id) WHERE parent_node_id IS NOT NULL")
                 if err then
                     error(err)
                 end
 
-                success, err = db:execute("CREATE INDEX idx_nodes_status ON nodes(status)")
+                success, err = db:execute("CREATE INDEX idx_nodes_status ON dataflow_nodes(status)")
                 if err then
                     error(err)
                 end
@@ -55,7 +55,7 @@ return require("migration").define(function()
                     error(err)
                 end
 
-                success, err = db:execute("DROP TABLE IF EXISTS nodes")
+                success, err = db:execute("DROP TABLE IF EXISTS dataflow_nodes")
                 if err then
                     error(err)
                 end
@@ -65,7 +65,7 @@ return require("migration").define(function()
         database("sqlite", function()
             up(function(db)
                 local success, err = db:execute([[
-                    CREATE TABLE nodes (
+                    CREATE TABLE dataflow_nodes (
                         node_id TEXT PRIMARY KEY,
                         dataflow_id TEXT NOT NULL,
                         parent_node_id TEXT,
@@ -84,18 +84,18 @@ return require("migration").define(function()
                     error(err)
                 end
 
-                success, err = db:execute("CREATE INDEX idx_nodes_dataflow ON nodes(dataflow_id)")
+                success, err = db:execute("CREATE INDEX idx_nodes_dataflow ON dataflow_nodes(dataflow_id)")
                 if err then
                     error(err)
                 end
 
                 success, err = db:execute(
-                "CREATE INDEX idx_nodes_parent ON nodes(parent_node_id) WHERE parent_node_id IS NOT NULL")
+                "CREATE INDEX idx_nodes_parent ON dataflow_nodes(parent_node_id) WHERE parent_node_id IS NOT NULL")
                 if err then
                     error(err)
                 end
 
-                success, err = db:execute("CREATE INDEX idx_nodes_status ON nodes(status)")
+                success, err = db:execute("CREATE INDEX idx_nodes_status ON dataflow_nodes(status)")
                 if err then
                     error(err)
                 end
@@ -117,7 +117,7 @@ return require("migration").define(function()
                     error(err)
                 end
 
-                success, err = db:execute("DROP TABLE IF EXISTS nodes")
+                success, err = db:execute("DROP TABLE IF EXISTS dataflow_nodes")
                 if err then
                     error(err)
                 end

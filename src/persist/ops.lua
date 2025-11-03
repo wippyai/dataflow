@@ -62,7 +62,7 @@ handlers[constants.COMMAND_TYPES.CREATE_NODE] = function(tx, dataflow_id, op_id,
     local status = payload.status or constants.STATUS.PENDING
     local now_ts = time.now():format(time.RFC3339NANO)
 
-    local insert_query = sql.builder.insert("nodes")
+    local insert_query = sql.builder.insert("dataflow_nodes")
         :set_map({
             node_id = node_id,
             dataflow_id = dataflow_id,
@@ -106,7 +106,7 @@ handlers[constants.COMMAND_TYPES.UPDATE_NODE] = function(tx, dataflow_id, op_id,
         merge_metadata = true -- Default to merge
     end
 
-    local update_query = sql.builder.update("nodes")
+    local update_query = sql.builder.update("dataflow_nodes")
         :where("node_id = ?", payload.node_id)
         :where("dataflow_id = ?", dataflow_id)
 
@@ -141,7 +141,7 @@ handlers[constants.COMMAND_TYPES.UPDATE_NODE] = function(tx, dataflow_id, op_id,
         if merge_metadata and payload.metadata then
             -- Read existing metadata first for merging
             local existing_query = sql.builder.select("metadata")
-                :from("nodes")
+                :from("dataflow_nodes")
                 :where("node_id = ?", payload.node_id)
                 :where("dataflow_id = ?", dataflow_id)
 
@@ -259,7 +259,7 @@ handlers[constants.COMMAND_TYPES.DELETE_NODE] = function(tx, dataflow_id, op_id,
         return nil, "Node ID is required"
     end
 
-    local delete_query = sql.builder.delete("nodes")
+    local delete_query = sql.builder.delete("dataflow_nodes")
         :where("node_id = ?", payload.node_id)
         :where("dataflow_id = ?", dataflow_id)
 
@@ -319,7 +319,7 @@ handlers[constants.COMMAND_TYPES.CREATE_DATA] = function(tx, dataflow_id, op_id,
 
     local now_ts = time.now():format(time.RFC3339NANO)
 
-    local insert_query = sql.builder.insert("data")
+    local insert_query = sql.builder.insert("dataflow_data")
         :set_map({
             data_id = data_id,
             dataflow_id = dataflow_id,
@@ -358,7 +358,7 @@ handlers[constants.COMMAND_TYPES.UPDATE_DATA] = function(tx, dataflow_id, op_id,
         return nil, "Data ID is required"
     end
 
-    local update_query = sql.builder.update("data")
+    local update_query = sql.builder.update("dataflow_data")
         :where("data_id = ?", payload.data_id)
         :where("dataflow_id = ?", dataflow_id)
 
@@ -432,7 +432,7 @@ handlers[constants.COMMAND_TYPES.DELETE_DATA] = function(tx, dataflow_id, op_id,
         return nil, "Data ID is required"
     end
 
-    local delete_query = sql.builder.delete("data")
+    local delete_query = sql.builder.delete("dataflow_data")
         :where("data_id = ?", payload.data_id)
         :where("dataflow_id = ?", dataflow_id)
 

@@ -1043,7 +1043,7 @@ local function define_tests()
                 state.nodes = {
                     ["map-reduce-parent"] = {
                         status = consts.STATUS.COMPLETED_SUCCESS,
-                        type = "map_reduce_processor",
+                        type = "parallel_processor",
                         parent_node_id = nil
                     },
                     ["child-1"] = {
@@ -1076,7 +1076,7 @@ local function define_tests()
                 state.nodes = {
                     ["map-reduce-parent"] = {
                         status = consts.STATUS.COMPLETED_FAILURE,
-                        type = "map_reduce_processor",
+                        type = "parallel_processor",
                         parent_node_id = nil
                     },
                     ["child-1"] = {

@@ -595,7 +595,6 @@ local function run(args)
                 if success and state.running then
                     call_scheduler_and_handle(state)
                 end
-
             elseif topic == consts.MESSAGE_TOPIC.YIELD_REQUEST then
                 -- Process pending commits FIRST, before ANY yield handling
                 local success = process_pending_commits(state)
@@ -604,7 +603,6 @@ local function run(args)
                     call_scheduler_and_handle(state)
                 end
             end
-
         elseif result.channel == events then
             local event = result.value
 
