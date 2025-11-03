@@ -76,7 +76,9 @@ consts.DATA_TYPE = {
     WORKFLOW_INPUT = "dataflow.input",
     WORKFLOW_LOG = "dataflow.log",
     CONTEXT_DATA = "context.data",
-    ARTIFACT = "artifact.data"
+    ARTIFACT = "artifact.data",
+    ITERATION_RESULT = "iteration.result",
+    ITERATION_ERROR = "iteration.error"
 }
 
 -- Content type constants

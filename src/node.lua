@@ -103,6 +103,38 @@ local function create_reference_data(self, target, ref_id)
     return data_id
 end
 
+local function resolve_dataflow_references(self, value)
+    if type(value) ~= "table" then
+        return value
+    end
+
+    if value._dataflow_ref then
+        local reader = self._deps.data_reader.with_dataflow(self.dataflow_id)
+            :with_data(value._dataflow_ref)
+            :fetch_options({ replace_references = true })
+
+        local data = reader:one()
+        if data and data.content then
+            if data.content_type == consts.CONTENT_TYPE.JSON and type(data.content) == "string" then
+                local parsed, _ = json.decode(data.content)
+                return parsed or data.content
+            end
+            return data.content
+        end
+        return value
+    end
+
+    if #value > 0 and value[1] and value[1]._dataflow_ref then
+        local resolved = {}
+        for i, item in ipairs(value) do
+            resolved[i] = resolve_dataflow_references(self, item)
+        end
+        return resolved
+    end
+
+    return value
+end
+
 function node.new(args, deps)
     if not args then
         return nil, "Node args required"
@@ -155,7 +187,7 @@ function methods:_transform_inputs_with_expr(raw_inputs, transform_config)
     if type(transform_config) == "string" then
         local content, err = expr.eval(transform_config, env)
         if err then
-            return nil, "Input transform failed: " .. err
+            return nil, "Node [" .. self.node_id .. "] input transform failed: " .. err
         end
         return {
             ["default"] = {
@@ -168,7 +200,7 @@ function methods:_transform_inputs_with_expr(raw_inputs, transform_config)
     end
 
     if type(transform_config) ~= "table" then
-        return nil, "input_transform must be string or table"
+        return nil, "Node [" .. self.node_id .. "] input_transform must be string or table"
     end
 
     local field_count = 0
@@ -180,7 +212,7 @@ function methods:_transform_inputs_with_expr(raw_inputs, transform_config)
     for field_name, expression in pairs(transform_config) do
         local content, err = expr.eval(expression, env)
         if err then
-            return nil, "Transform failed for " .. field_name .. ": " .. err
+            return nil, "Node [" .. self.node_id .. "] transform failed for field '" .. field_name .. "': " .. err
         end
         result[field_name] = {
             content = content,
@@ -215,7 +247,9 @@ function methods:_load_raw_inputs()
             content = parsed_content,
             metadata = input.metadata or {},
             key = input.key,
-            discriminator = input.discriminator
+            discriminator = input.discriminator,
+            data_id = input.data_id,
+            content_type = input.content_type
         }
     end
 
@@ -257,10 +291,11 @@ end
 
 function methods:data(data_type, content, options)
     if not data_type or data_type == "" then
-        return nil, "Data type is required"
+        return nil, "Node [" .. self.node_id .. "] data type is required"
     end
+
     if content == nil then
-        return nil, "Content is required"
+        return nil, "Node [" .. self.node_id .. "] content is required"
     end
 
     options = options or {}
@@ -345,7 +380,7 @@ function methods:submit()
         self._queued_commands = table.create(10, 0)
         return true, nil
     else
-        return false, err
+        return false, "Node [" .. self.node_id .. "] submit failed: " .. (err or "unknown")
     end
 end
 
@@ -377,7 +412,7 @@ function methods:yield(options)
 
     local submitted, err = self._deps.commit.submit(self.dataflow_id, op_id, self._queued_commands)
     if not submitted then
-        return nil, "Failed to submit yield: " .. (err or "unknown error")
+        return nil, "Node [" .. self.node_id .. "] failed to submit yield: " .. (err or "unknown")
     end
     self._queued_commands = table.create(10, 0)
 
@@ -399,12 +434,12 @@ function methods:yield(options)
     )
 
     if not success then
-        return nil, "Failed to send yield signal"
+        return nil, "Node [" .. self.node_id .. "] failed to send yield signal"
     end
 
     local received, ok = self._yield_channel:receive()
     if not ok then
-        return nil, "Yield channel closed or error"
+        return nil, "Node [" .. self.node_id .. "] yield channel closed or error"
     end
 
     self._last_yield_id = yield_id
@@ -424,36 +459,61 @@ function methods:_route_outputs(content)
     local routed_data_ids = table.create(#self.data_targets, 0)
     local data_id_count = 0
 
+    local resolved_content = resolve_dataflow_references(self, content)
+
+    local inputs_map, inputs_err = self:inputs()
+    if inputs_err then
+        return nil, "Node [" .. self.node_id .. "] failed to load inputs for output routing: " .. inputs_err
+    end
+
     local env = {
-        output = content
+        output = resolved_content,
+        inputs = inputs_map or {}
     }
 
-    for _, target in ipairs(self.data_targets) do
+    local first_actual_data_id = nil
+
+    for target_idx, target in ipairs(self.data_targets) do
+        local target_desc = "target[" .. target_idx .. "]"
+        if target.discriminator then
+            target_desc = target_desc .. " (discriminator=" .. target.discriminator .. ")"
+        end
+        if target.node_id then
+            target_desc = target_desc .. " -> node[" .. target.node_id .. "]"
+        end
+
         if target.condition then
             local should_create, condition_err = expr.eval(target.condition, env)
             if condition_err then
-                return nil, "Output condition evaluation failed for target " .. (target.key or "unknown") .. ": " .. condition_err
+                return nil, "Node [" .. self.node_id .. "] condition eval failed for " .. target_desc .. ": " .. condition_err
             end
             if not should_create then
                 goto continue
             end
         end
 
-        local output_content = content
-        if target.transform then
+        local output_content = resolved_content
+        local has_transform = target.transform ~= nil
+
+        if has_transform then
             local transformed, transform_err = expr.eval(target.transform, env)
             if transform_err then
-                return nil, "Output transform failed for target " .. (target.key or "unknown") .. ": " .. transform_err
+                return nil, "Node [" .. self.node_id .. "] transform failed for " .. target_desc .. ": " .. transform_err
             end
             output_content = transformed
         end
 
-        if is_dataflow_reference(output_content) then
-            local ref_id = create_reference_data(self, target, output_content._dataflow_ref)
+        if output_content == nil then
+            return nil, "Node [" .. self.node_id .. "] output content is nil for " .. target_desc ..
+                       " (transform: " .. tostring(target.transform or "none") .. ")"
+        end
+
+        if is_dataflow_reference(content) then
+            local ref_id = create_reference_data(self, target, content._dataflow_ref)
             data_id_count = data_id_count + 1
             routed_data_ids[data_id_count] = ref_id
-        elseif type(output_content) == "table" and #output_content > 0 and is_dataflow_reference(output_content[1]) then
-            for _, ref_item in ipairs(output_content) do
+        elseif type(content) == "table" and #content > 0 and is_dataflow_reference(content[1]) then
+            for _, ref_item in ipairs(content) do
                 if is_dataflow_reference(ref_item) then
                     local ref_id = create_reference_data(self, target, ref_item._dataflow_ref)
                     data_id_count = data_id_count + 1
@@ -461,20 +521,47 @@ function methods:_route_outputs(content)
                 end
             end
         else
-            local data_id = uuid.v7()
-            data_id_count = data_id_count + 1
-            routed_data_ids[data_id_count] = data_id
+            if has_transform or not first_actual_data_id then
+                local data_id = uuid.v7()
+                data_id_count = data_id_count + 1
+                routed_data_ids[data_id_count] = data_id
 
-            local _, data_err = self:data(target.data_type, output_content, {
-                data_id = data_id,
-                key = target.key,
-                discriminator = target.discriminator,
-                node_id = target.node_id or self.node_id,
-                content_type = target.content_type,
-                metadata = target.metadata
-            })
-            if data_err then
-                return nil, data_err
+                local _, data_err = self:data(target.data_type, output_content, {
+                    data_id = data_id,
+                    key = target.key,
+                    discriminator = target.discriminator,
+                    node_id = target.node_id or self.node_id,
+                    content_type = target.content_type,
+                    metadata = target.metadata
+                })
+                if data_err then
+                    return nil, "Node [" .. self.node_id .. "] failed to create data for " .. target_desc .. ": " .. data_err
+                end
+
+                if not has_transform and not first_actual_data_id then
+                    first_actual_data_id = data_id
+                end
+            else
+                local ref_data_id = uuid.v7()
+                data_id_count = data_id_count + 1
+                routed_data_ids[data_id_count] = ref_data_id
+                table.insert(self._created_data_ids, ref_data_id)
+
+                local command = {
+                    type = consts.COMMAND_TYPES.CREATE_DATA,
+                    payload = {
+                        data_id = ref_data_id,
+                        data_type = target.data_type,
+                        key = first_actual_data_id,
+                        content = "",
+                        content_type = "dataflow/reference",
+                        discriminator = target.discriminator,
+                        node_id = target.node_id or self.node_id,
+                        metadata = target.metadata
+                    }
+                }
+
+                table.insert(self._queued_commands, command)
             end
         end
 
@@ -492,7 +579,15 @@ function methods:_route_errors(error_content)
         error = error_content
     }
 
-    for _, target in ipairs(self.error_targets) do
+    for target_idx, target in ipairs(self.error_targets) do
+        local target_desc = "error_target[" .. target_idx .. "]"
+        if target.discriminator then
+            target_desc = target_desc .. " (discriminator=" .. target.discriminator .. ")"
+        end
+        if target.node_id then
+            target_desc = target_desc .. " -> node[" .. target.node_id .. "]"
+        end
+
         if target.condition then
             local should_create, condition_err = expr.eval(target.condition, env)
             if condition_err then
@@ -551,7 +646,7 @@ function methods:complete(output_content, message, extra_metadata)
         if meta_err then
             return {
                 success = false,
-                message = "Failed to update metadata: " .. meta_err,
+                message = "Node [" .. self.node_id .. "] failed to update metadata: " .. meta_err,
                 error = meta_err,
                 data_ids = table.create(0, 0)
             }
@@ -563,7 +658,7 @@ function methods:complete(output_content, message, extra_metadata)
         if msg_err then
             return {
                 success = false,
-                message = "Failed to set status message: " .. msg_err,
+                message = "Node [" .. self.node_id .. "] failed to set status message: " .. msg_err,
                 error = msg_err,
                 data_ids = table.create(0, 0)
             }
@@ -576,7 +671,7 @@ function methods:complete(output_content, message, extra_metadata)
         if route_err then
             return {
                 success = false,
-                message = "Failed to route outputs: " .. route_err,
+                message = "Node [" .. self.node_id .. "] failed to route outputs: " .. route_err,
                 error = route_err,
                 data_ids = table.create(0, 0)
             }
@@ -588,7 +683,7 @@ function methods:complete(output_content, message, extra_metadata)
     if not success then
         return {
             success = false,
-            message = "Failed to submit final commands: " .. (err or "unknown error"),
+            message = "Node [" .. self.node_id .. "] failed to submit final commands: " .. (err or "unknown"),
             error = err,
             data_ids = table.create(0, 0)
         }
@@ -628,7 +723,7 @@ function methods:fail(error_details, message, extra_metadata)
     if not success then
         return {
             success = false,
-            message = "Failed to submit final commands: " .. (err or "unknown error"),
+            message = "Node [" .. self.node_id .. "] failed to submit final commands: " .. (err or "unknown"),
             error = err,
             data_ids = table.create(0, 0)
         }

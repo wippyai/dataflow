@@ -1,8 +1,8 @@
 version: "1.0"
-namespace: userspace.dataflow.node.map_reduce.stub
+namespace: userspace.dataflow.node.parallel.stub
 
 entries:
-  # userspace.dataflow.node.map_reduce.stub:calculate_stats
+  # userspace.dataflow.node.parallel.stub:calculate_stats
   - name: calculate_stats
     kind: function.lua
     meta:
@@ -17,7 +17,7 @@ entries:
       - ctx
     method: run
     
-  # userspace.dataflow.node.map_reduce.stub:compress_item
+  # userspace.dataflow.node.parallel.stub:compress_item
   - name: compress_item
     kind: function.lua
     meta:
@@ -32,7 +32,7 @@ entries:
       - ctx
     method: run
     
-  # userspace.dataflow.node.map_reduce.stub:extract_number
+  # userspace.dataflow.node.parallel.stub:extract_number
   - name: extract_number
     kind: function.lua
     meta:
@@ -47,7 +47,7 @@ entries:
       - ctx
     method: run
     
-  # userspace.dataflow.node.map_reduce.stub:format_report
+  # userspace.dataflow.node.parallel.stub:format_report
   - name: format_report
     kind: function.lua
     meta:
@@ -62,7 +62,7 @@ entries:
       - ctx
     method: run
     
-  # userspace.dataflow.node.map_reduce.stub:validate_item
+  # userspace.dataflow.node.parallel.stub:validate_item
   - name: validate_item
     kind: function.lua
     meta:

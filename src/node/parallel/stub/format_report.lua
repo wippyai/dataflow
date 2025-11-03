@@ -8,7 +8,7 @@ local function run(stats_data)
     end
 
     local report = {
-        title = config.title or "Map-Reduce Report",
+        title = config.title or "Parallel Report",
         formatted_by = "format_report",
         data = stats_data
     }

@@ -30,6 +30,59 @@ local function build_execution_context_with_dataflow(base_context, dataflow_id, 
     return execution_context
 end
 
+local function merge_inputs_with_base_args(inputs, base_args)
+    if not inputs or next(inputs) == nil then
+        if not base_args then
+            return nil
+        end
+        return base_args
+    end
+
+    if not base_args then
+        if inputs["default"] and inputs["default"].content ~= nil then
+            return inputs["default"].content
+        end
+
+        if inputs[""] and inputs[""].content ~= nil then
+            return inputs[""].content
+        end
+
+        local input_count = 0
+        for _ in pairs(inputs) do
+            input_count = input_count + 1
+        end
+
+        if input_count == 1 then
+            for discriminator, input in pairs(inputs) do
+                if discriminator == "default" or discriminator == "" then
+                    return input.content
+                else
+                    return {[discriminator] = input.content}
+                end
+            end
+        end
+
+        local result = {}
+        for key, input in pairs(inputs) do
+            result[key] = input.content
+        end
+        return result
+    end
+
+    local result = {}
+    for k, v in pairs(base_args) do
+        result[k] = v
+    end
+
+    for discriminator, input_data in pairs(inputs) do
+        if discriminator ~= "" and discriminator ~= "default" then
+            result[discriminator] = input_data.content
+        end
+    end
+
+    return result
+end
+
 local function run(args)
     local n, err = func._deps.node.new(args)
     if err then
@@ -45,6 +98,8 @@ local function run(args)
         }, "Missing func_id in node config")
     end
 
+    local base_args = config.args
+
     local inputs, inputs_err = n:inputs()
     if inputs_err then
         return n:fail({
@@ -53,32 +108,7 @@ local function run(args)
         }, inputs_err)
     end
 
-    local input_data = nil
-
-    if next(inputs) == nil then
-        input_data = nil
-    elseif inputs.default then
-        input_data = inputs.default.content
-    elseif inputs[""] then
-        input_data = inputs[""].content
-    else
-        local input_count = 0
-        for _ in pairs(inputs) do
-            input_count = input_count + 1
-        end
-
-        if input_count == 1 then
-            for _, input in pairs(inputs) do
-                input_data = input.content
-                break
-            end
-        else
-            input_data = {}
-            for key, input in pairs(inputs) do
-                input_data[key] = input.content
-            end
-        end
-    end
+    local input_data = merge_inputs_with_base_args(inputs, base_args)
 
     if input_data == nil then
         return n:fail({
@@ -173,6 +203,16 @@ local function run(args)
             local output_data = reader:all()
 
             if output_data and #output_data > 0 then
+                for _, output in ipairs(output_data) do
+                    if output.discriminator == "error" then
+                        local error_content = output.content
+                        return n:fail({
+                            code = "CHILD_WORKFLOW_FAILED",
+                            message = type(error_content) == "string" and error_content or "Child workflow failed"
+                        }, "Child workflow failed")
+                    end
+                end
+
                 local final_output
 
                 if #output_data == 1 then

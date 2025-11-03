@@ -1,8 +1,8 @@
 version: "1.0"
-namespace: userspace.dataflow.node.map_reduce
+namespace: userspace.dataflow.node.parallel
 
 entries:
-  # userspace.dataflow.node.map_reduce:iterator
+  # userspace.dataflow.node.parallel:iterator
   - name: iterator
     kind: library.lua
     meta:
@@ -26,14 +26,14 @@ entries:
       consts: userspace.dataflow:consts
       data_reader: userspace.dataflow.persist:data_reader
     
-  # userspace.dataflow.node.map_reduce:iterator_test
+  # userspace.dataflow.node.parallel:iterator_test
   - name: iterator_test
     kind: function.lua
     meta:
       name: Iterator Tests
       type: test
       comment: Unit tests for iteration management and node lifecycle
-      group: Workflow / Map-Reduce
+      group: Workflow / Parallel
       tags:
         - dataflow
         - map-reduce
@@ -49,15 +49,15 @@ entries:
       - json
     imports:
       consts: userspace.dataflow:consts
-      iterator: userspace.dataflow.node.map_reduce:iterator
+      iterator: userspace.dataflow.node.parallel:iterator
       test: wippy.test:test
     method: run_tests
     
-  # userspace.dataflow.node.map_reduce:map_reduce
-  - name: map_reduce
+  # userspace.dataflow.node.parallel:parallel
+  - name: parallel
     kind: process.lua
     meta:
-      name: Map-Reduce Node
+      name: Parallel Node
       comment: Parallel map-reduce execution node for dataflow workflows
       tags:
         - dataflow
@@ -72,24 +72,25 @@ entries:
         graphs between templates, and optional result reduction. Handles complex parallel
         execution scenarios with proper error propagation and result aggregation.
       default_host: app:processes
-    source: file://map_reduce.lua
+    source: file://parallel.lua
     modules:
       - funcs
+      - json
     imports:
       consts: userspace.dataflow:consts
-      iterator: userspace.dataflow.node.map_reduce:iterator
+      iterator: userspace.dataflow.node.parallel:iterator
       node: userspace.dataflow:node
       template_graph: userspace.dataflow.template:graph
     method: run
     
-  # userspace.dataflow.node.map_reduce:map_reduce_test
-  - name: map_reduce_test
+  # userspace.dataflow.node.parallel:parallel_test
+  - name: parallel_test
     kind: function.lua
     meta:
-      name: Map-Reduce Tests
+      name: Parallel Tests
       type: test
       comment: Comprehensive unit and integration tests for map-reduce functionality
-      group: Workflow / Map-Reduce
+      group: Workflow / Parallel
       tags:
         - dataflow
         - node
@@ -102,7 +103,7 @@ entries:
         validation, input processing, template discovery, batch execution, failure
         strategies, reducer application, and end-to-end integration workflows.
         Combines both unit tests with mocking and real integration tests.
-    source: file://map_reduce_test.lua
+    source: file://parallel_test.lua
     modules:
       - uuid
       - json
@@ -110,7 +111,7 @@ entries:
       client: userspace.dataflow:client
       consts: userspace.dataflow:consts
       data_reader: userspace.dataflow.persist:data_reader
-      map_reduce: userspace.dataflow.node.map_reduce:map_reduce
+      parallel: userspace.dataflow.node.parallel:parallel
       test: wippy.test:test
     method: run_tests
     

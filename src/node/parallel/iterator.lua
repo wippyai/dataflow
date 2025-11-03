@@ -2,17 +2,12 @@ local uuid = require("uuid")
 local json = require("json")
 local consts = require("consts")
 
--- Default dependencies
 local default_deps = {
     data_reader = require("data_reader")
 }
 
 local iterator = {}
 
----Remap template configuration to use iteration UUIDs
----@param config table|nil Original template config
----@param uuid_mapping table<string, string> Map of template_id -> actual_node_id
----@return table Remapped configuration
 function iterator.remap_template_config(config, uuid_mapping)
     if not config then
         return {}
@@ -58,34 +53,63 @@ function iterator.remap_template_config(config, uuid_mapping)
     return remapped
 end
 
----@class IterationInfo
----@field iteration number Index of this iteration (1-based)
----@field input_item any The input item for this iteration
----@field uuid_mapping table<string, string> Map of template_id -> actual_node_id
----@field root_nodes table Array of root node IDs created for this iteration
----@field child_path table List of ancestor node IDs for child nodes
+function iterator.redirect_terminals_to_parent(config, parent_node_id, iteration_index, source_node_id)
+    local padded_iteration = string.format("%06d", iteration_index)
 
----Create nodes for a single iteration
----@param parent_node any Parent node instance
----@param template_graph any Template graph instance
----@param input_item any Input item for this iteration
----@param iteration_index number Index of this iteration
----@param iteration_input_key string Key to use for iteration input
----@param deps table|nil Optional dependencies for testing
----@return IterationInfo
-function iterator.create_iteration(parent_node, template_graph, input_item, iteration_index, iteration_input_key, deps)
+    local new_data_targets = {}
+    for _, target in ipairs(config.data_targets or {}) do
+        if not target.node_id and target.data_type == consts.DATA_TYPE.NODE_OUTPUT then
+            table.insert(new_data_targets, {
+                data_type = consts.DATA_TYPE.ITERATION_RESULT,
+                node_id = parent_node_id,
+                discriminator = "iteration." .. padded_iteration,
+                content_type = target.content_type,
+                metadata = {
+                    source_node_id = source_node_id,
+                    iteration = iteration_index
+                }
+            })
+        else
+            table.insert(new_data_targets, target)
+        end
+    end
+
+    local new_error_targets = {}
+    for _, target in ipairs(config.error_targets or {}) do
+        if not target.node_id and target.data_type == consts.DATA_TYPE.NODE_OUTPUT then
+            table.insert(new_error_targets, {
+                data_type = consts.DATA_TYPE.ITERATION_ERROR,
+                node_id = parent_node_id,
+                discriminator = "iteration." .. padded_iteration,
+                key = target.key or "error",
+                content_type = target.content_type,
+                metadata = {
+                    source_node_id = source_node_id,
+                    iteration = iteration_index
+                }
+            })
+        else
+            table.insert(new_error_targets, target)
+        end
+    end
+
+    config.data_targets = new_data_targets
+    config.error_targets = new_error_targets
+    return config
+end
+
+function iterator.create_iteration(parent_node, template_graph, input_item, iteration_index, iteration_input_key,
+                                   passthrough_inputs, deps)
     deps = deps or default_deps
 
     local uuid_mapping = {}
 
-    -- Get sorted template IDs for deterministic order
     local template_ids = {}
     for template_id, _ in pairs(template_graph.nodes) do
         table.insert(template_ids, template_id)
     end
     table.sort(template_ids)
 
-    -- Create UUID mapping in sorted order
     for _, template_id in ipairs(template_ids) do
         uuid_mapping[template_id] = uuid.v7()
     end
@@ -99,24 +123,27 @@ function iterator.create_iteration(parent_node, template_graph, input_item, iter
     local root_nodes = {}
     local template_roots = template_graph:get_roots()
 
-    -- Process templates in sorted order
     for _, template_id in ipairs(template_ids) do
         local template = template_graph.nodes[template_id]
         local actual_node_id = uuid_mapping[template_id]
 
         local remapped_config = iterator.remap_template_config(template.config, uuid_mapping)
 
-        -- Merge original template metadata with iteration metadata
+        remapped_config = iterator.redirect_terminals_to_parent(
+            remapped_config,
+            parent_node.node_id,
+            iteration_index,
+            actual_node_id
+        )
+
         local merged_metadata = {}
 
-        -- Copy original template metadata if it exists
         if template.metadata then
             for k, v in pairs(template.metadata) do
                 merged_metadata[k] = v
             end
         end
 
-        -- Add iteration-specific metadata
         merged_metadata.iteration = iteration_index
         merged_metadata.template_source = template_id
 
@@ -145,8 +172,22 @@ function iterator.create_iteration(parent_node, template_graph, input_item, iter
 
             parent_node:data(consts.DATA_TYPE.NODE_INPUT, input_item, {
                 node_id = actual_node_id,
-                key = iteration_input_key
+                discriminator = iteration_input_key
             })
+
+            if passthrough_inputs then
+                for input_key, ref_target in pairs(passthrough_inputs) do
+                    parent_node:data(consts.DATA_TYPE.NODE_INPUT, {
+                        node_id = ref_target.node_id,
+                        data_id = ref_target.data_id
+                    }, {
+                        node_id = actual_node_id,
+                        key = ref_target.data_id,
+                        discriminator = input_key,
+                        content_type = consts.CONTENT_TYPE.REFERENCE
+                    })
+                end
+            end
         end
     end
 
@@ -159,17 +200,8 @@ function iterator.create_iteration(parent_node, template_graph, input_item, iter
     }
 end
 
----Create a batch of iterations
----@param parent_node any Parent node instance
----@param template_graph any Template graph instance
----@param items table Array of input items
----@param batch_start number Start index (1-based)
----@param batch_end number End index (1-based, inclusive)
----@param iteration_input_key string Key to use for iteration input
----@param deps table|nil Optional dependencies for testing
----@return table|nil iterations Array of IterationInfo or nil on error
----@return string|nil error Error message if failed
-function iterator.create_batch(parent_node, template_graph, items, batch_start, batch_end, iteration_input_key, deps)
+function iterator.create_batch(parent_node, template_graph, items, batch_start, batch_end, iteration_input_key,
+                               passthrough_inputs, deps)
     deps = deps or default_deps
 
     if not parent_node or not template_graph or not items then
@@ -184,7 +216,7 @@ function iterator.create_batch(parent_node, template_graph, items, batch_start, 
 
     for i = batch_start, batch_end do
         local iteration_info = iterator.create_iteration(
-            parent_node, template_graph, items[i], i, iteration_input_key, deps
+            parent_node, template_graph, items[i], i, iteration_input_key, passthrough_inputs, deps
         )
         table.insert(iterations, iteration_info)
     end
@@ -192,32 +224,6 @@ function iterator.create_batch(parent_node, template_graph, items, batch_start, 
     return iterations, nil
 end
 
----Parse content based on content type
----@param content any Raw content from database
----@param content_type string Content type indicator
----@return any Parsed content
-local function parse_content(content, content_type)
-    -- Parse JSON content if needed
-    if (content_type == consts.CONTENT_TYPE.JSON or content_type == "application/json")
-       and type(content) == "string" then
-        local parsed, err = json.decode(content)
-        if not err then
-            return parsed
-        else
-            -- If JSON parsing fails, return original content
-            return content
-        end
-    end
-
-    return content
-end
-
----Collect results from an iteration
----@param parent_node any Parent node instance
----@param iteration_info IterationInfo Iteration information
----@param deps table|nil Optional dependencies for testing
----@return any|nil result Iteration result or nil on error
----@return string|nil error Error message if failed
 function iterator.collect_results(parent_node, iteration_info, deps)
     deps = deps or default_deps
 
@@ -231,38 +237,25 @@ function iterator.collect_results(parent_node, iteration_info, deps)
         return nil, "Failed to create data reader: " .. reader_err
     end
 
-    local output_data, query_err = reader
+    local errors = reader
         :with_nodes(iteration_node_ids)
-        :with_data_types(consts.DATA_TYPE.NODE_OUTPUT)
-        :fetch_options({ replace_references = true })
+        :with_data_types(consts.DATA_TYPE.ITERATION_ERROR)
         :all()
 
-    if query_err then
-        return nil, "Failed to query output data: " .. query_err
+    if #errors > 0 then
+        local error_messages = {}
+        for _, error_data in ipairs(errors) do
+            local error_content = error_data.content
+            if type(error_content) == "table" then
+                error_content = error_content.error or error_content.message or tostring(error_content)
+            end
+            table.insert(error_messages, tostring(error_content))
+        end
+
+        return nil, table.concat(error_messages, "; ")
     end
 
-    if #output_data == 0 then
-        return nil, "No output data found for iteration"
-    end
-
-    local results = {}
-    for _, output in ipairs(output_data) do
-        -- Parse content based on content_type
-        local parsed_content = parse_content(output.content, output.content_type)
-
-        table.insert(results, {
-            key = output.key,
-            content = parsed_content,
-            node_id = output.node_id,
-            discriminator = output.discriminator
-        })
-    end
-
-    if #results == 1 then
-        return results[1].content, nil
-    else
-        return results, nil
-    end
+    return true, nil
 end
 
 return iterator
