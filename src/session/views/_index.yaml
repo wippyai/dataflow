@@ -65,3 +65,14 @@ entries:
     kind: template.set
     meta:
       description: Template set for dataflow views
+
+  # userspace.dataflow.session.views:wippy-api
+  - name: wippy-api
+    kind: registry.entry
+    meta:
+      name: WippyAPI
+      type: view.resource
+      order: 10
+      resource_type: script
+      template_set: userspace.dataflow.session.views:templates
+      url: https://front.wippy.ai/proxy.js
