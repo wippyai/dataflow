@@ -15,7 +15,7 @@ return require("migration").define(function()
                         metadata JSONB DEFAULT '{}',
                         created_at TIMESTAMP NOT NULL DEFAULT now(),
                         FOREIGN KEY (dataflow_id) REFERENCES dataflows(dataflow_id) ON DELETE CASCADE,
-                        FOREIGN KEY (node_id) REFERENCES nodes(node_id) ON DELETE CASCADE
+                        FOREIGN KEY (node_id) REFERENCES dataflow_nodes(node_id) ON DELETE CASCADE
                     )
                 ]])
 
@@ -135,7 +135,7 @@ return require("migration").define(function()
                         metadata TEXT DEFAULT '{}',
                         created_at INTEGER NOT NULL,
                         FOREIGN KEY (dataflow_id) REFERENCES dataflows(dataflow_id) ON DELETE CASCADE,
-                        FOREIGN KEY (node_id) REFERENCES nodes(node_id) ON DELETE CASCADE
+                        FOREIGN KEY (node_id) REFERENCES dataflow_nodes(node_id) ON DELETE CASCADE
                     )
                 ]])
 
