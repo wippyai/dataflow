@@ -408,12 +408,15 @@ local function process_tool_results(n, tool_results, iteration, exit_tool_name, 
                         :call(arena_config.exit_func_id, exit_arguments)
 
                     if validation_err then
-                        n:data(agent_consts.DATA_TYPE.AGENT_OBSERVATION, validation_err, {
-                            key = iteration .. "_exit_validation_failed",
+                        local tool_key = iteration .. "_" .. exit_tool_name
+                        n:data(agent_consts.DATA_TYPE.AGENT_OBSERVATION, "error: " .. validation_err, {
+                            key = tool_key,
                             content_type = consts.CONTENT_TYPE.TEXT,
                             node_id = n.node_id,
                             metadata = {
                                 iteration = iteration,
+                                tool_call_id = original_tool_call.id,
+                                tool_name = exit_tool_name,
                                 is_error = true,
                                 exit_validation = true
                             }
