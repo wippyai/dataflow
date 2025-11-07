@@ -258,6 +258,17 @@ function FlowGraph:create_template_nodes(template, parent_node_id)
                 source_node_id = last_template_node_id
             }
         })
+
+        if not last_node.config.error_targets then
+            last_node.config.error_targets = table.create(1, 0)
+        end
+        table.insert(last_node.config.error_targets, {
+            data_type = consts.DATA_TYPE.NODE_OUTPUT,
+            discriminator = "error",
+            metadata = {
+                source_node_id = last_template_node_id
+            }
+        })
     end
 
     return template_node_ids
@@ -507,7 +518,7 @@ function compiler.build_graph(operations, session_context)
                     return nil, err
                 end
             else
-                return nil, "Cannot name node: no previous node, input, or static data to name"
+                return nil, "Cannot name node: no previous node, input, or static data to name: " .. op.config.name
             end
         elseif op.type == compiler.OP_TYPES.TO then
             if op.config.target == "@success" or op.config.target == "@fail" or op.config.target == "@end" then
@@ -834,26 +845,17 @@ function compiler.validate_graph(graph)
         end
     end
 
-    local has_string_transform_nodes = table.create(0, 16)
-    for node_id, node_def in pairs(graph.nodes) do
-        if node_def.config.input_transform and type(node_def.config.input_transform) == "string" then
-            has_string_transform_nodes[node_id] = true
-        end
-    end
-
     local conflicts = table.create(8, 0)
     for node_id, node_def in pairs(graph.nodes) do
-        if node_def.config.args then
-            local receives_default = nodes_with_default_inputs[node_id]
-            local has_string_transform = has_string_transform_nodes[node_id]
+        if nodes_with_default_inputs[node_id] then
+            local has_args = node_def.config.args ~= nil
+            local has_string_transform = type(node_def.config.input_transform) == "string"
 
-            if receives_default or has_string_transform then
+            if has_args or has_string_transform then
                 local title = node_def.metadata and node_def.metadata.title or "unnamed"
                 local reason = ""
-                if receives_default and has_string_transform then
-                    reason = " (receives default input AND has string input_transform)"
-                elseif receives_default then
-                    reason = " (receives default input)"
+                if has_args then
+                    reason = " (has args)"
                 elseif has_string_transform then
                     reason = " (has string input_transform)"
                 end
@@ -1120,6 +1122,7 @@ function compiler.compile_to_commands(graph, session_context)
                         target.node_id = node_id
                     end
 
+                    -- Both @success and @fail routes should be in data_targets with conditions
                     table.insert(config.data_targets, target)
                 else
                     table.insert(config.data_targets, {

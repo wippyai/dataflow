@@ -391,11 +391,13 @@ local function execute_tools(agent_result, caller, session_context)
     return tool_results or {}
 end
 
-local function process_tool_results(n, tool_results, iteration, exit_tool_name, agent_result, arena_config, session_context)
+local function process_tool_results(n, tool_results, iteration, exit_tool_name, agent_result, arena_config,
+                                    session_context)
     local control_responses = {}
     local control_delegations = {}
     local task_complete = false
     local final_result = nil
+    local skip_call = false
 
     if exit_tool_name and agent_result.tool_calls then
         for _, original_tool_call in ipairs(agent_result.tool_calls) do
@@ -415,10 +417,12 @@ local function process_tool_results(n, tool_results, iteration, exit_tool_name, 
                             metadata = {
                                 iteration = iteration,
                                 is_error = true,
+                                tool_call_id = original_tool_call.id,
                                 exit_validation = true
                             }
                         })
                         task_complete = false
+                        skip_call = true
                     else
                         task_complete = true
                         final_result = validated_result
@@ -432,7 +436,7 @@ local function process_tool_results(n, tool_results, iteration, exit_tool_name, 
         end
     end
 
-    if task_complete then
+    if task_complete or skip_call then
         return control_responses, control_delegations, task_complete, final_result
     end
 
@@ -472,7 +476,8 @@ local function process_tool_results(n, tool_results, iteration, exit_tool_name, 
 
                     n:data(agent_consts.DATA_TYPE.AGENT_OBSERVATION, obs_content, {
                         key = tool_key,
-                        content_type = type(obs_content) == "table" and consts.CONTENT_TYPE.JSON or consts.CONTENT_TYPE.TEXT,
+                        content_type = type(obs_content) == "table" and consts.CONTENT_TYPE.JSON or
+                        consts.CONTENT_TYPE.TEXT,
                         node_id = n.node_id,
                         metadata = {
                             iteration = iteration,
@@ -601,9 +606,9 @@ local function run(args)
         local entry = registry.get(agent_id_override)
         if entry and entry.meta and (entry.meta.title or entry.meta.name) then
             local title = entry.meta.title or entry.meta.name
-            n:update_metadata({title = title})
+            n:update_metadata({ title = title })
         else
-            n:update_metadata({title = "Agent: " .. agent_id_override})
+            n:update_metadata({ title = "Agent: " .. agent_id_override })
         end
     end
 
@@ -645,7 +650,7 @@ local function run(args)
         }, "Agent ID not specified in config or inputs")
     end
 
-    local load_options = model_override and {model = model_override} or nil
+    local load_options = model_override and { model = model_override } or nil
     local agent_instance, agent_err = agent_ctx:load_agent(agent_to_load, load_options)
     if not agent_instance then
         return n:fail({
@@ -747,7 +752,8 @@ local function run(args)
 
         store_agent_action(n, agent_result, iteration, agent_id, model_name, exit_tool_name, control_metadata)
 
-        local control_responses, control_delegations, tool_complete, tool_result = process_tool_results(n, tool_results, iteration,
+        local control_responses, control_delegations, tool_complete, tool_result = process_tool_results(n, tool_results,
+            iteration,
             exit_tool_name, { tool_calls = regular_tool_calls }, config.arena, session_context)
 
         for _, control_del in ipairs(control_delegations) do
@@ -883,7 +889,8 @@ local function run(args)
 
                         n:data(agent_consts.DATA_TYPE.AGENT_OBSERVATION, output_content, {
                             key = iteration .. "_commands_output",
-                            content_type = type(output_content) == "table" and consts.CONTENT_TYPE.JSON or consts.CONTENT_TYPE.TEXT,
+                            content_type = type(output_content) == "table" and consts.CONTENT_TYPE.JSON or
+                            consts.CONTENT_TYPE.TEXT,
                             node_id = n.node_id,
                             metadata = {
                                 iteration = iteration,
