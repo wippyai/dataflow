@@ -1122,7 +1122,6 @@ function compiler.compile_to_commands(graph, session_context)
                         target.node_id = node_id
                     end
 
-                    -- FIX: Always insert into data_targets for edges from edges.targets list
                     -- Both @success and @fail routes should be in data_targets with conditions
                     table.insert(config.data_targets, target)
                 else
