@@ -418,6 +418,7 @@ local function process_tool_results(n, tool_results, iteration, exit_tool_name, 
                                 iteration = iteration,
                                 is_error = true,
                                 tool_call_id = original_tool_call.id,
+                                tool_name = original_tool_call.name,
                                 exit_validation = true
                             }
                         })
@@ -477,7 +478,7 @@ local function process_tool_results(n, tool_results, iteration, exit_tool_name, 
                     n:data(agent_consts.DATA_TYPE.AGENT_OBSERVATION, obs_content, {
                         key = tool_key,
                         content_type = type(obs_content) == "table" and consts.CONTENT_TYPE.JSON or
-                        consts.CONTENT_TYPE.TEXT,
+                            consts.CONTENT_TYPE.TEXT,
                         node_id = n.node_id,
                         metadata = {
                             iteration = iteration,
@@ -890,7 +891,7 @@ local function run(args)
                         n:data(agent_consts.DATA_TYPE.AGENT_OBSERVATION, output_content, {
                             key = iteration .. "_commands_output",
                             content_type = type(output_content) == "table" and consts.CONTENT_TYPE.JSON or
-                            consts.CONTENT_TYPE.TEXT,
+                                consts.CONTENT_TYPE.TEXT,
                             node_id = n.node_id,
                             metadata = {
                                 iteration = iteration,
