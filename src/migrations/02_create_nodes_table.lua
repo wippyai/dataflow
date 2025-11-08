@@ -14,7 +14,7 @@ return require("migration").define(function()
                         created_at TIMESTAMP NOT NULL DEFAULT now(),
                         updated_at TIMESTAMP NOT NULL DEFAULT now(),
                         FOREIGN KEY (dataflow_id) REFERENCES dataflows(dataflow_id) ON DELETE CASCADE,
-                        FOREIGN KEY (parent_node_id) REFERENCES nodes(node_id) ON DELETE CASCADE
+                        FOREIGN KEY (parent_node_id) REFERENCES dataflow_nodes(node_id) ON DELETE CASCADE
                     )
                 ]])
 
@@ -76,7 +76,7 @@ return require("migration").define(function()
                         created_at INTEGER NOT NULL,
                         updated_at INTEGER NOT NULL,
                         FOREIGN KEY (dataflow_id) REFERENCES dataflows(dataflow_id) ON DELETE CASCADE,
-                        FOREIGN KEY (parent_node_id) REFERENCES nodes(node_id) ON DELETE CASCADE
+                        FOREIGN KEY (parent_node_id) REFERENCES dataflow_nodes(node_id) ON DELETE CASCADE
                     )
                 ]])
 
