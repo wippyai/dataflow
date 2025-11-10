@@ -122,6 +122,7 @@ function FlowBuilder:agent(agent_id, config)
             min_iterations = arena_config.min_iterations or DEFAULTS.AGENT_MIN_ITERATIONS,
             tool_calling = arena_config.tool_calling or DEFAULTS.AGENT_TOOL_CALLING,
             exit_schema = arena_config.exit_schema,
+            exit_func_id = arena_config.exit_func_id,
             tools = arena_config.tools,
             context = arena_config.context
         },
