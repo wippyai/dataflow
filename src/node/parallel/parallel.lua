@@ -6,7 +6,8 @@ parallel._deps = {
     iterator = require("iterator"),
     uuid = require("uuid"),
     consts = require("consts"),
-    data_reader = require("data_reader")
+    data_reader = require("data_reader"),
+    json = require("json")
 }
 
 parallel.DEFAULTS = {
@@ -282,6 +283,15 @@ local function run(args)
                 :order_by("discriminator", "ASC")
                 :all()
 
+            for _, data in ipairs(all_data) do
+                if data.content_type == consts.CONTENT_TYPE.JSON and type(data.content) == "string" then
+                    local parsed, parse_err = parallel._deps.json.decode(data.content)
+                    if not parse_err then
+                        data.content = parsed
+                    end
+                end
+            end
+
             local partial_results = table.create(#all_data, 0)
             for i, data in ipairs(all_data) do
                 local is_error = data.type == consts.DATA_TYPE.ITERATION_ERROR
@@ -316,6 +326,15 @@ local function run(args)
         :with_data_types({consts.DATA_TYPE.ITERATION_RESULT, consts.DATA_TYPE.ITERATION_ERROR})
         :order_by("discriminator", "ASC")
         :all()
+
+    for _, data in ipairs(all_data) do
+        if data.content_type == consts.CONTENT_TYPE.JSON and type(data.content) == "string" then
+            local parsed, parse_err = parallel._deps.json.decode(data.content)
+            if not parse_err then
+                data.content = parsed
+            end
+        end
+    end
 
     local results = table.create(#all_data, 0)
     local errors = table.create(#all_data, 0)
