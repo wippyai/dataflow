@@ -33,19 +33,19 @@ local function define_tests()
             local now_ts = time.now():format(time.RFC3339)
 
             -- Insert test dataflow
-            local success, err_insert = tx:execute([[
-                INSERT INTO dataflows (
-                    dataflow_id, actor_id, type, status, metadata, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-            ]], {
-                dataflow_id,
-                "test-user",
-                "commit_test_type",
-                "active",
-                "{}",
-                now_ts,
-                now_ts
-            })
+            local insert_query = sql.builder.insert("dataflows")
+                :set_map({
+                    dataflow_id = dataflow_id,
+                    actor_id = "test-user",
+                    type = "commit_test_type",
+                    status = "active",
+                    metadata = "{}",
+                    created_at = now_ts,
+                    updated_at = now_ts
+                })
+
+            local insert_exec = insert_query:run_with(tx)
+            local success, err_insert = insert_exec:exec()
 
             if err_insert then
                 tx:rollback()
@@ -84,7 +84,10 @@ local function define_tests()
 
             -- Delete test dataflows
             for _, id in ipairs(test_ctx.cleanup_ids) do
-                tx:execute("DELETE FROM dataflows WHERE dataflow_id = ?", {id})
+                local delete_query = sql.builder.delete("dataflows"):where("dataflow_id = ?", id)
+
+                local delete_exec = delete_query:run_with(tx)
+                delete_exec:exec()
             end
 
             tx:commit()
@@ -107,17 +110,20 @@ local function define_tests()
 
                 -- Verify in database
                 local db, _ = sql.get("app:db")
-                local rows, _ = db:query("SELECT * FROM dataflow_commits WHERE commit_id = ?", {commit_id})
+                local query = sql.builder.select("*"):from("dataflow_commits"):where("commit_id = ?", commit_id)
+                local exec = query:run_with(db)
+                local rows, _ = exec:query()
                 db:release()
 
                 expect(#rows).to_equal(1)
 
                 -- Check dataflow last_commit_id was updated
                 db, _ = sql.get("app:db")
-                local dataflow_rows, _ = db:query(
-                    "SELECT last_commit_id FROM dataflows WHERE dataflow_id = ?",
-                    {test_ctx.dataflow_id}
-                )
+                local dataflow_query = sql.builder.select("last_commit_id")
+                    :from("dataflows")
+                    :where("dataflow_id = ?", test_ctx.dataflow_id)
+                local dataflow_exec = dataflow_query:run_with(db)
+                local dataflow_rows, _ = dataflow_exec:query()
                 db:release()
 
                 expect(dataflow_rows[1].last_commit_id).to_equal(commit_id)
@@ -145,7 +151,11 @@ local function define_tests()
 
                 -- Verify metadata in database
                 local db, _ = sql.get("app:db")
-                local rows, _ = db:query("SELECT metadata FROM dataflow_commits WHERE commit_id = ?", {commit_id})
+                local metadata_query = sql.builder.select("metadata")
+                    :from("dataflow_commits")
+                    :where("commit_id = ?", commit_id)
+                local metadata_exec = metadata_query:run_with(db)
+                local rows, _ = metadata_exec:query()
                 db:release()
 
                 local parsed_metadata = json.decode(rows[1].metadata)

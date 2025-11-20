@@ -40,7 +40,12 @@ local function define_tests()
             local success_all = true
             for i = #created_dataflow_ids_for_global_cleanup, 1, -1 do
                 local id_to_delete = created_dataflow_ids_for_global_cleanup[i]
-                local _, err_delete = tx:execute("DELETE FROM dataflows WHERE dataflow_id = $1", { id_to_delete })
+                local delete_query = sql.builder.delete("dataflows")
+                    :where("dataflow_id = ?", id_to_delete)
+
+                local delete_exec = delete_query:run_with(tx)
+                local _, err_delete = delete_exec:exec()
+
                 if err_delete then
                     print("ERROR (global after_all): Delete failed for " .. id_to_delete .. ": " .. err_delete)
                     success_all = false
@@ -83,20 +88,20 @@ local function define_tests()
                 end
             end
 
-            local success, err_insert = tx:execute([[
-                INSERT INTO dataflows (
-                    dataflow_id, parent_dataflow_id, actor_id, type, status, metadata, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ]], {
-                dataflow_id,
-                params.parent_dataflow_id or sql.as.null(),
-                actor_id,
-                type_val,
-                params.status or "pending",
-                metadata_json,
-                now_ts,
-                now_ts
-            })
+            local dataflow_insert = sql.builder.insert("dataflows")
+                :set_map({
+                    dataflow_id = dataflow_id,
+                    parent_dataflow_id = params.parent_dataflow_id and params.parent_dataflow_id or sql.as.null(),
+                    actor_id = actor_id,
+                    type = type_val,
+                    status = params.status or "pending",
+                    metadata = metadata_json,
+                    created_at = now_ts,
+                    updated_at = now_ts
+                })
+
+            local dataflow_exec = dataflow_insert:run_with(tx)
+            local success, err_insert = dataflow_exec:exec()
 
             if err_insert then
                 tx:rollback()
@@ -156,21 +161,21 @@ local function define_tests()
                 end
             end
 
-            local success, err_insert = tx:execute([[
-                INSERT INTO dataflow_nodes (
-                    node_id, dataflow_id, parent_node_id, type, status, config, metadata, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ]], {
-                node_id,
-                dataflow_id,
-                params.parent_node_id or sql.as.null(),
-                node_type,
-                params.status or "pending",
-                config_json,
-                metadata_json,
-                now_ts,
-                now_ts
-            })
+            local node_insert = sql.builder.insert("dataflow_nodes")
+                :set_map({
+                    node_id = node_id,
+                    dataflow_id = dataflow_id,
+                    parent_node_id = params.parent_node_id and params.parent_node_id or sql.as.null(),
+                    type = node_type,
+                    status = params.status or "pending",
+                    config = config_json,
+                    metadata = metadata_json,
+                    created_at = now_ts,
+                    updated_at = now_ts
+                })
+
+            local node_exec = node_insert:run_with(tx)
+            local success, err_insert = node_exec:exec()
 
             if err_insert then
                 tx:rollback()
