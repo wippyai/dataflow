@@ -3,10 +3,8 @@ local uuid = require("uuid")
 local json = require("json")
 local time = require("time")
 local sql = require("sql")
-local security = require("security")
 
 local commit = require("commit")
-local commit_repo = require("commit_repo")
 local ops = require("ops")
 
 local function define_tests()
@@ -111,19 +109,19 @@ local function define_tests()
             local dataflow_id = uuid.v7()
             local now_ts = time.now():format(time.RFC3339NANO)
 
-            local success, err_insert = tx:execute([[
-                INSERT INTO dataflows (
-                    dataflow_id, actor_id, type, status, metadata, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-            ]], {
-                dataflow_id,
-                test_actor_id,
-                "test_dataflow",
-                "active",
-                "{}",
-                now_ts,
-                now_ts
-            })
+            local insert_query = sql.builder.insert("dataflows")
+                :set_map({
+                    dataflow_id = dataflow_id,
+                    actor_id = test_actor_id,
+                    type = "test_dataflow",
+                    status = "active",
+                    metadata = "{}",
+                    created_at = now_ts,
+                    updated_at = now_ts
+                })
+
+            local insert_exec = insert_query:run_with(tx)
+            local success, err_insert = insert_exec:exec()
 
             if err_insert then
                 error("Failed to create test dataflow: " .. err_insert)
@@ -154,19 +152,19 @@ local function define_tests()
                 error("Failed to begin transaction: " .. err_tx)
             end
 
-            local _, err_create = tx:execute([[
-                INSERT INTO dataflows (
-                    dataflow_id, actor_id, type, status, metadata, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-            ]], {
-                dataflow_id,
-                actor_id,
-                "test_dataflow",
-                "active",
-                "{}",
-                now_ts,
-                now_ts
-            })
+            local insert_query = sql.builder.insert("dataflows")
+                :set_map({
+                    dataflow_id = dataflow_id,
+                    actor_id = actor_id,
+                    type = "test_dataflow",
+                    status = "active",
+                    metadata = "{}",
+                    created_at = now_ts,
+                    updated_at = now_ts
+                })
+
+            local insert_exec = insert_query:run_with(tx)
+            local _, err_create = insert_exec:exec()
 
             if err_create then
                 tx:rollback()
@@ -436,18 +434,18 @@ local function define_tests()
                 local now_ts = time.now():format(time.RFC3339NANO)
 
                 -- Insert commit directly using existing transaction
-                local _, insert_err = tx:execute([[
-                    INSERT INTO dataflow_commits (
-                        commit_id, dataflow_id, op_id, payload, metadata, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                ]], {
-                    commit_id,
-                    resources.dataflow_id,
-                    nil, -- op_id
-                    payload_json,
-                    "{}",
-                    now_ts
-                })
+                local insert_query = sql.builder.insert("dataflow_commits")
+                    :set_map({
+                        commit_id = commit_id,
+                        dataflow_id = resources.dataflow_id,
+                        op_id = sql.as.null(),
+                        payload = payload_json,
+                        metadata = "{}",
+                        created_at = now_ts
+                    })
+
+                local insert_exec = insert_query:run_with(tx)
+                local _, insert_err = insert_exec:exec()
                 expect(insert_err).to_be_nil()
 
                 -- Now test applying the commit

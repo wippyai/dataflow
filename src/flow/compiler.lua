@@ -940,6 +940,7 @@ function compiler.compile_to_commands(graph, session_context)
     local input_data_id = nil
     local is_nested = session_context and session_context.dataflow_id
 
+    -- Step 1: Create workflow input data object (only for non-nested workflows)
     if graph.input_data and not is_nested then
         input_data_id = uuid.v7()
         table.insert(commands, {
@@ -948,128 +949,12 @@ function compiler.compile_to_commands(graph, session_context)
                 data_id = input_data_id,
                 data_type = consts.DATA_TYPE.WORKFLOW_INPUT,
                 content = graph.input_data,
-                content_type = type(graph.input_data) == "table" and consts.CONTENT_TYPE.JSON or consts.CONTENT_TYPE
-                    .TEXT
+                content_type = type(graph.input_data) == "table" and consts.CONTENT_TYPE.JSON or consts.CONTENT_TYPE.TEXT
             }
         })
     end
 
-    local static_data_ids = table.create(0, #graph.static_data_sources)
-
-    for _, static_source in ipairs(graph.static_data_sources) do
-        if #static_source.routes > 0 then
-            local first_route = static_source.routes[1]
-            local target_node_id, err = graph:resolve_reference(first_route.target_name)
-            if err then
-                return nil, err
-            end
-
-            local content = static_source.data
-            if first_route.transform then
-                local transform_env = {
-                    output = static_source.data
-                }
-                local transformed, eval_err = expr.eval(first_route.transform, transform_env)
-                if eval_err then
-                    return nil, "Static data route transform failed: " .. eval_err
-                end
-                content = transformed
-            end
-
-            local data_id = uuid.v7()
-            static_data_ids[static_source.static_id] = data_id
-
-            table.insert(commands, {
-                type = consts.COMMAND_TYPES.CREATE_DATA,
-                payload = {
-                    data_id = data_id,
-                    data_type = consts.DATA_TYPE.NODE_INPUT,
-                    node_id = target_node_id,
-                    discriminator = first_route.input_key,
-                    content = content,
-                    content_type = type(content) == "table" and consts.CONTENT_TYPE.JSON or consts.CONTENT_TYPE.TEXT
-                }
-            })
-
-            for i = 2, #static_source.routes do
-                local route = static_source.routes[i]
-                local route_target_id, route_err = graph:resolve_reference(route.target_name)
-                if route_err then
-                    return nil, route_err
-                end
-
-                table.insert(commands, {
-                    type = consts.COMMAND_TYPES.CREATE_DATA,
-                    payload = {
-                        data_id = uuid.v7(),
-                        data_type = consts.DATA_TYPE.NODE_INPUT,
-                        node_id = route_target_id,
-                        discriminator = route.input_key,
-                        key = data_id,
-                        content = "",
-                        content_type = consts.CONTENT_TYPE.REFERENCE
-                    }
-                })
-            end
-        end
-    end
-
-    if graph.input_data and is_nested then
-        if #graph.input_routes > 0 then
-            for _, route in ipairs(graph.input_routes) do
-                local target_node_id, err = graph:resolve_reference(route.target_name)
-                if err then
-                    return nil, err
-                end
-
-                local content = graph.input_data
-                if route.transform then
-                    local transform_env = {
-                        input = graph.input_data,
-                        output = graph.input_data
-                    }
-                    local transformed, eval_err = expr.eval(route.transform, transform_env)
-                    if eval_err then
-                        return nil, "Input route transform failed: " .. eval_err
-                    end
-                    content = transformed
-                end
-
-                table.insert(commands, {
-                    type = consts.COMMAND_TYPES.CREATE_DATA,
-                    payload = {
-                        data_id = uuid.v7(),
-                        data_type = consts.DATA_TYPE.NODE_INPUT,
-                        node_id = target_node_id,
-                        discriminator = route.input_key,
-                        content = content,
-                        content_type = type(content) == "table" and consts.CONTENT_TYPE.JSON or consts.CONTENT_TYPE.TEXT
-                    }
-                })
-            end
-        else
-            local root_nodes, roots_err = compiler.find_root_nodes(graph)
-            if roots_err then
-                return nil, roots_err
-            end
-
-            for _, node_id in ipairs(root_nodes) do
-                table.insert(commands, {
-                    type = consts.COMMAND_TYPES.CREATE_DATA,
-                    payload = {
-                        data_id = uuid.v7(),
-                        data_type = consts.DATA_TYPE.NODE_INPUT,
-                        node_id = node_id,
-                        discriminator = "default",
-                        content = graph.input_data,
-                        content_type = type(graph.input_data) == "table" and consts.CONTENT_TYPE.JSON or
-                            consts.CONTENT_TYPE.TEXT
-                    }
-                })
-            end
-        end
-    end
-
+    -- Step 2: Create all nodes first
     local leaf_nodes, leaf_err = compiler.find_leaf_nodes(graph)
     if leaf_err then
         return nil, leaf_err
@@ -1122,7 +1007,6 @@ function compiler.compile_to_commands(graph, session_context)
                         target.node_id = node_id
                     end
 
-                    -- Both @success and @fail routes should be in data_targets with conditions
                     table.insert(config.data_targets, target)
                 else
                     table.insert(config.data_targets, {
@@ -1225,6 +1109,125 @@ function compiler.compile_to_commands(graph, session_context)
         })
     end
 
+    -- Step 3: Create static data sources (nodes now exist)
+    local static_data_ids = table.create(0, #graph.static_data_sources)
+
+    for _, static_source in ipairs(graph.static_data_sources) do
+        if #static_source.routes > 0 then
+            local first_route = static_source.routes[1]
+            local target_node_id, err = graph:resolve_reference(first_route.target_name)
+            if err then
+                return nil, err
+            end
+
+            local content = static_source.data
+            if first_route.transform then
+                local transform_env = {
+                    output = static_source.data
+                }
+                local transformed, eval_err = expr.eval(first_route.transform, transform_env)
+                if eval_err then
+                    return nil, "Static data route transform failed: " .. eval_err
+                end
+                content = transformed
+            end
+
+            local data_id = uuid.v7()
+            static_data_ids[static_source.static_id] = data_id
+
+            table.insert(commands, {
+                type = consts.COMMAND_TYPES.CREATE_DATA,
+                payload = {
+                    data_id = data_id,
+                    data_type = consts.DATA_TYPE.NODE_INPUT,
+                    node_id = target_node_id,
+                    discriminator = first_route.input_key,
+                    content = content,
+                    content_type = type(content) == "table" and consts.CONTENT_TYPE.JSON or consts.CONTENT_TYPE.TEXT
+                }
+            })
+
+            for i = 2, #static_source.routes do
+                local route = static_source.routes[i]
+                local route_target_id, route_err = graph:resolve_reference(route.target_name)
+                if route_err then
+                    return nil, route_err
+                end
+
+                table.insert(commands, {
+                    type = consts.COMMAND_TYPES.CREATE_DATA,
+                    payload = {
+                        data_id = uuid.v7(),
+                        data_type = consts.DATA_TYPE.NODE_INPUT,
+                        node_id = route_target_id,
+                        discriminator = route.input_key,
+                        key = data_id,
+                        content = "",
+                        content_type = consts.CONTENT_TYPE.REFERENCE
+                    }
+                })
+            end
+        end
+    end
+
+    -- Step 4: Create nested workflow input routing (nodes now exist)
+    if graph.input_data and is_nested then
+        if #graph.input_routes > 0 then
+            for _, route in ipairs(graph.input_routes) do
+                local target_node_id, err = graph:resolve_reference(route.target_name)
+                if err then
+                    return nil, err
+                end
+
+                local content = graph.input_data
+                if route.transform then
+                    local transform_env = {
+                        input = graph.input_data,
+                        output = graph.input_data
+                    }
+                    local transformed, eval_err = expr.eval(route.transform, transform_env)
+                    if eval_err then
+                        return nil, "Input route transform failed: " .. eval_err
+                    end
+                    content = transformed
+                end
+
+                table.insert(commands, {
+                    type = consts.COMMAND_TYPES.CREATE_DATA,
+                    payload = {
+                        data_id = uuid.v7(),
+                        data_type = consts.DATA_TYPE.NODE_INPUT,
+                        node_id = target_node_id,
+                        discriminator = route.input_key,
+                        content = content,
+                        content_type = type(content) == "table" and consts.CONTENT_TYPE.JSON or consts.CONTENT_TYPE.TEXT
+                    }
+                })
+            end
+        else
+            local root_nodes, roots_err = compiler.find_root_nodes(graph)
+            if roots_err then
+                return nil, roots_err
+            end
+
+            for _, node_id in ipairs(root_nodes) do
+                table.insert(commands, {
+                    type = consts.COMMAND_TYPES.CREATE_DATA,
+                    payload = {
+                        data_id = uuid.v7(),
+                        data_type = consts.DATA_TYPE.NODE_INPUT,
+                        node_id = node_id,
+                        discriminator = "default",
+                        content = graph.input_data,
+                        content_type = type(graph.input_data) == "table" and consts.CONTENT_TYPE.JSON or
+                            consts.CONTENT_TYPE.TEXT
+                    }
+                })
+            end
+        end
+    end
+
+    -- Step 5: Create workflow input data references (non-nested, nodes now exist)
     if input_data_id and not is_nested then
         local root_nodes, roots_err = compiler.find_root_nodes(graph)
         if roots_err then

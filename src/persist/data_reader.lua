@@ -136,7 +136,7 @@ local function create_in_clause(field, values)
     return { field .. " IN (" .. table.concat(placeholders, ", ") .. ")", unpack(values) }
 end
 
-function methods:_build_query()
+function methods:_build_query(db_type)
     local select_fields = { "d.data_id", "d.dataflow_id", "d.node_id", "d.type", "d.discriminator", "d.key",
         "d.created_at" }
 
@@ -165,7 +165,9 @@ function methods:_build_query()
 
     if self._resolve_references then
         query_builder = query_builder:left_join(
-            "dataflow_data ref ON d.key = ref.data_id AND d.dataflow_id = ref.dataflow_id AND d.content_type = '" ..
+            "dataflow_data ref ON d.key = " ..
+            (sql.type.POSTGRES == db_type and "ref.data_id::text" or "ref.data_id") ..
+            " AND d.dataflow_id = ref.dataflow_id AND d.content_type = '" ..
             REFERENCE_CONTENT_TYPE .. "'"
         )
     end
@@ -279,8 +281,8 @@ local function get_db()
 end
 
 function methods:all()
-    local query_builder = self:_build_query()
     local db = get_db()
+    local query_builder = self:_build_query(db:type())
 
     local executor = query_builder:run_with(db)
     local results, err = executor:query()
@@ -302,8 +304,8 @@ function methods:all()
 end
 
 function methods:one()
-    local query_builder = self:_build_query():limit(1)
     local db = get_db()
+    local query_builder = self:_build_query(db:type()):limit(1)
 
     local executor = query_builder:run_with(db)
     local results, err = executor:query()

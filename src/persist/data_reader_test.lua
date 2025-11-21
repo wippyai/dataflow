@@ -3,9 +3,6 @@ local uuid = require("uuid")
 local json = require("json")
 local time = require("time")
 local sql = require("sql")
-local security = require("security")
-
--- Make sure we're loading the module correctly
 local data_reader = require("data_reader")
 
 local function define_tests()
@@ -39,19 +36,19 @@ local function define_tests()
             test_dataflow_id = uuid.v7()
             local test_actor_id = "test-actor-" .. uuid.v7()
 
-            local dataflow_result, wf_err = tx:execute([[
-                INSERT INTO dataflows (
-                    dataflow_id, actor_id, type, status, metadata, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-            ]], {
-                test_dataflow_id,
-                test_actor_id,
-                "data_reader_test",
-                "active",
-                "{}",
-                now_ts,
-                now_ts
-            })
+            local dataflow_insert = sql.builder.insert("dataflows")
+                :set_map({
+                    dataflow_id = test_dataflow_id,
+                    actor_id = test_actor_id,
+                    type = "data_reader_test",
+                    status = "active",
+                    metadata = "{}",
+                    created_at = now_ts,
+                    updated_at = now_ts
+                })
+
+            local dataflow_exec = dataflow_insert:run_with(tx)
+            local dataflow_result, wf_err = dataflow_exec:exec()
 
             if wf_err then
                 tx:rollback()
@@ -63,28 +60,39 @@ local function define_tests()
             test_node_id_1 = uuid.v7()
             test_node_id_2 = uuid.v7()
 
-            local node_result, node_err = tx:execute([[
-                INSERT INTO dataflow_nodes (
-                    node_id, dataflow_id, type, status, metadata, created_at, updated_at
-                ) VALUES
-                (?, ?, ?, ?, ?, ?, ?),
-                (?, ?, ?, ?, ?, ?, ?)
-            ]], {
-                test_node_id_1,
-                test_dataflow_id,
-                "test_node_type_1",
-                "active",
-                "{}",
-                now_ts,
-                now_ts,
-                test_node_id_2,
-                test_dataflow_id,
-                "test_node_type_2",
-                "active",
-                "{}",
-                now_ts,
-                now_ts
-            })
+            local node1_insert = sql.builder.insert("dataflow_nodes")
+                :set_map({
+                    node_id = test_node_id_1,
+                    dataflow_id = test_dataflow_id,
+                    type = "test_node_type_1",
+                    status = "active",
+                    metadata = "{}",
+                    created_at = now_ts,
+                    updated_at = now_ts
+                })
+
+            local node1_exec = node1_insert:run_with(tx)
+            local _, node1_err = node1_exec:exec()
+
+            if node1_err then
+                tx:rollback()
+                db:release()
+                error("Failed to create test node 1: " .. node1_err)
+            end
+
+            local node2_insert = sql.builder.insert("dataflow_nodes")
+                :set_map({
+                    node_id = test_node_id_2,
+                    dataflow_id = test_dataflow_id,
+                    type = "test_node_type_2",
+                    status = "active",
+                    metadata = "{}",
+                    created_at = now_ts,
+                    updated_at = now_ts
+                })
+
+            local node2_exec = node2_insert:run_with(tx)
+            local node_result, node_err = node2_exec:exec()
 
             if node_err then
                 tx:rollback()
@@ -94,23 +102,22 @@ local function define_tests()
 
             -- Create target data first to reference later
             test_target_data_id = uuid.v7()
-            local target_result, target_err = tx:execute([[
-                INSERT INTO dataflow_data (
-                    data_id, dataflow_id, node_id, type, discriminator, key,
-                    content, content_type, metadata, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ]], {
-                test_target_data_id,
-                test_dataflow_id,
-                nil,
-                "target_type",
-                "test_target",
-                "target_key",
-                "Target content value",
-                "text/plain",
-                json.encode({ target_meta = "Target metadata value" }),
-                now_ts
-            })
+            local target_insert = sql.builder.insert("dataflow_data")
+                :set_map({
+                    data_id = test_target_data_id,
+                    dataflow_id = test_dataflow_id,
+                    node_id = sql.as.null(),
+                    type = "target_type",
+                    discriminator = "test_target",
+                    key = "target_key",
+                    content = "Target content value",
+                    content_type = "text/plain",
+                    metadata = json.encode({ target_meta = "Target metadata value" }),
+                    created_at = now_ts
+                })
+
+            local target_exec = target_insert:run_with(tx)
+            local target_result, target_err = target_exec:exec()
 
             if target_err then
                 tx:rollback()
@@ -204,23 +211,22 @@ local function define_tests()
                     test_reference_data_id = item.data_id
                 end
 
-                local data_result, data_err = tx:execute([[
-                    INSERT INTO data (
-                        data_id, dataflow_id, node_id, type, discriminator, key,
-                        content, content_type, metadata, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ]], {
-                    item.data_id,
-                    test_dataflow_id,
-                    item.node_id,
-                    item.type,
-                    item.discriminator,
-                    item.key,
-                    item.content,
-                    item.content_type,
-                    item.metadata,
-                    now_ts
-                })
+                local data_insert = sql.builder.insert("dataflow_data")
+                    :set_map({
+                        data_id = item.data_id,
+                        dataflow_id = test_dataflow_id,
+                        node_id = item.node_id and item.node_id or sql.as.null(),
+                        type = item.type,
+                        discriminator = item.discriminator,
+                        key = item.key,
+                        content = item.content,
+                        content_type = item.content_type,
+                        metadata = item.metadata,
+                        created_at = now_ts
+                    })
+
+                local data_exec = data_insert:run_with(tx)
+                local data_result, data_err = data_exec:exec()
 
                 if data_err then
                     tx:rollback()
@@ -512,23 +518,23 @@ local function define_tests()
 
                 -- Insert dangling reference
                 local now_ts = time.now():format(time.RFC3339)
-                local result, err = db:execute([[
-                    INSERT INTO data (
-                        data_id, dataflow_id, node_id, type, discriminator, key,
-                        content, content_type, metadata, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ]], {
-                    hanging_ref_id,
-                    test_dataflow_id,
-                    nil,
-                    "reference",
-                    "default",
-                    non_existent_id,
-                    "Reference to nothing",
-                    "dataflow/reference",
-                    "{}",
-                    now_ts
-                })
+
+                local dangling_insert = sql.builder.insert("dataflow_data")
+                    :set_map({
+                        data_id = hanging_ref_id,
+                        dataflow_id = test_dataflow_id,
+                        node_id = sql.as.null(),
+                        type = "reference",
+                        discriminator = "default",
+                        key = non_existent_id,
+                        content = "Reference to nothing",
+                        content_type = "dataflow/reference",
+                        metadata = "{}",
+                        created_at = now_ts
+                    })
+
+                local dangling_exec = dangling_insert:run_with(db)
+                local result, err = dangling_exec:exec()
                 db:release()
 
                 if err then

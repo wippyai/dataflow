@@ -3,7 +3,6 @@ local uuid = require("uuid")
 local json = require("json")
 local time = require("time")
 local sql = require("sql")
-local security = require("security")
 
 local node_reader = require("node_reader")
 
@@ -31,19 +30,19 @@ local function define_tests()
             test_dataflow_id = uuid.v7()
             local test_actor_id = "test-actor-" .. uuid.v7()
 
-            local dataflow_result, wf_err = tx:execute([[
-                INSERT INTO dataflows (
-                    dataflow_id, actor_id, type, status, metadata, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-            ]], {
-                test_dataflow_id,
-                test_actor_id,
-                "node_reader_test",
-                "active",
-                "{}",
-                now_ts,
-                now_ts
-            })
+            local dataflow_insert = sql.builder.insert("dataflows")
+                :set_map({
+                    dataflow_id = test_dataflow_id,
+                    actor_id = test_actor_id,
+                    type = "node_reader_test",
+                    status = "active",
+                    metadata = "{}",
+                    created_at = now_ts,
+                    updated_at = now_ts
+                })
+
+            local dataflow_exec = dataflow_insert:run_with(tx)
+            local dataflow_result, wf_err = dataflow_exec:exec()
 
             if wf_err then
                 tx:rollback()
@@ -178,21 +177,21 @@ local function define_tests()
                     end
                 end
 
-                local node_result, node_err = tx:execute([[
-                    INSERT INTO dataflow_nodes (
-                        node_id, dataflow_id, parent_node_id, type, status, config, metadata, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ]], {
-                    node_id,
-                    test_dataflow_id,
-                    parent_id,
-                    node_spec.type,
-                    node_spec.status,
-                    config_json,
-                    metadata_json,
-                    now_ts,
-                    now_ts
-                })
+                local node_insert = sql.builder.insert("dataflow_nodes")
+                    :set_map({
+                        node_id = node_id,
+                        dataflow_id = test_dataflow_id,
+                        parent_node_id = parent_id and parent_id or sql.as.null(),
+                        type = node_spec.type,
+                        status = node_spec.status,
+                        config = config_json,
+                        metadata = metadata_json,
+                        created_at = now_ts,
+                        updated_at = now_ts
+                    })
+
+                local node_exec = node_insert:run_with(tx)
+                local node_result, node_err = node_exec:exec()
 
                 if node_err then
                     tx:rollback()
@@ -218,7 +217,12 @@ local function define_tests()
                 print("ERROR: Failed to begin cleanup transaction"); db:release(); return
             end
 
-            local del_result, del_err = tx:execute("DELETE FROM dataflows WHERE dataflow_id = ?", { test_dataflow_id })
+            local delete_query = sql.builder.delete("dataflows")
+                :where("dataflow_id = ?", test_dataflow_id)
+
+            local delete_exec = delete_query:run_with(tx)
+            local del_result, del_err = delete_exec:exec()
+
             if del_err then
                 tx:rollback()
                 db:release()
