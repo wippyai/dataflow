@@ -2,7 +2,7 @@ local sql = require("sql")
 local time = require("time")
 local uuid = require("uuid")
 local json = require("json")
-local consts = require("consts")
+local consts = require("dataflow_consts")
 
 -- Use shared constants from consts
 local constants = {
