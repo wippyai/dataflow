@@ -2,7 +2,7 @@ local uuid = require("uuid")
 local time = require("time")
 local security = require("security")
 local funcs = require("funcs")
-local consts = require("consts")
+local consts = require("dataflow_consts")
 
 -- Get default dependencies (lazy loaded)
 local function get_default_deps()
