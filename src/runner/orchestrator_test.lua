@@ -35,11 +35,16 @@ type MockProcess = {
     event: { [string]: string },
 }
 
+type MockCommit = {
+    get_pending_commits: (dataflow_id: string) -> ({ string }?, string?)
+}
+
 local function define_tests()
     describe("Orchestrator", function()
         local mock_workflow_state = nil :: MockWorkflowState
         local mock_scheduler = nil :: MockScheduler
         local mock_process = nil :: MockProcess
+        local mock_commit = nil :: MockCommit
 
         before_each(function()
             mock_workflow_state = {
@@ -156,6 +161,12 @@ local function define_tests()
                 },
             }
 
+            mock_commit = {
+                get_pending_commits = function(_dataflow_id: string): ({ string }?, string?)
+                    return {}, nil
+                end
+            }
+
             local mock_channel = {
                 select = function(_cases: any): { ok: boolean }
                     return { ok = false }
@@ -171,6 +182,7 @@ local function define_tests()
             }
             orchestrator.scheduler = mock_scheduler
             orchestrator.process = mock_process
+            orchestrator.commit = mock_commit
             orchestrator.funcs = {
                 new = function(): any
                     return {
@@ -224,6 +236,92 @@ local function define_tests()
 
                 test.is_false(result.success)
                 test.contains(result.error, "Failed to load workflow state")
+            end)
+
+            it("should process startup pending commits before scheduling", function()
+                local commits_received = nil :: { string }?
+                local scheduler_called = false
+
+                mock_commit.get_pending_commits = function(_dataflow_id: string): ({ string }?, string?)
+                    return { "commit-1", "commit-2" }, nil
+                end
+
+                mock_workflow_state.process_commits = function(_self: MockWorkflowState, commit_ids: any): ({ changes_made: boolean }?, string?)
+                    commits_received = commit_ids
+                    return { changes_made = true }, nil
+                end
+
+                mock_scheduler.find_next_work = function(_snapshot: any): { type: string, payload: any }
+                    scheduler_called = true
+                    return {
+                        type = "complete_workflow",
+                        payload = { success = true, message = "Backlog drained" },
+                    }
+                end
+
+                local result = orchestrator.run({ dataflow_id = "test-workflow" })
+
+                test.is_true(result.success)
+                test.is_true(scheduler_called)
+                test.not_nil(commits_received)
+                local processed = test.not_nil(commits_received)
+                test.eq(#processed, 2)
+                test.eq(processed[1], "commit-1")
+                test.eq(processed[2], "commit-2")
+            end)
+
+            it("should process startup commits before empty-workflow shortcut", function()
+                local backlog_applied = false
+                local scheduler_called = false
+
+                mock_workflow_state.get_nodes = function(): { [string]: any }
+                    if backlog_applied then
+                        return {
+                            ["node-from-commit"] = {
+                                type = "test_node",
+                                status = consts.STATUS.PENDING
+                            }
+                        }
+                    end
+                    return {}
+                end
+
+                mock_commit.get_pending_commits = function(_dataflow_id: string): ({ string }?, string?)
+                    return { "commit-1" }, nil
+                end
+
+                mock_workflow_state.process_commits = function(_self: MockWorkflowState, _commit_ids: any): ({ changes_made: boolean }?, string?)
+                    backlog_applied = true
+                    return { changes_made = true }, nil
+                end
+
+                mock_scheduler.find_next_work = function(_snapshot: any): { type: string, payload: any }
+                    scheduler_called = true
+                    return {
+                        type = "complete_workflow",
+                        payload = { success = true, message = "Executed after backlog" },
+                    }
+                end
+
+                local result = orchestrator.run({ dataflow_id = "test-workflow" })
+
+                test.is_true(result.success)
+                test.is_true(backlog_applied)
+                test.is_true(scheduler_called)
+                local output = test.not_nil(result.output)
+                test.eq(output.message, "Executed after backlog")
+            end)
+
+            it("should fail when startup pending commits cannot be loaded", function()
+                mock_commit.get_pending_commits = function(_dataflow_id: string): ({ string }?, string?)
+                    return nil, "database unavailable"
+                end
+
+                local result = orchestrator.run({ dataflow_id = "test-workflow" })
+
+                test.is_false(result.success)
+                test.contains(result.error, "Failed to load pending commits")
+                test.contains(result.error, "database unavailable")
             end)
 
             it("should handle empty workflow", function()

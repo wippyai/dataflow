@@ -6,7 +6,8 @@ local orchestrator = {
     workflow_state = require("workflow_state"),
     scheduler = require("scheduler"),
     process = process,
-    funcs = require("funcs")
+    funcs = require("funcs"),
+    commit = require("commit")
 }
 
 ---Execute a single node
@@ -92,6 +93,37 @@ local function process_pending_commits(state)
 
     for _, commit_id in ipairs(commits_to_process) do
         table.insert(state.processed_commit_ids, commit_id)
+    end
+
+    return true
+end
+
+---Load pending commits from durable storage for crash/restart recovery
+---@param state table Orchestrator state
+---@return boolean success Whether loading succeeded
+local function load_startup_pending_commits(state)
+    local pending_commit_ids, pending_err = orchestrator.commit.get_pending_commits(state.dataflow_id)
+    if pending_err then
+        local failure_message = "Failed to load pending commits: " .. pending_err
+        state.workflow_state:queue_commands({
+            type = consts.COMMAND_TYPES.UPDATE_WORKFLOW,
+            payload = {
+                status = consts.STATUS.COMPLETED_FAILURE,
+                metadata = { error = failure_message }
+            }
+        })
+        local _persist_result, _persist_err = state.workflow_state:persist()
+        state.exit_result = {
+            success = false,
+            dataflow_id = state.dataflow_id,
+            error = failure_message
+        }
+        state.running = false
+        return false
+    end
+
+    for _, commit_id in ipairs(pending_commit_ids or {}) do
+        table.insert(state.incoming_commit_queue, commit_id)
     end
 
     return true
@@ -555,7 +587,27 @@ local function run(args)
         }
     end
 
-    -- Check for empty workflow
+    -- Recover commit backlog that may have accumulated while orchestrator was offline.
+    -- This must happen before empty-workflow detection because commits can create nodes.
+    local backlog_loaded = load_startup_pending_commits(state)
+    if not backlog_loaded then
+        return state.exit_result or {
+            success = false,
+            dataflow_id = dataflow_id,
+            error = "Failed to recover pending commits"
+        }
+    end
+
+    local pending_processed = process_pending_commits(state)
+    if not pending_processed then
+        return state.exit_result or {
+            success = false,
+            dataflow_id = dataflow_id,
+            error = "Failed to process pending commits"
+        }
+    end
+
+    -- Check for empty workflow after applying pending commits
     local nodes = workflow_state:get_nodes()
     local node_count = 0
     for _ in pairs(nodes) do

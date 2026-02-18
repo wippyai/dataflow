@@ -24,6 +24,7 @@ entries:
       - uuid
       - funcs
     imports:
+      commit: userspace.dataflow.persist:commit
       consts: userspace.dataflow:consts
       scheduler: userspace.dataflow.runner:scheduler
       workflow_state: userspace.dataflow.runner:workflow_state
