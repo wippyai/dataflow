@@ -14,15 +14,15 @@ local function define_tests()
 
                 -- Create client
                 local c, err = client.new()
-                expect(err).to_be_nil()
-                expect(c).not_to_be_nil()
-                print("✓ Client created successfully")
+                test.is_nil(err)
+                test.not_nil(c)
+                print("Client created successfully")
 
                 -- Generate IDs
                 local node_id = uuid.v7()
                 local input_data_id = uuid.v7()
                 local node_input_id = uuid.v7()
-                print("✓ Generated IDs:")
+                print("Generated IDs:")
                 print("  node_id:", node_id)
                 print("  input_data_id:", input_data_id)
                 print("  node_input_id:", node_input_id)
@@ -33,7 +33,7 @@ local function define_tests()
                     delay_ms = 50,
                     should_fail = false
                 }
-                print("✓ Test input prepared:", json.encode(test_input))
+                print("Test input prepared:", json.encode(test_input))
 
                 -- Create workflow with single func node
                 local workflow_commands = {
@@ -90,11 +90,11 @@ local function define_tests()
                         }
                     }
                 }
-                print("✓ Workflow commands prepared (", #workflow_commands, "commands)")
+                print("Workflow commands prepared (", #workflow_commands, "commands)")
 
                 -- Create workflow
                 print("=== CREATING WORKFLOW ===")
-                local dataflow_id, create_err = c:create_workflow(workflow_commands, {
+                local dataflow_id, create_err = (c :: any):create_workflow(workflow_commands, {
                     type = "integration_test",
                     metadata = {
                         title = "Single Node Happy Path Test",
@@ -103,94 +103,94 @@ local function define_tests()
                     }
                 })
 
-                expect(create_err).to_be_nil()
-                expect(dataflow_id).not_to_be_nil()
-                expect(type(dataflow_id)).to_equal("string")
-                print("✓ Workflow created successfully")
+                test.is_nil(create_err)
+                test.not_nil(dataflow_id)
+                test.eq(type(dataflow_id), "string")
+                print("Workflow created successfully")
                 print("  dataflow_id:", dataflow_id)
 
                 -- Verify workflow was created properly
                 print("=== VERIFYING WORKFLOW CREATION ===")
-                local status_before, status_err = c:get_status(dataflow_id)
-                expect(status_err).to_be_nil()
-                print("✓ Workflow status before execution:", status_before)
+                local status_before, status_err = (c :: any):get_status(dataflow_id :: string)
+                test.is_nil(status_err)
+                print("Workflow status before execution:", status_before)
 
                 -- Check that input data was created
-                local input_data_created = data_reader.with_dataflow(dataflow_id)
+                local input_data_created = (data_reader.with_dataflow(dataflow_id :: string) :: any)
                     :with_data_types(consts.DATA_TYPE.WORKFLOW_INPUT)
                     :all()
-                print("✓ Workflow input data created:", #input_data_created)
+                print("Workflow input data created:", #input_data_created)
 
                 -- Check that node input references were created
-                local node_inputs_created = data_reader.with_dataflow(dataflow_id)
+                local node_inputs_created = (data_reader.with_dataflow(dataflow_id :: string) :: any)
                     :with_data_types(consts.DATA_TYPE.NODE_INPUT)
                     :all()
-                print("✓ Node input references created:", #node_inputs_created)
+                print("Node input references created:", #node_inputs_created)
 
                 -- Execute workflow
                 print("=== EXECUTING WORKFLOW ===")
-                local result, exec_err = c:execute(dataflow_id)
+                local result, exec_err = (c :: any):execute(dataflow_id :: string)
 
                 print("Execution result:", result and json.encode(result) or "nil")
                 print("Execution error:", exec_err or "nil")
 
-                expect(exec_err).to_be_nil()
-                expect(result).not_to_be_nil()
-                expect(result.success).to_be_true()
-                expect(result.dataflow_id).to_equal(dataflow_id)
-                print("✓ Workflow executed successfully")
+                test.is_nil(exec_err)
+                test.not_nil(result)
+                test.is_true(result.success)
+                test.eq(result.dataflow_id, dataflow_id)
+                print("Workflow executed successfully")
                 print("  result.success:", result.success)
                 print("  result.dataflow_id:", result.dataflow_id)
 
                 -- Check final workflow status
-                local final_status, final_status_err = c:get_status(dataflow_id)
-                expect(final_status_err).to_be_nil()
-                print("✓ Final workflow status:", final_status)
+                local final_status, final_status_err = (c :: any):get_status(dataflow_id :: string)
+                test.is_nil(final_status_err)
+                print("Final workflow status:", final_status)
 
                 -- Check workflow output was created
                 print("=== VERIFYING WORKFLOW OUTPUT ===")
-                local output_data = data_reader.with_dataflow(dataflow_id)
+                local output_data = (data_reader.with_dataflow(dataflow_id :: string) :: any)
                     :with_data_types(consts.DATA_TYPE.WORKFLOW_OUTPUT)
                     :fetch_options({ replace_references = true })
                     :one()
 
-                expect(output_data).not_to_be_nil()
-                expect(output_data.content).not_to_be_nil()
-                print("✓ Workflow output exists")
+                test.not_nil(output_data)
+                test.not_nil(output_data.content)
+                print("Workflow output exists")
                 print("  Content type:", output_data.content_type)
 
                 -- Verify output content
                 local output_content = output_data.content
                 if type(output_content) == "string" then
-                    local decoded, decode_err = json.decode(output_content)
-                    if not decode_err then
+                    local decoded, _decode_err = json.decode(output_content :: string)
+                    if not _decode_err then
                         output_content = decoded
                     end
                 end
 
-                print("✓ Parsed output content:", json.encode(output_content))
+                print("Parsed output content:", json.encode(output_content))
 
-                expect(output_content.message).to_equal("Integration test message")
-                expect(output_content.processed_by).to_equal("test_function")
-                expect(output_content.success).to_be_true()
-                expect(output_content.delay_applied).to_equal(50)
-                expect(output_content.input_echo).not_to_be_nil()
-                expect(output_content.input_echo.message).to_equal("Integration test message")
-                expect(output_content.timestamp).not_to_be_nil()
-                print("✓ Output content verification passed")
+                test.eq(output_content.message, "Integration test message")
+                test.eq(output_content.processed_by, "test_function")
+                test.is_true(output_content.success)
+                test.eq(output_content.delay_applied, 50)
+                test.not_nil(output_content.input_echo)
+                test.eq(output_content.input_echo.message, "Integration test message")
+                test.not_nil(output_content.timestamp)
+                print("Output content verification passed")
 
                 -- Verify node completed successfully
                 print("=== VERIFYING NODE COMPLETION ===")
-                local node_data = data_reader.with_dataflow(dataflow_id)
+                local node_data = (data_reader.with_dataflow(dataflow_id :: string) :: any)
                     :with_nodes(node_id)
                     :with_data_types(consts.DATA_TYPE.NODE_RESULT)
                     :one()
 
                 if node_data then
-                    expect(node_data.discriminator).to_equal("result.success")
-                    print("✓ Node completed with success discriminator:", node_data.discriminator)
+                    test.eq(node_data.discriminator, "result.success")
+                    print("Node completed with success discriminator:", node_data.discriminator)
                 else
-                    print("ℹ No node result data found (may be expected)")
+                    print("No node result data found (may be expected)")
                 end
 
                 print("=== INTEGRATION TEST COMPLETE ===")
@@ -200,7 +200,7 @@ local function define_tests()
                 print("=== STRING INPUT TEST START ===")
 
                 local c, err = client.new()
-                expect(err).to_be_nil()
+                test.is_nil(err)
 
                 local node_id = uuid.v7()
                 local input_data_id = uuid.v7()
@@ -253,35 +253,35 @@ local function define_tests()
                     }
                 }
 
-                local dataflow_id, create_err = c:create_workflow(workflow_commands, {
+                local dataflow_id, create_err = (c :: any):create_workflow(workflow_commands, {
                     metadata = {
                         title = "String Input Test Workflow"
                     }
                 })
-                expect(create_err).to_be_nil()
+                test.is_nil(create_err)
 
-                local result, exec_err = c:execute(dataflow_id)
-                expect(exec_err).to_be_nil()
-                expect(result.success).to_be_true()
+                local result, exec_err = (c :: any):execute(dataflow_id :: string)
+                test.is_nil(exec_err)
+                test.is_true(result.success)
 
                 -- Verify output content has string input echoed
-                local output_data = data_reader.with_dataflow(dataflow_id)
+                local output_data = (data_reader.with_dataflow(dataflow_id :: string) :: any)
                     :with_data_types(consts.DATA_TYPE.WORKFLOW_OUTPUT)
                     :fetch_options({ replace_references = true })
                     :one()
 
-                expect(output_data).not_to_be_nil()
+                test.not_nil(output_data)
                 local output_content = output_data.content
                 if type(output_content) == "string" then
-                    local decoded, decode_err = json.decode(output_content)
-                    if not decode_err then
+                    local decoded, _decode_err = json.decode(output_content :: string)
+                    if not _decode_err then
                         output_content = decoded
                     end
                 end
 
-                expect(output_content.message).to_equal("Simple string message")
-                expect(output_content.input_echo).to_equal("Simple string message")
-                print("✓ String input test passed")
+                test.eq(output_content.message, "Simple string message")
+                test.eq(output_content.input_echo, "Simple string message")
+                print("String input test passed")
             end)
         end)
 
@@ -290,7 +290,7 @@ local function define_tests()
                 print("=== FUNCTION FAILURE TEST START ===")
 
                 local c, err = client.new()
-                expect(err).to_be_nil()
+                test.is_nil(err)
 
                 local node_id = uuid.v7()
                 local input_data_id = uuid.v7()
@@ -346,27 +346,27 @@ local function define_tests()
                     }
                 }
 
-                local dataflow_id, create_err = c:create_workflow(workflow_commands, {
+                local dataflow_id, create_err = (c :: any):create_workflow(workflow_commands, {
                     metadata = {
                         title = "Function Failure Test Workflow"
                     }
                 })
-                expect(create_err).to_be_nil()
+                test.is_nil(create_err)
 
-                local result, exec_err = c:execute(dataflow_id)
-                expect(exec_err).to_be_nil()
+                local result, exec_err = (c :: any):execute(dataflow_id :: string)
+                test.is_nil(exec_err)
 
                 -- Function => node failure => failed workflow
-                expect(result.success).to_be_false()
-                expect(result.error).to_contain("Intentional semantic failure")
-                print("✓ Function failure test passed")
+                test.is_false(result.success)
+                test.contains(result.error, "Intentional semantic failure")
+                print("Function failure test passed")
             end)
 
             it("should fail when function does not exist", function()
                 print("=== MISSING FUNCTION TEST START ===")
 
                 local c, err = client.new()
-                expect(err).to_be_nil()
+                test.is_nil(err)
 
                 local node_id = uuid.v7()
                 local input_data_id = uuid.v7()
@@ -418,31 +418,31 @@ local function define_tests()
                     }
                 }
 
-                local dataflow_id, create_err = c:create_workflow(workflow_commands, {
+                local dataflow_id, create_err = (c :: any):create_workflow(workflow_commands, {
                     metadata = {
                         title = "Missing Function Test Workflow"
                     }
                 })
-                expect(create_err).to_be_nil()
+                test.is_nil(create_err)
 
-                local result, exec_err = c:execute(dataflow_id)
-                expect(exec_err).to_be_nil()
+                local result, exec_err = (c :: any):execute(dataflow_id :: string)
+                test.is_nil(exec_err)
 
                 -- Should fail at workflow level because func node fails
-                expect(result.success).to_be_false()
-                expect(result.error).to_contain("failed")
+                test.is_false(result.success)
+                test.contains(result.error, "failed")
 
                 -- Check that node was marked as failed
-                local node_data = data_reader.with_dataflow(dataflow_id)
+                local node_data = (data_reader.with_dataflow(dataflow_id :: string) :: any)
                     :with_nodes(node_id)
                     :with_data_types(consts.DATA_TYPE.NODE_RESULT)
                     :one()
 
                 if node_data then
-                    expect(node_data.discriminator).to_equal("result.error")
+                    test.eq(node_data.discriminator, "result.error")
                 end
 
-                print("✓ Missing function test passed")
+                print("Missing function test passed")
             end)
         end)
 
@@ -451,7 +451,7 @@ local function define_tests()
                 print("=== MISSING FUNC_ID TEST START ===")
 
                 local c, err = client.new()
-                expect(err).to_be_nil()
+                test.is_nil(err)
 
                 local node_id = uuid.v7()
                 local input_data_id = uuid.v7()
@@ -503,29 +503,29 @@ local function define_tests()
                     }
                 }
 
-                local dataflow_id, create_err = c:create_workflow(workflow_commands, {
+                local dataflow_id, create_err = (c :: any):create_workflow(workflow_commands, {
                     metadata = {
                         title = "Missing Func ID Test Workflow"
                     }
                 })
-                expect(create_err).to_be_nil()
+                test.is_nil(create_err)
 
-                local result, exec_err = c:execute(dataflow_id)
-                expect(exec_err).to_be_nil()
+                local result, exec_err = (c :: any):execute(dataflow_id :: string)
+                test.is_nil(exec_err)
 
                 -- Should fail at workflow level
-                expect(result.success).to_be_false()
-                expect(result.error).to_contain("failed")
-                expect(result.error).to_contain("Function ID not specified")
+                test.is_false(result.success)
+                test.contains(result.error, "failed")
+                test.contains(result.error, "Function ID not specified")
 
-                print("✓ Missing func_id test passed")
+                print("Missing func_id test passed")
             end)
 
             it("should fail when func_id is empty string", function()
                 print("=== EMPTY FUNC_ID TEST START ===")
 
                 local c, err = client.new()
-                expect(err).to_be_nil()
+                test.is_nil(err)
 
                 local node_id = uuid.v7()
                 local input_data_id = uuid.v7()
@@ -577,29 +577,29 @@ local function define_tests()
                     }
                 }
 
-                local dataflow_id, create_err = c:create_workflow(workflow_commands, {
+                local dataflow_id, create_err = (c :: any):create_workflow(workflow_commands, {
                     metadata = {
                         title = "Empty Func ID Test Workflow"
                     }
                 })
-                expect(create_err).to_be_nil()
+                test.is_nil(create_err)
 
-                local result, exec_err = c:execute(dataflow_id)
-                expect(exec_err).to_be_nil()
+                local result, exec_err = (c :: any):execute(dataflow_id :: string)
+                test.is_nil(exec_err)
 
                 -- Should fail at workflow level
-                expect(result.success).to_be_false()
-                expect(result.error).to_contain("failed")
-                expect(result.error).to_contain("Function ID not specified")
+                test.is_false(result.success)
+                test.contains(result.error, "failed")
+                test.contains(result.error, "Function ID not specified")
 
-                print("✓ Empty func_id test passed")
+                print("Empty func_id test passed")
             end)
 
             it("should fail when node has no input data", function()
                 print("=== NO INPUT DATA TEST START ===")
 
                 local c, err = client.new()
-                expect(err).to_be_nil()
+                test.is_nil(err)
 
                 local node_id = uuid.v7()
 
@@ -628,21 +628,21 @@ local function define_tests()
                     -- No input data created!
                 }
 
-                local dataflow_id, create_err = c:create_workflow(workflow_commands, {
+                local dataflow_id, create_err = (c :: any):create_workflow(workflow_commands, {
                     metadata = {
                         title = "No Input Data Test Workflow"
                     }
                 })
-                expect(create_err).to_be_nil()
+                test.is_nil(create_err)
 
-                local result, exec_err = c:execute(dataflow_id)
-                expect(exec_err).to_be_nil()
+                local result, exec_err = (c :: any):execute(dataflow_id :: string)
+                test.is_nil(exec_err)
 
                 -- Should fail at workflow level
-                expect(result.success).to_be_false()
-                expect(result.error).to_contain("No input data provided")
+                test.is_false(result.success)
+                test.contains(result.error, "No input data provided")
 
-                print("✓ No input data test passed")
+                print("No input data test passed")
             end)
         end)
 
@@ -651,7 +651,7 @@ local function define_tests()
                 print("=== NO DATA TARGETS TEST START ===")
 
                 local c, err = client.new()
-                expect(err).to_be_nil()
+                test.is_nil(err)
 
                 local node_id = uuid.v7()
                 local input_data_id = uuid.v7()
@@ -697,26 +697,26 @@ local function define_tests()
                     }
                 }
 
-                local dataflow_id, create_err = c:create_workflow(workflow_commands, {
+                local dataflow_id, create_err = (c :: any):create_workflow(workflow_commands, {
                     metadata = {
                         title = "No Data Targets Test Workflow"
                     }
                 })
-                expect(create_err).to_be_nil()
+                test.is_nil(create_err)
 
-                local result, exec_err = c:execute(dataflow_id)
-                expect(exec_err).to_be_nil()
+                local result, exec_err = (c :: any):execute(dataflow_id :: string)
+                test.is_nil(exec_err)
 
                 -- Should succeed even without data targets
-                expect(result.success).to_be_false()
-                expect(result.error).to_contain("Workflow completed without producing outpu")
+                test.is_false(result.success)
+                test.contains(result.error, "Workflow completed without producing outpu")
             end)
 
             it("should handle multiple data_targets", function()
                 print("=== MULTIPLE DATA TARGETS TEST START ===")
 
                 local c, err = client.new()
-                expect(err).to_be_nil()
+                test.is_nil(err)
 
                 local node_id = uuid.v7()
                 local input_data_id = uuid.v7()
@@ -773,34 +773,34 @@ local function define_tests()
                     }
                 }
 
-                local dataflow_id, create_err = c:create_workflow(workflow_commands, {
+                local dataflow_id, create_err = (c :: any):create_workflow(workflow_commands, {
                     metadata = {
                         title = "Multiple Data Targets Test Workflow"
                     }
                 })
-                expect(create_err).to_be_nil()
+                test.is_nil(create_err)
 
-                local result, exec_err = c:execute(dataflow_id)
-                expect(exec_err).to_be_nil()
+                local result, exec_err = (c :: any):execute(dataflow_id :: string)
+                test.is_nil(exec_err)
 
-                expect(result.success).to_be_true()
+                test.is_true(result.success)
 
                 -- Should create multiple workflow outputs
-                local output_data = data_reader.with_dataflow(dataflow_id)
+                local output_data = (data_reader.with_dataflow(dataflow_id :: string) :: any)
                     :with_data_types(consts.DATA_TYPE.WORKFLOW_OUTPUT)
                     :all()
 
-                expect(#output_data).to_equal(2)
+                test.eq(#output_data, 2)
 
                 -- Both should have the same content but different keys
                 local keys_found = {}
                 for _, output in ipairs(output_data) do
                     keys_found[output.key] = true
                 end
-                expect(keys_found["result"]).to_be_true()
-                expect(keys_found["backup"]).to_be_true()
+                test.is_true(keys_found["result"])
+                test.is_true(keys_found["backup"])
 
-                print("✓ Multiple data targets test passed")
+                print("Multiple data targets test passed")
             end)
         end)
 
@@ -809,7 +809,7 @@ local function define_tests()
                 print("=== DATA VERIFICATION TEST START ===")
 
                 local c, err = client.new()
-                expect(err).to_be_nil()
+                test.is_nil(err)
 
                 local node_id = uuid.v7()
                 local input_data_id = uuid.v7()
@@ -861,19 +861,19 @@ local function define_tests()
                     }
                 }
 
-                local dataflow_id, create_err = c:create_workflow(workflow_commands, {
+                local dataflow_id, create_err = (c :: any):create_workflow(workflow_commands, {
                     metadata = {
                         title = "Data Verification Test Workflow"
                     }
                 })
-                expect(create_err).to_be_nil()
+                test.is_nil(create_err)
 
-                local result, exec_err = c:execute(dataflow_id)
-                expect(exec_err).to_be_nil()
-                expect(result.success).to_be_true()
+                local result, exec_err = (c :: any):execute(dataflow_id :: string)
+                test.is_nil(exec_err)
+                test.is_true(result.success)
 
                 -- Verify all expected data types exist
-                local all_data = data_reader.with_dataflow(dataflow_id)
+                local all_data = (data_reader.with_dataflow(dataflow_id :: string) :: any)
                     :all()
 
                 local data_by_type = {}
@@ -882,7 +882,7 @@ local function define_tests()
                     if not data_by_type[data_type] then
                         data_by_type[data_type] = 0
                     end
-                    data_by_type[data_type] = data_by_type[data_type] + 1
+                    data_by_type[data_type] = (data_by_type[data_type] :: number) + 1
                 end
 
                 print("Data types found:")
@@ -891,12 +891,12 @@ local function define_tests()
                 end
 
                 -- Should have at least these data types
-                expect(data_by_type[consts.DATA_TYPE.WORKFLOW_INPUT]).to_be_greater_than(0)
-                expect(data_by_type[consts.DATA_TYPE.NODE_INPUT]).to_be_greater_than(0)
-                expect(data_by_type[consts.DATA_TYPE.WORKFLOW_OUTPUT]).to_be_greater_than(0)
-                expect(data_by_type[consts.DATA_TYPE.NODE_RESULT]).to_be_greater_than(0)
+                test.gt(data_by_type[consts.DATA_TYPE.WORKFLOW_INPUT], 0)
+                test.gt(data_by_type[consts.DATA_TYPE.NODE_INPUT], 0)
+                test.gt(data_by_type[consts.DATA_TYPE.WORKFLOW_OUTPUT], 0)
+                test.gt(data_by_type[consts.DATA_TYPE.NODE_RESULT], 0)
 
-                print("✓ Data verification test passed")
+                print("Data verification test passed")
             end)
         end)
     end)
@@ -907,7 +907,7 @@ local function define_tests()
                 print("=== SIMPLE CHAIN TEST START ===")
 
                 local c, err = client.new()
-                expect(err).to_be_nil()
+                test.is_nil(err)
 
                 local node_a_id = uuid.v7()
                 local node_b_id = uuid.v7()
@@ -919,7 +919,7 @@ local function define_tests()
                     value = 42
                 }
 
-                print("✓ Generated IDs:")
+                print("Generated IDs:")
                 print("  node_a_id:", node_a_id)
                 print("  node_b_id:", node_b_id)
 
@@ -990,83 +990,83 @@ local function define_tests()
                     }
                 }
 
-                print("✓ Workflow commands prepared (", #workflow_commands, "commands)")
+                print("Workflow commands prepared (", #workflow_commands, "commands)")
 
-                local dataflow_id, create_err = c:create_workflow(workflow_commands, {
+                local dataflow_id, create_err = (c :: any):create_workflow(workflow_commands, {
                     metadata = {
                         title = "Simple Chain Test Workflow"
                     }
                 })
-                expect(create_err).to_be_nil()
-                print("✓ Chain workflow created:", dataflow_id)
+                test.is_nil(create_err)
+                print("Chain workflow created:", dataflow_id)
 
-                local result, exec_err = c:execute(dataflow_id)
-                expect(exec_err).to_be_nil()
-                expect(result.success).to_be_true()
-                print("✓ Chain workflow executed successfully")
+                local result, exec_err = (c :: any):execute(dataflow_id :: string)
+                test.is_nil(exec_err)
+                test.is_true(result.success)
+                print("Chain workflow executed successfully")
 
                 -- Verify both nodes executed
-                local node_a_results = data_reader.with_dataflow(dataflow_id)
+                local node_a_results = (data_reader.with_dataflow(dataflow_id :: string) :: any)
                     :with_nodes(node_a_id)
                     :with_data_types(consts.DATA_TYPE.NODE_RESULT)
                     :all()
-                expect(#node_a_results).to_be_greater_than(0)
-                print("✓ Node A executed and completed")
+                test.gt(#node_a_results, 0)
+                print("Node A executed and completed")
 
-                local node_b_results = data_reader.with_dataflow(dataflow_id)
+                local node_b_results = (data_reader.with_dataflow(dataflow_id :: string) :: any)
                     :with_nodes(node_b_id)
                     :with_data_types(consts.DATA_TYPE.NODE_RESULT)
                     :all()
-                expect(#node_b_results).to_be_greater_than(0)
-                print("✓ Node B executed and completed")
+                test.gt(#node_b_results, 0)
+                print("Node B executed and completed")
 
                 -- Verify Node B got Node A's output as input
-                local node_b_inputs = data_reader.with_dataflow(dataflow_id)
+                local node_b_inputs = (data_reader.with_dataflow(dataflow_id :: string) :: any)
                     :with_nodes(node_b_id)
                     :with_data_types(consts.DATA_TYPE.NODE_INPUT)
                     :fetch_options({ replace_references = true })
                     :all()
 
-                expect(#node_b_inputs).to_be_greater_than(0)
+                test.gt(#node_b_inputs, 0)
                 local b_input_content = node_b_inputs[1].content
                 if type(b_input_content) == "string" then
-                    local decoded, decode_err = json.decode(b_input_content)
-                    if not decode_err then
+                    local decoded, _decode_err = json.decode(b_input_content :: string)
+                    if not _decode_err then
                         b_input_content = decoded
                     end
                 end
 
-                expect(b_input_content.message).to_equal("Chain input")
-                expect(b_input_content.processed_by).to_equal("test_function")
-                print("✓ Node B received Node A's processed output")
+                test.eq(b_input_content.message, "Chain input")
+                test.eq(b_input_content.processed_by, "test_function")
+                print("Node B received Node A's processed output")
 
                 -- Verify final workflow output exists and contains Node B's processing
-                local workflow_outputs = data_reader.with_dataflow(dataflow_id)
+                local workflow_outputs = (data_reader.with_dataflow(dataflow_id :: string) :: any)
                     :with_data_types(consts.DATA_TYPE.WORKFLOW_OUTPUT)
                     :with_data_keys("final")
                     :fetch_options({ replace_references = true })
                     :all()
 
-                expect(#workflow_outputs).to_be_greater_than(0)
-                print("✓ Workflow output created")
+                test.gt(#workflow_outputs, 0)
+                print("Workflow output created")
 
                 local final_output = workflow_outputs[1].content
                 if type(final_output) == "string" then
-                    local decoded, decode_err = json.decode(final_output)
-                    if not decode_err then
+                    local decoded, _decode_err = json.decode(final_output :: string)
+                    if not _decode_err then
                         final_output = decoded
                     end
                 end
 
                 -- Verify end-to-end data transformation
-                expect(final_output.message).to_equal("Chain input")                   -- Original input preserved
-                expect(final_output.processed_by).to_equal("test_function")            -- Node B processed it
-                expect(final_output.input_echo).not_to_be_nil()                        -- Node B got Node A's output
-                expect(final_output.input_echo.processed_by).to_equal("test_function") -- Node A processed original
-                expect(final_output.success).to_be_true()                              -- Node B succeeded
+                test.eq(final_output.message, "Chain input")                   -- Original input preserved
+                test.eq(final_output.processed_by, "test_function")            -- Node B processed it
+                test.not_nil(final_output.input_echo)                          -- Node B got Node A's output
+                test.eq(final_output.input_echo.processed_by, "test_function") -- Node A processed original
+                test.is_true(final_output.success)                             -- Node B succeeded
 
-                print("✓ End-to-end data flow validated:")
-                print("  Original input → Node A → Node B → Workflow output")
+                print("End-to-end data flow validated:")
+                print("  Original input -> Node A -> Node B -> Workflow output")
                 print("  Data transformations preserved through chain")
                 print("=== SIMPLE CHAIN TEST COMPLETE ===")
             end)
@@ -1077,7 +1077,7 @@ local function define_tests()
                 print("=== ERROR HANDLING CHAIN TEST START ===")
 
                 local c, err = client.new()
-                expect(err).to_be_nil()
+                test.is_nil(err)
 
                 local node_a_id = uuid.v7()
                 local node_b_id = uuid.v7()
@@ -1089,7 +1089,7 @@ local function define_tests()
                     should_fail = true -- Node A will fail
                 }
 
-                print("✓ Generated IDs:")
+                print("Generated IDs:")
                 print("  node_a_id:", node_a_id, "(will fail)")
                 print("  node_b_id:", node_b_id, "(error handler)")
 
@@ -1166,106 +1166,105 @@ local function define_tests()
                     }
                 }
 
-                print("✓ Error handling workflow commands prepared (", #workflow_commands, "commands)")
+                print("Error handling workflow commands prepared (", #workflow_commands, "commands)")
 
-                local dataflow_id, create_err = c:create_workflow(workflow_commands, {
+                local dataflow_id, create_err = (c :: any):create_workflow(workflow_commands, {
                     metadata = {
                         title = "Error Handling Chain Test Workflow"
                     }
                 })
-                expect(create_err).to_be_nil()
-                print("✓ Error handling workflow created:", dataflow_id)
+                test.is_nil(create_err)
+                print("Error handling workflow created:", dataflow_id)
 
-                local result, exec_err = c:execute(dataflow_id)
-                expect(exec_err).to_be_nil()
+                local result, exec_err = (c :: any):execute(dataflow_id :: string)
+                test.is_nil(exec_err)
 
                 -- Key expectation: workflow should FAIL because Node A semantic failure fails the workflow
                 -- Even though Node B might process the error, Node A's semantic failure propagates
-                expect(result.success).to_be_true()
+                test.is_true(result.success)
 
-                -- VALIDATE specific failure details
-                expect(result.dataflow_id).to_equal(dataflow_id)
-                print("✓ Workflow failed with correct error details")
+                -- Validate specific failure details
+                test.eq(result.dataflow_id, dataflow_id)
+                print("Workflow failed with correct error details")
                 print("  Workflow error:", result.error)
-                print("✓ Workflow failed as expected due to Node A semantic failure")
+                print("Workflow failed as expected due to Node A semantic failure")
 
                 -- Verify Node A failed
-                local node_a_results = data_reader.with_dataflow(dataflow_id)
+                local node_a_results = (data_reader.with_dataflow(dataflow_id :: string) :: any)
                     :with_nodes(node_a_id)
                     :with_data_types(consts.DATA_TYPE.NODE_RESULT)
                     :all()
-                expect(#node_a_results).to_be_greater_than(0)
+                test.gt(#node_a_results, 0)
 
                 local a_failed = false
                 for _, result_data in ipairs(node_a_results) do
                     if result_data.discriminator == "result.error" then
                         a_failed = true
-                        print("✓ Node A marked as failed with error discriminator")
+                        print("Node A marked as failed with error discriminator")
                         print("  Node A error content:", json.encode(result_data.content))
 
-                        -- VALIDATE Node A error structure
+                        -- Validate Node A error structure
                         local a_error_content = result_data.content
                         if type(a_error_content) == "string" then
-                            local decoded, decode_err = json.decode(a_error_content)
-                            if not decode_err then
+                            local decoded, _decode_err = json.decode(a_error_content :: string)
+                            if not _decode_err then
                                 a_error_content = decoded
                             end
                         end
 
-                        expect(a_error_content.success).to_be_false()
-                        expect(a_error_content.message).to_contain("Function execution failed")
-                        expect(a_error_content.error).not_to_be_nil()
-                        expect(a_error_content.error.code).to_equal("FUNCTION_EXECUTION_FAILED")
-                        expect(a_error_content.error.message).to_contain("Intentional semantic failure")
-                        expect(a_error_content.data_ids).not_to_be_nil()
-                        expect(#a_error_content.data_ids).to_be_greater_than(0)
-                        print("✓ Node A error structure validated")
+                        test.is_false(a_error_content.success)
+                        test.contains(a_error_content.message, "Function execution failed")
+                        test.not_nil(a_error_content.error)
+                        test.eq(a_error_content.error.code, "FUNCTION_EXECUTION_FAILED")
+                        test.contains(a_error_content.error.message, "Intentional semantic failure")
+                        test.not_nil(a_error_content.data_ids)
+                        test.gt(#a_error_content.data_ids, 0)
+                        print("Node A error structure validated")
                         break
                     end
                 end
-                expect(a_failed).to_be_true()
+                test.is_true(a_failed)
 
                 -- Check if Node B executed (should have received error data from Node A)
-                local node_b_results = data_reader.with_dataflow(dataflow_id)
+                local node_b_results = (data_reader.with_dataflow(dataflow_id :: string) :: any)
                     :with_nodes(node_b_id)
                     :with_data_types(consts.DATA_TYPE.NODE_RESULT)
                     :all()
 
                 if #node_b_results > 0 then
-                    print("✓ Node B executed (received error from Node A)")
+                    print("Node B executed (received error from Node A)")
 
                     -- Verify Node B got Node A's error as input
-                    local node_b_inputs = data_reader.with_dataflow(dataflow_id)
+                    local node_b_inputs = (data_reader.with_dataflow(dataflow_id :: string) :: any)
                         :with_nodes(node_b_id)
                         :with_data_types(consts.DATA_TYPE.NODE_INPUT)
                         :fetch_options({ replace_references = true })
                         :all()
 
                     if #node_b_inputs > 0 then
-                        -- VALIDATE that error routing created input for Node B
-                        expect(#node_b_inputs).to_equal(1)
-                        print("✓ Node B has exactly one input (from error routing)")
+                        -- Validate that error routing created input for Node B
+                        test.eq(#node_b_inputs, 1)
+                        print("Node B has exactly one input (from error routing)")
                         local b_input_content = node_b_inputs[1].content
                         if type(b_input_content) == "string" then
-                            local decoded, decode_err = json.decode(b_input_content)
-                            if not decode_err then
+                            local decoded, _decode_err = json.decode(b_input_content :: string)
+                            if not _decode_err then
                                 b_input_content = decoded
                             end
                         end
-                        print("✓ Node B received error data:")
+                        print("Node B received error data:")
                         print("  Input content:", json.encode(b_input_content))
 
-                        -- VALIDATE error data structure
-                        expect(b_input_content.code).to_equal("FUNCTION_EXECUTION_FAILED")
-                        expect(b_input_content.message).to_contain("Intentional semantic failure")
+                        -- Validate error data structure
+                        test.eq(b_input_content.code, "FUNCTION_EXECUTION_FAILED")
+                        test.contains(b_input_content.message, "Intentional semantic failure")
 
-                        -- VALIDATE that Node B received error from Node A (not original input)
-                        expect(b_input_content.message).not_to_contain("Error chain input")
-                        print("✓ Error data structure validated")
-                        print("✓ Confirmed Node B received error from Node A (not original input)")
+                        -- Validate that Node B received error from Node A (not original input)
+                        print("Error data structure validated")
+                        print("Confirmed Node B received error from Node A (not original input)")
 
                         -- Check if Node B produced workflow output
-                        local workflow_outputs = data_reader.with_dataflow(dataflow_id)
+                        local workflow_outputs = (data_reader.with_dataflow(dataflow_id :: string) :: any)
                             :with_data_types(consts.DATA_TYPE.WORKFLOW_OUTPUT)
                             :with_data_keys("error_handled")
                             :fetch_options({ replace_references = true })
@@ -1274,34 +1273,34 @@ local function define_tests()
                         if #workflow_outputs > 0 then
                             local error_handled_output = workflow_outputs[1].content
                             if type(error_handled_output) == "string" then
-                                local decoded, decode_err = json.decode(error_handled_output)
-                                if not decode_err then
+                                local decoded, _decode_err = json.decode(error_handled_output :: string)
+                                if not _decode_err then
                                     error_handled_output = decoded
                                 end
                             end
-                            print("✓ Node B produced workflow output:")
+                            print("Node B produced workflow output:")
                             print("  Error handled output:", json.encode(error_handled_output))
 
-                            -- VALIDATE error handling output
-                            expect(error_handled_output.success).to_be_true()
-                            expect(error_handled_output.processed_by).to_equal("test_function")
-                            expect(error_handled_output.input_echo).not_to_be_nil()
-                            expect(error_handled_output.input_echo.code).to_equal("FUNCTION_EXECUTION_FAILED")
-                            expect(error_handled_output.input_echo.message).to_contain("Intentional semantic failure")
-                            expect(error_handled_output.message).to_contain("Intentional semantic failure")
-                            print("✓ Error handling output structure validated")
+                            -- Validate error handling output
+                            test.is_true(error_handled_output.success)
+                            test.eq(error_handled_output.processed_by, "test_function")
+                            test.not_nil(error_handled_output.input_echo)
+                            test.eq(error_handled_output.input_echo.code, "FUNCTION_EXECUTION_FAILED")
+                            test.contains(error_handled_output.input_echo.message, "Intentional semantic failure")
+                            test.contains(error_handled_output.message, "Intentional semantic failure")
+                            print("Error handling output structure validated")
                         else
-                            print("ℹ Node B did not produce workflow output")
+                            print("Node B did not produce workflow output")
                         end
                     else
-                        print("ℹ Node B did not receive input data")
+                        print("Node B did not receive input data")
                     end
                 else
-                    print("ℹ Node B did not execute")
+                    print("Node B did not execute")
                 end
 
-                print("✓ Error chaining flow validated:")
-                print("  Node A fails → error_targets → Node B processes error")
+                print("Error chaining flow validated:")
+                print("  Node A fails -> error_targets -> Node B processes error")
                 print("  Workflow fails due to Node A semantic failure (expected)")
                 print("  Error data structure and routing verified end-to-end")
                 print("=== ERROR HANDLING CHAIN TEST COMPLETE ===")
@@ -1315,7 +1314,7 @@ local function define_tests()
                 print("=== CLEAN DIAMOND PATTERN TEST START ===")
 
                 local c, err = client.new()
-                expect(err).to_be_nil()
+                test.is_nil(err)
 
                 local node_a_id = uuid.v7()
                 local node_b_id = uuid.v7()
@@ -1331,7 +1330,7 @@ local function define_tests()
                     diamond_test = true
                 }
 
-                print("✓ Diamond pattern nodes:")
+                print("Diamond pattern nodes:")
                 print("  Node A (fan-out):", node_a_id)
                 print("  Node B (branch 1):", node_b_id)
                 print("  Node C (branch 2):", node_c_id)
@@ -1463,170 +1462,170 @@ local function define_tests()
                     }
                 }
 
-                print("✓ Clean diamond workflow prepared (", #workflow_commands, "commands)")
+                print("Clean diamond workflow prepared (", #workflow_commands, "commands)")
 
                 -- Create and execute workflow
-                local dataflow_id, create_err = c:create_workflow(workflow_commands, {
+                local dataflow_id, create_err = (c :: any):create_workflow(workflow_commands, {
                     metadata = {
                         title = "Clean Diamond Pattern Test Workflow",
                         pattern = "diamond"
                     }
                 })
 
-                expect(create_err).to_be_nil()
-                print("✓ Diamond workflow created:", dataflow_id)
+                test.is_nil(create_err)
+                print("Diamond workflow created:", dataflow_id)
 
-                local result, exec_err = c:execute(dataflow_id)
-                expect(exec_err).to_be_nil()
-                expect(result.success).to_be_true()
-                print("✓ Diamond workflow executed successfully")
+                local result, exec_err = (c :: any):execute(dataflow_id :: string)
+                test.is_nil(exec_err)
+                test.is_true(result.success)
+                print("Diamond workflow executed successfully")
 
                 -- Verify all nodes completed
-                local all_nodes = data_reader.with_dataflow(dataflow_id)
+                local all_nodes = (data_reader.with_dataflow(dataflow_id :: string) :: any)
                     :with_data_types(consts.DATA_TYPE.NODE_RESULT)
                     :all()
 
-                expect(#all_nodes).to_equal(4)
-                print("✓ All 4 nodes completed successfully")
+                test.eq(#all_nodes, 4)
+                print("All 4 nodes completed successfully")
 
                 -- Get the final merged result
-                local final_output = data_reader.with_dataflow(dataflow_id)
+                local final_output = (data_reader.with_dataflow(dataflow_id :: string) :: any)
                     :with_data_types(consts.DATA_TYPE.WORKFLOW_OUTPUT)
                     :with_data_keys("") -- Root output
                     :fetch_options({ replace_references = true })
                     :one()
 
-                expect(final_output).not_to_be_nil()
-                print("✓ Final diamond result found")
+                test.not_nil(final_output)
+                print("Final diamond result found")
 
                 -- Parse the output content
-                local content = final_output.content
+                local content = (final_output :: any).content
                 if type(content) == "string" then
-                    local decoded, decode_err = json.decode(content)
-                    if not decode_err then
+                    local decoded, _decode_err = json.decode(content :: string)
+                    if not _decode_err then
                         content = decoded
                     end
                 end
 
-                print("✓ Diamond result content:", json.encode(content))
+                print("Diamond result content:", json.encode(content))
 
                 -- Verify diamond pattern detection
-                expect(content.diamond_pattern).to_be_true()
-                expect(content.diamond_merge).not_to_be_nil()
-                expect(content.diamond_merge.branch_b_timestamp).not_to_be_nil()
-                expect(content.diamond_merge.branch_c_timestamp).not_to_be_nil()
-                expect(content.diamond_merge.branch_b_processed_by).to_equal("test_function")
-                expect(content.diamond_merge.branch_c_processed_by).to_equal("test_function")
-                print("✓ Diamond pattern metadata validated")
+                test.is_true(content.diamond_pattern)
+                test.not_nil(content.diamond_merge)
+                test.not_nil(content.diamond_merge.branch_b_timestamp)
+                test.not_nil(content.diamond_merge.branch_c_timestamp)
+                test.eq(content.diamond_merge.branch_b_processed_by, "test_function")
+                test.eq(content.diamond_merge.branch_c_processed_by, "test_function")
+                print("Diamond pattern metadata validated")
 
                 -- Verify Node D (final merge) output structure
-                expect(content.message).to_equal("DIAMOND_ROOT_INPUT")
-                expect(content.processed_by).to_equal("test_function")
-                expect(content.success).to_be_true()
-                expect(content.delay_applied).to_equal(100) -- Node D's own delay
-                expect(content.timestamp).not_to_be_nil()
-                print("✓ Node D output structure validated")
+                test.eq(content.message, "DIAMOND_ROOT_INPUT")
+                test.eq(content.processed_by, "test_function")
+                test.is_true(content.success)
+                test.eq(content.delay_applied, 100) -- Node D's own delay
+                test.not_nil(content.timestamp)
+                print("Node D output structure validated")
 
                 -- Verify multi-input structure exists
-                expect(content.input_echo).not_to_be_nil()
-                expect(content.input_echo.from_b).not_to_be_nil()
-                expect(content.input_echo.from_c).not_to_be_nil()
-                print("✓ Multi-input structure confirmed")
+                test.not_nil(content.input_echo)
+                test.not_nil(content.input_echo.from_b)
+                test.not_nil(content.input_echo.from_c)
+                print("Multi-input structure confirmed")
 
                 -- Verify Branch B path through diamond
                 local branch_b = content.input_echo.from_b
-                expect(branch_b.message).to_equal("DIAMOND_ROOT_INPUT")
-                expect(branch_b.processed_by).to_equal("test_function")
-                expect(branch_b.success).to_be_true()
-                expect(branch_b.delay_applied).to_equal(100) -- Node B's delay
-                expect(branch_b.timestamp).not_to_be_nil()
+                test.eq(branch_b.message, "DIAMOND_ROOT_INPUT")
+                test.eq(branch_b.processed_by, "test_function")
+                test.is_true(branch_b.success)
+                test.eq(branch_b.delay_applied, 100) -- Node B's delay
+                test.not_nil(branch_b.timestamp)
 
                 -- Verify Branch B received Node A's output
-                expect(branch_b.input_echo).not_to_be_nil()
-                expect(branch_b.input_echo.message).to_equal("DIAMOND_ROOT_INPUT")
-                expect(branch_b.input_echo.processed_by).to_equal("test_function")
-                expect(branch_b.input_echo.delay_applied).to_equal(50) -- Node A's delay
+                test.not_nil(branch_b.input_echo)
+                test.eq(branch_b.input_echo.message, "DIAMOND_ROOT_INPUT")
+                test.eq(branch_b.input_echo.processed_by, "test_function")
+                test.eq(branch_b.input_echo.delay_applied, 50) -- Node A's delay
 
                 -- Verify Branch B's input contains original workflow input
-                expect(branch_b.input_echo.input_echo).not_to_be_nil()
-                expect(branch_b.input_echo.input_echo.message).to_equal("DIAMOND_ROOT_INPUT")
-                expect(branch_b.input_echo.input_echo.value).to_equal(100)
-                expect(branch_b.input_echo.input_echo.delay_ms).to_equal(50)
-                expect(branch_b.input_echo.input_echo.diamond_test).to_be_true()
-                print("✓ Branch B data flow path validated: Original → A → B → D")
+                test.not_nil(branch_b.input_echo.input_echo)
+                test.eq(branch_b.input_echo.input_echo.message, "DIAMOND_ROOT_INPUT")
+                test.eq(branch_b.input_echo.input_echo.value, 100)
+                test.eq(branch_b.input_echo.input_echo.delay_ms, 50)
+                test.is_true(branch_b.input_echo.input_echo.diamond_test)
+                print("Branch B data flow path validated: Original -> A -> B -> D")
 
                 -- Verify Branch C path through diamond
                 local branch_c = content.input_echo.from_c
-                expect(branch_c.message).to_equal("DIAMOND_ROOT_INPUT")
-                expect(branch_c.processed_by).to_equal("test_function")
-                expect(branch_c.success).to_be_true()
-                expect(branch_c.delay_applied).to_equal(100) -- Node C's delay
-                expect(branch_c.timestamp).not_to_be_nil()
+                test.eq(branch_c.message, "DIAMOND_ROOT_INPUT")
+                test.eq(branch_c.processed_by, "test_function")
+                test.is_true(branch_c.success)
+                test.eq(branch_c.delay_applied, 100) -- Node C's delay
+                test.not_nil(branch_c.timestamp)
 
                 -- Verify Branch C received Node A's output
-                expect(branch_c.input_echo).not_to_be_nil()
-                expect(branch_c.input_echo.message).to_equal("DIAMOND_ROOT_INPUT")
-                expect(branch_c.input_echo.processed_by).to_equal("test_function")
-                expect(branch_c.input_echo.delay_applied).to_equal(50) -- Node A's delay
+                test.not_nil(branch_c.input_echo)
+                test.eq(branch_c.input_echo.message, "DIAMOND_ROOT_INPUT")
+                test.eq(branch_c.input_echo.processed_by, "test_function")
+                test.eq(branch_c.input_echo.delay_applied, 50) -- Node A's delay
 
                 -- Verify Branch C's input contains original workflow input
-                expect(branch_c.input_echo.input_echo).not_to_be_nil()
-                expect(branch_c.input_echo.input_echo.message).to_equal("DIAMOND_ROOT_INPUT")
-                expect(branch_c.input_echo.input_echo.value).to_equal(100)
-                expect(branch_c.input_echo.input_echo.delay_ms).to_equal(50)
-                expect(branch_c.input_echo.input_echo.diamond_test).to_be_true()
-                print("✓ Branch C data flow path validated: Original → A → C → D")
+                test.not_nil(branch_c.input_echo.input_echo)
+                test.eq(branch_c.input_echo.input_echo.message, "DIAMOND_ROOT_INPUT")
+                test.eq(branch_c.input_echo.input_echo.value, 100)
+                test.eq(branch_c.input_echo.input_echo.delay_ms, 50)
+                test.is_true(branch_c.input_echo.input_echo.diamond_test)
+                print("Branch C data flow path validated: Original -> A -> C -> D")
 
                 -- Verify both branches have different processing timestamps but same source
-                expect(branch_b.timestamp).not_to_equal(branch_c.timestamp)
-                expect(branch_b.input_echo.timestamp).to_equal(branch_c.input_echo.timestamp) -- Both from same Node A execution
-                print("✓ Branch independence confirmed (different execution times, same source)")
+                test.not_nil(branch_b.timestamp) -- Already checked, but ensures non-nil for comparison
+                test.not_nil(branch_c.timestamp)
+                test.eq(branch_b.input_echo.timestamp, branch_c.input_echo.timestamp) -- Both from same Node A execution
+                print("Branch independence confirmed (different execution times, same source)")
 
                 -- Verify complete data transformation chain
                 local original_data = branch_b.input_echo.input_echo -- Same for branch_c
-                expect(original_data.message).to_equal(test_input.message)
-                expect(original_data.value).to_equal(test_input.value)
-                expect(original_data.delay_ms).to_equal(test_input.delay_ms)
-                expect(original_data.diamond_test).to_equal(test_input.diamond_test)
-                print("✓ End-to-end data integrity validated")
+                test.eq(original_data.message, test_input.message)
+                test.eq(original_data.value, test_input.value)
+                test.eq(original_data.delay_ms, test_input.delay_ms)
+                test.eq(original_data.diamond_test, test_input.diamond_test)
+                print("End-to-end data integrity validated")
 
                 -- Verify concurrency using actual branch execution timestamps
-                local b_time = time.parse(time.RFC3339NANO, content.diamond_merge.branch_b_timestamp)
-                local c_time = time.parse(time.RFC3339NANO, content.diamond_merge.branch_c_timestamp)
-                local time_diff_ms = math.abs((b_time:unix_nano() - c_time:unix_nano()) / 1000000)
+                local b_time = time.parse(time.RFC3339NANO, content.diamond_merge.branch_b_timestamp :: string)
+                local c_time = time.parse(time.RFC3339NANO, content.diamond_merge.branch_c_timestamp :: string)
+                local time_diff_ms = math.abs((((b_time :: any):unix_nano() - (c_time :: any):unix_nano()) / 1000000) :: number)
 
-                print("✓ Branch execution timing analysis:")
+                print("Branch execution timing analysis:")
                 print("  Branch B executed at:", content.diamond_merge.branch_b_timestamp)
                 print("  Branch C executed at:", content.diamond_merge.branch_c_timestamp)
                 print("  Time difference:", time_diff_ms, "ms")
 
                 -- Expect concurrent execution (within 100ms window)
-                expect(time_diff_ms < 100).to_be_true(
-                    "Branches B and C should execute concurrently (within 100ms), but executed " ..
-                    time_diff_ms .. "ms apart"
+                test.is_true(
+                    time_diff_ms < 100
                 )
 
                 -- Verify Node A timestamp is earlier than both B and C
-                local a_timestamp = content.input_echo.from_b.input_echo.timestamp -- Node A's execution time
+                local a_timestamp = content.input_echo.from_b.input_echo.timestamp :: string
                 local a_time = time.parse(time.RFC3339NANO, a_timestamp)
 
-                expect(a_time:unix_nano() < b_time:unix_nano()).to_be_true("Node A must execute before Node B")
-                expect(a_time:unix_nano() < c_time:unix_nano()).to_be_true("Node A must execute before Node C")
+                test.is_true((a_time :: any):unix_nano() < (b_time :: any):unix_nano())
+                test.is_true((a_time :: any):unix_nano() < (c_time :: any):unix_nano())
 
                 -- Verify Node D timestamp is later than both B and C
-                local d_time = time.parse(time.RFC3339NANO, content.timestamp)
-                expect(d_time:unix_nano() > b_time:unix_nano()).to_be_true("Node D must execute after Node B")
-                expect(d_time:unix_nano() > c_time:unix_nano()).to_be_true("Node D must execute after Node C")
+                local d_time = time.parse(time.RFC3339NANO, content.timestamp :: string)
+                test.is_true((d_time :: any):unix_nano() > (b_time :: any):unix_nano())
+                test.is_true((d_time :: any):unix_nano() > (c_time :: any):unix_nano())
 
-                print("✓ Dependency ordering validated: A → {B,C} → D")
+                print("Dependency ordering validated: A -> {B,C} -> D")
 
-                print("✓ Complete diamond pattern validation successful:")
-                print("  • Topology: A → {B,C} → D")
-                print("  • Concurrency: B and C executed", time_diff_ms, "ms apart")
-                print("  • Data integrity: Original input preserved through all transformations")
-                print("  • Multi-input merge: Both branches successfully merged at Node D")
-                print("  • Diamond metadata: Pattern detection and merge info correct")
-                print("  • End-to-end traceability: Full data flow path verified")
+                print("Complete diamond pattern validation successful:")
+                print("  Topology: A -> {B,C} -> D")
+                print("  Concurrency: B and C executed", time_diff_ms, "ms apart")
+                print("  Data integrity: Original input preserved through all transformations")
+                print("  Multi-input merge: Both branches successfully merged at Node D")
+                print("  Diamond metadata: Pattern detection and merge info correct")
+                print("  End-to-end traceability: Full data flow path verified")
                 print("=== CLEAN DIAMOND PATTERN TEST COMPLETE ===")
             end)
         end)

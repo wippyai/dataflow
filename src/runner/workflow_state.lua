@@ -11,6 +11,36 @@ local workflow_state = {}
 local methods = {}
 local workflow_state_mt = { __index = methods }
 
+local function normalize_node_config(config: any): any
+    if type(config) == "table" then
+        return config
+    end
+
+    if type(config) == "string" and config ~= "" then
+        local parsed, parse_err = json.decode(config)
+        if not parse_err and type(parsed) == "table" then
+            return parsed
+        end
+    end
+
+    return nil
+end
+
+local function normalize_string_array(values)
+    if type(values) ~= "table" then
+        return {}
+    end
+
+    local result = {}
+    for _, value in ipairs(values) do
+        if type(value) == "string" then
+            table.insert(result, value)
+        end
+    end
+
+    return result
+end
+
 local function get_db()
     local db, err = sql.get(consts.APP_DB)
     if err then
@@ -50,15 +80,16 @@ function workflow_state.new(dataflow_id, options)
 end
 
 function methods:_set_input_requirements_from_config(node_id, config)
-    if not config or type(config) ~= "table" then
+    config = normalize_node_config(config)
+    if not config then
         return
     end
 
     local inputs = config.inputs
     if inputs and type(inputs) == "table" then
         self:set_input_requirements(node_id, {
-            required = inputs.required or {},
-            optional = inputs.optional or {}
+            required = normalize_string_array(inputs.required),
+            optional = normalize_string_array(inputs.optional)
         })
     end
 end
@@ -86,7 +117,7 @@ function methods:load_state()
 
     self.nodes = {}
     for _, node in ipairs(nodes or {}) do
-        local config = node.config
+        local config = normalize_node_config(node.config)
 
         self.nodes[node.node_id] = {
             status = node.status,
@@ -285,8 +316,9 @@ function methods:_update_state_from_results(results)
         local command_type = command.type
         local payload = command.payload or {}
 
-        if command_type == consts.COMMAND_TYPES.CREATE_NODE and result.node_id then
-            local config = payload.config
+        if command_type == consts.COMMAND_TYPES.CREATE_NODE and (result.node_id or payload.node_id) then
+            local created_node_id = result.node_id or payload.node_id
+            local config = normalize_node_config(payload.config)
 
             local node = {
                 status = payload.status or consts.STATUS.PENDING,
@@ -295,9 +327,9 @@ function methods:_update_state_from_results(results)
                 metadata = payload.metadata or {},
                 config = config
             }
-            self.nodes[result.node_id] = node
+            self.nodes[created_node_id] = node
 
-            self:_set_input_requirements_from_config(result.node_id, config)
+            self:_set_input_requirements_from_config(created_node_id, config)
 
         elseif command_type == consts.COMMAND_TYPES.UPDATE_NODE and payload.node_id then
             local node_id = payload.node_id
@@ -314,8 +346,8 @@ function methods:_update_state_from_results(results)
                     node.metadata = payload.metadata
                 end
                 if payload.config then
-                    node.config = payload.config
-                    self:_set_input_requirements_from_config(node_id, payload.config)
+                    node.config = normalize_node_config(payload.config)
+                    self:_set_input_requirements_from_config(node_id, node.config)
                 end
             end
         elseif command_type == consts.COMMAND_TYPES.DELETE_NODE and payload.node_id then

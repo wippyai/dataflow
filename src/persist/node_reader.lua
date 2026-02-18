@@ -214,7 +214,7 @@ local function parse_json_fields(rows, fetch_config, fetch_metadata)
     for i, row in ipairs(rows) do
         if fetch_config then
             if row.config then
-                row.config = parse_json_field(row.config)
+                row.config = parse_json_field(row.config :: string)
             else
                 row.config = {}
             end
@@ -222,7 +222,7 @@ local function parse_json_fields(rows, fetch_config, fetch_metadata)
 
         if fetch_metadata then
             if row.metadata then
-                row.metadata = parse_json_field(row.metadata)
+                row.metadata = parse_json_field(row.metadata :: string)
             else
                 row.metadata = {}
             end

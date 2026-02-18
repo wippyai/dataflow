@@ -3,7 +3,6 @@ local uuid = require("uuid")
 local json = require("json")
 local time = require("time")
 local sql = require("sql")
-local security = require("security")
 
 local ops = require("ops")
 
@@ -54,7 +53,7 @@ local function define_tests()
             local dataflow_id = uuid.v7()
             local now_ts = time.now():format(time.RFC3339)
 
-            local success, err_insert = tx:execute([[
+            local _success, err_insert = tx:execute([[
                 INSERT INTO dataflows (
                     dataflow_id, actor_id,  type, status, metadata, created_at, updated_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -74,7 +73,7 @@ local function define_tests()
 
             local node_id = uuid.v7()
 
-            success, err_insert = tx:execute([[
+            _success, err_insert = tx:execute([[
                 INSERT INTO dataflow_nodes (
                     node_id, dataflow_id, type, status, config, metadata, created_at, updated_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -124,19 +123,19 @@ local function define_tests()
 
                 local result, err = ops.execute(tx, resources.dataflow_id, nil, command)
 
-                expect(err).to_be_nil()
-                expect(result).not_to_be_nil()
-                expect(result.op_id).not_to_be_nil()
-                expect(result.changes_made).to_be_true()
-                expect(#result.results).to_equal(1)
-                expect(result.results[1].data_id).to_equal(data_id)
+                test.is_nil(err)
+                test.not_nil(result)
+                test.not_nil(result.op_id)
+                test.is_true(result.changes_made)
+                test.eq(#result.results, 1)
+                test.eq(result.results[1].data_id, data_id)
 
                 local query = "SELECT * FROM dataflow_data WHERE data_id = ?"
                 local rows, err_query = tx:query(query, { data_id })
 
-                expect(err_query).to_be_nil()
-                expect(#rows).to_equal(1)
-                expect(rows[1].data_id).to_equal(data_id)
+                test.is_nil(err_query)
+                test.eq(#rows, 1)
+                test.eq(rows[1].data_id, data_id)
             end)
 
             it("should execute multiple commands in a batch", function()
@@ -174,23 +173,23 @@ local function define_tests()
 
                 local result, err = ops.execute(tx, resources.dataflow_id, nil, commands)
 
-                expect(err).to_be_nil()
-                expect(result).not_to_be_nil()
-                expect(result.op_id).not_to_be_nil()
-                expect(result.changes_made).to_be_true()
-                expect(#result.results).to_equal(2)
-                expect(result.results[1].data_id).to_equal(data_id_1)
-                expect(result.results[2].data_id).to_equal(data_id_2)
+                test.is_nil(err)
+                test.not_nil(result)
+                test.not_nil(result.op_id)
+                test.is_true(result.changes_made)
+                test.eq(#result.results, 2)
+                test.eq(result.results[1].data_id, data_id_1)
+                test.eq(result.results[2].data_id, data_id_2)
 
                 local query = "SELECT * FROM dataflow_data WHERE data_id IN (?, ?) ORDER BY key ASC"
                 local rows, err_query = tx:query(query, { data_id_1, data_id_2 })
 
-                expect(err_query).to_be_nil()
-                expect(#rows).to_equal(2)
-                expect(rows[1].key).to_equal("batch_key_1")
-                expect(rows[2].key).to_equal("batch_key_2")
-                expect(rows[1].node_id).to_equal(resources.node_id)
-                expect(rows[2].node_id).to_be_nil()
+                test.is_nil(err_query)
+                test.eq(#rows, 2)
+                test.eq(rows[1].key, "batch_key_1")
+                test.eq(rows[2].key, "batch_key_2")
+                test.eq(rows[1].node_id, resources.node_id)
+                test.is_nil(rows[2].node_id)
             end)
 
             it("should fail with missing dataflow ID", function()
@@ -209,8 +208,8 @@ local function define_tests()
 
                 local result, err = ops.execute(tx, nil, nil, command)
 
-                expect(result).to_be_nil()
-                expect(err).to_contain("Workflow ID is required")
+                test.is_nil(result)
+                test.contains(err, "Workflow ID is required")
             end)
 
             it("should fail with unknown command type", function()
@@ -226,8 +225,8 @@ local function define_tests()
 
                 local result, err = ops.execute(tx, resources.dataflow_id, nil, command)
 
-                expect(result).to_be_nil()
-                expect(err).to_contain("Unknown command type")
+                test.is_nil(result)
+                test.contains(err, "Unknown command type")
             end)
 
             it("should fail if a command in a batch fails", function()
@@ -262,15 +261,15 @@ local function define_tests()
 
                 local result, err = ops.execute(tx, resources.dataflow_id, nil, commands)
 
-                expect(result).to_be_nil()
-                expect(err).to_contain("Data type is required")
+                test.is_nil(result)
+                test.contains(err, "Data type is required")
 
                 -- Verify first command was executed but will be rolled back
-                local query = "SELECT * FROM data WHERE data_id = ?"
+                local query = "SELECT * FROM dataflow_data WHERE data_id = ?"
                 local rows, err_query = tx:query(query, { data_id_1 })
 
-                expect(err_query).to_be_nil()
-                expect(#rows).to_equal(1) -- Record exists in transaction but will rollback
+                test.is_nil(err_query)
+                test.eq(#rows, 1) -- Record exists in transaction but will rollback
             end)
         end)
 
@@ -291,31 +290,31 @@ local function define_tests()
 
                 local result, err = ops.execute(tx, dataflow_id, nil, command)
 
-                expect(err).to_be_nil()
-                expect(result).not_to_be_nil()
-                expect(result.op_id).not_to_be_nil()
-                expect(result.changes_made).to_be_true()
-                expect(#result.results).to_equal(1)
-                expect(result.results[1].dataflow_id).to_equal(dataflow_id)
+                test.is_nil(err)
+                test.not_nil(result)
+                test.not_nil(result.op_id)
+                test.is_true(result.changes_made)
+                test.eq(#result.results, 1)
+                test.eq(result.results[1].dataflow_id, dataflow_id)
 
                 local query = "SELECT * FROM dataflows WHERE dataflow_id = ?"
                 local rows, err_query = tx:query(query, { dataflow_id })
 
-                expect(err_query).to_be_nil()
-                expect(#rows).to_equal(1)
-                expect(rows[1].dataflow_id).to_equal(dataflow_id)
-                expect(rows[1].actor_id).to_equal(actor_id)
-                expect(rows[1].type).to_equal("minimal_dataflow_type")
-                expect(rows[1].status).to_equal("pending")
-                expect(rows[1].parent_dataflow_id).to_be_nil()
+                test.is_nil(err_query)
+                test.eq(#rows, 1)
+                test.eq(rows[1].dataflow_id, dataflow_id)
+                test.eq(rows[1].actor_id, actor_id)
+                test.eq(rows[1].type, "minimal_dataflow_type")
+                test.eq(rows[1].status, "pending")
+                test.is_nil(rows[1].parent_dataflow_id)
 
-                local metadata = json.decode(rows[1].metadata)
-                expect(metadata).to_be_type("table")
-                expect(next(metadata)).to_be_nil()
+                local metadata = json.decode(rows[1].metadata :: string)
+                test.is_table(metadata)
+                test.is_nil(next(metadata))
 
-                expect(rows[1].created_at).not_to_be_nil()
-                expect(rows[1].updated_at).not_to_be_nil()
-                expect(rows[1].created_at).to_equal(rows[1].updated_at)
+                test.not_nil(rows[1].created_at)
+                test.not_nil(rows[1].updated_at)
+                test.eq(rows[1].created_at, rows[1].updated_at)
             end)
 
             it("should create a dataflow using CREATE_WORKFLOW command with all optional fields", function()
@@ -333,8 +332,8 @@ local function define_tests()
                     }
                 }
 
-                local parent_result, parent_err = ops.execute(tx, parent_dataflow_id, nil, parent_command)
-                expect(parent_err).to_be_nil()
+                local _parent_result, parent_err = ops.execute(tx, parent_dataflow_id, nil, parent_command)
+                test.is_nil(parent_err)
 
                 local dataflow_id = uuid.v7()
                 local command = {
@@ -355,30 +354,30 @@ local function define_tests()
 
                 local result, err = ops.execute(tx, dataflow_id, nil, command)
 
-                expect(err).to_be_nil()
-                expect(result).not_to_be_nil()
-                expect(result.op_id).not_to_be_nil()
-                expect(result.changes_made).to_be_true()
-                expect(#result.results).to_equal(1)
-                expect(result.results[1].dataflow_id).to_equal(dataflow_id)
+                test.is_nil(err)
+                test.not_nil(result)
+                test.not_nil(result.op_id)
+                test.is_true(result.changes_made)
+                test.eq(#result.results, 1)
+                test.eq(result.results[1].dataflow_id, dataflow_id)
 
                 local query = "SELECT * FROM dataflows WHERE dataflow_id = ?"
                 local rows, err_query = tx:query(query, { dataflow_id })
 
-                expect(err_query).to_be_nil()
-                expect(#rows).to_equal(1)
-                expect(rows[1].dataflow_id).to_equal(dataflow_id)
-                expect(rows[1].actor_id).to_equal(actor_id)
-                expect(rows[1].type).to_equal("full_dataflow_type")
-                expect(rows[1].status).to_equal("running")
-                expect(rows[1].parent_dataflow_id).to_equal(parent_dataflow_id)
+                test.is_nil(err_query)
+                test.eq(#rows, 1)
+                test.eq(rows[1].dataflow_id, dataflow_id)
+                test.eq(rows[1].actor_id, actor_id)
+                test.eq(rows[1].type, "full_dataflow_type")
+                test.eq(rows[1].status, "running")
+                test.eq(rows[1].parent_dataflow_id, parent_dataflow_id)
 
-                local metadata = json.decode(rows[1].metadata)
-                expect(metadata).to_be_type("table")
-                expect(metadata.source).to_equal("ops_test")
-                expect(metadata.purpose).to_equal("testing")
-                expect(metadata.nested.key).to_equal("value")
-                expect(metadata.nested.num).to_equal(42)
+                local metadata = json.decode(rows[1].metadata :: string)
+                test.is_table(metadata)
+                test.eq(metadata.source, "ops_test")
+                test.eq(metadata.purpose, "testing")
+                test.eq(metadata.nested.key, "value")
+                test.eq(metadata.nested.num, 42)
             end)
 
             it("should fail to create a dataflow without required fields", function()
@@ -404,12 +403,12 @@ local function define_tests()
                 }
 
                 local result1, err1 = ops.execute(tx, dataflow_id, nil, command1)
-                expect(result1).to_be_nil()
-                expect(err1).to_contain("User ID is required")
+                test.is_nil(result1)
+                test.contains(err1, "User ID is required")
 
                 local result2, err2 = ops.execute(tx, dataflow_id, nil, command2)
-                expect(result2).to_be_nil()
-                expect(err2).to_contain("Workflow type is required")
+                test.is_nil(result2)
+                test.contains(err2, "Workflow type is required")
             end)
 
             it("should accept metadata as pre-encoded JSON string", function()
@@ -429,18 +428,18 @@ local function define_tests()
                     }
                 }
 
-                local result, err = ops.execute(tx, dataflow_id, nil, command)
-                expect(err).to_be_nil()
+                local _result, err = ops.execute(tx, dataflow_id, nil, command)
+                test.is_nil(err)
 
                 local query = "SELECT metadata FROM dataflows WHERE dataflow_id = ?"
                 local rows, err_query = tx:query(query, { dataflow_id })
 
-                expect(err_query).to_be_nil()
-                expect(#rows).to_equal(1)
+                test.is_nil(err_query)
+                test.eq(#rows, 1)
 
-                local metadata = json.decode(rows[1].metadata)
-                expect(metadata.json_key).to_equal("json_value")
-                expect(metadata.nested.num).to_equal(123)
+                local metadata = json.decode(rows[1].metadata :: string)
+                test.eq(metadata.json_key, "json_value")
+                test.eq(metadata.nested.num, 123)
             end)
 
             it("should update a dataflow with UPDATE_WORKFLOW command", function()
@@ -459,12 +458,12 @@ local function define_tests()
                 }
 
                 local create_result, create_err = ops.execute(tx, dataflow_id, nil, create_command)
-                expect(create_err).to_be_nil()
-                expect(create_result.changes_made).to_be_true()
+                test.is_nil(create_err)
+                test.is_true(create_result.changes_made)
 
                 local check_query = "SELECT created_at FROM dataflows WHERE dataflow_id = ?"
                 local check_rows, check_err = tx:query(check_query, { dataflow_id })
-                expect(check_err).to_be_nil()
+                test.is_nil(check_err)
                 local created_at = check_rows[1].created_at
 
                 local update_command = {
@@ -477,25 +476,25 @@ local function define_tests()
 
                 local result, err = ops.execute(tx, dataflow_id, nil, update_command)
 
-                expect(err).to_be_nil()
-                expect(result).not_to_be_nil()
-                expect(result.changes_made).to_be_true()
-                expect(#result.results).to_equal(1)
-                expect(result.results[1].dataflow_id).to_equal(dataflow_id)
+                test.is_nil(err)
+                test.not_nil(result)
+                test.is_true(result.changes_made)
+                test.eq(#result.results, 1)
+                test.eq(result.results[1].dataflow_id, dataflow_id)
 
                 local query = "SELECT * FROM dataflows WHERE dataflow_id = ?"
                 local rows, err_query = tx:query(query, { dataflow_id })
 
-                expect(err_query).to_be_nil()
-                expect(#rows).to_equal(1)
-                expect(rows[1].status).to_equal("completed")
+                test.is_nil(err_query)
+                test.eq(#rows, 1)
+                test.eq(rows[1].status, "completed")
 
-                local metadata = json.decode(rows[1].metadata)
-                expect(metadata).to_be_type("table")
-                expect(metadata.version).to_equal(2)
-                expect(metadata.updated).to_be_true()
+                local metadata = json.decode(rows[1].metadata :: string)
+                test.is_table(metadata)
+                test.eq(metadata.version, 2)
+                test.is_true(metadata.updated)
 
-                expect(rows[1].updated_at >= created_at).to_be_true()
+                test.is_true(rows[1].updated_at >= created_at)
             end)
 
             it("should handle empty updates with UPDATE_WORKFLOW command", function()
@@ -512,9 +511,8 @@ local function define_tests()
                     }
                 }
 
-                local create_result, create_err = ops.execute(tx, dataflow_id, nil, create_command)
-                expect(create_err).to_be_nil()
-                expect(create_result.changes_made).to_be_true()
+                local _create_result, create_err = ops.execute(tx, dataflow_id, nil, create_command)
+                test.is_nil(create_err)
 
                 local update_command = {
                     type = ops.COMMAND_TYPES.UPDATE_WORKFLOW,
@@ -523,12 +521,12 @@ local function define_tests()
 
                 local result, err = ops.execute(tx, dataflow_id, nil, update_command)
 
-                expect(err).to_be_nil()
-                expect(result).not_to_be_nil()
-                expect(result.changes_made).to_be_false()
-                expect(#result.results).to_equal(1)
-                expect(result.results[1].dataflow_id).to_equal(dataflow_id)
-                expect(result.results[1].message).to_contain("No valid fields provided for update")
+                test.is_nil(err)
+                test.not_nil(result)
+                test.is_false(result.changes_made)
+                test.eq(#result.results, 1)
+                test.eq(result.results[1].dataflow_id, dataflow_id)
+                test.contains(result.results[1].message, "No valid fields provided for update")
             end)
 
             it("should return error for non-existent dataflow ID on update", function()
@@ -545,8 +543,8 @@ local function define_tests()
 
                 local result, err = ops.execute(tx, fake_dataflow_id, nil, update_command)
 
-                expect(result).to_be_nil()
-                expect(err).to_contain("Workflow not found or no changes applied")
+                test.is_nil(result)
+                test.contains(err, "Workflow not found or no changes applied")
             end)
 
             it("should update dataflow status with UPDATE_WORKFLOW command", function()
@@ -563,14 +561,13 @@ local function define_tests()
                     }
                 }
 
-                local create_result, create_err = ops.execute(tx, dataflow_id, nil, create_command)
-                expect(create_err).to_be_nil()
-                expect(create_result.changes_made).to_be_true()
+                local _create_result, create_err = ops.execute(tx, dataflow_id, nil, create_command)
+                test.is_nil(create_err)
 
                 local check_query = "SELECT status FROM dataflows WHERE dataflow_id = ?"
                 local check_rows, check_err = tx:query(check_query, { dataflow_id })
-                expect(check_err).to_be_nil()
-                expect(check_rows[1].status).to_equal("pending")
+                test.is_nil(check_err)
+                test.eq(check_rows[1].status, "pending")
 
                 local update_command = {
                     type = ops.COMMAND_TYPES.UPDATE_WORKFLOW,
@@ -581,18 +578,18 @@ local function define_tests()
 
                 local result, err = ops.execute(tx, dataflow_id, nil, update_command)
 
-                expect(err).to_be_nil()
-                expect(result).not_to_be_nil()
-                expect(result.changes_made).to_be_true()
-                expect(#result.results).to_equal(1)
-                expect(result.results[1].dataflow_id).to_equal(dataflow_id)
+                test.is_nil(err)
+                test.not_nil(result)
+                test.is_true(result.changes_made)
+                test.eq(#result.results, 1)
+                test.eq(result.results[1].dataflow_id, dataflow_id)
 
                 local query = "SELECT status FROM dataflows WHERE dataflow_id = ?"
                 local rows, err_query = tx:query(query, { dataflow_id })
 
-                expect(err_query).to_be_nil()
-                expect(#rows).to_equal(1)
-                expect(rows[1].status).to_equal("running")
+                test.is_nil(err_query)
+                test.eq(#rows, 1)
+                test.eq(rows[1].status, "running")
             end)
 
             it("should delete a dataflow with DELETE_WORKFLOW command", function()
@@ -609,14 +606,13 @@ local function define_tests()
                     }
                 }
 
-                local create_result, create_err = ops.execute(tx, dataflow_id, nil, create_command)
-                expect(create_err).to_be_nil()
-                expect(create_result.changes_made).to_be_true()
+                local _create_result, create_err = ops.execute(tx, dataflow_id, nil, create_command)
+                test.is_nil(create_err)
 
                 local check_query = "SELECT COUNT(*) AS wf_count FROM dataflows WHERE dataflow_id = ?"
                 local check_rows, check_err = tx:query(check_query, { dataflow_id })
-                expect(check_err).to_be_nil()
-                expect(check_rows[1].wf_count).to_equal(1)
+                test.is_nil(check_err)
+                test.eq(check_rows[1].wf_count, 1)
 
                 local delete_command = {
                     type = ops.COMMAND_TYPES.DELETE_WORKFLOW,
@@ -625,17 +621,17 @@ local function define_tests()
 
                 local result, err = ops.execute(tx, dataflow_id, nil, delete_command)
 
-                expect(err).to_be_nil()
-                expect(result).not_to_be_nil()
-                expect(result.changes_made).to_be_true()
-                expect(#result.results).to_equal(1)
-                expect(result.results[1].dataflow_id).to_equal(dataflow_id)
-                expect(result.results[1].deleted).to_be_true()
+                test.is_nil(err)
+                test.not_nil(result)
+                test.is_true(result.changes_made)
+                test.eq(#result.results, 1)
+                test.eq(result.results[1].dataflow_id, dataflow_id)
+                test.is_true(result.results[1].deleted)
 
                 local count_query = "SELECT COUNT(*) AS wf_count FROM dataflows WHERE dataflow_id = ?"
                 local count_rows, count_err = tx:query(count_query, { dataflow_id })
-                expect(count_err).to_be_nil()
-                expect(count_rows[1].wf_count).to_equal(0)
+                test.is_nil(count_err)
+                test.eq(count_rows[1].wf_count, 0)
             end)
 
             it("should return error when deleting non-existent dataflow", function()
@@ -650,8 +646,8 @@ local function define_tests()
 
                 local result, err = ops.execute(tx, fake_dataflow_id, nil, delete_command)
 
-                expect(result).to_be_nil()
-                expect(err).to_contain("Workflow not found")
+                test.is_nil(result)
+                test.contains(err, "Workflow not found")
             end)
 
             it("should delete a specific dataflow when provided in command", function()
@@ -670,8 +666,8 @@ local function define_tests()
                     }
                 }
 
-                local context_result, context_err = ops.execute(tx, context_dataflow_id, nil, context_command)
-                expect(context_err).to_be_nil()
+                local _context_result, context_err = ops.execute(tx, context_dataflow_id, nil, context_command)
+                test.is_nil(context_err)
 
                 local target_command = {
                     type = ops.COMMAND_TYPES.CREATE_WORKFLOW,
@@ -682,8 +678,8 @@ local function define_tests()
                     }
                 }
 
-                local target_result, target_err = ops.execute(tx, delete_dataflow_id, nil, target_command)
-                expect(target_err).to_be_nil()
+                local _target_result, target_err = ops.execute(tx, delete_dataflow_id, nil, target_command)
+                test.is_nil(target_err)
 
                 local delete_command = {
                     type = ops.COMMAND_TYPES.DELETE_WORKFLOW,
@@ -694,22 +690,22 @@ local function define_tests()
 
                 local result, err = ops.execute(tx, delete_dataflow_id, nil, delete_command)
 
-                expect(err).to_be_nil()
-                expect(result).not_to_be_nil()
-                expect(result.changes_made).to_be_true()
-                expect(#result.results).to_equal(1)
-                expect(result.results[1].dataflow_id).to_equal(delete_dataflow_id)
-                expect(result.results[1].deleted).to_be_true()
+                test.is_nil(err)
+                test.not_nil(result)
+                test.is_true(result.changes_made)
+                test.eq(#result.results, 1)
+                test.eq(result.results[1].dataflow_id, delete_dataflow_id)
+                test.is_true(result.results[1].deleted)
 
                 local count_query = "SELECT COUNT(*) AS wf_count FROM dataflows WHERE dataflow_id = ?"
 
                 local deleted_rows, deleted_err = tx:query(count_query, { delete_dataflow_id })
-                expect(deleted_err).to_be_nil()
-                expect(deleted_rows[1].wf_count).to_equal(0)
+                test.is_nil(deleted_err)
+                test.eq(deleted_rows[1].wf_count, 0)
 
                 local context_rows, context_count_err = tx:query(count_query, { context_dataflow_id })
-                expect(context_count_err).to_be_nil()
-                expect(context_rows[1].wf_count).to_equal(1)
+                test.is_nil(context_count_err)
+                test.eq(context_rows[1].wf_count, 1)
             end)
         end)
 
@@ -729,30 +725,30 @@ local function define_tests()
 
                 local result, err = ops.execute(tx, resources.dataflow_id, nil, command)
 
-                expect(err).to_be_nil()
-                expect(result).not_to_be_nil()
-                expect(result.op_id).not_to_be_nil()
-                expect(result.changes_made).to_be_true()
-                expect(#result.results).to_equal(1)
-                expect(result.results[1].node_id).to_equal(node_id)
+                test.is_nil(err)
+                test.not_nil(result)
+                test.not_nil(result.op_id)
+                test.is_true(result.changes_made)
+                test.eq(#result.results, 1)
+                test.eq(result.results[1].node_id, node_id)
 
                 local query = "SELECT * FROM dataflow_nodes WHERE node_id = ?"
                 local rows, err_query = tx:query(query, { node_id })
 
-                expect(err_query).to_be_nil()
-                expect(#rows).to_equal(1)
-                expect(rows[1].node_id).to_equal(node_id)
-                expect(rows[1].type).to_equal("minimal_node_type")
-                expect(rows[1].status).to_equal("pending")
-                expect(rows[1].parent_node_id).to_be_nil()
+                test.is_nil(err_query)
+                test.eq(#rows, 1)
+                test.eq(rows[1].node_id, node_id)
+                test.eq(rows[1].type, "minimal_node_type")
+                test.eq(rows[1].status, "pending")
+                test.is_nil(rows[1].parent_node_id)
 
-                local metadata = json.decode(rows[1].metadata)
-                expect(metadata).to_be_type("table")
-                expect(next(metadata)).to_be_nil()
+                local metadata = json.decode(rows[1].metadata :: string)
+                test.is_table(metadata)
+                test.is_nil(next(metadata))
 
-                local config = json.decode(rows[1].config)
-                expect(config).to_be_type("table")
-                expect(next(config)).to_be_nil()
+                local config = json.decode(rows[1].config :: string)
+                test.is_table(config)
+                test.is_nil(next(config))
             end)
 
             it("should add a node using CREATE_NODE command with all optional fields", function()
@@ -774,34 +770,34 @@ local function define_tests()
 
                 local result, err = ops.execute(tx, resources.dataflow_id, nil, command)
 
-                expect(err).to_be_nil()
-                expect(result).not_to_be_nil()
-                expect(result.op_id).not_to_be_nil()
-                expect(result.changes_made).to_be_true()
-                expect(#result.results).to_equal(1)
-                expect(result.results[1].node_id).to_equal(node_id)
+                test.is_nil(err)
+                test.not_nil(result)
+                test.not_nil(result.op_id)
+                test.is_true(result.changes_made)
+                test.eq(#result.results, 1)
+                test.eq(result.results[1].node_id, node_id)
 
                 local query = "SELECT * FROM dataflow_nodes WHERE node_id = ?"
                 local rows, err_query = tx:query(query, { node_id })
 
-                expect(err_query).to_be_nil()
-                expect(#rows).to_equal(1)
-                expect(rows[1].node_id).to_equal(node_id)
-                expect(rows[1].parent_node_id).to_equal(resources.node_id)
-                expect(rows[1].type).to_equal("full_node_type")
-                expect(rows[1].status).to_equal("ready")
+                test.is_nil(err_query)
+                test.eq(#rows, 1)
+                test.eq(rows[1].node_id, node_id)
+                test.eq(rows[1].parent_node_id, resources.node_id)
+                test.eq(rows[1].type, "full_node_type")
+                test.eq(rows[1].status, "ready")
 
-                local config = json.decode(rows[1].config)
-                expect(config).to_be_type("table")
-                expect(config.timeout).to_equal(30)
-                expect(config.retries).to_equal(3)
-                expect(config.mode).to_equal("strict")
+                local config = json.decode(rows[1].config :: string)
+                test.is_table(config)
+                test.eq(config.timeout, 30)
+                test.eq(config.retries, 3)
+                test.eq(config.mode, "strict")
 
-                local metadata = json.decode(rows[1].metadata)
-                expect(metadata).to_be_type("table")
-                expect(metadata.source).to_equal("ops_test")
-                expect(metadata.purpose).to_equal("testing")
-                expect(metadata.count).to_equal(42)
+                local metadata = json.decode(rows[1].metadata :: string)
+                test.is_table(metadata)
+                test.eq(metadata.source, "ops_test")
+                test.eq(metadata.purpose, "testing")
+                test.eq(metadata.count, 42)
             end)
 
             it("should add a node with config as pre-encoded JSON string", function()
@@ -821,24 +817,24 @@ local function define_tests()
 
                 local result, err = ops.execute(tx, resources.dataflow_id, nil, command)
 
-                expect(err).to_be_nil()
-                expect(result).not_to_be_nil()
-                expect(result.changes_made).to_be_true()
-                expect(#result.results).to_equal(1)
-                expect(result.results[1].node_id).to_equal(node_id)
+                test.is_nil(err)
+                test.not_nil(result)
+                test.is_true(result.changes_made)
+                test.eq(#result.results, 1)
+                test.eq(result.results[1].node_id, node_id)
 
                 local query = "SELECT config FROM dataflow_nodes WHERE node_id = ?"
                 local rows, err_query = tx:query(query, { node_id })
 
-                expect(err_query).to_be_nil()
-                expect(#rows).to_equal(1)
+                test.is_nil(err_query)
+                test.eq(#rows, 1)
 
-                local config = json.decode(rows[1].config)
-                expect(config).to_be_type("table")
-                expect(config.batch_size).to_equal(100)
-                expect(config.parallel).to_be_true()
-                expect(config.settings).to_be_type("table")
-                expect(config.settings.debug).to_be_false()
+                local config = json.decode(rows[1].config :: string)
+                test.is_table(config)
+                test.eq(config.batch_size, 100)
+                test.is_true(config.parallel)
+                test.is_table(config.settings)
+                test.is_false(config.settings.debug)
             end)
 
             it("should fail to add a node without required node_type", function()
@@ -855,15 +851,15 @@ local function define_tests()
 
                 local result, err = ops.execute(tx, resources.dataflow_id, nil, command)
 
-                expect(result).to_be_nil()
-                expect(err).not_to_be_nil()
-                expect(err).to_contain("Node type is required")
+                test.is_nil(result)
+                test.not_nil(err)
+                test.contains(err, "Node type is required")
 
                 local query = "SELECT COUNT(*) AS node_count FROM dataflow_nodes WHERE node_id = ?"
                 local rows, err_query = tx:query(query, { node_id })
 
-                expect(err_query).to_be_nil()
-                expect(rows[1].node_count).to_equal(0)
+                test.is_nil(err_query)
+                test.eq(rows[1].node_count, 0)
             end)
 
             it("should update node config with UPDATE_NODE command", function()
@@ -873,12 +869,12 @@ local function define_tests()
                 local initial_query = "SELECT config FROM dataflow_nodes WHERE node_id = ?"
                 local initial_rows, err_initial = tx:query(initial_query, { resources.node_id })
 
-                expect(err_initial).to_be_nil()
-                expect(#initial_rows).to_equal(1)
+                test.is_nil(err_initial)
+                test.eq(#initial_rows, 1)
 
-                local initial_config = json.decode(initial_rows[1].config)
-                expect(initial_config).to_be_type("table")
-                expect(next(initial_config)).to_be_nil()
+                local initial_config = json.decode(initial_rows[1].config :: string)
+                test.is_table(initial_config)
+                test.is_nil(next(initial_config))
 
                 local command = {
                     type = ops.COMMAND_TYPES.UPDATE_NODE,
@@ -894,27 +890,27 @@ local function define_tests()
 
                 local result, err = ops.execute(tx, resources.dataflow_id, nil, command)
 
-                expect(err).to_be_nil()
-                expect(result).not_to_be_nil()
-                expect(result.changes_made).to_be_true()
-                expect(#result.results).to_equal(1)
-                expect(result.results[1].node_id).to_equal(resources.node_id)
-                expect(result.results[1].changes_made).to_be_true()
+                test.is_nil(err)
+                test.not_nil(result)
+                test.is_true(result.changes_made)
+                test.eq(#result.results, 1)
+                test.eq(result.results[1].node_id, resources.node_id)
+                test.is_true(result.results[1].changes_made)
 
-                local query = "SELECT config FROM nodes WHERE node_id = ?"
+                local query = "SELECT config FROM dataflow_nodes WHERE node_id = ?"
                 local rows, err_query = tx:query(query, { resources.node_id })
 
-                expect(err_query).to_be_nil()
-                expect(#rows).to_equal(1)
+                test.is_nil(err_query)
+                test.eq(#rows, 1)
 
-                local config = json.decode(rows[1].config)
-                expect(config).to_be_type("table")
-                expect(config.max_workers).to_equal(4)
-                expect(config.timeout).to_equal(60)
-                expect(config.features).to_be_type("table")
-                expect(#config.features).to_equal(2)
-                expect(config.features[1]).to_equal("logging")
-                expect(config.features[2]).to_equal("metrics")
+                local config = json.decode(rows[1].config :: string)
+                test.is_table(config)
+                test.eq(config.max_workers, 4)
+                test.eq(config.timeout, 60)
+                test.is_table(config.features)
+                test.eq(#config.features, 2)
+                test.eq(config.features[1], "logging")
+                test.eq(config.features[2], "metrics")
             end)
 
             it("should update node metadata with UPDATE_NODE command", function()
@@ -924,12 +920,12 @@ local function define_tests()
                 local initial_query = "SELECT metadata FROM dataflow_nodes WHERE node_id = ?"
                 local initial_rows, err_initial = tx:query(initial_query, { resources.node_id })
 
-                expect(err_initial).to_be_nil()
-                expect(#initial_rows).to_equal(1)
+                test.is_nil(err_initial)
+                test.eq(#initial_rows, 1)
 
-                local initial_metadata = json.decode(initial_rows[1].metadata)
-                expect(initial_metadata).to_be_type("table")
-                expect(next(initial_metadata)).to_be_nil()
+                local initial_metadata = json.decode(initial_rows[1].metadata :: string)
+                test.is_table(initial_metadata)
+                test.is_nil(next(initial_metadata))
 
                 local command = {
                     type = ops.COMMAND_TYPES.UPDATE_NODE,
@@ -945,27 +941,27 @@ local function define_tests()
 
                 local result, err = ops.execute(tx, resources.dataflow_id, nil, command)
 
-                expect(err).to_be_nil()
-                expect(result).not_to_be_nil()
-                expect(result.changes_made).to_be_true()
-                expect(#result.results).to_equal(1)
-                expect(result.results[1].node_id).to_equal(resources.node_id)
-                expect(result.results[1].changes_made).to_be_true()
+                test.is_nil(err)
+                test.not_nil(result)
+                test.is_true(result.changes_made)
+                test.eq(#result.results, 1)
+                test.eq(result.results[1].node_id, resources.node_id)
+                test.is_true(result.results[1].changes_made)
 
                 local query = "SELECT metadata FROM dataflow_nodes WHERE node_id = ?"
                 local rows, err_query = tx:query(query, { resources.node_id })
 
-                expect(err_query).to_be_nil()
-                expect(#rows).to_equal(1)
+                test.is_nil(err_query)
+                test.eq(#rows, 1)
 
-                local metadata = json.decode(rows[1].metadata)
-                expect(metadata).to_be_type("table")
-                expect(metadata.updated).to_be_true()
-                expect(metadata.version).to_equal(2)
-                expect(metadata.tags).to_be_type("table")
-                expect(#metadata.tags).to_equal(2)
-                expect(metadata.tags[1]).to_equal("test")
-                expect(metadata.tags[2]).to_equal("update")
+                local metadata = json.decode(rows[1].metadata :: string)
+                test.is_table(metadata)
+                test.is_true(metadata.updated)
+                test.eq(metadata.version, 2)
+                test.is_table(metadata.tags)
+                test.eq(#metadata.tags, 2)
+                test.eq(metadata.tags[1], "test")
+                test.eq(metadata.tags[2], "update")
             end)
 
             it("should update node status with UPDATE_NODE command", function()
@@ -975,9 +971,9 @@ local function define_tests()
                 local initial_query = "SELECT status FROM dataflow_nodes WHERE node_id = ?"
                 local initial_rows, err_initial = tx:query(initial_query, { resources.node_id })
 
-                expect(err_initial).to_be_nil()
-                expect(#initial_rows).to_equal(1)
-                expect(initial_rows[1].status).to_equal("pending")
+                test.is_nil(err_initial)
+                test.eq(#initial_rows, 1)
+                test.eq(initial_rows[1].status, "pending")
 
                 local command = {
                     type = ops.COMMAND_TYPES.UPDATE_NODE,
@@ -989,19 +985,19 @@ local function define_tests()
 
                 local result, err = ops.execute(tx, resources.dataflow_id, nil, command)
 
-                expect(err).to_be_nil()
-                expect(result).not_to_be_nil()
-                expect(result.changes_made).to_be_true()
-                expect(#result.results).to_equal(1)
-                expect(result.results[1].node_id).to_equal(resources.node_id)
-                expect(result.results[1].changes_made).to_be_true()
+                test.is_nil(err)
+                test.not_nil(result)
+                test.is_true(result.changes_made)
+                test.eq(#result.results, 1)
+                test.eq(result.results[1].node_id, resources.node_id)
+                test.is_true(result.results[1].changes_made)
 
                 local query = "SELECT status FROM dataflow_nodes WHERE node_id = ?"
                 local rows, err_query = tx:query(query, { resources.node_id })
 
-                expect(err_query).to_be_nil()
-                expect(#rows).to_equal(1)
-                expect(rows[1].status).to_equal("running")
+                test.is_nil(err_query)
+                test.eq(#rows, 1)
+                test.eq(rows[1].status, "running")
             end)
 
             it("should update node type with UPDATE_NODE command", function()
@@ -1011,9 +1007,9 @@ local function define_tests()
                 local initial_query = "SELECT type FROM dataflow_nodes WHERE node_id = ?"
                 local initial_rows, err_initial = tx:query(initial_query, { resources.node_id })
 
-                expect(err_initial).to_be_nil()
-                expect(#initial_rows).to_equal(1)
-                expect(initial_rows[1].type).to_equal("test_node")
+                test.is_nil(err_initial)
+                test.eq(#initial_rows, 1)
+                test.eq(initial_rows[1].type, "test_node")
 
                 local command = {
                     type = ops.COMMAND_TYPES.UPDATE_NODE,
@@ -1025,19 +1021,19 @@ local function define_tests()
 
                 local result, err = ops.execute(tx, resources.dataflow_id, nil, command)
 
-                expect(err).to_be_nil()
-                expect(result).not_to_be_nil()
-                expect(result.changes_made).to_be_true()
-                expect(#result.results).to_equal(1)
-                expect(result.results[1].node_id).to_equal(resources.node_id)
-                expect(result.results[1].changes_made).to_be_true()
+                test.is_nil(err)
+                test.not_nil(result)
+                test.is_true(result.changes_made)
+                test.eq(#result.results, 1)
+                test.eq(result.results[1].node_id, resources.node_id)
+                test.is_true(result.results[1].changes_made)
 
                 local query = "SELECT type FROM dataflow_nodes WHERE node_id = ?"
                 local rows, err_query = tx:query(query, { resources.node_id })
 
-                expect(err_query).to_be_nil()
-                expect(#rows).to_equal(1)
-                expect(rows[1].type).to_equal("updated_node_type")
+                test.is_nil(err_query)
+                test.eq(#rows, 1)
+                test.eq(rows[1].type, "updated_node_type")
             end)
 
             it("should update multiple node fields including config with a single UPDATE_NODE command", function()
@@ -1057,30 +1053,30 @@ local function define_tests()
 
                 local result, err = ops.execute(tx, resources.dataflow_id, nil, command)
 
-                expect(err).to_be_nil()
-                expect(result).not_to_be_nil()
-                expect(result.changes_made).to_be_true()
-                expect(#result.results).to_equal(1)
-                expect(result.results[1].node_id).to_equal(resources.node_id)
-                expect(result.results[1].changes_made).to_be_true()
+                test.is_nil(err)
+                test.not_nil(result)
+                test.is_true(result.changes_made)
+                test.eq(#result.results, 1)
+                test.eq(result.results[1].node_id, resources.node_id)
+                test.is_true(result.results[1].changes_made)
 
                 local query = "SELECT * FROM dataflow_nodes WHERE node_id = ?"
                 local rows, err_query = tx:query(query, { resources.node_id })
 
-                expect(err_query).to_be_nil()
-                expect(#rows).to_equal(1)
-                expect(rows[1].type).to_equal("multi_update_type")
-                expect(rows[1].status).to_equal("running")
+                test.is_nil(err_query)
+                test.eq(#rows, 1)
+                test.eq(rows[1].type, "multi_update_type")
+                test.eq(rows[1].status, "running")
 
-                local config = json.decode(rows[1].config)
-                expect(config).to_be_type("table")
-                expect(config.workers).to_equal(8)
-                expect(config.enabled).to_be_true()
+                local config = json.decode(rows[1].config :: string)
+                test.is_table(config)
+                test.eq(config.workers, 8)
+                test.is_true(config.enabled)
 
-                local metadata = json.decode(rows[1].metadata)
-                expect(metadata).to_be_type("table")
-                expect(metadata.updated).to_be_true()
-                expect(metadata.multi).to_equal("field_update")
+                local metadata = json.decode(rows[1].metadata :: string)
+                test.is_table(metadata)
+                test.is_true(metadata.updated)
+                test.eq(metadata.multi, "field_update")
             end)
 
             it("should update config as pre-encoded JSON string with UPDATE_NODE command", function()
@@ -1098,26 +1094,26 @@ local function define_tests()
 
                 local result, err = ops.execute(tx, resources.dataflow_id, nil, command)
 
-                expect(err).to_be_nil()
-                expect(result).not_to_be_nil()
-                expect(result.changes_made).to_be_true()
-                expect(#result.results).to_equal(1)
-                expect(result.results[1].node_id).to_equal(resources.node_id)
-                expect(result.results[1].changes_made).to_be_true()
+                test.is_nil(err)
+                test.not_nil(result)
+                test.is_true(result.changes_made)
+                test.eq(#result.results, 1)
+                test.eq(result.results[1].node_id, resources.node_id)
+                test.is_true(result.results[1].changes_made)
 
                 local query = "SELECT config FROM dataflow_nodes WHERE node_id = ?"
                 local rows, err_query = tx:query(query, { resources.node_id })
 
-                expect(err_query).to_be_nil()
-                expect(#rows).to_equal(1)
+                test.is_nil(err_query)
+                test.eq(#rows, 1)
 
-                local config = json.decode(rows[1].config)
-                expect(config).to_be_type("table")
-                expect(config.api_key).to_equal("secret123")
-                expect(config.endpoints).to_be_type("table")
-                expect(#config.endpoints).to_equal(1)
-                expect(config.endpoints[1]).to_equal("api.example.com")
-                expect(config.retry_count).to_equal(5)
+                local config = json.decode(rows[1].config :: string)
+                test.is_table(config)
+                test.eq(config.api_key, "secret123")
+                test.is_table(config.endpoints)
+                test.eq(#config.endpoints, 1)
+                test.eq(config.endpoints[1], "api.example.com")
+                test.eq(config.retry_count, 5)
             end)
 
             it("should handle empty updates with UPDATE_NODE command", function()
@@ -1133,13 +1129,13 @@ local function define_tests()
 
                 local result, err = ops.execute(tx, resources.dataflow_id, nil, command)
 
-                expect(err).to_be_nil()
-                expect(result).not_to_be_nil()
-                expect(result.changes_made).to_be_false()
-                expect(#result.results).to_equal(1)
-                expect(result.results[1].node_id).to_equal(resources.node_id)
-                expect(result.results[1].changes_made).to_be_false()
-                expect(result.results[1].message).to_contain("No fields provided for update")
+                test.is_nil(err)
+                test.not_nil(result)
+                test.is_false(result.changes_made)
+                test.eq(#result.results, 1)
+                test.eq(result.results[1].node_id, resources.node_id)
+                test.is_false(result.results[1].changes_made)
+                test.contains(result.results[1].message, "No fields provided for update")
             end)
 
             it("should delete a node with DELETE_NODE command", function()
@@ -1149,9 +1145,9 @@ local function define_tests()
                 local initial_query = "SELECT 1 AS exists_flag FROM dataflow_nodes WHERE node_id = ?"
                 local initial_rows, err_initial = tx:query(initial_query, { resources.node_id })
 
-                expect(err_initial).to_be_nil()
-                expect(#initial_rows).to_equal(1)
-                expect(initial_rows[1].exists_flag).to_equal(1)
+                test.is_nil(err_initial)
+                test.eq(#initial_rows, 1)
+                test.eq(initial_rows[1].exists_flag, 1)
 
                 local command = {
                     type = ops.COMMAND_TYPES.DELETE_NODE,
@@ -1162,18 +1158,18 @@ local function define_tests()
 
                 local result, err = ops.execute(tx, resources.dataflow_id, nil, command)
 
-                expect(err).to_be_nil()
-                expect(result).not_to_be_nil()
-                expect(result.changes_made).to_be_true()
-                expect(#result.results).to_equal(1)
-                expect(result.results[1].node_id).to_equal(resources.node_id)
-                expect(result.results[1].changes_made).to_be_true()
+                test.is_nil(err)
+                test.not_nil(result)
+                test.is_true(result.changes_made)
+                test.eq(#result.results, 1)
+                test.eq(result.results[1].node_id, resources.node_id)
+                test.is_true(result.results[1].changes_made)
 
                 local query = "SELECT COUNT(*) AS node_count FROM dataflow_nodes WHERE node_id = ?"
                 local rows, err_query = tx:query(query, { resources.node_id })
 
-                expect(err_query).to_be_nil()
-                expect(rows[1].node_count).to_equal(0)
+                test.is_nil(err_query)
+                test.eq(rows[1].node_count, 0)
             end)
         end)
 
@@ -1195,26 +1191,26 @@ local function define_tests()
 
                 local result, err = ops.execute(tx, resources.dataflow_id, nil, command)
 
-                expect(err).to_be_nil()
-                expect(result).not_to_be_nil()
-                expect(result.op_id).not_to_be_nil()
-                expect(result.changes_made).to_be_true()
-                expect(#result.results).to_equal(1)
-                expect(result.results[1].data_id).to_equal(data_id)
+                test.is_nil(err)
+                test.not_nil(result)
+                test.not_nil(result.op_id)
+                test.is_true(result.changes_made)
+                test.eq(#result.results, 1)
+                test.eq(result.results[1].data_id, data_id)
 
-                local query = "SELECT * FROM data WHERE data_id = ?"
+                local query = "SELECT * FROM dataflow_data WHERE data_id = ?"
                 local rows, err_query = tx:query(query, { data_id })
 
-                expect(err_query).to_be_nil()
-                expect(#rows).to_equal(1)
-                expect(rows[1].data_id).to_equal(data_id)
-                expect(rows[1].dataflow_id).to_equal(resources.dataflow_id)
-                expect(rows[1].node_id).to_be_nil()
-                expect(rows[1].type).to_equal("test_data")
-                expect(rows[1].discriminator).to_equal(nil)
-                expect(rows[1].key).to_equal("minimal_test_key")
-                expect(rows[1].content).to_equal("Simple string content")
-                expect(rows[1].content_type).to_equal("application/json")
+                test.is_nil(err_query)
+                test.eq(#rows, 1)
+                test.eq(rows[1].data_id, data_id)
+                test.eq(rows[1].dataflow_id, resources.dataflow_id)
+                test.is_nil(rows[1].node_id)
+                test.eq(rows[1].type, "test_data")
+                test.eq(rows[1].discriminator, nil)
+                test.eq(rows[1].key, "minimal_test_key")
+                test.eq(rows[1].content, "Simple string content")
+                test.eq(rows[1].content_type, "application/json")
             end)
 
             it("should create data with complex content and metadata", function()
@@ -1252,38 +1248,38 @@ local function define_tests()
 
                 local result, err = ops.execute(tx, resources.dataflow_id, nil, command)
 
-                expect(err).to_be_nil()
-                expect(result).not_to_be_nil()
-                expect(result.changes_made).to_be_true()
-                expect(#result.results).to_equal(1)
-                expect(result.results[1].data_id).to_equal(data_id)
+                test.is_nil(err)
+                test.not_nil(result)
+                test.is_true(result.changes_made)
+                test.eq(#result.results, 1)
+                test.eq(result.results[1].data_id, data_id)
 
-                local query = "SELECT * FROM data WHERE data_id = ?"
+                local query = "SELECT * FROM dataflow_data WHERE data_id = ?"
                 local rows, err_query = tx:query(query, { data_id })
 
-                expect(err_query).to_be_nil()
-                expect(#rows).to_equal(1)
-                expect(rows[1].data_id).to_equal(data_id)
-                expect(rows[1].dataflow_id).to_equal(resources.dataflow_id)
-                expect(rows[1].node_id).to_equal(resources.node_id)
-                expect(rows[1].type).to_equal("complex_data")
-                expect(rows[1].discriminator).to_equal("test_discriminator")
-                expect(rows[1].key).to_equal("complex_test_key")
-                expect(rows[1].content_type).to_equal("application/json")
+                test.is_nil(err_query)
+                test.eq(#rows, 1)
+                test.eq(rows[1].data_id, data_id)
+                test.eq(rows[1].dataflow_id, resources.dataflow_id)
+                test.eq(rows[1].node_id, resources.node_id)
+                test.eq(rows[1].type, "complex_data")
+                test.eq(rows[1].discriminator, "test_discriminator")
+                test.eq(rows[1].key, "complex_test_key")
+                test.eq(rows[1].content_type, "application/json")
 
-                local content = json.decode(rows[1].content)
-                expect(content).to_be_type("table")
-                expect(content.count).to_equal(2)
-                expect(content.valid).to_be_true()
-                expect(#content.items).to_equal(2)
-                expect(content.items[1].id).to_equal(1)
-                expect(content.items[2].name).to_equal("Second item")
+                local content = json.decode(rows[1].content :: string)
+                test.is_table(content)
+                test.eq(content.count, 2)
+                test.is_true(content.valid)
+                test.eq(#content.items, 2)
+                test.eq(content.items[1].id, 1)
+                test.eq(content.items[2].name, "Second item")
 
-                local metadata = json.decode(rows[1].metadata)
-                expect(metadata).to_be_type("table")
-                expect(metadata.source).to_equal("test")
-                expect(metadata.created_by).to_equal("ops_test")
-                expect(#metadata.tags).to_equal(2)
+                local metadata = json.decode(rows[1].metadata :: string)
+                test.is_table(metadata)
+                test.eq(metadata.source, "test")
+                test.eq(metadata.created_by, "ops_test")
+                test.eq(#metadata.tags, 2)
             end)
 
             it("should update data content with UPDATE_DATA command", function()
@@ -1301,9 +1297,8 @@ local function define_tests()
                     }
                 }
 
-                local create_result, err_create = ops.execute(tx, resources.dataflow_id, nil, create_command)
-                expect(err_create).to_be_nil()
-                expect(create_result.changes_made).to_be_true()
+                local _create_result, err_create = ops.execute(tx, resources.dataflow_id, nil, create_command)
+                test.is_nil(err_create)
 
                 local update_command = {
                     type = ops.COMMAND_TYPES.UPDATE_DATA,
@@ -1315,24 +1310,24 @@ local function define_tests()
 
                 local result, err = ops.execute(tx, resources.dataflow_id, nil, update_command)
 
-                expect(err).to_be_nil()
-                expect(result).not_to_be_nil()
-                expect(result.changes_made).to_be_true()
-                expect(#result.results).to_equal(1)
-                expect(result.results[1].data_id).to_equal(data_id)
-                expect(result.results[1].changes_made).to_be_true()
+                test.is_nil(err)
+                test.not_nil(result)
+                test.is_true(result.changes_made)
+                test.eq(#result.results, 1)
+                test.eq(result.results[1].data_id, data_id)
+                test.is_true(result.results[1].changes_made)
 
-                local query = "SELECT content FROM data WHERE data_id = ?"
+                local query = "SELECT content FROM dataflow_data WHERE data_id = ?"
                 local rows, err_query = tx:query(query, { data_id })
 
-                expect(err_query).to_be_nil()
-                expect(#rows).to_equal(1)
+                test.is_nil(err_query)
+                test.eq(#rows, 1)
 
-                local content = json.decode(rows[1].content)
-                expect(content).to_be_type("table")
-                expect(content.value).to_equal("updated value")
-                expect(content.count).to_equal(2)
-                expect(content.new_field).to_be_true()
+                local content = json.decode(rows[1].content :: string)
+                test.is_table(content)
+                test.eq(content.value, "updated value")
+                test.eq(content.count, 2)
+                test.is_true(content.new_field)
             end)
 
             it("should update data metadata with UPDATE_DATA command", function()
@@ -1351,9 +1346,8 @@ local function define_tests()
                     }
                 }
 
-                local create_result, err_create = ops.execute(tx, resources.dataflow_id, nil, create_command)
-                expect(err_create).to_be_nil()
-                expect(create_result.changes_made).to_be_true()
+                local _create_result, err_create = ops.execute(tx, resources.dataflow_id, nil, create_command)
+                test.is_nil(err_create)
 
                 local update_command = {
                     type = ops.COMMAND_TYPES.UPDATE_DATA,
@@ -1365,26 +1359,26 @@ local function define_tests()
 
                 local result, err = ops.execute(tx, resources.dataflow_id, nil, update_command)
 
-                expect(err).to_be_nil()
-                expect(result).not_to_be_nil()
-                expect(result.changes_made).to_be_true()
-                expect(#result.results).to_equal(1)
-                expect(result.results[1].data_id).to_equal(data_id)
-                expect(result.results[1].changes_made).to_be_true()
+                test.is_nil(err)
+                test.not_nil(result)
+                test.is_true(result.changes_made)
+                test.eq(#result.results, 1)
+                test.eq(result.results[1].data_id, data_id)
+                test.is_true(result.results[1].changes_made)
 
-                local query = "SELECT metadata FROM data WHERE data_id = ?"
+                local query = "SELECT metadata FROM dataflow_data WHERE data_id = ?"
                 local rows, err_query = tx:query(query, { data_id })
 
-                expect(err_query).to_be_nil()
-                expect(#rows).to_equal(1)
+                test.is_nil(err_query)
+                test.eq(#rows, 1)
 
-                local metadata = json.decode(rows[1].metadata)
-                expect(metadata).to_be_type("table")
-                expect(metadata.version).to_equal(2)
-                expect(metadata.updated).to_be_true()
-                expect(metadata.tags).to_be_type("table")
-                expect(#metadata.tags).to_equal(1)
-                expect(metadata.tags[1]).to_equal("modified")
+                local metadata = json.decode(rows[1].metadata :: string)
+                test.is_table(metadata)
+                test.eq(metadata.version, 2)
+                test.is_true(metadata.updated)
+                test.is_table(metadata.tags)
+                test.eq(#metadata.tags, 1)
+                test.eq(metadata.tags[1], "modified")
             end)
 
             it("should delete data with DELETE_DATA command", function()
@@ -1402,14 +1396,13 @@ local function define_tests()
                     }
                 }
 
-                local create_result, err_create = ops.execute(tx, resources.dataflow_id, nil, create_command)
-                expect(err_create).to_be_nil()
-                expect(create_result.changes_made).to_be_true()
+                local _create_result, err_create = ops.execute(tx, resources.dataflow_id, nil, create_command)
+                test.is_nil(err_create)
 
-                local exists_query = "SELECT COUNT(*) AS data_count FROM data WHERE data_id = ?"
+                local exists_query = "SELECT COUNT(*) AS data_count FROM dataflow_data WHERE data_id = ?"
                 local exists_rows, err_exists = tx:query(exists_query, { data_id })
-                expect(err_exists).to_be_nil()
-                expect(exists_rows[1].data_count).to_equal(1)
+                test.is_nil(err_exists)
+                test.eq(exists_rows[1].data_count, 1)
 
                 local delete_command = {
                     type = ops.COMMAND_TYPES.DELETE_DATA,
@@ -1420,17 +1413,17 @@ local function define_tests()
 
                 local result, err = ops.execute(tx, resources.dataflow_id, nil, delete_command)
 
-                expect(err).to_be_nil()
-                expect(result).not_to_be_nil()
-                expect(result.changes_made).to_be_true()
-                expect(#result.results).to_equal(1)
-                expect(result.results[1].data_id).to_equal(data_id)
-                expect(result.results[1].changes_made).to_be_true()
+                test.is_nil(err)
+                test.not_nil(result)
+                test.is_true(result.changes_made)
+                test.eq(#result.results, 1)
+                test.eq(result.results[1].data_id, data_id)
+                test.is_true(result.results[1].changes_made)
 
-                local count_query = "SELECT COUNT(*) AS data_count FROM data WHERE data_id = ?"
+                local count_query = "SELECT COUNT(*) AS data_count FROM dataflow_data WHERE data_id = ?"
                 local count_rows, count_err = tx:query(count_query, { data_id })
-                expect(count_err).to_be_nil()
-                expect(count_rows[1].data_count).to_equal(0)
+                test.is_nil(count_err)
+                test.eq(count_rows[1].data_count, 0)
             end)
         end)
 
@@ -1456,8 +1449,8 @@ local function define_tests()
                     }
                 }
 
-                local create_result, create_err = ops.execute(tx, dataflow_id, nil, create_command)
-                expect(create_err).to_be_nil()
+                local _create_result, create_err = ops.execute(tx, dataflow_id, nil, create_command)
+                test.is_nil(create_err)
 
                 -- Update with new metadata (should merge by default)
                 local update_command = {
@@ -1474,27 +1467,27 @@ local function define_tests()
 
                 local result, err = ops.execute(tx, dataflow_id, nil, update_command)
 
-                expect(err).to_be_nil()
-                expect(result.changes_made).to_be_true()
-                expect(result.results[1].metadata_merged).to_be_true()
+                test.is_nil(err)
+                test.is_true(result.changes_made)
+                test.is_true(result.results[1].metadata_merged)
 
                 local query = "SELECT metadata FROM dataflows WHERE dataflow_id = ?"
                 local rows, err_query = tx:query(query, { dataflow_id })
 
-                expect(err_query).to_be_nil()
-                expect(#rows).to_equal(1)
+                test.is_nil(err_query)
+                test.eq(#rows, 1)
 
-                local metadata = json.decode(rows[1].metadata)
+                local metadata = json.decode(rows[1].metadata :: string)
                 -- Original metadata should be preserved
-                expect(metadata.title).to_equal("Original Title")
-                expect(metadata.tags).to_be_type("table")
-                expect(#metadata.tags).to_equal(2)
-                expect(metadata.tags[1]).to_equal("initial")
+                test.eq(metadata.title, "Original Title")
+                test.is_table(metadata.tags)
+                test.eq(#metadata.tags, 2)
+                test.eq(metadata.tags[1], "initial")
                 -- New metadata should be added
-                expect(metadata.status).to_equal("running")
-                expect(metadata.started_at).to_equal("2024-01-01T12:00:00Z")
+                test.eq(metadata.status, "running")
+                test.eq(metadata.started_at, "2024-01-01T12:00:00Z")
                 -- Overlapping key should be updated
-                expect(metadata.version).to_equal(2)
+                test.eq(metadata.version, 2)
             end)
 
             it("should merge metadata when explicitly requested", function()
@@ -1517,8 +1510,8 @@ local function define_tests()
                     }
                 }
 
-                local create_result, create_err = ops.execute(tx, dataflow_id, nil, create_command)
-                expect(create_err).to_be_nil()
+                local _create_result, create_err = ops.execute(tx, dataflow_id, nil, create_command)
+                test.is_nil(create_err)
 
                 local update_command = {
                     type = ops.COMMAND_TYPES.UPDATE_WORKFLOW,
@@ -1534,21 +1527,21 @@ local function define_tests()
 
                 local result, err = ops.execute(tx, dataflow_id, nil, update_command)
 
-                expect(err).to_be_nil()
-                expect(result.changes_made).to_be_true()
-                expect(result.results[1].metadata_merged).to_be_true()
+                test.is_nil(err)
+                test.is_true(result.changes_made)
+                test.is_true(result.results[1].metadata_merged)
 
                 local query = "SELECT metadata FROM dataflows WHERE dataflow_id = ?"
                 local rows, err_query = tx:query(query, { dataflow_id })
 
-                expect(err_query).to_be_nil()
-                local metadata = json.decode(rows[1].metadata)
+                test.is_nil(err_query)
+                local metadata = json.decode(rows[1].metadata :: string)
 
-                expect(metadata.priority).to_equal("urgent")        -- Overwritten
-                expect(metadata.department).to_equal("engineering") -- Preserved
-                expect(metadata.assignee).to_equal("john.doe")      -- Added
-                expect(metadata.config.retries).to_equal(3)         -- New config
-                expect(metadata.config.timeout).to_be_nil()         -- Original config overwritten
+                test.eq(metadata.priority, "urgent")        -- Overwritten
+                test.eq(metadata.department, "engineering") -- Preserved
+                test.eq(metadata.assignee, "john.doe")      -- Added
+                test.eq(metadata.config.retries, 3)         -- New config
+                test.is_nil(metadata.config.timeout)         -- Original config overwritten
             end)
 
             it("should replace metadata when explicitly disabled", function()
@@ -1571,8 +1564,8 @@ local function define_tests()
                     }
                 }
 
-                local create_result, create_err = ops.execute(tx, dataflow_id, nil, create_command)
-                expect(create_err).to_be_nil()
+                local _create_result, create_err = ops.execute(tx, dataflow_id, nil, create_command)
+                test.is_nil(create_err)
 
                 local update_command = {
                     type = ops.COMMAND_TYPES.UPDATE_WORKFLOW,
@@ -1587,23 +1580,23 @@ local function define_tests()
 
                 local result, err = ops.execute(tx, dataflow_id, nil, update_command)
 
-                expect(err).to_be_nil()
-                expect(result.changes_made).to_be_true()
-                expect(result.results[1].metadata_merged).to_be_false()
+                test.is_nil(err)
+                test.is_true(result.changes_made)
+                test.is_false(result.results[1].metadata_merged)
 
                 local query = "SELECT metadata FROM dataflows WHERE dataflow_id = ?"
                 local rows, err_query = tx:query(query, { dataflow_id })
 
-                expect(err_query).to_be_nil()
-                local metadata = json.decode(rows[1].metadata)
+                test.is_nil(err_query)
+                local metadata = json.decode(rows[1].metadata :: string)
 
                 -- Only new metadata should exist
-                expect(metadata.new_field).to_equal("new_value")
-                expect(metadata.replacement).to_be_true()
+                test.eq(metadata.new_field, "new_value")
+                test.is_true(metadata.replacement)
                 -- Original metadata should be gone
-                expect(metadata.original_field).to_be_nil()
-                expect(metadata.preserve_me).to_be_nil()
-                expect(metadata.nested).to_be_nil()
+                test.is_nil(metadata.original_field)
+                test.is_nil(metadata.preserve_me)
+                test.is_nil(metadata.nested)
             end)
 
             it("should handle empty existing metadata during merge", function()
@@ -1623,8 +1616,8 @@ local function define_tests()
                     }
                 }
 
-                local create_result, create_err = ops.execute(tx, dataflow_id, nil, create_command)
-                expect(create_err).to_be_nil()
+                local _create_result, create_err = ops.execute(tx, dataflow_id, nil, create_command)
+                test.is_nil(create_err)
 
                 local update_command = {
                     type = ops.COMMAND_TYPES.UPDATE_WORKFLOW,
@@ -1639,17 +1632,17 @@ local function define_tests()
 
                 local result, err = ops.execute(tx, dataflow_id, nil, update_command)
 
-                expect(err).to_be_nil()
-                expect(result.changes_made).to_be_true()
+                test.is_nil(err)
+                test.is_true(result.changes_made)
 
                 local query = "SELECT metadata FROM dataflows WHERE dataflow_id = ?"
                 local rows, err_query = tx:query(query, { dataflow_id })
 
-                expect(err_query).to_be_nil()
-                local metadata = json.decode(rows[1].metadata)
+                test.is_nil(err_query)
+                local metadata = json.decode(rows[1].metadata :: string)
 
-                expect(metadata.first_addition).to_equal("value1")
-                expect(metadata.nested.key).to_equal("value")
+                test.eq(metadata.first_addition, "value1")
+                test.eq(metadata.nested.key, "value")
             end)
 
             it("should handle empty update metadata during merge", function()
@@ -1671,8 +1664,8 @@ local function define_tests()
                     }
                 }
 
-                local create_result, create_err = ops.execute(tx, dataflow_id, nil, create_command)
-                expect(create_err).to_be_nil()
+                local _create_result, create_err = ops.execute(tx, dataflow_id, nil, create_command)
+                test.is_nil(create_err)
 
                 local update_command = {
                     type = ops.COMMAND_TYPES.UPDATE_WORKFLOW,
@@ -1684,18 +1677,18 @@ local function define_tests()
 
                 local result, err = ops.execute(tx, dataflow_id, nil, update_command)
 
-                expect(err).to_be_nil()
-                expect(result.changes_made).to_be_true()
+                test.is_nil(err)
+                test.is_true(result.changes_made)
 
                 local query = "SELECT metadata FROM dataflows WHERE dataflow_id = ?"
                 local rows, err_query = tx:query(query, { dataflow_id })
 
-                expect(err_query).to_be_nil()
-                local metadata = json.decode(rows[1].metadata)
+                test.is_nil(err_query)
+                local metadata = json.decode(rows[1].metadata :: string)
 
                 -- Original metadata should be preserved
-                expect(metadata.preserved_field).to_equal("should_remain")
-                expect(metadata.count).to_equal(42)
+                test.eq(metadata.preserved_field, "should_remain")
+                test.eq(metadata.count, 42)
             end)
 
             it("should handle JSON string metadata during merge", function()
@@ -1714,8 +1707,8 @@ local function define_tests()
                     }
                 }
 
-                local create_result, create_err = ops.execute(tx, dataflow_id, nil, create_command)
-                expect(create_err).to_be_nil()
+                local _create_result, create_err = ops.execute(tx, dataflow_id, nil, create_command)
+                test.is_nil(create_err)
 
                 local update_command = {
                     type = ops.COMMAND_TYPES.UPDATE_WORKFLOW,
@@ -1727,19 +1720,19 @@ local function define_tests()
 
                 local result, err = ops.execute(tx, dataflow_id, nil, update_command)
 
-                expect(err).to_be_nil()
-                expect(result.changes_made).to_be_true()
+                test.is_nil(err)
+                test.is_true(result.changes_made)
 
                 local query = "SELECT metadata FROM dataflows WHERE dataflow_id = ?"
                 local rows, err_query = tx:query(query, { dataflow_id })
 
-                expect(err_query).to_be_nil()
-                local metadata = json.decode(rows[1].metadata)
+                test.is_nil(err_query)
+                local metadata = json.decode(rows[1].metadata :: string)
 
-                expect(metadata.string_created).to_equal("true") -- Preserved
-                expect(metadata.string_updated).to_equal("true") -- Added
-                expect(metadata.num).to_equal(456)               -- Overwritten
-                expect(metadata.new_field).to_equal("added")     -- Added
+                test.eq(metadata.string_created, "true") -- Preserved
+                test.eq(metadata.string_updated, "true") -- Added
+                test.eq(metadata.num, 456)               -- Overwritten
+                test.eq(metadata.new_field, "added")     -- Added
             end)
 
             it("should fail gracefully with malformed JSON during merge", function()
@@ -1758,8 +1751,8 @@ local function define_tests()
                     }
                 }
 
-                local create_result, create_err = ops.execute(tx, dataflow_id, nil, create_command)
-                expect(create_err).to_be_nil()
+                local _create_result, create_err = ops.execute(tx, dataflow_id, nil, create_command)
+                test.is_nil(create_err)
 
                 local update_command = {
                     type = ops.COMMAND_TYPES.UPDATE_WORKFLOW,
@@ -1771,8 +1764,8 @@ local function define_tests()
 
                 local result, err = ops.execute(tx, dataflow_id, nil, update_command)
 
-                expect(result).to_be_nil()
-                expect(err).to_contain("Failed to decode new metadata JSON")
+                test.is_nil(result)
+                test.contains(err, "Failed to decode new metadata JSON")
             end)
 
             it("should preserve complex nested structures during merge", function()
@@ -1797,8 +1790,8 @@ local function define_tests()
                     }
                 }
 
-                local create_result, create_err = ops.execute(tx, dataflow_id, nil, create_command)
-                expect(create_err).to_be_nil()
+                local _create_result, create_err = ops.execute(tx, dataflow_id, nil, create_command)
+                test.is_nil(create_err)
 
                 local update_command = {
                     type = ops.COMMAND_TYPES.UPDATE_WORKFLOW,
@@ -1816,24 +1809,24 @@ local function define_tests()
 
                 local result, err = ops.execute(tx, dataflow_id, nil, update_command)
 
-                expect(err).to_be_nil()
-                expect(result.changes_made).to_be_true()
+                test.is_nil(err)
+                test.is_true(result.changes_made)
 
                 local query = "SELECT metadata FROM dataflows WHERE dataflow_id = ?"
                 local rows, err_query = tx:query(query, { dataflow_id })
 
-                expect(err_query).to_be_nil()
-                local metadata = json.decode(rows[1].metadata)
+                test.is_nil(err_query)
+                local metadata = json.decode(rows[1].metadata :: string)
 
                 -- Top-level merge behavior
-                expect(metadata.owner).to_equal("team-alpha") -- Preserved
-                expect(metadata.status).to_equal("active")    -- Added
+                test.eq(metadata.owner, "team-alpha") -- Preserved
+                test.eq(metadata.status, "active")    -- Added
 
                 -- Nested objects are replaced entirely (Lua table merge behavior)
-                expect(metadata.config.cache.ttl).to_equal(300) -- From update
-                expect(metadata.config.database).to_be_nil()    -- Lost in merge
-                expect(#metadata.config.features).to_equal(1)   -- Replaced
-                expect(metadata.config.features[1]).to_equal("caching")
+                test.eq(metadata.config.cache.ttl, 300) -- From update
+                test.is_nil(metadata.config.database)    -- Lost in merge
+                test.eq(#metadata.config.features, 1)   -- Replaced
+                test.eq(metadata.config.features[1], "caching")
             end)
 
             it("should clear metadata with empty object replacement", function()
@@ -1852,8 +1845,8 @@ local function define_tests()
                     }
                 }
 
-                local create_result, create_err = ops.execute(tx, dataflow_id, nil, create_command)
-                expect(create_err).to_be_nil()
+                local _create_result, create_err = ops.execute(tx, dataflow_id, nil, create_command)
+                test.is_nil(create_err)
 
                 local update_command = {
                     type = ops.COMMAND_TYPES.UPDATE_WORKFLOW,
@@ -1865,17 +1858,17 @@ local function define_tests()
 
                 local result, err = ops.execute(tx, dataflow_id, nil, update_command)
 
-                expect(err).to_be_nil()
-                expect(result.changes_made).to_be_true()
+                test.is_nil(err)
+                test.is_true(result.changes_made)
 
                 local query = "SELECT metadata FROM dataflows WHERE dataflow_id = ?"
                 local rows, err_query = tx:query(query, { dataflow_id })
 
-                expect(err_query).to_be_nil()
+                test.is_nil(err_query)
 
-                local metadata = json.decode(rows[1].metadata)
-                expect(metadata).to_be_type("table")
-                expect(next(metadata)).to_be_nil() -- Should be empty table
+                local metadata = json.decode(rows[1].metadata :: string)
+                test.is_table(metadata)
+                test.is_nil(next(metadata)) -- Should be empty table
             end)
 
             it("should maintain backward compatibility with existing UPDATE_WORKFLOW usage", function()
@@ -1894,8 +1887,8 @@ local function define_tests()
                     }
                 }
 
-                local create_result, create_err = ops.execute(tx, dataflow_id, nil, create_command)
-                expect(create_err).to_be_nil()
+                local _create_result, create_err = ops.execute(tx, dataflow_id, nil, create_command)
+                test.is_nil(create_err)
 
                 -- Old-style update without merge_metadata flag
                 local update_command = {
@@ -1909,19 +1902,19 @@ local function define_tests()
 
                 local result, err = ops.execute(tx, dataflow_id, nil, update_command)
 
-                expect(err).to_be_nil()
-                expect(result.changes_made).to_be_true()
-                expect(result.results[1].metadata_merged).to_be_true() -- Default behavior
+                test.is_nil(err)
+                test.is_true(result.changes_made)
+                test.is_true(result.results[1].metadata_merged) -- Default behavior
 
                 local query = "SELECT metadata, status FROM dataflows WHERE dataflow_id = ?"
                 local rows, err_query = tx:query(query, { dataflow_id })
 
-                expect(err_query).to_be_nil()
-                expect(rows[1].status).to_equal("completed")
+                test.is_nil(err_query)
+                test.eq(rows[1].status, "completed")
 
-                local metadata = json.decode(rows[1].metadata)
-                expect(metadata.original).to_equal("data") -- Should be preserved with new default
-                expect(metadata.completion_time).to_equal("2024-01-01")
+                local metadata = json.decode(rows[1].metadata :: string)
+                test.eq(metadata.original, "data") -- Should be preserved with new default
+                test.eq(metadata.completion_time, "2024-01-01")
             end)
         end)
     end)

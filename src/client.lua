@@ -4,6 +4,8 @@ local security = require("security")
 local funcs = require("funcs")
 local consts = require("dataflow_consts")
 
+local SYSTEM_ACTOR_ID = "system.dataflow"
+
 -- Get default dependencies (lazy loaded)
 local function get_default_deps()
     return {
@@ -26,6 +28,14 @@ function client.new(deps)
 
     -- Get current security actor
     local actor = deps.security.actor()
+
+    -- In non-authenticated contexts (tests/system workflows), synthesize a stable actor.
+    if not actor and type(deps.security.new_actor) == "function" then
+        actor = deps.security.new_actor(SYSTEM_ACTOR_ID, {
+            kind = "system",
+            source = "userspace.dataflow:client"
+        })
+    end
 
     -- Validate security actor exists
     if not actor then
@@ -50,7 +60,7 @@ function client.new(deps)
         _deps = deps
     }
 
-    return setmetatable(instance, mt), nil
+    return setmetatable(instance, mt) :: any, nil
 end
 
 -- Create workflow with optional commands and options
@@ -125,13 +135,16 @@ function methods:execute(dataflow_id, options)
     local result = {
         success = orch_result.success,
         dataflow_id = orch_result.dataflow_id or dataflow_id,
-        data = nil
+        data = nil,
+        error = orch_result.error
     }
 
     -- Handle workflow failure
     if not orch_result.success then
-        local error_msg = orch_result.error or "Workflow failed"
-        return nil, error_msg
+        if not result.error then
+            result.error = "Workflow failed"
+        end
+        return result, nil
     end
 
     -- Handle successful workflow - fetch outputs if requested

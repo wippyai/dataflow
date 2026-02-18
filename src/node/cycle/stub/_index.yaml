@@ -33,6 +33,19 @@ entries:
     modules:
       - ctx
     method: run
+
+  # userspace.dataflow.node.cycle.stub:continue_refinement_func
+  - name: continue_refinement_func
+    kind: function.lua
+    meta:
+      name: Continue Refinement Function
+      comment: Continuation predicate for cycle continue_func_id tests
+      tags:
+        - cycle
+        - continuation
+        - test
+    source: file://continue_refinement_func.lua
+    method: run
     
   # userspace.dataflow.node.cycle.stub:failing_template_func
   - name: failing_template_func

@@ -12,7 +12,9 @@ cycle.ERROR = table.freeze({
     MAX_ITERATIONS_EXCEEDED = "MAX_ITERATIONS_EXCEEDED",
     TEMPLATE_DISCOVERY_FAILED = "TEMPLATE_DISCOVERY_FAILED",
     NO_TEMPLATES = "NO_TEMPLATES",
-    TEMPLATE_EXECUTION_FAILED = "TEMPLATE_EXECUTION_FAILED"
+    TEMPLATE_EXECUTION_FAILED = "TEMPLATE_EXECUTION_FAILED",
+    INVALID_CONTINUATION_CONFIG = "INVALID_CONTINUATION_CONFIG",
+    CONTINUATION_EVALUATION_FAILED = "CONTINUATION_EVALUATION_FAILED"
 })
 
 cycle._deps = {
@@ -194,9 +196,9 @@ local function collect_template_outputs(n, uuid_mapping, template_graph)
         table.insert(iteration_node_ids, actual_node_id)
     end
 
-    local reader, reader_err = cycle._deps.data_reader.with_dataflow(n.dataflow_id)
+    local reader, reader_err = cycle._deps.data_reader.with_dataflow(n.dataflow_id) :: any
     if reader_err then
-        return nil, "Failed to create data reader: " .. reader_err
+        return nil, "Failed to create data reader: " .. (reader_err :: string)
     end
 
     local output_data, query_err = reader
@@ -206,7 +208,7 @@ local function collect_template_outputs(n, uuid_mapping, template_graph)
         :all()
 
     if query_err then
-        return nil, "Failed to query output data: " .. query_err
+        return nil, "Failed to query output data: " .. (query_err :: string)
     end
 
     if #output_data == 0 then
@@ -215,7 +217,7 @@ local function collect_template_outputs(n, uuid_mapping, template_graph)
 
     local results = {}
     for _, output in ipairs(output_data) do
-        local parsed_content = parse_content(output.content, output.content_type)
+        local parsed_content = parse_content(output.content :: string, output.content_type :: string)
         table.insert(results, {
             key = output.key,
             content = parsed_content,
@@ -285,7 +287,7 @@ local function execute_template_iteration(n, template_graph, current_state, last
         iteration = iteration_number
     }
 
-    local template_roots = template_graph:get_roots()
+    local template_roots = (template_graph :: any):get_roots()
     for _, root_template_id in ipairs(template_roots) do
         local actual_node_id = uuid_mapping[root_template_id]
         n:data(cycle._deps.consts.DATA_TYPE.NODE_INPUT, cycle_context, {
@@ -301,12 +303,12 @@ local function execute_template_iteration(n, template_graph, current_state, last
 
     local yield_result, yield_err = n:yield({ run_nodes = all_nodes })
     if yield_err then
-        return nil, "Template execution failed: " .. yield_err
+        return nil, "Template execution failed: " .. (yield_err :: string)
     end
 
     local outputs, collect_err = collect_template_outputs(n, uuid_mapping, template_graph)
     if collect_err then
-        return nil, collect_err
+        return nil, "Template execution failed: " .. (collect_err :: string)
     end
 
     return outputs, nil
@@ -339,17 +341,17 @@ local function process_control_commands(n, control_commands, iteration_number)
     if #created_node_ids > 0 then
         local yield_result, yield_err = n:yield({ run_nodes = created_node_ids })
         if yield_err then
-            return nil, "Control command execution failed: " .. yield_err
+            return nil, "Control command execution failed: " .. (yield_err :: string)
         end
 
-        local output_data, collect_err = n:query()
+        local output_data, collect_err = (n:query() :: any)
             :with_nodes(created_node_ids)
             :with_data_types(cycle._deps.consts.DATA_TYPE.NODE_OUTPUT)
             :fetch_options({ replace_references = true })
             :all()
 
         if collect_err then
-            return nil, "Failed to collect child outputs: " .. collect_err
+            return nil, "Failed to collect child outputs: " .. (collect_err :: string)
         end
 
         if output_data and #output_data > 0 then
@@ -400,8 +402,53 @@ local function update_node_metadata(n, metadata_updates)
     n:update_metadata(metadata_updates)
 end
 
+local function evaluate_continue_condition(continue_condition, context)
+    local should_continue, condition_err = expr.eval(continue_condition :: string, context)
+    if condition_err then
+        return nil, "Failed to evaluate continue_condition: " .. tostring(condition_err)
+    end
+
+    return should_continue and true or false, nil
+end
+
+local function evaluate_continue_function(continue_executor, continue_func_id, execution_context, continue_context, events_channel)
+    local scoped_executor = continue_executor:with_context(execution_context)
+    local continue_result, continue_err_code, continue_err_detail = execute_function_iteration(
+        scoped_executor,
+        continue_func_id,
+        continue_context,
+        events_channel
+    )
+
+    if continue_err_code then
+        return nil, continue_err_detail or continue_err_code
+    end
+
+    if type(continue_result) == "table" and continue_result.continue ~= nil then
+        return continue_result.continue and true or false, nil
+    end
+
+    return continue_result and true or false, nil
+end
+
+local function safe_inputs(n)
+    local ok, inputs_or_err, inputs_err = pcall(function()
+        return n:inputs()
+    end)
+
+    if not ok then
+        return nil, tostring(inputs_or_err)
+    end
+
+    if inputs_err then
+        return nil, tostring(inputs_err)
+    end
+
+    return inputs_or_err, nil
+end
+
 local function run(args)
-    local n, err = cycle._deps.node.new(args)
+    local n, err = cycle._deps.node.new(args) :: any
     if err then
         error(err)
     end
@@ -415,11 +462,12 @@ local function run(args)
     if func_id then
         use_template = false
     else
+        local template_err
         template_graph, template_err = cycle._deps.template_graph.build_for_node(n)
         if template_err then
             return n:fail({
                 code = cycle.ERROR.TEMPLATE_DISCOVERY_FAILED,
-                message = "Template discovery failed: " .. template_err
+                message = "Template discovery failed: " .. (template_err :: string)
             }, "Failed to discover template nodes")
         end
 
@@ -433,10 +481,21 @@ local function run(args)
         use_template = true
     end
 
+    local continue_condition = config.continue_condition
+    local continue_func_id = config.continue_func_id
+
+    if continue_condition and continue_func_id then
+        local validation_message = "Only one continuation method allowed"
+        return n:fail({
+            code = cycle.ERROR.INVALID_CONTINUATION_CONFIG,
+            message = validation_message
+        }, validation_message)
+    end
+
     local max_iterations = config.max_iterations or cycle.DEFAULTS.MAX_ITERATIONS
     local initial_state = config.initial_state or cycle.DEFAULTS.INITIAL_STATE
 
-    local inputs, inputs_err = n:inputs()
+    local inputs, inputs_err = safe_inputs(n)
     if inputs_err then
         return n:fail({
             code = "INPUT_VALIDATION_FAILED",
@@ -478,11 +537,16 @@ local function run(args)
     local last_result = nil
 
     local executor = nil
+    local continue_executor = nil
     local base_context = config.context
     local events_channel = process.events()
 
     if not use_template then
-        executor = cycle._deps.funcs.new()
+        executor = cycle._deps.funcs.new() :: any
+    end
+
+    if continue_func_id then
+        continue_executor = cycle._deps.funcs.new() :: any
     end
 
     for iteration_number = start_iteration, max_iterations do
@@ -490,7 +554,7 @@ local function run(args)
 
         if use_template then
             iteration_result, iter_err = execute_template_iteration(
-                n, template_graph, current_state, last_result,
+                n, template_graph :: any, current_state, last_result,
                 iteration_number, original_input
             )
             iter_err_detail = iter_err
@@ -532,26 +596,29 @@ local function run(args)
         end
 
         local should_continue = false
+        local has_explicit_continue = false
         local new_state = current_state
         local current_result = nil
         local control_commands = nil
         local metadata_updates = nil
 
         if type(iteration_result) == "table" then
-            new_state = iteration_result.state or current_state
-            current_result = iteration_result.result
+            local iter_table = iteration_result :: any
+            new_state = iter_table.state or current_state
+            current_result = iter_table.result
 
-            if iteration_result.continue ~= nil then
-                should_continue = iteration_result.continue
+            if iter_table.continue ~= nil then
+                should_continue = iter_table.continue
+                has_explicit_continue = true
             else
                 should_continue = (new_state ~= current_state)
             end
 
-            if iteration_result._control and iteration_result._control.commands then
-                control_commands = iteration_result._control.commands
+            if iter_table._control and iter_table._control.commands then
+                control_commands = iter_table._control.commands
             end
 
-            metadata_updates = iteration_result._metadata
+            metadata_updates = iter_table._metadata
         else
             current_result = iteration_result
             should_continue = false
@@ -571,13 +638,31 @@ local function run(args)
                 }, "Failed to execute control commands in iteration " .. iteration_number)
             end
 
-            if type(child_result) == "table" then
-                new_state = child_result.state or new_state
-                current_result = child_result.result
-                if child_result.continue ~= nil then
-                    should_continue = child_result.continue
+            if child_result ~= nil then
+                if type(child_result) == "table" then
+                    local child_result_table = child_result :: any
+                    local has_envelope = child_result_table.state ~= nil or
+                        child_result_table.result ~= nil or
+                        child_result_table.continue ~= nil
+
+                    if has_envelope then
+                        new_state = child_result_table.state or new_state
+                        if child_result_table.result ~= nil then
+                            current_result = child_result_table.result
+                        else
+                            current_result = child_result_table
+                        end
+                        if child_result_table.continue ~= nil then
+                            should_continue = child_result_table.continue and true or false
+                            has_explicit_continue = true
+                        end
+                        current_state = new_state
+                    else
+                        current_result = child_result_table
+                    end
+                else
+                    current_result = child_result
                 end
-                current_state = new_state
             end
 
             last_result = current_result
@@ -585,14 +670,61 @@ local function run(args)
             last_result = current_result
         end
 
+        local continuation_context = {
+            input = original_input,
+            state = current_state,
+            result = current_result,
+            last_result = last_result,
+            iteration = iteration_number
+        }
+
+        if not has_explicit_continue then
+            if continue_condition then
+                local evaluated_continue, continue_err = evaluate_continue_condition(continue_condition, continuation_context)
+                if continue_err then
+                    return n:fail({
+                        code = cycle.ERROR.CONTINUATION_EVALUATION_FAILED,
+                        message = continue_err
+                    }, continue_err)
+                end
+                should_continue = evaluated_continue
+            elseif continue_func_id then
+                local continue_context = build_cycle_context(
+                    base_context,
+                    n.dataflow_id,
+                    n.node_id,
+                    n.path,
+                    iteration_number
+                )
+
+                local evaluated_continue, continue_err = evaluate_continue_function(
+                    continue_executor :: any,
+                    continue_func_id,
+                    continue_context,
+                    continuation_context,
+                    events_channel
+                )
+                if continue_err then
+                    return n:fail({
+                        code = cycle.ERROR.CONTINUATION_EVALUATION_FAILED,
+                        message = "Continue function failed: " .. continue_err
+                    }, "Continue function failed: " .. continue_err)
+                end
+                should_continue = evaluated_continue
+            end
+        end
+
+        if should_continue and iteration_number >= max_iterations then
+            local max_iterations_message = "Maximum iterations (" .. max_iterations .. ") exceeded"
+            return n:fail({
+                code = cycle.ERROR.MAX_ITERATIONS_EXCEEDED,
+                message = max_iterations_message
+            }, max_iterations_message)
+        end
+
         if not should_continue then
             local final_result = control_commands and last_result or current_result
             return n:complete(final_result, "Cycle completed after " .. iteration_number .. " iterations")
-        end
-
-        if iteration_number >= max_iterations then
-            local final_result = control_commands and last_result or current_result
-            return n:complete(final_result, "Cycle completed at maximum iterations (" .. max_iterations .. ")")
         end
     end
 

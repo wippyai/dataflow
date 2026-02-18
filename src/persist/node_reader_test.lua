@@ -10,7 +10,6 @@ local function define_tests()
     local test_dataflow_id
     local test_node_ids = {}
     local test_parent_node_id
-
     describe("Node Reader", function()
         local function get_test_db()
             local db, err = sql.get("app:db")
@@ -42,7 +41,7 @@ local function define_tests()
                 })
 
             local dataflow_exec = dataflow_insert:run_with(tx)
-            local dataflow_result, wf_err = dataflow_exec:exec()
+            local _, wf_err = dataflow_exec:exec()
 
             if wf_err then
                 tx:rollback()
@@ -191,7 +190,7 @@ local function define_tests()
                     })
 
                 local node_exec = node_insert:run_with(tx)
-                local node_result, node_err = node_exec:exec()
+                local _, node_err = node_exec:exec()
 
                 if node_err then
                     tx:rollback()
@@ -200,7 +199,7 @@ local function define_tests()
                 end
             end
 
-            local commit_result, commit_err = tx:commit()
+            local _, commit_err = tx:commit()
             if commit_err then
                 tx:rollback()
                 db:release()
@@ -214,27 +213,25 @@ local function define_tests()
             local db = get_test_db()
             local tx, err_tx = db:begin()
             if err_tx then
-                print("ERROR: Failed to begin cleanup transaction"); db:release(); return
+                db:release(); return
             end
 
             local delete_query = sql.builder.delete("dataflows")
                 :where("dataflow_id = ?", test_dataflow_id)
 
             local delete_exec = delete_query:run_with(tx)
-            local del_result, del_err = delete_exec:exec()
+            local _, del_err = delete_exec:exec()
 
             if del_err then
                 tx:rollback()
                 db:release()
-                print("ERROR: Failed to clean up test data: " .. del_err)
                 return
             end
 
-            local commit_result, commit_err = tx:commit()
+            local _, commit_err = tx:commit()
             if commit_err then
                 tx:rollback()
                 db:release()
-                print("ERROR: Failed to commit cleanup: " .. commit_err)
                 return
             end
 
@@ -244,55 +241,55 @@ local function define_tests()
         describe("Basic Operations", function()
             it("should initialize with a dataflow ID", function()
                 local reader, err = node_reader.with_dataflow(test_dataflow_id)
-                expect(err).to_be_nil()
-                expect(reader).not_to_be_nil()
+                test.is_nil(err)
+                test.not_nil(reader)
             end)
 
             it("should return error when initialized without a dataflow ID", function()
                 local reader1, err1 = node_reader.with_dataflow(nil)
-                expect(reader1).to_be_nil()
-                expect(err1).to_contain("Workflow ID is required")
+                test.is_nil(reader1)
+                test.contains(err1, "Workflow ID is required")
 
                 local reader2, err2 = node_reader.with_dataflow("")
-                expect(reader2).to_be_nil()
-                expect(err2).to_contain("Workflow ID is required")
+                test.is_nil(reader2)
+                test.contains(err2, "Workflow ID is required")
             end)
 
             it("should return all nodes for a dataflow", function()
                 local reader, err = node_reader.with_dataflow(test_dataflow_id)
-                expect(err).to_be_nil()
+                test.is_nil(err)
 
-                local results, query_err = reader:all()
-                expect(query_err).to_be_nil()
-                expect(#results).to_equal(7)
+                local results, query_err = (reader :: any):all()
+                test.is_nil(query_err)
+                test.eq(#results, 7)
 
-                expect(results[1].config).to_be_type("table")
-                expect(results[1].metadata).to_be_type("table")
+                test.is_table(results[1].config)
+                test.is_table(results[1].metadata)
             end)
 
             it("should count all nodes for a dataflow", function()
                 local reader, err = node_reader.with_dataflow(test_dataflow_id)
-                expect(err).to_be_nil()
+                test.is_nil(err)
 
-                local count, query_err = reader:count()
-                expect(query_err).to_be_nil()
-                expect(count).to_equal(7)
+                local count, query_err = (reader :: any):count()
+                test.is_nil(query_err)
+                test.eq(count, 7)
             end)
 
             it("should check existence of nodes", function()
                 local reader, err = node_reader.with_dataflow(test_dataflow_id)
-                expect(err).to_be_nil()
+                test.is_nil(err)
 
-                local exists, query_err = reader:exists()
-                expect(query_err).to_be_nil()
-                expect(exists).to_be_true()
+                local exists, query_err = (reader :: any):exists()
+                test.is_nil(query_err)
+                test.is_true(exists)
 
                 local reader2, err2 = node_reader.with_dataflow(uuid.v7())
-                expect(err2).to_be_nil()
+                test.is_nil(err2)
 
-                local non_exists, query_err2 = reader2:exists()
-                expect(query_err2).to_be_nil()
-                expect(non_exists).to_be_false()
+                local non_exists, query_err2 = (reader2 :: any):exists()
+                test.is_nil(query_err2)
+                test.is_false(non_exists)
             end)
         end)
 
@@ -300,16 +297,16 @@ local function define_tests()
             it("should filter by node ID", function()
                 local root_node_id = test_node_ids["root_node"]
                 local reader, err = node_reader.with_dataflow(test_dataflow_id)
-                expect(err).to_be_nil()
+                test.is_nil(err)
 
                 local results, query_err = reader
                     :with_nodes(root_node_id)
                     :all()
-                expect(query_err).to_be_nil()
+                test.is_nil(query_err)
 
-                expect(#results).to_equal(1)
-                expect(results[1].node_id).to_equal(root_node_id)
-                expect(results[1].type).to_equal("root_node")
+                test.eq(#results, 1)
+                test.eq(results[1].node_id, root_node_id)
+                test.eq(results[1].type, "root_node")
             end)
 
             it("should filter by multiple node IDs", function()
@@ -317,129 +314,129 @@ local function define_tests()
                 local template_id = test_node_ids["template_node"]
 
                 local reader, err = node_reader.with_dataflow(test_dataflow_id)
-                expect(err).to_be_nil()
+                test.is_nil(err)
 
                 local results, query_err = reader
                     :with_nodes(root_id, template_id)
                     :all()
-                expect(query_err).to_be_nil()
+                test.is_nil(query_err)
 
-                expect(#results).to_equal(2)
+                test.eq(#results, 2)
                 local found_types = {}
                 for _, node in ipairs(results) do
                     found_types[node.type] = true
                 end
-                expect(found_types["root_node"]).to_be_true()
-                expect(found_types["template_node"]).to_be_true()
+                test.is_true(found_types["root_node"])
+                test.is_true(found_types["template_node"])
             end)
 
             it("should filter by node type", function()
                 local reader, err = node_reader.with_dataflow(test_dataflow_id)
-                expect(err).to_be_nil()
+                test.is_nil(err)
 
                 local results, query_err = reader
                     :with_node_types("func_node")
                     :all()
-                expect(query_err).to_be_nil()
+                test.is_nil(query_err)
 
-                expect(#results).to_equal(3)
+                test.eq(#results, 3)
                 for _, node in ipairs(results) do
-                    expect(node.type).to_equal("func_node")
+                    test.eq(node.type, "func_node")
                 end
             end)
 
             it("should filter by multiple node types", function()
                 local reader, err = node_reader.with_dataflow(test_dataflow_id)
-                expect(err).to_be_nil()
+                test.is_nil(err)
 
                 local results, query_err = reader
                     :with_node_types("root_node", "template_node")
                     :all()
-                expect(query_err).to_be_nil()
+                test.is_nil(query_err)
 
-                expect(#results).to_equal(2)
+                test.eq(#results, 2)
                 for _, node in ipairs(results) do
-                    expect(node.type == "root_node" or node.type == "template_node").to_be_true()
+                    test.is_true(node.type == "root_node" or node.type == "template_node")
                 end
             end)
 
             it("should filter by status", function()
                 local reader, err = node_reader.with_dataflow(test_dataflow_id)
-                expect(err).to_be_nil()
+                test.is_nil(err)
 
                 local results, query_err = reader
                     :with_statuses("pending")
                     :all()
-                expect(query_err).to_be_nil()
+                test.is_nil(query_err)
 
-                expect(#results).to_equal(3)
+                test.eq(#results, 3)
                 for _, node in ipairs(results) do
-                    expect(node.status).to_equal("pending")
+                    test.eq(node.status, "pending")
                 end
             end)
 
             it("should filter by multiple statuses", function()
                 local reader, err = node_reader.with_dataflow(test_dataflow_id)
-                expect(err).to_be_nil()
+                test.is_nil(err)
 
                 local results, query_err = reader
                     :with_statuses("running", "completed")
                     :all()
-                expect(query_err).to_be_nil()
+                test.is_nil(query_err)
 
-                expect(#results).to_equal(2)
+                test.eq(#results, 2)
                 for _, node in ipairs(results) do
-                    expect(node.status == "running" or node.status == "completed").to_be_true()
+                    test.is_true(node.status == "running" or node.status == "completed")
                 end
             end)
 
             it("should filter by parent node ID", function()
                 local reader, err = node_reader.with_dataflow(test_dataflow_id)
-                expect(err).to_be_nil()
+                test.is_nil(err)
 
                 local results, query_err = reader
                     :with_parent_nodes(test_parent_node_id)
                     :all()
-                expect(query_err).to_be_nil()
+                test.is_nil(query_err)
 
-                expect(#results).to_equal(4)
+                test.eq(#results, 4)
                 for _, node in ipairs(results) do
-                    expect(node.parent_node_id).to_equal(test_parent_node_id)
+                    test.eq(node.parent_node_id, test_parent_node_id)
                 end
             end)
 
             it("should filter by multiple parent node IDs", function()
                 local fake_parent_id = uuid.v7()
                 local reader, err = node_reader.with_dataflow(test_dataflow_id)
-                expect(err).to_be_nil()
+                test.is_nil(err)
 
                 local results, query_err = reader
                     :with_parent_nodes(test_parent_node_id, fake_parent_id)
                     :all()
-                expect(query_err).to_be_nil()
+                test.is_nil(query_err)
 
-                expect(#results).to_equal(4)
+                test.eq(#results, 4)
                 for _, node in ipairs(results) do
-                    expect(node.parent_node_id).to_equal(test_parent_node_id)
+                    test.eq(node.parent_node_id, test_parent_node_id)
                 end
             end)
 
             it("should combine multiple filters", function()
                 local reader, err = node_reader.with_dataflow(test_dataflow_id)
-                expect(err).to_be_nil()
+                test.is_nil(err)
 
                 local results, query_err = reader
                     :with_parent_nodes(test_parent_node_id)
                     :with_node_types("func_node")
                     :with_statuses("running", "completed")
                     :all()
-                expect(query_err).to_be_nil()
+                test.is_nil(query_err)
 
-                expect(#results).to_equal(2)
+                test.eq(#results, 2)
                 for _, node in ipairs(results) do
-                    expect(node.type).to_equal("func_node")
-                    expect(node.parent_node_id).to_equal(test_parent_node_id)
-                    expect(node.status == "running" or node.status == "completed").to_be_true()
+                    test.eq(node.type, "func_node")
+                    test.eq(node.parent_node_id, test_parent_node_id)
+                    test.is_true(node.status == "running" or node.status == "completed")
                 end
             end)
         end)
@@ -447,50 +444,50 @@ local function define_tests()
         describe("Fetch Options", function()
             it("should exclude config when specified", function()
                 local reader, err = node_reader.with_dataflow(test_dataflow_id)
-                expect(err).to_be_nil()
+                test.is_nil(err)
 
                 local results, query_err = reader
                     :fetch_options({ config = false })
                     :all()
-                expect(query_err).to_be_nil()
+                test.is_nil(query_err)
 
-                expect(#results).to_be_greater_than(0)
+                test.gt(#results, 0)
                 for _, node in ipairs(results) do
-                    expect(node.config).to_be_nil()
+                    test.is_nil(node.config)
                 end
             end)
 
             it("should exclude metadata when specified", function()
                 local reader, err = node_reader.with_dataflow(test_dataflow_id)
-                expect(err).to_be_nil()
+                test.is_nil(err)
 
                 local results, query_err = reader
                     :fetch_options({ metadata = false })
                     :all()
-                expect(query_err).to_be_nil()
+                test.is_nil(query_err)
 
-                expect(#results).to_be_greater_than(0)
+                test.gt(#results, 0)
                 for _, node in ipairs(results) do
-                    expect(node.metadata).to_be_nil()
+                    test.is_nil(node.metadata)
                 end
             end)
 
             it("should fetch only basic fields when config and metadata excluded", function()
                 local reader, err = node_reader.with_dataflow(test_dataflow_id)
-                expect(err).to_be_nil()
+                test.is_nil(err)
 
                 local results, query_err = reader
                     :fetch_options({ config = false, metadata = false })
                     :all()
-                expect(query_err).to_be_nil()
+                test.is_nil(query_err)
 
-                expect(#results).to_be_greater_than(0)
+                test.gt(#results, 0)
                 for _, node in ipairs(results) do
-                    expect(node.node_id).not_to_be_nil()
-                    expect(node.type).not_to_be_nil()
-                    expect(node.status).not_to_be_nil()
-                    expect(node.config).to_be_nil()
-                    expect(node.metadata).to_be_nil()
+                    test.not_nil(node.node_id)
+                    test.not_nil(node.type)
+                    test.not_nil(node.status)
+                    test.is_nil(node.config)
+                    test.is_nil(node.metadata)
                 end
             end)
         end)
@@ -499,47 +496,47 @@ local function define_tests()
             it("should fetch a single result", function()
                 local root_node_id = test_node_ids["root_node"]
                 local reader, err = node_reader.with_dataflow(test_dataflow_id)
-                expect(err).to_be_nil()
+                test.is_nil(err)
 
                 local node, query_err = reader
                     :with_nodes(root_node_id)
                     :one()
-                expect(query_err).to_be_nil()
+                test.is_nil(query_err)
 
-                expect(node).not_to_be_nil()
-                expect(node.node_id).to_equal(root_node_id)
-                expect(node.type).to_equal("root_node")
-                expect(node.config).to_be_type("table")
-                expect(node.metadata).to_be_type("table")
+                test.not_nil(node)
+                test.eq(node.node_id, root_node_id)
+                test.eq(node.type, "root_node")
+                test.is_table(node.config)
+                test.is_table(node.metadata)
             end)
 
             it("should return nil for non-matching query", function()
                 local fake_node_id = uuid.v7()
                 local reader, err = node_reader.with_dataflow(test_dataflow_id)
-                expect(err).to_be_nil()
+                test.is_nil(err)
 
                 local node, query_err = reader
                     :with_nodes(fake_node_id)
                     :one()
-                expect(query_err).to_be_nil()
-                expect(node).to_be_nil()
+                test.is_nil(query_err)
+                test.is_nil(node)
             end)
 
             it("should respect fetch options", function()
                 local root_node_id = test_node_ids["root_node"]
                 local reader, err = node_reader.with_dataflow(test_dataflow_id)
-                expect(err).to_be_nil()
+                test.is_nil(err)
 
                 local node, query_err = reader
                     :with_nodes(root_node_id)
                     :fetch_options({ config = false })
                     :one()
-                expect(query_err).to_be_nil()
+                test.is_nil(query_err)
 
-                expect(node).not_to_be_nil()
-                expect(node.node_id).to_equal(root_node_id)
-                expect(node.config).to_be_nil()
-                expect(node.metadata).to_be_type("table")
+                test.not_nil(node)
+                test.eq(node.node_id, root_node_id)
+                test.is_nil(node.config)
+                test.is_table(node.metadata)
             end)
         end)
 
@@ -547,114 +544,114 @@ local function define_tests()
             it("should parse complex config correctly", function()
                 local template_node_id = test_node_ids["template_node"]
                 local reader, err = node_reader.with_dataflow(test_dataflow_id)
-                expect(err).to_be_nil()
+                test.is_nil(err)
 
                 local node, query_err = reader
                     :with_nodes(template_node_id)
                     :one()
-                expect(query_err).to_be_nil()
+                test.is_nil(query_err)
 
-                expect(node).not_to_be_nil()
-                expect(node.config).to_be_type("table")
-                expect(node.config.func_id).to_equal("test_function")
-                expect(node.config.data_targets).to_be_type("table")
-                expect(#node.config.data_targets).to_equal(1)
-                expect(node.config.data_targets[1].data_type).to_equal("node.output")
-                expect(node.config.data_targets[1].key).to_equal("result")
+                test.not_nil(node)
+                test.is_table(node.config)
+                test.eq(node.config.func_id, "test_function")
+                test.is_table(node.config.data_targets)
+                test.eq(#node.config.data_targets, 1)
+                test.eq(node.config.data_targets[1].data_type, "node.output")
+                test.eq(node.config.data_targets[1].key, "result")
 
-                expect(node.metadata).to_be_type("table")
-                expect(node.metadata.template_type).to_equal("function_executor")
-                expect(node.metadata.version).to_equal("1.0")
+                test.is_table(node.metadata)
+                test.eq(node.metadata.template_type, "function_executor")
+                test.eq(node.metadata.version, "1.0")
             end)
 
             it("should handle empty string config/metadata", function()
                 local minimal_node_id = test_node_ids["minimal_node"]
                 local reader, err = node_reader.with_dataflow(test_dataflow_id)
-                expect(err).to_be_nil()
+                test.is_nil(err)
 
                 local node, query_err = reader
                     :with_nodes(minimal_node_id)
                     :one()
-                expect(query_err).to_be_nil()
+                test.is_nil(query_err)
 
-                expect(node).not_to_be_nil()
-                expect(node.config).to_be_type("table")
-                expect(next(node.config)).to_be_nil()
-                expect(node.metadata).to_be_type("table")
-                expect(next(node.metadata)).to_be_nil()
+                test.not_nil(node)
+                test.is_table(node.config)
+                test.is_nil(next(node.config))
+                test.is_table(node.metadata)
+                test.is_nil(next(node.metadata))
             end)
 
             it("should handle invalid JSON gracefully", function()
                 local invalid_node_id = test_node_ids["invalid_json_node"]
                 local reader, err = node_reader.with_dataflow(test_dataflow_id)
-                expect(err).to_be_nil()
+                test.is_nil(err)
 
                 local node, query_err = reader
                     :with_nodes(invalid_node_id)
                     :one()
-                expect(query_err).to_be_nil()
+                test.is_nil(query_err)
 
-                expect(node).not_to_be_nil()
-                expect(node.config).to_be_type("table")
-                expect(next(node.config)).to_be_nil()
-                expect(node.metadata).to_be_type("table")
-                expect(next(node.metadata)).to_be_nil()
+                test.not_nil(node)
+                test.is_table(node.config)
+                test.is_nil(next(node.config))
+                test.is_table(node.metadata)
+                test.is_nil(next(node.metadata))
             end)
         end)
 
         describe("Template Node Discovery", function()
             it("should find template nodes by status", function()
                 local reader, err = node_reader.with_dataflow(test_dataflow_id)
-                expect(err).to_be_nil()
+                test.is_nil(err)
 
                 local templates, query_err = reader
                     :with_statuses("template")
                     :all()
-                expect(query_err).to_be_nil()
+                test.is_nil(query_err)
 
-                expect(#templates).to_equal(1)
-                expect(templates[1].status).to_equal("template")
-                expect(templates[1].type).to_equal("template_node")
+                test.eq(#templates, 1)
+                test.eq(templates[1].status, "template")
+                test.eq(templates[1].type, "template_node")
             end)
 
             it("should find template children of a specific parent", function()
                 local reader, err = node_reader.with_dataflow(test_dataflow_id)
-                expect(err).to_be_nil()
+                test.is_nil(err)
 
                 local templates, query_err = reader
                     :with_parent_nodes(test_parent_node_id)
                     :with_statuses("template")
                     :all()
-                expect(query_err).to_be_nil()
+                test.is_nil(query_err)
 
-                expect(#templates).to_equal(1)
-                expect(templates[1].status).to_equal("template")
-                expect(templates[1].parent_node_id).to_equal(test_parent_node_id)
-                expect(templates[1].config.func_id).to_equal("test_function")
+                test.eq(#templates, 1)
+                test.eq(templates[1].status, "template")
+                test.eq(templates[1].parent_node_id, test_parent_node_id)
+                test.eq(templates[1].config.func_id, "test_function")
             end)
 
             it("should find all children of a parent node", function()
                 local reader, err = node_reader.with_dataflow(test_dataflow_id)
-                expect(err).to_be_nil()
+                test.is_nil(err)
 
                 local children, query_err = reader
                     :with_parent_nodes(test_parent_node_id)
                     :all()
-                expect(query_err).to_be_nil()
+                test.is_nil(query_err)
 
-                expect(#children).to_equal(4)
+                test.eq(#children, 4)
                 for _, child in ipairs(children) do
-                    expect(child.parent_node_id).to_equal(test_parent_node_id)
+                    test.eq(child.parent_node_id, test_parent_node_id)
                 end
 
                 local statuses = {}
                 for _, child in ipairs(children) do
                     statuses[child.status] = true
                 end
-                expect(statuses["template"]).to_be_true()
-                expect(statuses["running"]).to_be_true()
-                expect(statuses["completed"]).to_be_true()
-                expect(statuses["failed"]).to_be_true()
+                test.is_true(statuses["template"])
+                test.is_true(statuses["running"])
+                test.is_true(statuses["completed"])
+                test.is_true(statuses["failed"])
             end)
         end)
     end)

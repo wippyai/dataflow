@@ -1,4 +1,5 @@
 local func = {}
+local time = require("time")
 
 local ERROR_MISSING_FUNC_ID = "MISSING_FUNC_ID"
 local ERROR_NO_INPUT_DATA = "NO_INPUT_DATA"
@@ -53,12 +54,8 @@ local function merge_inputs_with_base_args(inputs, base_args)
         end
 
         if input_count == 1 then
-            for discriminator, input in pairs(inputs) do
-                if discriminator == "default" or discriminator == "" then
-                    return input.content
-                else
-                    return {[discriminator] = input.content}
-                end
+            for _, input in pairs(inputs) do
+                return input.content
             end
         end
 
@@ -83,8 +80,24 @@ local function merge_inputs_with_base_args(inputs, base_args)
     return result
 end
 
+local function safe_inputs(n)
+    local ok, inputs_or_err, inputs_err = pcall(function()
+        return n:inputs()
+    end)
+
+    if not ok then
+        return nil, tostring(inputs_or_err)
+    end
+
+    if inputs_err then
+        return nil, tostring(inputs_err)
+    end
+
+    return inputs_or_err, nil
+end
+
 local function run(args)
-    local n, err = func._deps.node.new(args)
+    local n, err = func._deps.node.new(args) :: any
     if err then
         error(err)
     end
@@ -100,7 +113,7 @@ local function run(args)
 
     local base_args = config.args
 
-    local inputs, inputs_err = n:inputs()
+    local inputs, inputs_err = safe_inputs(n)
     if inputs_err then
         return n:fail({
             code = "INPUT_VALIDATION_FAILED",
@@ -117,7 +130,7 @@ local function run(args)
         }, "Function node requires input data")
     end
 
-    local executor = func._deps.funcs.new()
+    local executor = func._deps.funcs.new() :: any
     local base_context = config.context
     local execution_context = build_execution_context_with_dataflow(
         base_context,
@@ -200,7 +213,14 @@ local function run(args)
                 :with_data_types(func._deps.consts.DATA_TYPE.NODE_OUTPUT)
                 :fetch_options({ replace_references = true })
 
-            local output_data = reader:all()
+            local output_data = nil
+            for _ = 1, 10 do
+                output_data = reader:all()
+                if output_data and #output_data > 0 then
+                    break
+                end
+                time.sleep("10ms")
+            end
 
             if output_data and #output_data > 0 then
                 for _, output in ipairs(output_data) do

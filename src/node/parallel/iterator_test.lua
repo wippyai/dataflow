@@ -1,5 +1,5 @@
 local test = require("test")
-local uuid = require("uuid")
+local _uuid = require("uuid")
 local json = require("json")
 local consts = require("consts")
 local iterator = require("iterator")
@@ -12,13 +12,11 @@ local function define_tests()
                     dataflow_id = "test-df",
                     node_id = "parent",
                     path = { "ancestor1", "ancestor2" },
-                    command = function(self, cmd)
-                        -- Mock command function
+                    command = function(self: any, cmd: any)
                         self._commands = self._commands or {}
                         table.insert(self._commands, cmd)
                     end,
-                    data = function(self, data_type, content, options)
-                        -- Mock data function
+                    data = function(self: any, data_type: string, content: any, options: any?)
                         self._data_calls = self._data_calls or {}
                         table.insert(self._data_calls, {
                             data_type = data_type,
@@ -40,7 +38,7 @@ local function define_tests()
                             }
                         }
                     },
-                    get_roots = function(self)
+                    get_roots = function(_self: any)
                         return { "template1" }
                     end
                 }
@@ -53,35 +51,32 @@ local function define_tests()
                     parent_node, template_graph, input_item, iteration_index, iteration_input_key
                 )
 
-                expect(iteration_info.iteration).to_equal(1)
-                expect(iteration_info.input_item).to_equal(input_item)
-                expect(iteration_info.uuid_mapping).not_to_be_nil()
-                expect(iteration_info.uuid_mapping["template1"]).not_to_be_nil()
-                expect(#iteration_info.root_nodes).to_equal(1)
+                test.eq(iteration_info.iteration, 1)
+                test.eq(iteration_info.input_item, input_item)
+                test.not_nil(iteration_info.uuid_mapping)
+                test.not_nil(iteration_info.uuid_mapping["template1"])
+                test.eq(#iteration_info.root_nodes, 1)
 
-                -- Fix: Compare individual elements instead of table reference
-                expect(#iteration_info.child_path).to_equal(3)
-                expect(iteration_info.child_path[1]).to_equal("ancestor1")
-                expect(iteration_info.child_path[2]).to_equal("ancestor2")
-                expect(iteration_info.child_path[3]).to_equal("parent")
+                test.eq(#iteration_info.child_path, 3)
+                test.eq(iteration_info.child_path[1], "ancestor1")
+                test.eq(iteration_info.child_path[2], "ancestor2")
+                test.eq(iteration_info.child_path[3], "parent")
 
-                -- Verify command was called to create node
-                expect(parent_node._commands).not_to_be_nil()
-                expect(#parent_node._commands).to_equal(1)
-                expect(parent_node._commands[1].type).to_equal(consts.COMMAND_TYPES.CREATE_NODE)
+                local pn = parent_node :: any
+                test.not_nil(pn._commands)
+                test.eq(#pn._commands, 1)
+                test.eq(pn._commands[1].type, consts.COMMAND_TYPES.CREATE_NODE)
 
-                -- Verify metadata preservation and title enhancement
-                local created_node = parent_node._commands[1].payload
-                expect(created_node.metadata).not_to_be_nil()
-                expect(created_node.metadata.title).to_equal("Test Function Node")
-                expect(created_node.metadata.description).to_equal("A test node for validation")
-                expect(created_node.metadata.iteration).to_equal(1)
-                expect(created_node.metadata.template_source).to_equal("template1")
+                local created_node = pn._commands[1].payload
+                test.not_nil(created_node.metadata)
+                test.eq(created_node.metadata.title, "Test Function Node")
+                test.eq(created_node.metadata.description, "A test node for validation")
+                test.eq(created_node.metadata.iteration, 1)
+                test.eq(created_node.metadata.template_source, "template1")
 
-                -- Verify data was called to create input
-                expect(parent_node._data_calls).not_to_be_nil()
-                expect(#parent_node._data_calls).to_equal(1)
-                expect(parent_node._data_calls[1].data_type).to_equal(consts.DATA_TYPE.NODE_INPUT)
+                test.not_nil(pn._data_calls)
+                test.eq(#pn._data_calls, 1)
+                test.eq(pn._data_calls[1].data_type, consts.DATA_TYPE.NODE_INPUT)
             end)
 
             it("should handle templates without metadata", function()
@@ -89,11 +84,11 @@ local function define_tests()
                     dataflow_id = "test-df",
                     node_id = "parent",
                     path = {},
-                    command = function(self, cmd)
+                    command = function(self: any, cmd: any)
                         self._commands = self._commands or {}
                         table.insert(self._commands, cmd)
                     end,
-                    data = function(self, data_type, content, options)
+                    data = function(self: any, data_type: string, content: any, options: any?)
                         self._data_calls = self._data_calls or {}
                         table.insert(self._data_calls, {
                             data_type = data_type,
@@ -109,10 +104,9 @@ local function define_tests()
                             node_id = "template1",
                             type = "func_node",
                             config = {}
-                            -- No metadata field
                         }
                     },
-                    get_roots = function(self)
+                    get_roots = function(_self: any)
                         return { "template1" }
                     end
                 }
@@ -121,14 +115,13 @@ local function define_tests()
                     parent_node, template_graph, { test = "data" }, 2, "default"
                 )
 
-                expect(iteration_info.iteration).to_equal(2)
+                test.eq(iteration_info.iteration, 2)
 
-                -- Verify minimal metadata is created
-                local created_node = parent_node._commands[1].payload
-                expect(created_node.metadata).not_to_be_nil()
-                expect(created_node.metadata.title).to_be_nil() -- No original title
-                expect(created_node.metadata.iteration).to_equal(2)
-                expect(created_node.metadata.template_source).to_equal("template1")
+                local created_node = (parent_node :: any)._commands[1].payload
+                test.not_nil(created_node.metadata)
+                test.is_nil(created_node.metadata.title)
+                test.eq(created_node.metadata.iteration, 2)
+                test.eq(created_node.metadata.template_source, "template1")
             end)
 
             it("should handle templates with metadata but no title", function()
@@ -136,11 +129,11 @@ local function define_tests()
                     dataflow_id = "test-df",
                     node_id = "parent",
                     path = {},
-                    command = function(self, cmd)
+                    command = function(self: any, cmd: any)
                         self._commands = self._commands or {}
                         table.insert(self._commands, cmd)
                     end,
-                    data = function(self, data_type, content, options)
+                    data = function(self: any, data_type: string, content: any, options: any?)
                         self._data_calls = self._data_calls or {}
                         table.insert(self._data_calls, {
                             data_type = data_type,
@@ -162,7 +155,7 @@ local function define_tests()
                             }
                         }
                     },
-                    get_roots = function(self)
+                    get_roots = function(_self: any)
                         return { "template1" }
                     end
                 }
@@ -171,16 +164,15 @@ local function define_tests()
                     parent_node, template_graph, { test = "data" }, 3, "default"
                 )
 
-                expect(iteration_info.iteration).to_equal(3)
+                test.eq(iteration_info.iteration, 3)
 
-                -- Verify metadata preservation without title modification
-                local created_node = parent_node._commands[1].payload
-                expect(created_node.metadata).not_to_be_nil()
-                expect(created_node.metadata.title).to_be_nil() -- No title to modify
-                expect(created_node.metadata.description).to_equal("A node without title")
-                expect(created_node.metadata.custom_field).to_equal("custom_value")
-                expect(created_node.metadata.iteration).to_equal(3)
-                expect(created_node.metadata.template_source).to_equal("template1")
+                local created_node = (parent_node :: any)._commands[1].payload
+                test.not_nil(created_node.metadata)
+                test.is_nil(created_node.metadata.title)
+                test.eq(created_node.metadata.description, "A node without title")
+                test.eq(created_node.metadata.custom_field, "custom_value")
+                test.eq(created_node.metadata.iteration, 3)
+                test.eq(created_node.metadata.template_source, "template1")
             end)
 
             it("should handle multiple templates with dependencies", function()
@@ -188,11 +180,11 @@ local function define_tests()
                     dataflow_id = "test-df",
                     node_id = "parent",
                     path = {},
-                    command = function(self, cmd)
+                    command = function(self: any, cmd: any)
                         self._commands = self._commands or {}
                         table.insert(self._commands, cmd)
                     end,
-                    data = function(self, data_type, content, options)
+                    data = function(self: any, data_type: string, content: any, options: any?)
                         self._data_calls = self._data_calls or {}
                         table.insert(self._data_calls, {
                             data_type = data_type,
@@ -230,7 +222,7 @@ local function define_tests()
                             }
                         }
                     },
-                    get_roots = function(self)
+                    get_roots = function(_self: any)
                         return { "template1" }
                     end
                 }
@@ -240,16 +232,16 @@ local function define_tests()
                     parent_node, template_graph, input_item, 4, "default"
                 )
 
-                expect(#iteration_info.root_nodes).to_equal(1)
-                expect(parent_node._commands).not_to_be_nil()
-                expect(#parent_node._commands).to_equal(2) -- Two nodes created
-                expect(#parent_node._data_calls).to_equal(1) -- Only root gets input
+                test.eq(#iteration_info.root_nodes, 1)
+                local pn = parent_node :: any
+                test.not_nil(pn._commands)
+                test.eq(#pn._commands, 2)
+                test.eq(#pn._data_calls, 1)
 
-                -- Verify UUID remapping in config
-                local template1_cmd = nil
-                local template2_cmd = nil
+                local template1_cmd: any = nil
+                local template2_cmd: any = nil
 
-                for _, cmd in ipairs(parent_node._commands) do
+                for _, cmd in ipairs(pn._commands) do
                     if cmd.payload.metadata.template_source == "template1" then
                         template1_cmd = cmd
                     elseif cmd.payload.metadata.template_source == "template2" then
@@ -257,18 +249,16 @@ local function define_tests()
                     end
                 end
 
-                expect(template1_cmd).not_to_be_nil()
-                expect(template2_cmd).not_to_be_nil()
+                test.not_nil(template1_cmd)
+                test.not_nil(template2_cmd)
 
-                -- Verify title enhancement for both nodes
-                expect(template1_cmd.payload.metadata.title).to_equal("First Node")
-                expect(template1_cmd.payload.metadata.order).to_equal(1)
-                expect(template2_cmd.payload.metadata.title).to_equal("Second Node")
-                expect(template2_cmd.payload.metadata.order).to_equal(2)
+                test.eq(template1_cmd.payload.metadata.title, "First Node")
+                test.eq(template1_cmd.payload.metadata.order, 1)
+                test.eq(template2_cmd.payload.metadata.title, "Second Node")
+                test.eq(template2_cmd.payload.metadata.order, 2)
 
-                -- Verify UUID remapping
                 local data_targets = template1_cmd.payload.config.data_targets
-                expect(data_targets[1].node_id).to_equal(iteration_info.uuid_mapping["template2"])
+                test.eq(data_targets[1].node_id, iteration_info.uuid_mapping["template2"])
             end)
         end)
 
@@ -278,11 +268,11 @@ local function define_tests()
                     dataflow_id = "test-df",
                     node_id = "parent",
                     path = {},
-                    command = function(self, cmd)
+                    command = function(self: any, cmd: any)
                         self._commands = self._commands or {}
                         table.insert(self._commands, cmd)
                     end,
-                    data = function(self, data_type, content, options)
+                    data = function(self: any, data_type: string, content: any, options: any?)
                         self._data_calls = self._data_calls or {}
                         table.insert(self._data_calls, {
                             data_type = data_type,
@@ -303,7 +293,7 @@ local function define_tests()
                             }
                         }
                     },
-                    get_roots = function(self)
+                    get_roots = function(_self: any)
                         return { "template1" }
                     end
                 }
@@ -318,24 +308,23 @@ local function define_tests()
                     parent_node, template_graph, items, 1, 3, "default"
                 )
 
-                expect(err).to_be_nil()
-                expect(iterations).not_to_be_nil()
-                expect(#iterations).to_equal(3)
+                test.is_nil(err)
+                test.not_nil(iterations)
+                test.eq(#iterations, 3)
 
                 for i, iteration in ipairs(iterations) do
-                    expect(iteration.iteration).to_equal(i)
-                    expect(iteration.input_item).to_equal(items[i])
-                    expect(#iteration.root_nodes).to_equal(1)
+                    test.eq(iteration.iteration, i)
+                    test.eq(iteration.input_item, items[i])
+                    test.eq(#iteration.root_nodes, 1)
                 end
 
-                -- Should have created 3 nodes (one per iteration)
-                expect(#parent_node._commands).to_equal(3)
-                expect(#parent_node._data_calls).to_equal(3)
+                local pn = parent_node :: any
+                test.eq(#pn._commands, 3)
+                test.eq(#pn._data_calls, 3)
 
-                -- Verify title enhancement for each iteration
-                for i, cmd in ipairs(parent_node._commands) do
-                    expect(cmd.payload.metadata.title).to_equal("Batch Processing Node")
-                    expect(cmd.payload.metadata.iteration).to_equal(i)
+                for i, cmd in ipairs(pn._commands) do
+                    test.eq(cmd.payload.metadata.title, "Batch Processing Node")
+                    test.eq(cmd.payload.metadata.iteration, i)
                 end
             end)
 
@@ -344,11 +333,11 @@ local function define_tests()
                     dataflow_id = "test-df",
                     node_id = "parent",
                     path = {},
-                    command = function(self, cmd)
+                    command = function(self: any, cmd: any)
                         self._commands = self._commands or {}
                         table.insert(self._commands, cmd)
                     end,
-                    data = function(self, data_type, content, options)
+                    data = function(self: any, data_type: string, content: any, options: any?)
                         self._data_calls = self._data_calls or {}
                         table.insert(self._data_calls, {
                             data_type = data_type,
@@ -369,7 +358,7 @@ local function define_tests()
                             }
                         }
                     },
-                    get_roots = function(self)
+                    get_roots = function(_self: any)
                         return { "template1" }
                     end
                 }
@@ -380,19 +369,21 @@ local function define_tests()
                     parent_node, template_graph, items, 2, 4, "default"
                 )
 
-                expect(err).to_be_nil()
-                expect(#iterations).to_equal(3) -- Items 2, 3, 4
-                expect(iterations[1].iteration).to_equal(2)
-                expect(iterations[2].iteration).to_equal(3)
-                expect(iterations[3].iteration).to_equal(4)
-                expect(iterations[1].input_item).to_equal("b")
-                expect(iterations[2].input_item).to_equal("c")
-                expect(iterations[3].input_item).to_equal("d")
+                test.is_nil(err)
+                test.not_nil(iterations)
+                local iters = iterations :: any
+                test.eq(#iters, 3)
+                test.eq(iters[1].iteration, 2)
+                test.eq(iters[2].iteration, 3)
+                test.eq(iters[3].iteration, 4)
+                test.eq(iters[1].input_item, "b")
+                test.eq(iters[2].input_item, "c")
+                test.eq(iters[3].input_item, "d")
 
-                -- Verify correct iteration numbering in titles
-                expect(parent_node._commands[1].payload.metadata.title).to_equal("Partial Batch Node")
-                expect(parent_node._commands[2].payload.metadata.title).to_equal("Partial Batch Node")
-                expect(parent_node._commands[3].payload.metadata.title).to_equal("Partial Batch Node")
+                local pn = parent_node :: any
+                test.eq(pn._commands[1].payload.metadata.title, "Partial Batch Node")
+                test.eq(pn._commands[2].payload.metadata.title, "Partial Batch Node")
+                test.eq(pn._commands[3].payload.metadata.title, "Partial Batch Node")
             end)
 
             it("should validate batch parameters", function()
@@ -403,20 +394,20 @@ local function define_tests()
 
                 local template_graph = {
                     nodes = {},
-                    get_roots = function(self) return {} end
+                    get_roots = function(_self: any) return {} end
                 }
 
                 local iterations1, err1 = iterator.create_batch(nil, template_graph, {}, 1, 1, "default")
-                expect(iterations1).to_be_nil()
-                expect(err1).to_contain("Missing required parameters")
+                test.is_nil(iterations1)
+                test.contains(err1, "Missing required parameters")
 
                 local iterations2, err2 = iterator.create_batch(parent_node, template_graph, {}, 0, 1, "default")
-                expect(iterations2).to_be_nil()
-                expect(err2).to_contain("Invalid batch range")
+                test.is_nil(iterations2)
+                test.contains(err2, "Invalid batch range")
 
                 local iterations3, err3 = iterator.create_batch(parent_node, template_graph, {"a"}, 1, 2, "default")
-                expect(iterations3).to_be_nil()
-                expect(err3).to_contain("Invalid batch range")
+                test.is_nil(iterations3)
+                test.contains(err3, "Invalid batch range")
             end)
         end)
 
@@ -440,13 +431,13 @@ local function define_tests()
                     ["template1"] = "actual-node-123"
                 }
 
-                local remapped = iterator.remap_template_config(config, uuid_mapping)
+                local remapped = iterator.remap_template_config(config, uuid_mapping) :: any
 
-                expect(remapped.func_id).to_equal("test_func")
-                expect(#remapped.data_targets).to_equal(2)
-                expect(remapped.data_targets[1].node_id).to_equal("actual-node-123")
-                expect(remapped.data_targets[2].node_id).to_be_nil() -- Should not be affected
-                expect(remapped.data_targets[2].key).to_equal("result")
+                test.eq(remapped.func_id, "test_func")
+                test.eq(#remapped.data_targets, 2)
+                test.eq(remapped.data_targets[1].node_id, "actual-node-123")
+                test.is_nil(remapped.data_targets[2].node_id)
+                test.eq(remapped.data_targets[2].key, "result")
             end)
 
             it("should remap error_targets node references", function()
@@ -463,16 +454,16 @@ local function define_tests()
                     ["template2"] = "actual-node-456"
                 }
 
-                local remapped = iterator.remap_template_config(config, uuid_mapping)
+                local remapped = iterator.remap_template_config(config, uuid_mapping) :: any
 
-                expect(#remapped.error_targets).to_equal(1)
-                expect(remapped.error_targets[1].node_id).to_equal("actual-node-456")
+                test.eq(#remapped.error_targets, 1)
+                test.eq(remapped.error_targets[1].node_id, "actual-node-456")
             end)
 
             it("should handle nil config", function()
                 local remapped = iterator.remap_template_config(nil, {})
-                expect(remapped).to_be_type("table")
-                expect(next(remapped)).to_be_nil() -- Empty table
+                test.is_table(remapped)
+                test.is_nil(next(remapped))
             end)
 
             it("should preserve non-remappable references", function()
@@ -480,7 +471,7 @@ local function define_tests()
                     data_targets = {
                         {
                             data_type = "node.input",
-                            node_id = "external-node" -- Not in mapping
+                            node_id = "external-node"
                         }
                     }
                 }
@@ -489,8 +480,8 @@ local function define_tests()
                     ["template1"] = "actual-node-123"
                 }
 
-                local remapped = iterator.remap_template_config(config, uuid_mapping)
-                expect(remapped.data_targets[1].node_id).to_equal("external-node")
+                local remapped = iterator.remap_template_config(config, uuid_mapping) :: any
+                test.eq(remapped.data_targets[1].node_id, "external-node")
             end)
         end)
 
@@ -508,13 +499,13 @@ local function define_tests()
                 }
 
                 local mock_data_reader = {
-                    with_dataflow = function(dataflow_id)
+                    with_dataflow = function(_dataflow_id: any)
                         return {
-                            with_nodes = function(node_ids)
+                            with_nodes = function(_node_ids: any)
                                 return {
-                                    with_data_types = function(data_type)
+                                    with_data_types = function(_data_type: any)
                                         return {
-                                            fetch_options = function(options)
+                                            fetch_options = function(_options: any)
                                                 return {
                                                     all = function()
                                                         return {
@@ -540,10 +531,11 @@ local function define_tests()
 
                 local result, err = iterator.collect_results(parent_node, iteration_info, deps)
 
-                expect(err).to_be_nil()
-                expect(result).not_to_be_nil()
-                expect(result.message).to_equal("success")
-                expect(result.value).to_equal(123)
+                test.is_nil(err)
+                test.not_nil(result)
+                local res = result :: any
+                test.eq(res.message, "success")
+                test.eq(res.value, 123)
             end)
 
             it("should handle multiple outputs", function()
@@ -558,13 +550,13 @@ local function define_tests()
                 }
 
                 local mock_data_reader = {
-                    with_dataflow = function(dataflow_id)
+                    with_dataflow = function(_dataflow_id: any)
                         return {
-                            with_nodes = function(node_ids)
+                            with_nodes = function(_node_ids: any)
                                 return {
-                                    with_data_types = function(data_type)
+                                    with_data_types = function(_data_type: any)
                                         return {
-                                            fetch_options = function(options)
+                                            fetch_options = function(_options: any)
                                                 return {
                                                     all = function()
                                                         return {
@@ -596,11 +588,12 @@ local function define_tests()
 
                 local result, err = iterator.collect_results(parent_node, iteration_info, deps)
 
-                expect(err).to_be_nil()
-                expect(result).to_be_type("table")
-                expect(#result).to_equal(2)
-                expect(result[1].content).to_equal("first")
-                expect(result[2].content).to_equal("second")
+                test.is_nil(err)
+                test.is_table(result)
+                local res = result :: any
+                test.eq(#res, 2)
+                test.eq(res[1].content, "first")
+                test.eq(res[2].content, "second")
             end)
 
             it("should handle data reader errors", function()
@@ -613,7 +606,7 @@ local function define_tests()
                 }
 
                 local mock_data_reader = {
-                    with_dataflow = function(dataflow_id)
+                    with_dataflow = function(_dataflow_id: any)
                         return nil, "Database connection failed"
                     end
                 }
@@ -622,8 +615,8 @@ local function define_tests()
 
                 local result, err = iterator.collect_results(parent_node, iteration_info, deps)
 
-                expect(result).to_be_nil()
-                expect(err).to_contain("Failed to create data reader")
+                test.is_nil(result)
+                test.contains(err, "Failed to create data reader")
             end)
 
             it("should handle query errors", function()
@@ -636,13 +629,13 @@ local function define_tests()
                 }
 
                 local mock_data_reader = {
-                    with_dataflow = function(dataflow_id)
+                    with_dataflow = function(_dataflow_id: any)
                         return {
-                            with_nodes = function(node_ids)
+                            with_nodes = function(_node_ids: any)
                                 return {
-                                    with_data_types = function(data_type)
+                                    with_data_types = function(_data_type: any)
                                         return {
-                                            fetch_options = function(options)
+                                            fetch_options = function(_options: any)
                                                 return {
                                                     all = function()
                                                         return nil, "Query execution failed"
@@ -661,8 +654,8 @@ local function define_tests()
 
                 local result, err = iterator.collect_results(parent_node, iteration_info, deps)
 
-                expect(result).to_be_nil()
-                expect(err).to_contain("Failed to query output data")
+                test.is_nil(result)
+                test.contains(err, "Failed to query output data")
             end)
 
             it("should handle no output data", function()
@@ -675,16 +668,16 @@ local function define_tests()
                 }
 
                 local mock_data_reader = {
-                    with_dataflow = function(dataflow_id)
+                    with_dataflow = function(_dataflow_id: any)
                         return {
-                            with_nodes = function(node_ids)
+                            with_nodes = function(_node_ids: any)
                                 return {
-                                    with_data_types = function(data_type)
+                                    with_data_types = function(_data_type: any)
                                         return {
-                                            fetch_options = function(options)
+                                            fetch_options = function(_options: any)
                                                 return {
                                                     all = function()
-                                                        return {}, nil -- Empty results
+                                                        return {}, nil
                                                     end
                                                 }
                                             end
@@ -700,8 +693,8 @@ local function define_tests()
 
                 local result, err = iterator.collect_results(parent_node, iteration_info, deps)
 
-                expect(result).to_be_nil()
-                expect(err).to_contain("No output data found")
+                test.is_nil(result)
+                test.contains(err, "No output data found")
             end)
 
             it("should parse JSON content correctly", function()
@@ -714,13 +707,13 @@ local function define_tests()
                 }
 
                 local mock_data_reader = {
-                    with_dataflow = function(dataflow_id)
+                    with_dataflow = function(_dataflow_id: any)
                         return {
-                            with_nodes = function(node_ids)
+                            with_nodes = function(_node_ids: any)
                                 return {
-                                    with_data_types = function(data_type)
+                                    with_data_types = function(_data_type: any)
                                         return {
-                                            fetch_options = function(options)
+                                            fetch_options = function(_options: any)
                                                 return {
                                                     all = function()
                                                         return {
@@ -747,11 +740,12 @@ local function define_tests()
 
                 local result, err = iterator.collect_results(parent_node, iteration_info, deps)
 
-                expect(err).to_be_nil()
-                expect(result).not_to_be_nil()
-                expect(type(result)).to_equal("table") -- Should be parsed as table
-                expect(result.message).to_equal("parsed")
-                expect(result.success).to_be_true()
+                test.is_nil(err)
+                test.not_nil(result)
+                test.is_table(result)
+                local res = result :: any
+                test.eq(res.message, "parsed")
+                test.is_true(res.success)
             end)
         end)
 
@@ -761,11 +755,11 @@ local function define_tests()
                     dataflow_id = "test-df",
                     node_id = "parent",
                     path = {},
-                    command = function(self, cmd)
+                    command = function(self: any, cmd: any)
                         self._commands = self._commands or {}
                         table.insert(self._commands, cmd)
                     end,
-                    data = function(self, data_type, content, options) end
+                    data = function(_self: any, _data_type: string, _content: any, _options: any?) end
                 }
 
                 local template_graph = {
@@ -788,33 +782,31 @@ local function define_tests()
                             }
                         }
                     },
-                    get_roots = function(self)
+                    get_roots = function(_self: any)
                         return { "template1" }
                     end
                 }
 
-                local iteration_info = iterator.create_iteration(
+                local _iteration_info = iterator.create_iteration(
                     parent_node, template_graph, { test = "data" }, 5, "default"
                 )
 
-                local created_node = parent_node._commands[1].payload
+                local created_node = (parent_node :: any)._commands[1].payload
                 local metadata = created_node.metadata
 
-                -- Verify all original metadata is preserved
-                expect(metadata.title).to_equal("Complex Node")
-                expect(metadata.description).to_equal("A node with lots of metadata")
-                expect(metadata.version).to_equal("1.2.3")
-                expect(metadata.author).to_equal("test_user")
-                expect(#metadata.tags).to_equal(2)
-                expect(metadata.tags[1]).to_equal("processing")
-                expect(metadata.tags[2]).to_equal("data")
-                expect(metadata.settings.timeout).to_equal(30)
-                expect(metadata.settings.retries).to_equal(3)
-                expect(metadata.custom_field).to_be_true()
+                test.eq(metadata.title, "Complex Node")
+                test.eq(metadata.description, "A node with lots of metadata")
+                test.eq(metadata.version, "1.2.3")
+                test.eq(metadata.author, "test_user")
+                test.eq(#metadata.tags, 2)
+                test.eq(metadata.tags[1], "processing")
+                test.eq(metadata.tags[2], "data")
+                test.eq(metadata.settings.timeout, 30)
+                test.eq(metadata.settings.retries, 3)
+                test.is_true(metadata.custom_field)
 
-                -- Verify iteration-specific metadata is added
-                expect(metadata.iteration).to_equal(5)
-                expect(metadata.template_source).to_equal("template1")
+                test.eq(metadata.iteration, 5)
+                test.eq(metadata.template_source, "template1")
             end)
 
             it("should handle complex title scenarios", function()
@@ -822,11 +814,11 @@ local function define_tests()
                     dataflow_id = "test-df",
                     node_id = "parent",
                     path = {},
-                    command = function(self, cmd)
+                    command = function(self: any, cmd: any)
                         self._commands = self._commands or {}
                         table.insert(self._commands, cmd)
                     end,
-                    data = function(self, data_type, content, options) end
+                    data = function(_self: any, _data_type: string, _content: any, _options: any?) end
                 }
 
                 local test_cases = {
@@ -852,8 +844,8 @@ local function define_tests()
                     }
                 }
 
-                for i, test_case in ipairs(test_cases) do
-                    parent_node._commands = {} -- Reset commands
+                for _i, test_case in ipairs(test_cases) do
+                    (parent_node :: any)._commands = {}
 
                     local template_graph = {
                         nodes = {
@@ -866,7 +858,7 @@ local function define_tests()
                                 }
                             }
                         },
-                        get_roots = function(self)
+                        get_roots = function(_self: any)
                             return { "template1" }
                         end
                     }
@@ -875,8 +867,8 @@ local function define_tests()
                         parent_node, template_graph, { test = "data" }, test_case.iteration, "default"
                     )
 
-                    local created_node = parent_node._commands[1].payload
-                    expect(created_node.metadata.title).to_equal(test_case.expected)
+                    local created_node = (parent_node :: any)._commands[1].payload
+                    test.eq(created_node.metadata.title, test_case.expected)
                 end
             end)
         end)

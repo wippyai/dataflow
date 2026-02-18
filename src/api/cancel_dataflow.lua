@@ -50,7 +50,7 @@ local function handler()
     local timeout = req:query("timeout") or "30s"
 
     -- Cancel the workflow
-    local success, err, info = workflow_client:cancel(dataflow_id, timeout)
+    local success, err, info = (workflow_client :: any):cancel(dataflow_id, timeout)
 
     if not success then
         -- Determine appropriate HTTP status based on error

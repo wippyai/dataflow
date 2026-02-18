@@ -1,0 +1,9 @@
+version: "1.0"
+namespace: userspace.uploads
+
+entries:
+  - name: upload_repo
+    kind: library.lua
+    meta:
+      comment: Stub upload repository for testing
+    source: file://upload_repo.lua

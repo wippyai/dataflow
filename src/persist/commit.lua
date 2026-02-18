@@ -24,8 +24,12 @@ function commit._send_process_message(target_process, topic, payload)
 end
 
 -- Isolated method for getting current user ID (can be mocked in tests)
-function commit._get_current_user_id()
-    return security.actor():id()
+function commit._get_current_user_id(): string
+    local actor = security.actor()
+    if not actor then
+        return ""
+    end
+    return actor:id()
 end
 
 -- Isolated method for getting current timestamp (can be mocked in tests)

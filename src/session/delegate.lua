@@ -16,6 +16,10 @@ local function handle(args)
     if not target_agent_id then
         return nil, "to_agent_id not found in context"
     end
+    if type(target_agent_id) ~= "string" or target_agent_id == "" then
+        return nil, "to_agent_id must be a non-empty string"
+    end
+    local target_agent = target_agent_id :: string
 
     -- Get all session context
     local session_context, ctx_err = ctx.all()
@@ -24,10 +28,10 @@ local function handle(args)
     end
 
     -- Get agent title from registry lookup
-    local agent_spec, lookup_err = agent_registry.get_by_id(target_agent_id)
+    local agent_spec, lookup_err = agent_registry.get_by_id(target_agent)
     if not agent_spec then
         -- Try by name if ID lookup failed
-        agent_spec, lookup_err = agent_registry.get_by_name(target_agent_id)
+        agent_spec, lookup_err = agent_registry.get_by_name(target_agent)
     end
 
     local agent_title = "Delegated Agent"
@@ -36,7 +40,7 @@ local function handle(args)
     elseif agent_spec and agent_spec.name then
         agent_title = agent_spec.name
     else
-        agent_title = target_agent_id
+        agent_title = target_agent
     end
 
     -- Create dataflow client
@@ -58,7 +62,7 @@ local function handle(args)
                 node_type = "userspace.dataflow.node.agent:node",
                 status = consts.STATUS.PENDING,
                 config = {
-                    agent = target_agent_id,
+                    agent = target_agent,
                     arena = {
                         prompt = "You are executing user request.", -- this prompt reseved for system context passing
                         max_iterations = session_context.max_iterations or 64,
@@ -99,11 +103,11 @@ local function handle(args)
     }
 
     -- Create and execute workflow
-    local dataflow_id, create_err = c:create_workflow(workflow_commands, {
+    local dataflow_id, create_err = (c :: any):create_workflow(workflow_commands, {
         metadata = {
             title = agent_title,
             delegation_type = "session_delegation",
-            target_agent = target_agent_id,
+            target_agent = target_agent,
             message = args.message,
             created_by = "userspace.dataflow.session:delegate"
         }
@@ -114,7 +118,7 @@ local function handle(args)
     end
 
     -- Execute workflow
-    local result, exec_err = c:execute(dataflow_id, {
+    local result, exec_err = (c :: any):execute(dataflow_id, {
         init_func_id = "userspace.dataflow.session:artifact"
     })
 

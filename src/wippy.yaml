@@ -1,0 +1,12 @@
+organization: wippy
+module: dataflow
+description: Workflow execution engine with visual flow designer support
+license: Apache-2.0
+keywords:
+  - workflow
+  - dataflow
+  - automation
+  - flows
+exclude_meta:
+  type:
+    - test

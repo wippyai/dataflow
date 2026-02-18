@@ -54,9 +54,9 @@ local function handler()
     end
 
     local total_count, count_err = dataflow_repo.count_by_user(user_id, {
-        status = filters.status,
-        type = filters.type,
-        parent_dataflow_id = filters.parent_dataflow_id
+        status = (filters :: any).status,
+        type = (filters :: any).type,
+        parent_dataflow_id = (filters :: any).parent_dataflow_id
     })
 
     if count_err then

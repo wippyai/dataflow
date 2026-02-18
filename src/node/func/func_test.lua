@@ -12,12 +12,12 @@ local function define_tests()
                 print("=== FUNC NODE INTEGRATION TEST START ===")
 
                 local c, err = client.new()
-                expect(err).to_be_nil()
-                expect(c).not_to_be_nil()
+                test.is_nil(err)
+                test.not_nil(c)
 
-                local node_id = uuid.v7()
-                local input_data_id = uuid.v7()
-                local node_input_id = uuid.v7()
+                local node_id: string = uuid.v7()
+                local input_data_id: string = uuid.v7()
+                local node_input_id: string = uuid.v7()
 
                 local test_input = {
                     message = "Function node test",
@@ -74,13 +74,13 @@ local function define_tests()
                         title = "Basic Function Execution Test Workflow"
                     }
                 })
-                expect(create_err).to_be_nil()
-                expect(dataflow_id).not_to_be_nil()
+                test.is_nil(create_err)
+                test.not_nil(dataflow_id)
 
                 local result, exec_err = c:execute(dataflow_id)
-                expect(exec_err).to_be_nil()
-                expect(result).not_to_be_nil()
-                expect(result.success).to_be_true()
+                test.is_nil(exec_err)
+                test.not_nil(result)
+                test.is_true(result.success)
 
                 -- Verify output was created
                 local output_data = data_reader.with_dataflow(dataflow_id)
@@ -88,30 +88,30 @@ local function define_tests()
                     :fetch_options({ replace_references = true })
                     :one()
 
-                expect(output_data).not_to_be_nil()
+                test.not_nil(output_data)
 
-                local output_content = output_data.content
+                local output_content: any = output_data.content
                 if type(output_content) == "string" then
-                    local decoded, decode_err = json.decode(output_content)
-                    if not decode_err then
+                    local decoded, _decode_err = json.decode(output_content)
+                    if not _decode_err then
                         output_content = decoded
                     end
                 end
 
-                expect(output_content.message).to_equal("Function node test")
-                expect(output_content.processed_by).to_equal("test_function")
-                expect(output_content.success).to_be_true()
+                test.eq(output_content.message, "Function node test")
+                test.eq(output_content.processed_by, "test_function")
+                test.is_true(output_content.success)
 
-                print("✓ Function node executed successfully via test_func")
+                print("Function node executed successfully via test_func")
             end)
 
             it("should handle function failure correctly", function()
                 local c, err = client.new()
-                expect(err).to_be_nil()
+                test.is_nil(err)
 
-                local node_id = uuid.v7()
-                local input_data_id = uuid.v7()
-                local node_input_id = uuid.v7()
+                local node_id: string = uuid.v7()
+                local input_data_id: string = uuid.v7()
+                local node_input_id: string = uuid.v7()
 
                 local test_input = {
                     message = "Should fail",
@@ -172,11 +172,11 @@ local function define_tests()
                         title = "Function Failure Test Workflow"
                     }
                 })
-                expect(create_err).to_be_nil()
+                test.is_nil(create_err)
 
                 local result, exec_err = c:execute(dataflow_id)
-                expect(exec_err).to_be_nil()
-                expect(result.success).to_be_true()
+                test.is_nil(exec_err)
+                test.is_true(result.success)
 
                 -- Check that error was routed via error_targets
                 local error_outputs = data_reader.with_dataflow(dataflow_id)
@@ -185,18 +185,18 @@ local function define_tests()
                     :fetch_options({ replace_references = true })
                     :all()
 
-                expect(#error_outputs).to_be_greater_than(0)
+                test.gt(#error_outputs, 0)
 
-                print("✓ Function node handled failure and routed error correctly")
+                print("Function node handled failure and routed error correctly")
             end)
 
             it("should fail when func_id is missing", function()
                 local c, err = client.new()
-                expect(err).to_be_nil()
+                test.is_nil(err)
 
-                local node_id = uuid.v7()
-                local input_data_id = uuid.v7()
-                local node_input_id = uuid.v7()
+                local node_id: string = uuid.v7()
+                local input_data_id: string = uuid.v7()
+                local node_input_id: string = uuid.v7()
 
                 local test_input = { message = "test" }
 
@@ -208,7 +208,6 @@ local function define_tests()
                             node_type = "userspace.dataflow.node.func:node",
                             status = consts.STATUS.PENDING,
                             config = {
-                                -- Missing func_id!
                                 data_targets = {
                                     {
                                         data_type = consts.DATA_TYPE.WORKFLOW_OUTPUT,
@@ -248,21 +247,21 @@ local function define_tests()
                         title = "Missing Func ID Test Workflow"
                     }
                 })
-                expect(create_err).to_be_nil()
+                test.is_nil(create_err)
 
                 local result, exec_err = c:execute(dataflow_id)
-                expect(exec_err).to_be_nil()
-                expect(result.success).to_be_false()
-                expect(result.error).to_contain("Function ID not specified")
+                test.is_nil(exec_err)
+                test.is_false(result.success)
+                test.contains(result.error, "Function ID not specified")
 
-                print("✓ Function node correctly failed with missing func_id")
+                print("Function node correctly failed with missing func_id")
             end)
 
             it("should fail when no input data provided", function()
                 local c, err = client.new()
-                expect(err).to_be_nil()
+                test.is_nil(err)
 
-                local node_id = uuid.v7()
+                local node_id: string = uuid.v7()
 
                 local workflow_commands = {
                     {
@@ -285,7 +284,6 @@ local function define_tests()
                             }
                         }
                     }
-                    -- No input data!
                 }
 
                 local dataflow_id, create_err = c:create_workflow(workflow_commands, {
@@ -293,23 +291,23 @@ local function define_tests()
                         title = "No Input Data Test Workflow"
                     }
                 })
-                expect(create_err).to_be_nil()
+                test.is_nil(create_err)
 
                 local result, exec_err = c:execute(dataflow_id)
-                expect(exec_err).to_be_nil()
-                expect(result.success).to_be_false()
-                expect(result.error).to_contain("No input data provided")
+                test.is_nil(exec_err)
+                test.is_false(result.success)
+                test.contains(result.error, "No input data provided")
 
-                print("✓ Function node correctly failed with no input data")
+                print("Function node correctly failed with no input data")
             end)
 
             it("should fail when function does not exist", function()
                 local c, err = client.new()
-                expect(err).to_be_nil()
+                test.is_nil(err)
 
-                local node_id = uuid.v7()
-                local input_data_id = uuid.v7()
-                local node_input_id = uuid.v7()
+                local node_id: string = uuid.v7()
+                local input_data_id: string = uuid.v7()
+                local node_input_id: string = uuid.v7()
 
                 local test_input = { message = "test" }
 
@@ -361,23 +359,23 @@ local function define_tests()
                         title = "Nonexistent Function Test Workflow"
                     }
                 })
-                expect(create_err).to_be_nil()
+                test.is_nil(create_err)
 
                 local result, exec_err = c:execute(dataflow_id)
-                expect(exec_err).to_be_nil()
-                expect(result.success).to_be_false()
-                expect(result.error).to_contain("failed")
+                test.is_nil(exec_err)
+                test.is_false(result.success)
+                test.contains(result.error, "failed")
 
-                print("✓ Function node correctly failed with nonexistent function")
+                print("Function node correctly failed with nonexistent function")
             end)
 
             it("should pass context to function when configured", function()
                 local c, err = client.new()
-                expect(err).to_be_nil()
+                test.is_nil(err)
 
-                local node_id = uuid.v7()
-                local input_data_id = uuid.v7()
-                local node_input_id = uuid.v7()
+                local node_id: string = uuid.v7()
+                local input_data_id: string = uuid.v7()
+                local node_input_id: string = uuid.v7()
 
                 local test_input = {
                     message = "Context test",
@@ -439,11 +437,11 @@ local function define_tests()
                         title = "Context Test Workflow"
                     }
                 })
-                expect(create_err).to_be_nil()
+                test.is_nil(create_err)
 
                 local result, exec_err = c:execute(dataflow_id)
-                expect(exec_err).to_be_nil()
-                expect(result.success).to_be_true()
+                test.is_nil(exec_err)
+                test.is_true(result.success)
 
                 -- Verify output contains context data
                 local output_data = data_reader.with_dataflow(dataflow_id)
@@ -451,31 +449,31 @@ local function define_tests()
                     :fetch_options({ replace_references = true })
                     :one()
 
-                expect(output_data).not_to_be_nil()
+                test.not_nil(output_data)
 
-                local output_content = output_data.content
+                local output_content: any = output_data.content
                 if type(output_content) == "string" then
-                    local decoded, decode_err = json.decode(output_content)
-                    if not decode_err then
+                    local decoded, _decode_err = json.decode(output_content)
+                    if not _decode_err then
                         output_content = decoded
                     end
                 end
 
-                expect(output_content.message).to_equal("Context test")
-                expect(output_content.processed_by).to_equal("test_function")
+                test.eq(output_content.message, "Context test")
+                test.eq(output_content.processed_by, "test_function")
 
-                print("✓ Function node passed context successfully")
+                print("Function node passed context successfully")
             end)
         end)
 
         describe("Input Handling", function()
             it("should handle string input correctly", function()
                 local c, err = client.new()
-                expect(err).to_be_nil()
+                test.is_nil(err)
 
-                local node_id = uuid.v7()
-                local input_data_id = uuid.v7()
-                local node_input_id = uuid.v7()
+                local node_id: string = uuid.v7()
+                local input_data_id: string = uuid.v7()
+                local node_input_id: string = uuid.v7()
 
                 local test_input = "Simple string input"
 
@@ -527,22 +525,22 @@ local function define_tests()
                         title = "String Input Test Workflow"
                     }
                 })
-                expect(create_err).to_be_nil()
+                test.is_nil(create_err)
 
                 local result, exec_err = c:execute(dataflow_id)
-                expect(exec_err).to_be_nil()
-                expect(result.success).to_be_true()
+                test.is_nil(exec_err)
+                test.is_true(result.success)
 
-                print("✓ Function node handled string input correctly")
+                print("Function node handled string input correctly")
             end)
 
             it("should use first available input when no default key", function()
                 local c, err = client.new()
-                expect(err).to_be_nil()
+                test.is_nil(err)
 
-                local node_id = uuid.v7()
-                local input_data_id = uuid.v7()
-                local node_input_id = uuid.v7()
+                local node_id: string = uuid.v7()
+                local input_data_id: string = uuid.v7()
+                local node_input_id: string = uuid.v7()
 
                 local test_input = { message = "Named input test" }
 
@@ -586,7 +584,7 @@ local function define_tests()
                             content = "",
                             content_type = "dataflow/reference",
                             metadata = {
-                                input_key = "named_input" -- Non-default key
+                                input_key = "named_input"
                             }
                         }
                     }
@@ -597,13 +595,13 @@ local function define_tests()
                         title = "Named Input Test Workflow"
                     }
                 })
-                expect(create_err).to_be_nil()
+                test.is_nil(create_err)
 
                 local result, exec_err = c:execute(dataflow_id)
-                expect(exec_err).to_be_nil()
-                expect(result.success).to_be_true()
+                test.is_nil(exec_err)
+                test.is_true(result.success)
 
-                print("✓ Function node used first available input correctly")
+                print("Function node used first available input correctly")
             end)
         end)
     end)

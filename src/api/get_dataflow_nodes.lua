@@ -56,7 +56,7 @@ local function handler()
         return
     end
 
-    local nodes, nodes_err = node_reader.with_dataflow(dataflow_id):all()
+    local nodes, nodes_err = (node_reader.with_dataflow(dataflow_id) :: any):all()
     if nodes_err then
         res:set_status(http.STATUS.INTERNAL_ERROR)
         res:set_content_type(http.CONTENT.JSON)

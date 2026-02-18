@@ -7,7 +7,6 @@ local commit_repo = require("commit_repo")
 
 local function define_tests()
     describe("Commit Repository", function()
-        -- Test context to track resources across all tests
         local test_ctx = {
             db = nil,
             tx = nil,
@@ -15,9 +14,7 @@ local function define_tests()
             cleanup_ids = {}
         }
 
-        -- Setup before all tests
         before_all(function()
-            -- Create a test dataflow
             local db, err_db = sql.get("app:db")
             if err_db then error("Failed to connect to database: " .. err_db) end
 
@@ -32,7 +29,6 @@ local function define_tests()
 
             local now_ts = time.now():format(time.RFC3339)
 
-            -- Insert test dataflow
             local insert_query = sql.builder.insert("dataflows")
                 :set_map({
                     dataflow_id = dataflow_id,
@@ -45,7 +41,7 @@ local function define_tests()
                 })
 
             local insert_exec = insert_query:run_with(tx)
-            local success, err_insert = insert_exec:exec()
+            local _, err_insert = insert_exec:exec()
 
             if err_insert then
                 tx:rollback()
@@ -65,27 +61,20 @@ local function define_tests()
             table.insert(test_ctx.cleanup_ids, dataflow_id)
         end)
 
-        -- Cleanup after all tests
         after_all(function()
             if #test_ctx.cleanup_ids == 0 then return end
 
             local db, err_db = sql.get("app:db")
-            if err_db then
-                print("WARNING: Failed to connect to database for cleanup: " .. err_db)
-                return
-            end
+            if err_db then return end
 
             local tx, err_tx = db:begin()
             if err_tx then
-                print("WARNING: Failed to begin transaction for cleanup: " .. err_tx)
                 db:release()
                 return
             end
 
-            -- Delete test dataflows
             for _, id in ipairs(test_ctx.cleanup_ids) do
                 local delete_query = sql.builder.delete("dataflows"):where("dataflow_id = ?", id)
-
                 local delete_exec = delete_query:run_with(tx)
                 delete_exec:exec()
             end
@@ -101,32 +90,34 @@ local function define_tests()
 
                 local commit, err = commit_repo.create(commit_id, test_ctx.dataflow_id, payload)
 
-                expect(err).to_be_nil()
-                expect(commit).not_to_be_nil()
-                expect(commit.commit_id).to_equal(commit_id)
-                expect(commit.dataflow_id).to_equal(test_ctx.dataflow_id)
-                expect(commit.payload.command).to_equal("test_command")
-                expect(commit.created_at).not_to_be_nil()
+                test.is_nil(err)
+                test.not_nil(commit)
+                test.eq(commit.commit_id, commit_id)
+                test.eq(commit.dataflow_id, test_ctx.dataflow_id)
+                test.eq(commit.payload.command, "test_command")
+                test.not_nil(commit.created_at)
 
                 -- Verify in database
                 local db, _ = sql.get("app:db")
+                assert(db)
                 local query = sql.builder.select("*"):from("dataflow_commits"):where("commit_id = ?", commit_id)
-                local exec = query:run_with(db)
+                local exec = query:run_with(db :: sql.DB)
                 local rows, _ = exec:query()
                 db:release()
 
-                expect(#rows).to_equal(1)
+                test.eq(#rows, 1)
 
                 -- Check dataflow last_commit_id was updated
                 db, _ = sql.get("app:db")
+                assert(db)
                 local dataflow_query = sql.builder.select("last_commit_id")
                     :from("dataflows")
                     :where("dataflow_id = ?", test_ctx.dataflow_id)
-                local dataflow_exec = dataflow_query:run_with(db)
+                local dataflow_exec = dataflow_query:run_with(db :: sql.DB)
                 local dataflow_rows, _ = dataflow_exec:query()
                 db:release()
 
-                expect(dataflow_rows[1].last_commit_id).to_equal(commit_id)
+                test.eq(dataflow_rows[1].last_commit_id, commit_id)
             end)
 
             it("should create a commit with metadata", function()
@@ -134,7 +125,7 @@ local function define_tests()
                 local payload = { command = "metadata_command" }
                 local metadata = {
                     source = "test",
-                    node_id = uuid.v7() -- We can include any data in metadata
+                    node_id = uuid.v7()
                 }
 
                 local commit, err = commit_repo.create(
@@ -144,23 +135,25 @@ local function define_tests()
                     metadata
                 )
 
-                expect(err).to_be_nil()
-                expect(commit).not_to_be_nil()
-                expect(commit.metadata.source).to_equal("test")
-                expect(commit.metadata.node_id).not_to_be_nil()
+                test.is_nil(err)
+                test.not_nil(commit)
+                local meta = commit.metadata :: any
+                test.eq(meta.source, "test")
+                test.not_nil(meta.node_id)
 
                 -- Verify metadata in database
                 local db, _ = sql.get("app:db")
+                assert(db)
                 local metadata_query = sql.builder.select("metadata")
                     :from("dataflow_commits")
                     :where("commit_id = ?", commit_id)
-                local metadata_exec = metadata_query:run_with(db)
+                local metadata_exec = metadata_query:run_with(db :: sql.DB)
                 local rows, _ = metadata_exec:query()
                 db:release()
 
-                local parsed_metadata = json.decode(rows[1].metadata)
-                expect(parsed_metadata.source).to_equal("test")
-                expect(parsed_metadata.node_id).to_equal(metadata.node_id)
+                local parsed_metadata = json.decode(rows[1].metadata :: string)
+                test.eq(parsed_metadata.source, "test")
+                test.eq(parsed_metadata.node_id, metadata.node_id)
             end)
 
             it("should create a commit with complex payload", function()
@@ -179,45 +172,40 @@ local function define_tests()
                     payload
                 )
 
-                expect(err).to_be_nil()
-                expect(commit).not_to_be_nil()
-                expect(commit.commit_id).to_equal(commit_id)
-                expect(#commit.payload.commands).to_equal(2)
-                expect(commit.payload.count).to_equal(2)
+                test.is_nil(err)
+                test.not_nil(commit)
+                test.eq(commit.commit_id, commit_id)
+                test.eq(#commit.payload.commands, 2)
+                test.eq(commit.payload.count, 2)
             end)
 
             it("should fail to create a commit without required fields", function()
-                -- Without commit ID
                 local _, err1 = commit_repo.create(
                     nil,
                     test_ctx.dataflow_id,
                     { test = true }
                 )
-                expect(err1).to_contain("Commit ID is required")
+                test.not_nil(string.find(err1 :: string, "Commit ID is required", 1, true))
 
-                -- Without dataflow ID
                 local _, err2 = commit_repo.create(
                     uuid.v7(),
                     nil,
                     { test = true }
                 )
-                expect(err2).to_contain("Dataflow ID is required")
+                test.not_nil(string.find(err2 :: string, "Dataflow ID is required", 1, true))
 
-                -- Without payload
                 local _, err3 = commit_repo.create(
                     uuid.v7(),
                     test_ctx.dataflow_id,
                     nil
                 )
-                expect(err3).to_contain("Payload is required")
+                test.not_nil(string.find(err3 :: string, "Payload is required", 1, true))
             end)
         end)
 
         describe("Read operations", function()
             local test_commit_id
-
             before_all(function()
-                -- Create a commit to retrieve later
                 test_commit_id = uuid.v7()
                 local payload = {
                     test_value = "retrievable",
@@ -240,21 +228,20 @@ local function define_tests()
             it("should get a commit by ID", function()
                 local commit, err = commit_repo.get(test_commit_id)
 
-                expect(err).to_be_nil()
-                expect(commit).not_to_be_nil()
-                expect(commit.commit_id).to_equal(test_commit_id)
-                expect(commit.payload.test_value).to_equal("retrievable")
-                expect(commit.payload.nested.key).to_equal("value")
-                expect(commit.metadata.purpose).to_equal("retrieval_test")
+                test.is_nil(err)
+                test.not_nil(commit)
+                test.eq(commit.commit_id, test_commit_id)
+                test.eq(commit.payload.test_value, "retrievable")
+                test.eq(commit.payload.nested.key, "value")
+                test.eq(commit.metadata.purpose, "retrieval_test")
             end)
 
             it("should return error for non-existent commit ID", function()
                 local _, err = commit_repo.get(uuid.v7())
-                expect(err).to_contain("Commit not found")
+                test.not_nil(string.find(err :: string, "Commit not found", 1, true))
             end)
 
             it("should list commits for a dataflow", function()
-                -- Create a few additional commits for this test
                 local commit_ids = {}
                 for i = 1, 3 do
                     local cid = uuid.v7()
@@ -266,61 +253,53 @@ local function define_tests()
                     )
                 end
 
-                -- Get all commits
                 local commits, err = commit_repo.list_by_dataflow(test_ctx.dataflow_id)
 
-                expect(err).to_be_nil()
-                expect(commits).not_to_be_nil()
-                -- Previous + 3 new = at least 4
-                expect(#commits >= 4).to_be_true()
+                test.is_nil(err)
+                test.not_nil(commits)
+                assert(commits)
+                test.is_true(#commits >= 4)
 
-                -- Verify the commits are ordered by ID (timestamp order for UUID v7)
                 for i = 2, #commits do
-                    expect(commits[i].commit_id > commits[i-1].commit_id).to_be_true()
+                    test.is_true(commits[i].commit_id > commits[i-1].commit_id)
                 end
 
-                -- Verify limited result
                 local limited_commits, err_limit = commit_repo.list_by_dataflow(
                     test_ctx.dataflow_id,
                     { limit = 2 }
                 )
-                expect(err_limit).to_be_nil()
-                expect(#limited_commits).to_equal(2)
+                test.is_nil(err_limit)
+                test.eq(#limited_commits, 2)
             end)
 
             it("should list all commits with list_after(nil)", function()
-                -- Get all commits using list_after with nil
                 local all_commits, err = commit_repo.list_after(test_ctx.dataflow_id, nil)
 
-                expect(err).to_be_nil()
-                expect(all_commits).not_to_be_nil()
+                test.is_nil(err)
+                test.not_nil(all_commits)
 
-                -- Compare with direct list_by_dataflow (should be equivalent)
                 local direct_commits, _ = commit_repo.list_by_dataflow(test_ctx.dataflow_id)
-                expect(#all_commits).to_equal(#direct_commits)
+                test.eq(#all_commits, #direct_commits)
             end)
 
             it("should list commits after a specific ID", function()
-                -- Get all commits
                 local all_commits, _ = commit_repo.list_by_dataflow(test_ctx.dataflow_id)
+                assert(all_commits)
 
-                -- Choose a midpoint commit
                 local mid_index = math.floor(#all_commits / 2)
                 local mid_commit_id = all_commits[mid_index].commit_id
 
-                -- Get commits after this ID
                 local later_commits, err = commit_repo.list_after(
                     test_ctx.dataflow_id,
                     mid_commit_id
                 )
 
-                expect(err).to_be_nil()
-                expect(later_commits).not_to_be_nil()
-                expect(#later_commits).to_equal(#all_commits - mid_index)
+                test.is_nil(err)
+                test.not_nil(later_commits)
+                test.eq(#later_commits, #all_commits - mid_index)
 
-                -- Verify all retrieved commits have IDs greater than the midpoint
                 for _, commit in ipairs(later_commits) do
-                    expect(commit.commit_id > mid_commit_id).to_be_true()
+                    test.is_true(commit.commit_id > mid_commit_id)
                 end
             end)
         end)

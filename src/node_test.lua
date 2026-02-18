@@ -1,15 +1,15 @@
 local test = require("test")
 local uuid = require("uuid")
-local json = require("json")
-local time = require("time")
+local _json = require("json")
+local _time = require("time")
 
 local node = require("node")
 local consts = require("consts")
 
 local function define_tests()
     describe("Node SDK with DI", function()
-        local mock_deps
-        local captured_calls
+        local mock_deps: any
+        local captured_calls: any
 
         before_each(function()
             captured_calls = {
@@ -21,7 +21,7 @@ local function define_tests()
 
             mock_deps = {
                 commit = {
-                    submit = function(dataflow_id, op_id, commands)
+                    submit = function(dataflow_id: string, op_id: string, commands: any)
                         table.insert(captured_calls.commit_submit, {
                             dataflow_id = dataflow_id,
                             op_id = op_id,
@@ -31,16 +31,16 @@ local function define_tests()
                     end
                 },
                 data_reader = {
-                    with_dataflow = function(dataflow_id)
+                    with_dataflow = function(dataflow_id: string)
                         table.insert(captured_calls.data_reader_calls, { method = "with_dataflow", dataflow_id = dataflow_id })
                         return {
-                            with_nodes = function(node_id)
+                            with_nodes = function(node_id: string)
                                 table.insert(captured_calls.data_reader_calls, { method = "with_nodes", node_id = node_id })
                                 return {
-                                    with_data_types = function(data_type)
+                                    with_data_types = function(data_type: string)
                                         table.insert(captured_calls.data_reader_calls, { method = "with_data_types", data_type = data_type })
                                         return {
-                                            fetch_options = function(options)
+                                            fetch_options = function(options: any)
                                                 table.insert(captured_calls.data_reader_calls, { method = "fetch_options", options = options })
                                                 return {
                                                     all = function()
@@ -72,7 +72,7 @@ local function define_tests()
                     end
                 },
                 process = {
-                    send = function(target, topic, payload)
+                    send = function(target: string, topic: string, payload: any)
                         table.insert(captured_calls.process_send, {
                             target = target,
                             topic = topic,
@@ -80,7 +80,7 @@ local function define_tests()
                         })
                         return true
                     end,
-                    listen = function(topic)
+                    listen = function(topic: string)
                         table.insert(captured_calls.process_listen, { topic = topic })
                         return {
                             receive = function()
@@ -107,21 +107,21 @@ local function define_tests()
 
                 local instance, err = node.new(args, mock_deps)
 
-                expect(err).to_be_nil()
-                expect(instance).not_to_be_nil()
-                expect(instance.node_id).to_equal("test-node-123")
-                expect(instance.dataflow_id).to_equal("test-dataflow-456")
-                expect(instance._deps).to_equal(mock_deps)
+                test.is_nil(err)
+                test.not_nil(instance)
+                test.eq(instance.node_id, "test-node-123")
+                test.eq(instance.dataflow_id, "test-dataflow-456")
+                test.eq(instance._deps, mock_deps)
             end)
 
             it("should fail with missing required args", function()
                 local instance, err = node.new(nil, mock_deps)
-                expect(instance).to_be_nil()
-                expect(err).to_contain("Node args required")
+                test.is_nil(instance)
+                test.contains(err, "Node args required")
 
                 instance, err = node.new({}, mock_deps)
-                expect(instance).to_be_nil()
-                expect(err).to_contain("node_id and dataflow_id")
+                test.is_nil(instance)
+                test.contains(err, "node_id and dataflow_id")
             end)
 
             it("should handle node configuration properly from config", function()
@@ -141,13 +141,13 @@ local function define_tests()
 
                 local instance, err = node.new(args, mock_deps)
 
-                expect(err).to_be_nil()
-                expect(instance).not_to_be_nil()
-                expect(#instance.data_targets).to_equal(1)
-                expect(#instance.error_targets).to_equal(1)
-                expect(instance._metadata.custom).to_equal("value")
-                expect(instance._config.timeout).to_equal(30)
-                expect(instance._config.retries).to_equal(3)
+                test.is_nil(err)
+                test.not_nil(instance)
+                test.eq(#instance.data_targets, 1)
+                test.eq(#instance.error_targets, 1)
+                test.eq(instance._metadata.custom, "value")
+                test.eq(instance._config.timeout, 30)
+                test.eq(instance._config.retries, 3)
             end)
 
             it("should handle empty or missing config gracefully", function()
@@ -161,12 +161,12 @@ local function define_tests()
 
                 local instance, err = node.new(args, mock_deps)
 
-                expect(err).to_be_nil()
-                expect(instance).not_to_be_nil()
-                expect(#instance.data_targets).to_equal(0)
-                expect(#instance.error_targets).to_equal(0)
-                expect(type(instance._config)).to_equal("table")
-                expect(next(instance._config)).to_be_nil()
+                test.is_nil(err)
+                test.not_nil(instance)
+                test.eq(#instance.data_targets, 0)
+                test.eq(#instance.error_targets, 0)
+                test.eq(type(instance._config), "table")
+                test.is_nil(next(instance._config))
             end)
         end)
 
@@ -186,17 +186,18 @@ local function define_tests()
                 }
 
                 local instance, err = node.new(args, mock_deps)
-                expect(err).to_be_nil()
+                test.is_nil(err)
+                test.not_nil(instance)
 
                 local config = instance:config()
-                expect(config).not_to_be_nil()
-                expect(config.timeout).to_equal(30)
-                expect(config.retries).to_equal(3)
-                expect(config.api_endpoint).to_equal("https://api.example.com")
-                expect(type(config.features)).to_equal("table")
-                expect(#config.features).to_equal(2)
-                expect(config.features[1]).to_equal("logging")
-                expect(config.features[2]).to_equal("metrics")
+                test.not_nil(config)
+                test.eq(config.timeout, 30)
+                test.eq(config.retries, 3)
+                test.eq(config.api_endpoint, "https://api.example.com")
+                test.eq(type(config.features), "table")
+                test.eq(#config.features, 2)
+                test.eq(config.features[1], "logging")
+                test.eq(config.features[2], "metrics")
             end)
 
             it("should return empty config when none provided", function()
@@ -206,81 +207,84 @@ local function define_tests()
                 }
 
                 local instance, err = node.new(args, mock_deps)
-                expect(err).to_be_nil()
+                test.is_nil(err)
+                test.not_nil(instance)
 
                 local config = instance:config()
-                expect(config).not_to_be_nil()
-                expect(type(config)).to_equal("table")
-                expect(next(config)).to_be_nil()
+                test.not_nil(config)
+                test.eq(type(config), "table")
+                test.is_nil(next(config))
             end)
         end)
 
         describe("Input Methods", function()
-            local test_node
+            local test_node: any
 
             before_each(function()
-                test_node, _ = node.new({
+                local _err: string?
+                test_node, _err = node.new({
                     node_id = "test-node-123",
                     dataflow_id = "test-dataflow-456"
                 }, mock_deps)
             end)
 
             it("should get all inputs as a map and cache them", function()
+                test.not_nil(test_node)
                 local inputs = test_node:inputs()
 
-                expect(inputs).not_to_be_nil()
-                -- Input with discriminator="primary" is stored as inputs["primary"]
-                expect(inputs.primary).not_to_be_nil()
-                expect(inputs.primary.content.message).to_equal("hello")
-                -- Input with no discriminator is stored by key
-                expect(inputs.input2).not_to_be_nil()
-                expect(inputs.input2.content).to_equal("plain text")
+                test.not_nil(inputs)
+                test.not_nil(inputs.primary)
+                test.eq(inputs.primary.content.message, "hello")
+                test.not_nil(inputs.input2)
+                test.eq(inputs.input2.content, "plain text")
 
-                expect(#captured_calls.data_reader_calls).to_be_greater_than(0)
+                test.gt(#captured_calls.data_reader_calls, 0)
 
-                local call_count = #captured_calls.data_reader_calls
+                local call_count: number = #captured_calls.data_reader_calls
                 local inputs2 = test_node:inputs()
-                expect(inputs2).to_equal(inputs)
-                expect(#captured_calls.data_reader_calls).to_equal(call_count)
+                test.eq(inputs2, inputs)
+                test.eq(#captured_calls.data_reader_calls, call_count)
             end)
 
             it("should get specific input by key", function()
+                test.not_nil(test_node)
                 local input = test_node:input("primary")
 
-                expect(input).not_to_be_nil()
-                expect(input.content.message).to_equal("hello")
-                expect(input.key).to_equal("input1")
-                expect(input.discriminator).to_equal("primary")
+                test.not_nil(input)
+                test.eq(input.content.message, "hello")
+                test.eq(input.key, "input1")
+                test.eq(input.discriminator, "primary")
             end)
 
             it("should fail when input key is missing", function()
+                test.not_nil(test_node)
                 local success, err = pcall(function()
                     test_node:input(nil)
                 end)
 
-                expect(success).to_be_false()
-                expect(err).to_contain("Input key is required")
+                test.is_false(success)
+                test.contains(err, "Input key is required")
             end)
         end)
 
         describe("Expr Input Transformation", function()
-            local expr_mock_deps
+            local expr_mock_deps: any
 
             before_each(function()
                 expr_mock_deps = {
                     commit = mock_deps.commit,
                     process = mock_deps.process,
                     data_reader = {
-                        with_dataflow = function(dataflow_id)
+                        with_dataflow = function(dataflow_id: string)
                             table.insert(captured_calls.data_reader_calls, { method = "with_dataflow", dataflow_id = dataflow_id })
                             return {
-                                with_nodes = function(node_id)
+                                with_nodes = function(node_id: string)
                                     table.insert(captured_calls.data_reader_calls, { method = "with_nodes", node_id = node_id })
                                     return {
-                                        with_data_types = function(data_type)
+                                        with_data_types = function(data_type: string)
                                             table.insert(captured_calls.data_reader_calls, { method = "with_data_types", data_type = data_type })
                                             return {
-                                                fetch_options = function(options)
+                                                fetch_options = function(options: any)
                                                     table.insert(captured_calls.data_reader_calls, { method = "fetch_options", options = options })
                                                     return {
                                                         all = function()
@@ -333,13 +337,14 @@ local function define_tests()
                 }
 
                 local test_node, err = node.new(args, expr_mock_deps)
-                expect(err).to_be_nil()
+                test.is_nil(err)
+                test.not_nil(test_node)
 
                 local inputs = test_node:inputs()
-                expect(inputs).not_to_be_nil()
-                expect(inputs["default"]).not_to_be_nil()
-                expect(inputs["default"].content).to_equal("John is 30 years old")
-                expect(inputs["default"].key).to_equal("default")
+                test.not_nil(inputs)
+                test.not_nil(inputs["default"])
+                test.eq(inputs["default"].content, "John is 30 years old")
+                test.eq(inputs["default"].key, "default")
             end)
 
             it("should transform inputs with field mapping", function()
@@ -360,29 +365,30 @@ local function define_tests()
                 }
 
                 local test_node, err = node.new(args, expr_mock_deps)
-                expect(err).to_be_nil()
+                test.is_nil(err)
+                test.not_nil(test_node)
 
                 local inputs = test_node:inputs()
-                expect(inputs).not_to_be_nil()
-                expect(inputs.user_name.content).to_equal("John")
-                expect(inputs.user_age.content).to_equal(30)
-                expect(inputs.total_cost.content).to_equal(300)
-                expect(inputs.is_adult.content).to_be_true()
-                expect(inputs.greeting.content).to_equal("Hello World, John")
+                test.not_nil(inputs)
+                test.eq(inputs.user_name.content, "John")
+                test.eq(inputs.user_age.content, 30)
+                test.eq(inputs.total_cost.content, 300)
+                test.is_true(inputs.is_adult.content)
+                test.eq(inputs.greeting.content, "Hello World, John")
             end)
 
             it("should handle array operations in expressions", function()
-                local complex_data_mock = {
+                local complex_data_mock: any = {
                     commit = mock_deps.commit,
                     process = mock_deps.process,
                     data_reader = {
-                        with_dataflow = function(dataflow_id)
+                        with_dataflow = function(_dataflow_id: string)
                             return {
-                                with_nodes = function(node_id)
+                                with_nodes = function(_node_id: string)
                                     return {
-                                        with_data_types = function(data_type)
+                                        with_data_types = function(_data_type: string)
                                             return {
-                                                fetch_options = function(options)
+                                                fetch_options = function(_options: any)
                                                     return {
                                                         all = function()
                                                             return {
@@ -421,14 +427,15 @@ local function define_tests()
                 }
 
                 local test_node, err = node.new(args, complex_data_mock)
-                expect(err).to_be_nil()
+                test.is_nil(err)
+                test.not_nil(test_node)
 
                 local inputs = test_node:inputs()
-                expect(inputs).not_to_be_nil()
-                expect(inputs.item_count.content).to_equal(3)
-                expect(inputs.has_expensive_items.content).to_be_true()
-                expect(type(inputs.cheap_items.content)).to_equal("table")
-                expect(#inputs.cheap_items.content).to_equal(1)
+                test.not_nil(inputs)
+                test.eq(inputs.item_count.content, 3)
+                test.is_true(inputs.has_expensive_items.content)
+                test.eq(type(inputs.cheap_items.content), "table")
+                test.eq(#inputs.cheap_items.content, 1)
             end)
 
             it("should handle mathematical expressions", function()
@@ -449,15 +456,16 @@ local function define_tests()
                 }
 
                 local test_node, err = node.new(args, expr_mock_deps)
-                expect(err).to_be_nil()
+                test.is_nil(err)
+                test.not_nil(test_node)
 
                 local inputs = test_node:inputs()
-                expect(inputs).not_to_be_nil()
-                expect(inputs.calculated_score.content).to_equal(102)
-                expect(inputs.rounded_score.content).to_equal(98)
-                expect(inputs.score_grade.content).to_equal("B")
-                expect(inputs.power_calc.content).to_equal(900)
-                expect(inputs.abs_diff.content).to_equal(5)
+                test.not_nil(inputs)
+                test.eq(inputs.calculated_score.content, 102)
+                test.eq(inputs.rounded_score.content, 98)
+                test.eq(inputs.score_grade.content, "B")
+                test.eq(inputs.power_calc.content, 900)
+                test.eq(inputs.abs_diff.content, 5)
             end)
 
             it("should handle string operations", function()
@@ -478,15 +486,16 @@ local function define_tests()
                 }
 
                 local test_node, err = node.new(args, expr_mock_deps)
-                expect(err).to_be_nil()
+                test.is_nil(err)
+                test.not_nil(test_node)
 
                 local inputs = test_node:inputs()
-                expect(inputs).not_to_be_nil()
-                expect(inputs.upper_name.content).to_equal("JOHN")
-                expect(inputs.name_length.content).to_equal(4)
-                expect(inputs.contains_john.content).to_be_true()
-                expect(inputs.starts_with_j.content).to_be_true()
-                expect(inputs.trimmed_message.content).to_equal("Hello World")
+                test.not_nil(inputs)
+                test.eq(inputs.upper_name.content, "JOHN")
+                test.eq(inputs.name_length.content, 4)
+                test.is_true(inputs.contains_john.content)
+                test.is_true(inputs.starts_with_j.content)
+                test.eq(inputs.trimmed_message.content, "Hello World")
             end)
 
             it("should preserve metadata structure in transformed inputs", function()
@@ -503,15 +512,16 @@ local function define_tests()
                 }
 
                 local test_node, err = node.new(args, expr_mock_deps)
-                expect(err).to_be_nil()
+                test.is_nil(err)
+                test.not_nil(test_node)
 
                 local inputs = test_node:inputs()
-                expect(inputs).not_to_be_nil()
-                expect(inputs.processed_name).not_to_be_nil()
-                expect(inputs.processed_name.content).to_equal("JOHN")
-                expect(inputs.processed_name.key).to_equal("processed_name")
-                expect(type(inputs.processed_name.metadata)).to_equal("table")
-                expect(inputs.processed_name.discriminator).to_be_nil()
+                test.not_nil(inputs)
+                test.not_nil(inputs.processed_name)
+                test.eq(inputs.processed_name.content, "JOHN")
+                test.eq(inputs.processed_name.key, "processed_name")
+                test.eq(type(inputs.processed_name.metadata), "table")
+                test.is_nil(inputs.processed_name.discriminator)
             end)
 
             it("should return original inputs when no transform config", function()
@@ -521,14 +531,15 @@ local function define_tests()
                 }
 
                 local test_node, err = node.new(args, expr_mock_deps)
-                expect(err).to_be_nil()
+                test.is_nil(err)
+                test.not_nil(test_node)
 
                 local inputs = test_node:inputs()
-                expect(inputs).not_to_be_nil()
-                expect(inputs.user_data).not_to_be_nil()
-                expect(inputs.user_data.content.name).to_equal("John")
-                expect(inputs.order_data).not_to_be_nil()
-                expect(inputs.message).not_to_be_nil()
+                test.not_nil(inputs)
+                test.not_nil(inputs.user_data)
+                test.eq(inputs.user_data.content.name, "John")
+                test.not_nil(inputs.order_data)
+                test.not_nil(inputs.message)
             end)
 
             it("should cache transformed inputs", function()
@@ -543,14 +554,15 @@ local function define_tests()
                 }
 
                 local test_node, err = node.new(args, expr_mock_deps)
-                expect(err).to_be_nil()
+                test.is_nil(err)
+                test.not_nil(test_node)
 
                 local inputs1 = test_node:inputs()
-                local call_count = #captured_calls.data_reader_calls
+                local call_count: number = #captured_calls.data_reader_calls
 
                 local inputs2 = test_node:inputs()
-                expect(inputs2).to_equal(inputs1)
-                expect(#captured_calls.data_reader_calls).to_equal(call_count)
+                test.eq(inputs2, inputs1)
+                test.eq(#captured_calls.data_reader_calls, call_count)
             end)
         end)
 
@@ -567,14 +579,15 @@ local function define_tests()
                 }
 
                 local test_node, err = node.new(args, mock_deps)
-                expect(err).to_be_nil()
+                test.is_nil(err)
+                test.not_nil(test_node)
 
                 local success, error_msg = pcall(function()
                     test_node:inputs()
                 end)
 
-                expect(success).to_be_false()
-                expect(error_msg).to_contain("Input transformation failed")
+                test.is_false(success)
+                test.contains(error_msg, "Input transformation failed")
             end)
 
             it("should handle undefined variables in expressions", function()
@@ -589,14 +602,15 @@ local function define_tests()
                 }
 
                 local test_node, err = node.new(args, mock_deps)
-                expect(err).to_be_nil()
+                test.is_nil(err)
+                test.not_nil(test_node)
 
                 local success, error_msg = pcall(function()
                     test_node:inputs()
                 end)
 
-                expect(success).to_be_false()
-                expect(error_msg).to_contain("Input transformation failed")
+                test.is_false(success)
+                test.contains(error_msg, "Input transformation failed")
             end)
 
             it("should handle field mapping errors individually", function()
@@ -613,14 +627,15 @@ local function define_tests()
                 }
 
                 local test_node, err = node.new(args, mock_deps)
-                expect(err).to_be_nil()
+                test.is_nil(err)
+                test.not_nil(test_node)
 
                 local success, error_msg = pcall(function()
                     test_node:inputs()
                 end)
 
-                expect(success).to_be_false()
-                expect(error_msg).to_contain("Transform failed for invalid_field")
+                test.is_false(success)
+                test.contains(error_msg, "Transform failed for invalid_field")
             end)
 
             it("should handle type conversion errors", function()
@@ -635,14 +650,15 @@ local function define_tests()
                 }
 
                 local test_node, err = node.new(args, mock_deps)
-                expect(err).to_be_nil()
+                test.is_nil(err)
+                test.not_nil(test_node)
 
                 local success, error_msg = pcall(function()
                     test_node:inputs()
                 end)
 
-                expect(success).to_be_false()
-                expect(error_msg).to_contain("Input transformation failed")
+                test.is_false(success)
+                test.contains(error_msg, "Input transformation failed")
             end)
 
             it("should validate transform config types", function()
@@ -657,30 +673,31 @@ local function define_tests()
                 }
 
                 local test_node, err = node.new(args, mock_deps)
-                expect(err).to_be_nil()
+                test.is_nil(err)
+                test.not_nil(test_node)
 
                 local success, error_msg = pcall(function()
                     test_node:inputs()
                 end)
 
-                expect(success).to_be_false()
-                expect(error_msg).to_contain("input_transform must be string or table")
+                test.is_false(success)
+                test.contains(error_msg, "input_transform must be string or table")
             end)
         end)
 
         describe("Complex Expr Scenarios", function()
             it("should handle nested object access", function()
-                local complex_mock = {
+                local complex_mock: any = {
                     commit = mock_deps.commit,
                     process = mock_deps.process,
                     data_reader = {
-                        with_dataflow = function(dataflow_id)
+                        with_dataflow = function(_dataflow_id: string)
                             return {
-                                with_nodes = function(node_id)
+                                with_nodes = function(_node_id: string)
                                     return {
-                                        with_data_types = function(data_type)
+                                        with_data_types = function(_data_type: string)
                                             return {
-                                                fetch_options = function(options)
+                                                fetch_options = function(_options: any)
                                                     return {
                                                         all = function()
                                                             return {
@@ -718,12 +735,13 @@ local function define_tests()
                 }
 
                 local test_node, err = node.new(args, complex_mock)
-                expect(err).to_be_nil()
+                test.is_nil(err)
+                test.not_nil(test_node)
 
                 local inputs = test_node:inputs()
-                expect(inputs).not_to_be_nil()
-                expect(inputs.theme.content).to_equal("dark")
-                expect(inputs.has_dark_theme.content).to_be_true()
+                test.not_nil(inputs)
+                test.eq(inputs.theme.content, "dark")
+                test.is_true(inputs.has_dark_theme.content)
             end)
 
             it("should handle basic conditional operations", function()
@@ -740,17 +758,17 @@ local function define_tests()
                     }
                 }
 
-                local expr_mock_with_user_data = {
+                local expr_mock_with_user_data: any = {
                     commit = mock_deps.commit,
                     process = mock_deps.process,
                     data_reader = {
-                        with_dataflow = function(dataflow_id)
+                        with_dataflow = function(_dataflow_id: string)
                             return {
-                                with_nodes = function(node_id)
+                                with_nodes = function(_node_id: string)
                                     return {
-                                        with_data_types = function(data_type)
+                                        with_data_types = function(_data_type: string)
                                             return {
-                                                fetch_options = function(options)
+                                                fetch_options = function(_options: any)
                                                     return {
                                                         all = function()
                                                             return {
@@ -775,12 +793,13 @@ local function define_tests()
                 }
 
                 local test_node, err = node.new(args, expr_mock_with_user_data)
-                expect(err).to_be_nil()
+                test.is_nil(err)
+                test.not_nil(test_node)
 
                 local inputs = test_node:inputs()
-                expect(inputs).not_to_be_nil()
-                expect(inputs.age_category.content).to_equal("adult")
-                expect(type(inputs.current_time.content)).to_equal("number")
+                test.not_nil(inputs)
+                test.eq(inputs.age_category.content, "adult")
+                test.eq(type(inputs.current_time.content), "number")
             end)
 
             it("should handle regex matching", function()
@@ -797,17 +816,17 @@ local function define_tests()
                     }
                 }
 
-                local expr_mock_with_both = {
+                local expr_mock_with_both: any = {
                     commit = mock_deps.commit,
                     process = mock_deps.process,
                     data_reader = {
-                        with_dataflow = function(dataflow_id)
+                        with_dataflow = function(_dataflow_id: string)
                             return {
-                                with_nodes = function(node_id)
+                                with_nodes = function(_node_id: string)
                                     return {
-                                        with_data_types = function(data_type)
+                                        with_data_types = function(_data_type: string)
                                             return {
-                                                fetch_options = function(options)
+                                                fetch_options = function(_options: any)
                                                     return {
                                                         all = function()
                                                             return {
@@ -839,82 +858,91 @@ local function define_tests()
                 }
 
                 local test_node, err = node.new(args, expr_mock_with_both)
-                expect(err).to_be_nil()
+                test.is_nil(err)
+                test.not_nil(test_node)
 
                 local inputs = test_node:inputs()
-                expect(inputs).not_to_be_nil()
-                expect(inputs.is_valid_name.content).to_be_true()
-                expect(inputs.contains_digits.content).to_be_false()
+                test.not_nil(inputs)
+                test.is_true(inputs.is_valid_name.content)
+                test.is_false(inputs.contains_digits.content)
             end)
         end)
 
         describe("Data and Metadata Methods", function()
-            local test_node
+            local test_node: any
 
             before_each(function()
-                test_node, _ = node.new({
+                local _err: string?
+                test_node, _err = node.new({
                     node_id = "test-node-123",
                     dataflow_id = "test-dataflow-456"
                 }, mock_deps)
             end)
 
             it("should create data with proper command queuing", function()
+                test.not_nil(test_node)
                 local result = test_node:data(consts.DATA_TYPE.NODE_OUTPUT, { message = "test" })
 
-                expect(result).to_equal(test_node)
-                expect(#test_node._queued_commands).to_equal(1)
-                expect(test_node._queued_commands[1].type).to_equal(consts.COMMAND_TYPES.CREATE_DATA)
-                expect(test_node._queued_commands[1].payload.data_type).to_equal(consts.DATA_TYPE.NODE_OUTPUT)
+                test.eq(result, test_node)
+                test.eq(#test_node._queued_commands, 1)
+                test.eq(test_node._queued_commands[1].type, consts.COMMAND_TYPES.CREATE_DATA)
+                test.eq(test_node._queued_commands[1].payload.data_type, consts.DATA_TYPE.NODE_OUTPUT)
             end)
 
             it("should update metadata properly", function()
+                test.not_nil(test_node)
                 local result = test_node:update_metadata({ key1 = "value1", key2 = "value2" })
 
-                expect(result).to_equal(test_node)
-                expect(test_node._metadata.key1).to_equal("value1")
-                expect(test_node._metadata.key2).to_equal("value2")
-                expect(#test_node._queued_commands).to_equal(1)
-                expect(test_node._queued_commands[1].type).to_equal(consts.COMMAND_TYPES.UPDATE_NODE)
+                test.eq(result, test_node)
+                test.eq(test_node._metadata.key1, "value1")
+                test.eq(test_node._metadata.key2, "value2")
+                test.eq(#test_node._queued_commands, 1)
+                test.eq(test_node._queued_commands[1].type, consts.COMMAND_TYPES.UPDATE_NODE)
             end)
 
             it("should merge metadata without overwriting existing values", function()
+                test.not_nil(test_node)
                 test_node._metadata = { existing = "value", shared = "original" }
 
                 test_node:update_metadata({ shared = "updated", new_key = "new_value" })
 
-                expect(test_node._metadata.existing).to_equal("value")
-                expect(test_node._metadata.shared).to_equal("updated")
-                expect(test_node._metadata.new_key).to_equal("new_value")
+                test.eq(test_node._metadata.existing, "value")
+                test.eq(test_node._metadata.shared, "updated")
+                test.eq((test_node._metadata :: any).new_key, "new_value")
             end)
 
             it("should handle nil and empty metadata updates gracefully", function()
+                test.not_nil(test_node)
                 test_node:update_metadata(nil)
-                expect(#test_node._queued_commands).to_equal(0)
+                test.eq(#test_node._queued_commands, 0)
 
                 test_node:update_metadata({})
-                expect(#test_node._queued_commands).to_equal(1)
+                test.eq(#test_node._queued_commands, 1)
             end)
 
             it("should determine content type automatically", function()
+                test.not_nil(test_node)
                 test_node:data(consts.DATA_TYPE.NODE_OUTPUT, { message = "test" })
                 test_node:data(consts.DATA_TYPE.NODE_OUTPUT, "plain text")
 
-                expect(test_node._queued_commands[1].payload.content_type).to_equal(consts.CONTENT_TYPE.JSON)
-                expect(test_node._queued_commands[2].payload.content_type).to_equal(consts.CONTENT_TYPE.TEXT)
+                test.eq(test_node._queued_commands[1].payload.content_type, consts.CONTENT_TYPE.JSON)
+                test.eq(test_node._queued_commands[2].payload.content_type, consts.CONTENT_TYPE.TEXT)
             end)
         end)
 
         describe("Child Node Creation", function()
-            local test_node
+            local test_node: any
 
             before_each(function()
-                test_node, _ = node.new({
+                local _err: string?
+                test_node, _err = node.new({
                     node_id = "test-node-123",
                     dataflow_id = "test-dataflow-456"
                 }, mock_deps)
             end)
 
             it("should create child nodes with auto-generated IDs", function()
+                test.not_nil(test_node)
                 local definitions = {
                     { node_type = "child_type_1" },
                     { node_type = "child_type_2" }
@@ -922,19 +950,20 @@ local function define_tests()
 
                 local child_ids, err = test_node:with_child_nodes(definitions)
 
-                expect(err).to_be_nil()
-                expect(child_ids).not_to_be_nil()
-                expect(#child_ids).to_equal(2)
-                expect(#test_node._queued_commands).to_equal(2)
+                test.is_nil(err)
+                test.not_nil(child_ids)
+                test.eq(#child_ids, 2)
+                test.eq(#test_node._queued_commands, 2)
 
                 for i, cmd in ipairs(test_node._queued_commands) do
-                    expect(cmd.type).to_equal(consts.COMMAND_TYPES.CREATE_NODE)
-                    expect(cmd.payload.node_type).to_equal(definitions[i].node_type)
-                    expect(cmd.payload.parent_node_id).to_equal("test-node-123")
+                    test.eq(cmd.type, consts.COMMAND_TYPES.CREATE_NODE)
+                    test.eq(cmd.payload.node_type, definitions[i].node_type)
+                    test.eq(cmd.payload.parent_node_id, "test-node-123")
                 end
             end)
 
             it("should create child nodes with provided IDs and config", function()
+                test.not_nil(test_node)
                 local definitions = {
                     {
                         node_id = "child-1",
@@ -950,68 +979,73 @@ local function define_tests()
 
                 local child_ids, err = test_node:with_child_nodes(definitions)
 
-                expect(err).to_be_nil()
-                expect(child_ids[1]).to_equal("child-1")
-                expect(child_ids[2]).to_equal("child-2")
+                test.is_nil(err)
+                test.not_nil(child_ids)
+                test.eq(child_ids[1], "child-1")
+                test.eq(child_ids[2], "child-2")
 
-                expect(test_node._queued_commands[1].payload.config).not_to_be_nil()
-                expect(test_node._queued_commands[1].payload.config.timeout).to_equal(60)
-                expect(test_node._queued_commands[2].payload.config.parallel).to_be_true()
+                test.not_nil(test_node._queued_commands[1].payload.config)
+                test.eq(test_node._queued_commands[1].payload.config.timeout, 60)
+                test.is_true(test_node._queued_commands[2].payload.config.parallel)
             end)
 
             it("should fail with invalid child definitions", function()
+                test.not_nil(test_node)
                 local child_ids, err = test_node:with_child_nodes(nil)
-                expect(child_ids).to_be_nil()
-                expect(err).to_contain("Child definitions required")
+                test.is_nil(child_ids)
+                test.contains(err, "Child definitions required")
 
                 child_ids, err = test_node:with_child_nodes({ { node_type = nil } })
-                expect(child_ids).to_be_nil()
-                expect(err).to_contain("node_type")
+                test.is_nil(child_ids)
+                test.contains(err, "node_type")
             end)
         end)
 
         describe("Submit Functionality", function()
-            local test_node
+            local test_node: any
 
             before_each(function()
-                test_node, _ = node.new({
+                local _err: string?
+                test_node, _err = node.new({
                     node_id = "test-node-123",
                     dataflow_id = "test-dataflow-456"
                 }, mock_deps)
             end)
 
             it("should submit queued commands without yielding", function()
+                test.not_nil(test_node)
                 test_node:data(consts.DATA_TYPE.NODE_OUTPUT, { message = "test1" })
                 test_node:update_metadata({ status = "processing" })
                 test_node:data(consts.DATA_TYPE.NODE_OUTPUT, { message = "test2" })
 
-                expect(#test_node._queued_commands).to_equal(3)
+                test.eq(#test_node._queued_commands, 3)
 
                 local success, err = test_node:submit()
 
-                expect(success).to_be_true()
-                expect(err).to_be_nil()
-                expect(#test_node._queued_commands).to_equal(0)
+                test.is_true(success)
+                test.is_nil(err)
+                test.eq(#test_node._queued_commands, 0)
 
-                expect(#captured_calls.commit_submit).to_equal(1)
-                expect(#captured_calls.commit_submit[1].commands).to_equal(3)
+                test.eq(#captured_calls.commit_submit, 1)
+                test.eq(#captured_calls.commit_submit[1].commands, 3)
 
-                expect(#captured_calls.process_send).to_equal(0)
+                test.eq(#captured_calls.process_send, 0)
             end)
 
             it("should handle empty queue gracefully", function()
-                expect(#test_node._queued_commands).to_equal(0)
+                test.not_nil(test_node)
+                test.eq(#test_node._queued_commands, 0)
 
                 local success, err = test_node:submit()
 
-                expect(success).to_be_true()
-                expect(err).to_be_nil()
+                test.is_true(success)
+                test.is_nil(err)
 
-                expect(#captured_calls.commit_submit).to_equal(0)
+                test.eq(#captured_calls.commit_submit, 0)
             end)
 
             it("should handle commit failures gracefully", function()
-                local failing_deps = {
+                local failing_deps: any = {
                     commit = {
                         submit = function()
                             return nil, "Database connection failed"
@@ -1021,119 +1055,128 @@ local function define_tests()
                     data_reader = mock_deps.data_reader
                 }
 
-                local failing_node, _ = node.new({
+                local failing_node, _err = node.new({
                     node_id = "test-node-123",
                     dataflow_id = "test-dataflow-456"
                 }, failing_deps)
+                test.not_nil(failing_node)
 
                 failing_node:data(consts.DATA_TYPE.NODE_OUTPUT, { message = "test" })
-                expect(#failing_node._queued_commands).to_equal(1)
+                test.eq(#failing_node._queued_commands, 1)
 
                 local success, err = failing_node:submit()
 
-                expect(success).to_be_false()
-                expect(err).to_equal("Database connection failed")
-                expect(#failing_node._queued_commands).to_equal(1)
+                test.is_false(success)
+                test.eq(err, "Database connection failed")
+                test.eq(#failing_node._queued_commands, 1)
             end)
 
             it("should be chainable after submit success", function()
+                test.not_nil(test_node)
                 test_node:data(consts.DATA_TYPE.NODE_OUTPUT, { message = "test1" })
                 local success, err = test_node:submit()
-                expect(success).to_be_true()
-                expect(#test_node._queued_commands).to_equal(0)
+                test.is_true(success)
+                test.eq(#test_node._queued_commands, 0)
 
                 test_node:data(consts.DATA_TYPE.NODE_OUTPUT, { message = "test2" })
                 test_node:update_metadata({ status = "updated" })
-                expect(#test_node._queued_commands).to_equal(2)
+                test.eq(#test_node._queued_commands, 2)
 
                 success, err = test_node:submit()
-                expect(success).to_be_true()
-                expect(#test_node._queued_commands).to_equal(0)
+                test.is_true(success)
+                test.eq(#test_node._queued_commands, 0)
 
-                expect(#captured_calls.commit_submit).to_equal(2)
+                test.eq(#captured_calls.commit_submit, 2)
             end)
 
             it("should preserve command order when submitting", function()
+                test.not_nil(test_node)
                 test_node:data("type1", "content1")
                 test_node:update_metadata({ key1 = "value1" })
                 test_node:data("type2", "content2")
 
-                local success, err = test_node:submit()
-                expect(success).to_be_true()
+                local success, _err = test_node:submit()
+                test.is_true(success)
 
                 local submit_call = captured_calls.commit_submit[1]
-                expect(#submit_call.commands).to_equal(3)
-                expect(submit_call.commands[1].payload.data_type).to_equal("type1")
-                expect(submit_call.commands[2].type).to_equal(consts.COMMAND_TYPES.UPDATE_NODE)
-                expect(submit_call.commands[3].payload.data_type).to_equal("type2")
+                test.eq(#submit_call.commands, 3)
+                test.eq(submit_call.commands[1].payload.data_type, "type1")
+                test.eq(submit_call.commands[2].type, consts.COMMAND_TYPES.UPDATE_NODE)
+                test.eq(submit_call.commands[3].payload.data_type, "type2")
             end)
 
             it("should maintain dataflow_id and generate op_id correctly", function()
+                test.not_nil(test_node)
                 test_node:data(consts.DATA_TYPE.NODE_OUTPUT, { message = "test" })
 
-                local success, err = test_node:submit()
-                expect(success).to_be_true()
+                local success, _err = test_node:submit()
+                test.is_true(success)
 
                 local submit_call = captured_calls.commit_submit[1]
-                expect(submit_call.dataflow_id).to_equal("test-dataflow-456")
-                expect(submit_call.op_id).not_to_be_nil()
-                expect(type(submit_call.op_id)).to_equal("string")
-                expect(string.len(submit_call.op_id)).to_be_greater_than(0)
+                test.eq(submit_call.dataflow_id, "test-dataflow-456")
+                test.not_nil(submit_call.op_id)
+                test.eq(type(submit_call.op_id), "string")
+                test.gt(string.len(submit_call.op_id), 0)
             end)
         end)
 
         describe("Yield Functionality", function()
-            local test_node
+            local test_node: any
 
             before_each(function()
-                test_node, _ = node.new({
+                local _err: string?
+                test_node, _err = node.new({
                     node_id = "test-node-123",
                     dataflow_id = "test-dataflow-456"
                 }, mock_deps)
             end)
 
             it("should handle empty yield", function()
+                test.not_nil(test_node)
                 local result, err = test_node:yield()
 
-                expect(err).to_be_nil()
-                expect(result).not_to_be_nil()
-                expect(type(result)).to_equal("table")
+                test.is_nil(err)
+                test.not_nil(result)
+                test.eq(type(result), "table")
 
-                expect(#captured_calls.commit_submit).to_equal(1)
+                test.eq(#captured_calls.commit_submit, 1)
 
-                expect(#captured_calls.process_send).to_equal(1)
-                expect(captured_calls.process_send[1].topic).to_equal(consts.MESSAGE_TOPIC.YIELD_REQUEST)
+                test.eq(#captured_calls.process_send, 1)
+                test.eq(captured_calls.process_send[1].topic, consts.MESSAGE_TOPIC.YIELD_REQUEST)
             end)
 
             it("should yield and wait for children", function()
+                test.not_nil(test_node)
                 local result, err = test_node:yield({ run_nodes = { "child-1" } })
 
-                expect(err).to_be_nil()
-                expect(result).not_to_be_nil()
-                expect(result["child-1"]).not_to_be_nil()
-                expect(result["child-1"].status).to_equal("completed")
+                test.is_nil(err)
+                test.not_nil(result)
+                test.not_nil(result["child-1"])
+                test.eq(result["child-1"].status, "completed")
 
-                expect(#captured_calls.commit_submit).to_equal(1)
-                expect(#captured_calls.process_send).to_equal(1)
+                test.eq(#captured_calls.commit_submit, 1)
+                test.eq(#captured_calls.process_send, 1)
             end)
 
             it("should create yield persistence record", function()
+                test.not_nil(test_node)
                 test_node:yield()
 
-                expect(#captured_calls.commit_submit).to_equal(1)
+                test.eq(#captured_calls.commit_submit, 1)
                 local submit_call = captured_calls.commit_submit[1]
-                expect(submit_call.commands).not_to_be_nil()
-                expect(#submit_call.commands).to_equal(1)
-                expect(submit_call.commands[1].type).to_equal(consts.COMMAND_TYPES.CREATE_DATA)
-                expect(submit_call.commands[1].payload.data_type).to_equal(consts.DATA_TYPE.NODE_YIELD)
+                test.not_nil(submit_call.commands)
+                test.eq(#submit_call.commands, 1)
+                test.eq(submit_call.commands[1].type, consts.COMMAND_TYPES.CREATE_DATA)
+                test.eq(submit_call.commands[1].payload.data_type, consts.DATA_TYPE.NODE_YIELD)
             end)
 
             it("should differ from submit in that it sends process signals", function()
+                test.not_nil(test_node)
                 test_node:data(consts.DATA_TYPE.NODE_OUTPUT, { message = "test" })
 
-                local success, err = test_node:submit()
-                expect(success).to_be_true()
-                expect(#captured_calls.process_send).to_equal(0)
+                local success, _err = test_node:submit()
+                test.is_true(success)
+                test.eq(#captured_calls.process_send, 0)
 
                 captured_calls.process_send = {}
                 captured_calls.commit_submit = {}
@@ -1141,17 +1184,18 @@ local function define_tests()
                 test_node:data(consts.DATA_TYPE.NODE_OUTPUT, { message = "test2" })
                 local result, yield_err = test_node:yield()
 
-                expect(yield_err).to_be_nil()
-                expect(#captured_calls.process_send).to_equal(1)
-                expect(captured_calls.process_send[1].topic).to_equal(consts.MESSAGE_TOPIC.YIELD_REQUEST)
+                test.is_nil(yield_err)
+                test.eq(#captured_calls.process_send, 1)
+                test.eq(captured_calls.process_send[1].topic, consts.MESSAGE_TOPIC.YIELD_REQUEST)
             end)
         end)
 
         describe("Output and Error Routing", function()
-            local test_node
+            local test_node: any
 
             before_each(function()
-                test_node, _ = node.new({
+                local _err: string?
+                test_node, _err = node.new({
                     node_id = "test-node-123",
                     dataflow_id = "test-dataflow-456",
                     node = {
@@ -1170,75 +1214,81 @@ local function define_tests()
             end)
 
             it("should route outputs via data_targets from config on complete", function()
+                test.not_nil(test_node)
                 local result = test_node:complete({ message = "success" })
 
-                expect(result.success).to_be_true()
+                test.is_true(result.success)
 
-                expect(#captured_calls.commit_submit).to_equal(1)
+                test.eq(#captured_calls.commit_submit, 1)
 
                 local first_submit = captured_calls.commit_submit[1]
-                local data_commands = 0
+                local data_commands: number = 0
                 for _, cmd in ipairs(first_submit.commands) do
                     if cmd.type == consts.COMMAND_TYPES.CREATE_DATA then
                         data_commands = data_commands + 1
                     end
                 end
-                expect(data_commands).to_equal(2)
+                test.eq(data_commands, 2)
             end)
 
             it("should route errors via error_targets from config on fail", function()
+                test.not_nil(test_node)
                 local result = test_node:fail("Something went wrong")
 
-                expect(result.success).to_be_false()
-                expect(#captured_calls.commit_submit).to_equal(1)
+                test.is_false(result.success)
+                test.eq(#captured_calls.commit_submit, 1)
 
                 local first_submit = captured_calls.commit_submit[1]
-                local data_commands = 0
+                local data_commands: number = 0
                 for _, cmd in ipairs(first_submit.commands) do
                     if cmd.type == consts.COMMAND_TYPES.CREATE_DATA then
                         data_commands = data_commands + 1
                     end
                 end
-                expect(data_commands).to_equal(2)
+                test.eq(data_commands, 2)
             end)
 
             it("should handle complete without output content", function()
-                local test_node_no_targets, _ = node.new({
+                local test_node_no_targets, _err = node.new({
                     node_id = "test-node-123",
                     dataflow_id = "test-dataflow-456"
                 }, mock_deps)
+                test.not_nil(test_node_no_targets)
 
                 local result = test_node_no_targets:complete()
 
-                expect(result.success).to_be_true()
-                expect(result.message).to_contain("completed successfully")
+                test.is_true(result.success)
+                test.contains(result.message, "completed successfully")
             end)
 
             it("should handle metadata updates in complete/fail", function()
+                test.not_nil(test_node)
                 test_node:complete(nil, "Custom message", { final_status = "success" })
 
-                expect(test_node._metadata.status_message).to_equal("Custom message")
-                expect(test_node._metadata.final_status).to_equal("success")
+                test.eq(test_node._metadata.status_message, "Custom message")
+                test.eq(test_node._metadata.final_status, "success")
             end)
 
             it("should verify config-based targets are loaded correctly", function()
-                expect(#test_node.data_targets).to_equal(2)
-                expect(#test_node.error_targets).to_equal(2)
-                expect(test_node.data_targets[1].data_type).to_equal("output.result")
-                expect(test_node.error_targets[1].data_type).to_equal("error.details")
+                test.not_nil(test_node)
+                test.eq(#test_node.data_targets, 2)
+                test.eq(#test_node.error_targets, 2)
+                test.eq(test_node.data_targets[1].data_type, "output.result")
+                test.eq(test_node.error_targets[1].data_type, "error.details")
 
                 local config = test_node:config()
-                expect(#config.data_targets).to_equal(2)
-                expect(#config.error_targets).to_equal(2)
+                test.eq(#config.data_targets, 2)
+                test.eq(#config.error_targets, 2)
             end)
         end)
 
         describe("Error Handling", function()
-            local test_node
-            local failing_deps
+            local test_node: any
+            local failing_deps: any
 
             before_each(function()
-                test_node, _ = node.new({
+                local _err: string?
+                test_node, _err = node.new({
                     node_id = "test-node-123",
                     dataflow_id = "test-dataflow-456"
                 }, mock_deps)
@@ -1258,21 +1308,22 @@ local function define_tests()
             end)
 
             it("should handle commit submission failures", function()
-                local failing_node, _ = node.new({
+                local failing_node, _err = node.new({
                     node_id = "test-node-123",
                     dataflow_id = "test-dataflow-456"
                 }, failing_deps)
+                test.not_nil(failing_node)
 
                 local result, err = failing_node:yield()
 
-                expect(result).to_be_nil()
-                expect(err).not_to_be_nil()
-                expect(err).to_contain("Failed to submit yield")
-                expect(err).to_contain("Database connection failed")
+                test.is_nil(result)
+                test.not_nil(err)
+                test.contains(err, "Failed to submit yield")
+                test.contains(err, "Database connection failed")
             end)
 
             it("should handle process send failures", function()
-                local process_fail_deps = {
+                local process_fail_deps: any = {
                     commit = mock_deps.commit,
                     process = {
                         send = function() return false end,
@@ -1281,19 +1332,20 @@ local function define_tests()
                     data_reader = mock_deps.data_reader
                 }
 
-                local failing_node, _ = node.new({
+                local failing_node, _err = node.new({
                     node_id = "test-node-123",
                     dataflow_id = "test-dataflow-456"
                 }, process_fail_deps)
+                test.not_nil(failing_node)
 
                 local result, err = failing_node:yield()
 
-                expect(result).to_be_nil()
-                expect(err).to_contain("Failed to send yield signal")
+                test.is_nil(result)
+                test.contains(err, "Failed to send yield signal")
             end)
 
             it("should handle yield channel failures", function()
-                local channel_fail_deps = {
+                local channel_fail_deps: any = {
                     commit = mock_deps.commit,
                     process = {
                         send = mock_deps.process.send,
@@ -1306,41 +1358,45 @@ local function define_tests()
                     data_reader = mock_deps.data_reader
                 }
 
-                local failing_node, _ = node.new({
+                local failing_node, _err = node.new({
                     node_id = "test-node-123",
                     dataflow_id = "test-dataflow-456"
                 }, channel_fail_deps)
+                test.not_nil(failing_node)
 
                 local result, err = failing_node:yield({ run_nodes = { "child-1" } })
 
-                expect(result).to_be_nil()
-                expect(err).to_contain("Yield channel closed")
+                test.is_nil(result)
+                test.contains(err, "Yield channel closed")
             end)
         end)
 
         describe("Query Operations", function()
-            local test_node
+            local test_node: any
 
             before_each(function()
-                test_node, _ = node.new({
+                local _err: string?
+                test_node, _err = node.new({
                     node_id = "test-node-123",
                     dataflow_id = "test-dataflow-456"
                 }, mock_deps)
             end)
 
             it("should handle query operations", function()
+                test.not_nil(test_node)
                 local query_builder = test_node:query()
 
-                expect(query_builder).not_to_be_nil()
-                expect(type(query_builder.with_nodes)).to_equal("function")
+                test.not_nil(query_builder)
+                test.eq(type(query_builder.with_nodes), "function")
             end)
         end)
 
-describe("Expr Output Routing", function()
-            local test_node
+        describe("Expr Output Routing", function()
+            local test_node: any
 
             before_each(function()
-                test_node, _ = node.new({
+                local _err: string?
+                test_node, _err = node.new({
                     node_id = "test-node-123",
                     dataflow_id = "test-dataflow-456",
                     node = {
@@ -1363,25 +1419,26 @@ describe("Expr Output Routing", function()
             end)
 
             it("should apply transforms to output content", function()
+                test.not_nil(test_node)
                 local result = test_node:complete({ message = "hello world test" }, "Processing complete")
 
-                expect(result.success).to_be_true()
-                expect(#captured_calls.commit_submit).to_equal(1)
+                test.is_true(result.success)
+                test.eq(#captured_calls.commit_submit, 1)
 
                 local submit_call = captured_calls.commit_submit[1]
-                expect(#submit_call.commands).to_equal(3) -- metadata + 2 data targets
+                test.eq(#submit_call.commands, 3) -- metadata + 2 data targets
 
-                local data_commands = {}
+                local data_commands: {any} = {}
                 for _, cmd in ipairs(submit_call.commands) do
                     if cmd.type == consts.COMMAND_TYPES.CREATE_DATA then
                         table.insert(data_commands, cmd)
                     end
                 end
 
-                expect(#data_commands).to_equal(2)
+                test.eq(#data_commands, 2)
 
-                local transformed_cmd = nil
-                local word_count_cmd = nil
+                local transformed_cmd: any = nil
+                local word_count_cmd: any = nil
                 for _, cmd in ipairs(data_commands) do
                     if cmd.payload.key == "transformed_result" then
                         transformed_cmd = cmd
@@ -1390,17 +1447,17 @@ describe("Expr Output Routing", function()
                     end
                 end
 
-                expect(transformed_cmd).not_to_be_nil()
-                expect(type(transformed_cmd.payload.content)).to_equal("table")
-                expect(transformed_cmd.payload.content.processed).to_equal("hello world test")
-                expect(type(transformed_cmd.payload.content.timestamp)).to_equal("number")
+                test.not_nil(transformed_cmd)
+                test.eq(type(transformed_cmd.payload.content), "table")
+                test.eq(transformed_cmd.payload.content.processed, "hello world test")
+                test.eq(type(transformed_cmd.payload.content.timestamp), "number")
 
-                expect(word_count_cmd).not_to_be_nil()
-                expect(word_count_cmd.payload.content).to_equal(3)
+                test.not_nil(word_count_cmd)
+                test.eq(word_count_cmd.payload.content, 3)
             end)
 
             it("should handle simple value transforms", function()
-                local test_node_simple, _ = node.new({
+                local test_node_simple, _err = node.new({
                     node_id = "test-node-123",
                     dataflow_id = "test-dataflow-456",
                     node = {
@@ -1415,13 +1472,14 @@ describe("Expr Output Routing", function()
                         }
                     }
                 }, mock_deps)
+                test.not_nil(test_node_simple)
 
                 local result = test_node_simple:complete({ message = "hello world" })
 
-                expect(result.success).to_be_true()
+                test.is_true(result.success)
 
                 local submit_call = captured_calls.commit_submit[1]
-                local data_cmd = nil
+                local data_cmd: any = nil
                 for _, cmd in ipairs(submit_call.commands) do
                     if cmd.type == consts.COMMAND_TYPES.CREATE_DATA then
                         data_cmd = cmd
@@ -1429,12 +1487,12 @@ describe("Expr Output Routing", function()
                     end
                 end
 
-                expect(data_cmd).not_to_be_nil()
-                expect(data_cmd.payload.content).to_equal("HELLO WORLD")
+                test.not_nil(data_cmd)
+                test.eq(data_cmd.payload.content, "HELLO WORLD")
             end)
 
             it("should pass through untransformed content when no transform specified", function()
-                local test_node_no_transform, _ = node.new({
+                local test_node_no_transform, _err = node.new({
                     node_id = "test-node-123",
                     dataflow_id = "test-dataflow-456",
                     node = {
@@ -1448,14 +1506,15 @@ describe("Expr Output Routing", function()
                         }
                     }
                 }, mock_deps)
+                test.not_nil(test_node_no_transform)
 
                 local output_content = { message = "original content", score = 85 }
                 local result = test_node_no_transform:complete(output_content)
 
-                expect(result.success).to_be_true()
+                test.is_true(result.success)
 
                 local submit_call = captured_calls.commit_submit[1]
-                local data_cmd = nil
+                local data_cmd: any = nil
                 for _, cmd in ipairs(submit_call.commands) do
                     if cmd.type == consts.COMMAND_TYPES.CREATE_DATA then
                         data_cmd = cmd
@@ -1463,12 +1522,12 @@ describe("Expr Output Routing", function()
                     end
                 end
 
-                expect(data_cmd).not_to_be_nil()
-                expect(data_cmd.payload.content).to_equal(output_content)
+                test.not_nil(data_cmd)
+                test.eq(data_cmd.payload.content, output_content)
             end)
 
             it("should handle mathematical and string operations in transforms", function()
-                local test_node_complex, _ = node.new({
+                local test_node_complex, _err = node.new({
                     node_id = "test-node-123",
                     dataflow_id = "test-dataflow-456",
                     node = {
@@ -1483,13 +1542,14 @@ describe("Expr Output Routing", function()
                         }
                     }
                 }, mock_deps)
+                test.not_nil(test_node_complex)
 
                 local result = test_node_complex:complete({ score = 85, name = "john" })
 
-                expect(result.success).to_be_true()
+                test.is_true(result.success)
 
                 local submit_call = captured_calls.commit_submit[1]
-                local data_cmd = nil
+                local data_cmd: any = nil
                 for _, cmd in ipairs(submit_call.commands) do
                     if cmd.type == consts.COMMAND_TYPES.CREATE_DATA then
                         data_cmd = cmd
@@ -1497,18 +1557,19 @@ describe("Expr Output Routing", function()
                     end
                 end
 
-                expect(data_cmd).not_to_be_nil()
-                expect(data_cmd.payload.content.score_doubled).to_equal(170)
-                expect(data_cmd.payload.content.grade).to_equal("B")
-                expect(data_cmd.payload.content.name_upper).to_equal("JOHN")
+                test.not_nil(data_cmd)
+                test.eq(data_cmd.payload.content.score_doubled, 170)
+                test.eq(data_cmd.payload.content.grade, "B")
+                test.eq(data_cmd.payload.content.name_upper, "JOHN")
             end)
         end)
 
         describe("Conditional Output Routing", function()
-            local test_node
+            local test_node: any
 
             before_each(function()
-                test_node, _ = node.new({
+                local _err: string?
+                test_node, _err = node.new({
                     node_id = "test-node-123",
                     dataflow_id = "test-dataflow-456",
                     node = {
@@ -1538,28 +1599,29 @@ describe("Expr Output Routing", function()
             end)
 
             it("should create data only when condition is true", function()
+                test.not_nil(test_node)
                 local result = test_node:complete({ score = 85 })
 
-                expect(result.success).to_be_true()
+                test.is_true(result.success)
 
                 local submit_call = captured_calls.commit_submit[1]
-                local data_commands = {}
+                local data_commands: {any} = {}
                 for _, cmd in ipairs(submit_call.commands) do
                     if cmd.type == consts.COMMAND_TYPES.CREATE_DATA then
                         table.insert(data_commands, cmd)
                     end
                 end
 
-                expect(#data_commands).to_equal(2)
+                test.eq(#data_commands, 2)
 
-                local keys = {}
+                local keys: {string} = {}
                 for _, cmd in ipairs(data_commands) do
                     table.insert(keys, cmd.payload.key)
                 end
 
-                local has_high_score = false
-                local has_summary = false
-                local has_low_score = false
+                local has_high_score: boolean = false
+                local has_summary: boolean = false
+                local has_low_score: boolean = false
 
                 for _, key in ipairs(keys) do
                     if key == "high_score" then has_high_score = true end
@@ -1567,13 +1629,13 @@ describe("Expr Output Routing", function()
                     if key == "low_score" then has_low_score = true end
                 end
 
-                expect(has_high_score).to_be_true()
-                expect(has_summary).to_be_true()
-                expect(has_low_score).to_be_false()
+                test.is_true(has_high_score)
+                test.is_true(has_summary)
+                test.is_false(has_low_score)
             end)
 
             it("should evaluate different conditions correctly", function()
-                local test_node_low, _ = node.new({
+                local test_node_low, _err = node.new({
                     node_id = "test-node-456",
                     dataflow_id = "test-dataflow-456",
                     node = {
@@ -1593,25 +1655,26 @@ describe("Expr Output Routing", function()
                         }
                     }
                 }, mock_deps)
+                test.not_nil(test_node_low)
 
                 local result = test_node_low:complete({ score = 65 })
 
-                expect(result.success).to_be_true()
+                test.is_true(result.success)
 
                 local submit_call = captured_calls.commit_submit[1]
-                local data_commands = {}
+                local data_commands: {any} = {}
                 for _, cmd in ipairs(submit_call.commands) do
                     if cmd.type == consts.COMMAND_TYPES.CREATE_DATA then
                         table.insert(data_commands, cmd)
                     end
                 end
 
-                expect(#data_commands).to_equal(1)
-                expect(data_commands[1].payload.key).to_equal("low_score")
+                test.eq(#data_commands, 1)
+                test.eq((data_commands[1] :: any).payload.key, "low_score")
             end)
 
             it("should handle complex conditional expressions", function()
-                local test_node_complex, _ = node.new({
+                local test_node_complex, _err = node.new({
                     node_id = "test-node-123",
                     dataflow_id = "test-dataflow-456",
                     node = {
@@ -1633,26 +1696,27 @@ describe("Expr Output Routing", function()
                         }
                     }
                 }, mock_deps)
+                test.not_nil(test_node_complex)
 
                 local result = test_node_complex:complete({ score = 75, attendance = 0.9 })
 
-                expect(result.success).to_be_true()
+                test.is_true(result.success)
 
                 local submit_call = captured_calls.commit_submit[1]
-                local data_commands = {}
+                local data_commands: {any} = {}
                 for _, cmd in ipairs(submit_call.commands) do
                     if cmd.type == consts.COMMAND_TYPES.CREATE_DATA then
                         table.insert(data_commands, cmd)
                     end
                 end
 
-                expect(#data_commands).to_equal(1)
-                expect(data_commands[1].payload.key).to_equal("qualified")
-                expect(data_commands[1].payload.content.qualified).to_be_true()
+                test.eq(#data_commands, 1)
+                test.eq((data_commands[1] :: any).payload.key, "qualified")
+                test.is_true((data_commands[1] :: any).payload.content.qualified)
             end)
 
             it("should skip target when condition evaluates to false and handle empty commits", function()
-                local test_node_skip, _ = node.new({
+                local test_node_skip, _err = node.new({
                     node_id = "test-node-123",
                     dataflow_id = "test-dataflow-456",
                     node = {
@@ -1668,17 +1732,17 @@ describe("Expr Output Routing", function()
                         }
                     }
                 }, mock_deps)
+                test.not_nil(test_node_skip)
 
                 local result = test_node_skip:complete({ message = "test" })
 
-                expect(result.success).to_be_true()
+                test.is_true(result.success)
 
-                -- When no data targets are created and no metadata is updated, no commit happens
-                expect(#captured_calls.commit_submit).to_equal(0)
+                test.eq(#captured_calls.commit_submit, 0)
             end)
 
             it("should handle mixed conditions with some true and some false", function()
-                local test_node_mixed, _ = node.new({
+                local test_node_mixed, _err = node.new({
                     node_id = "test-node-123",
                     dataflow_id = "test-dataflow-456",
                     node = {
@@ -1702,29 +1766,30 @@ describe("Expr Output Routing", function()
                         }
                     }
                 }, mock_deps)
+                test.not_nil(test_node_mixed)
 
                 local result = test_node_mixed:complete({ message = "test" })
 
-                expect(result.success).to_be_true()
+                test.is_true(result.success)
 
                 local submit_call = captured_calls.commit_submit[1]
-                local data_commands = {}
+                local data_commands: {any} = {}
                 for _, cmd in ipairs(submit_call.commands) do
                     if cmd.type == consts.COMMAND_TYPES.CREATE_DATA then
                         table.insert(data_commands, cmd)
                     end
                 end
 
-                expect(#data_commands).to_equal(2)
+                test.eq(#data_commands, 2)
 
-                local keys = {}
+                local keys: {string} = {}
                 for _, cmd in ipairs(data_commands) do
                     table.insert(keys, cmd.payload.key)
                 end
 
-                local has_should_create = false
-                local has_always_create = false
-                local has_should_not_create = false
+                local has_should_create: boolean = false
+                local has_always_create: boolean = false
+                local has_should_not_create: boolean = false
 
                 for _, key in ipairs(keys) do
                     if key == "should_create" then has_should_create = true end
@@ -1732,17 +1797,18 @@ describe("Expr Output Routing", function()
                     if key == "should_not_create" then has_should_not_create = true end
                 end
 
-                expect(has_should_create).to_be_true()
-                expect(has_always_create).to_be_true()
-                expect(has_should_not_create).to_be_false()
+                test.is_true(has_should_create)
+                test.is_true(has_always_create)
+                test.is_false(has_should_not_create)
             end)
         end)
 
         describe("Error Target Expr Support", function()
-            local test_node
+            local test_node: any
 
             before_each(function()
-                test_node, _ = node.new({
+                local _err: string?
+                test_node, _err = node.new({
                     node_id = "test-node-123",
                     dataflow_id = "test-dataflow-456",
                     node = {
@@ -1771,23 +1837,24 @@ describe("Expr Output Routing", function()
             end)
 
             it("should apply transforms to error content", function()
+                test.not_nil(test_node)
                 local error_details = { code = "TIMEOUT", message = "Request timed out", severity = "medium" }
                 local result = test_node:fail(error_details, "Operation failed")
 
-                expect(result.success).to_be_false()
+                test.is_false(result.success)
 
                 local submit_call = captured_calls.commit_submit[1]
-                local data_commands = {}
+                local data_commands: {any} = {}
                 for _, cmd in ipairs(submit_call.commands) do
                     if cmd.type == consts.COMMAND_TYPES.CREATE_DATA then
                         table.insert(data_commands, cmd)
                     end
                 end
 
-                expect(#data_commands).to_equal(2)
+                test.eq(#data_commands, 2)
 
-                local user_msg_cmd = nil
-                local audit_cmd = nil
+                local user_msg_cmd: any = nil
+                local audit_cmd: any = nil
                 for _, cmd in ipairs(data_commands) do
                     if cmd.payload.key == "user_message" then
                         user_msg_cmd = cmd
@@ -1796,31 +1863,32 @@ describe("Expr Output Routing", function()
                     end
                 end
 
-                expect(user_msg_cmd).not_to_be_nil()
-                expect(user_msg_cmd.payload.content).to_equal("Service temporarily unavailable")
+                test.not_nil(user_msg_cmd)
+                test.eq(user_msg_cmd.payload.content, "Service temporarily unavailable")
 
-                expect(audit_cmd).not_to_be_nil()
-                expect(audit_cmd.payload.content.error).to_equal("Request timed out")
-                expect(audit_cmd.payload.content.node_id).to_equal("test-node-123")
+                test.not_nil(audit_cmd)
+                test.eq(audit_cmd.payload.content.error, "Request timed out")
+                test.eq(audit_cmd.payload.content.node_id, "test-node-123")
             end)
 
             it("should handle conditional error targets", function()
+                test.not_nil(test_node)
                 local error_details = { code = "DATABASE_ERROR", message = "Connection failed", severity = "high" }
                 local result = test_node:fail(error_details, "Database error")
 
-                expect(result.success).to_be_false()
+                test.is_false(result.success)
 
                 local submit_call = captured_calls.commit_submit[1]
-                local data_commands = {}
+                local data_commands: {any} = {}
                 for _, cmd in ipairs(submit_call.commands) do
                     if cmd.type == consts.COMMAND_TYPES.CREATE_DATA then
                         table.insert(data_commands, cmd)
                     end
                 end
 
-                expect(#data_commands).to_equal(3)
+                test.eq(#data_commands, 3)
 
-                local alert_cmd = nil
+                local alert_cmd: any = nil
                 for _, cmd in ipairs(data_commands) do
                     if cmd.payload.key == "alert" then
                         alert_cmd = cmd
@@ -1828,13 +1896,13 @@ describe("Expr Output Routing", function()
                     end
                 end
 
-                expect(alert_cmd).not_to_be_nil()
-                expect(alert_cmd.payload.content.error_code).to_equal("DATABASE_ERROR")
-                expect(type(alert_cmd.payload.content.timestamp)).to_equal("number")
+                test.not_nil(alert_cmd)
+                test.eq(alert_cmd.payload.content.error_code, "DATABASE_ERROR")
+                test.eq(type(alert_cmd.payload.content.timestamp), "number")
             end)
 
             it("should gracefully handle error transform failures", function()
-                local test_node_bad_transform, _ = node.new({
+                local test_node_bad_transform, _err = node.new({
                     node_id = "test-node-123",
                     dataflow_id = "test-dataflow-456",
                     node = {
@@ -1849,27 +1917,28 @@ describe("Expr Output Routing", function()
                         }
                     }
                 }, mock_deps)
+                test.not_nil(test_node_bad_transform)
 
                 local error_details = { message = "original error" }
                 local result = test_node_bad_transform:fail(error_details, "Test error")
 
-                expect(result.success).to_be_false()
-                expect(result.message).to_equal("Test error")
+                test.is_false(result.success)
+                test.eq(result.message, "Test error")
 
                 local submit_call = captured_calls.commit_submit[1]
-                local data_commands = {}
+                local data_commands: {any} = {}
                 for _, cmd in ipairs(submit_call.commands) do
                     if cmd.type == consts.COMMAND_TYPES.CREATE_DATA then
                         table.insert(data_commands, cmd)
                     end
                 end
 
-                expect(#data_commands).to_equal(1)
-                expect(data_commands[1].payload.content).to_equal(error_details)
+                test.eq(#data_commands, 1)
+                test.eq((data_commands[1] :: any).payload.content, error_details)
             end)
 
             it("should skip error targets when condition fails", function()
-                local test_node_condition_fail, _ = node.new({
+                local test_node_condition_fail, _err = node.new({
                     node_id = "test-node-123",
                     dataflow_id = "test-dataflow-456",
                     node = {
@@ -1888,28 +1957,29 @@ describe("Expr Output Routing", function()
                         }
                     }
                 }, mock_deps)
+                test.not_nil(test_node_condition_fail)
 
                 local error_details = { severity = "medium", message = "moderate error" }
                 local result = test_node_condition_fail:fail(error_details)
 
-                expect(result.success).to_be_false()
+                test.is_false(result.success)
 
                 local submit_call = captured_calls.commit_submit[1]
-                local data_commands = {}
+                local data_commands: {any} = {}
                 for _, cmd in ipairs(submit_call.commands) do
                     if cmd.type == consts.COMMAND_TYPES.CREATE_DATA then
                         table.insert(data_commands, cmd)
                     end
                 end
 
-                expect(#data_commands).to_equal(1)
-                expect(data_commands[1].payload.key).to_equal("general_error")
+                test.eq(#data_commands, 1)
+                test.eq((data_commands[1] :: any).payload.key, "general_error")
             end)
         end)
 
         describe("Expr Error Handling in Output Routing", function()
             it("should fail when data target transform has invalid expression", function()
-                local test_node_bad, _ = node.new({
+                local test_node_bad, _err = node.new({
                     node_id = "test-node-123",
                     dataflow_id = "test-dataflow-456",
                     node = {
@@ -1924,17 +1994,18 @@ describe("Expr Output Routing", function()
                         }
                     }
                 }, mock_deps)
+                test.not_nil(test_node_bad)
 
                 local success, error_msg = pcall(function()
                     test_node_bad:complete({ message = "test" })
                 end)
 
-                expect(success).to_be_false()
-                expect(error_msg).to_contain("Output transform failed")
+                test.is_false(success)
+                test.contains(error_msg, "Output transform failed")
             end)
 
             it("should fail when data target condition has invalid expression", function()
-                local test_node_bad_condition, _ = node.new({
+                local test_node_bad_condition, _err = node.new({
                     node_id = "test-node-123",
                     dataflow_id = "test-dataflow-456",
                     node = {
@@ -1949,17 +2020,18 @@ describe("Expr Output Routing", function()
                         }
                     }
                 }, mock_deps)
+                test.not_nil(test_node_bad_condition)
 
                 local success, error_msg = pcall(function()
                     test_node_bad_condition:complete({ message = "test" })
                 end)
 
-                expect(success).to_be_false()
-                expect(error_msg).to_contain("Output condition evaluation failed")
+                test.is_false(success)
+                test.contains(error_msg, "Output condition evaluation failed")
             end)
 
             it("should gracefully skip error targets with bad conditions", function()
-                local test_node_bad_error_condition, _ = node.new({
+                local test_node_bad_error_condition, _err = node.new({
                     node_id = "test-node-123",
                     dataflow_id = "test-dataflow-456",
                     node = {
@@ -1978,25 +2050,26 @@ describe("Expr Output Routing", function()
                         }
                     }
                 }, mock_deps)
+                test.not_nil(test_node_bad_error_condition)
 
                 local result = test_node_bad_error_condition:fail({ message = "test error" })
 
-                expect(result.success).to_be_false()
+                test.is_false(result.success)
 
                 local submit_call = captured_calls.commit_submit[1]
-                local data_commands = {}
+                local data_commands: {any} = {}
                 for _, cmd in ipairs(submit_call.commands) do
                     if cmd.type == consts.COMMAND_TYPES.CREATE_DATA then
                         table.insert(data_commands, cmd)
                     end
                 end
 
-                expect(#data_commands).to_equal(1)
-                expect(data_commands[1].payload.key).to_equal("good_target")
+                test.eq(#data_commands, 1)
+                test.eq((data_commands[1] :: any).payload.key, "good_target")
             end)
 
             it("should validate transform expressions properly", function()
-                local test_node_validation, _ = node.new({
+                local test_node_validation, _err = node.new({
                     node_id = "test-node-123",
                     dataflow_id = "test-dataflow-456",
                     node = {
@@ -2011,12 +2084,13 @@ describe("Expr Output Routing", function()
                         }
                     }
                 }, mock_deps)
+                test.not_nil(test_node_validation)
 
                 local result = test_node_validation:complete({ score = 75 })
-                expect(result.success).to_be_true()
+                test.is_true(result.success)
 
                 local submit_call = captured_calls.commit_submit[1]
-                local data_cmd = nil
+                local data_cmd: any = nil
                 for _, cmd in ipairs(submit_call.commands) do
                     if cmd.type == consts.COMMAND_TYPES.CREATE_DATA then
                         data_cmd = cmd
@@ -2024,12 +2098,12 @@ describe("Expr Output Routing", function()
                     end
                 end
 
-                expect(data_cmd).not_to_be_nil()
-                expect(data_cmd.payload.content).to_equal("pass")
+                test.not_nil(data_cmd)
+                test.eq(data_cmd.payload.content, "pass")
             end)
 
             it("should handle type errors in expressions gracefully", function()
-                local test_node_type_error, _ = node.new({
+                local test_node_type_error, _err = node.new({
                     node_id = "test-node-123",
                     dataflow_id = "test-dataflow-456",
                     node = {
@@ -2044,17 +2118,18 @@ describe("Expr Output Routing", function()
                         }
                     }
                 }, mock_deps)
+                test.not_nil(test_node_type_error)
 
                 local success, error_msg = pcall(function()
                     test_node_type_error:complete({ number = 42 })
                 end)
 
-                expect(success).to_be_false()
-                expect(error_msg).to_contain("Output transform failed")
+                test.is_false(success)
+                test.contains(error_msg, "Output transform failed")
             end)
 
             it("should handle nested object transforms", function()
-                local test_node_nested, _ = node.new({
+                local test_node_nested, _err = node.new({
                     node_id = "test-node-123",
                     dataflow_id = "test-dataflow-456",
                     node = {
@@ -2069,12 +2144,13 @@ describe("Expr Output Routing", function()
                         }
                     }
                 }, mock_deps)
+                test.not_nil(test_node_nested)
 
                 local result = test_node_nested:complete({ user = { name = "Alice", age = 25 } })
-                expect(result.success).to_be_true()
+                test.is_true(result.success)
 
                 local submit_call = captured_calls.commit_submit[1]
-                local data_cmd = nil
+                local data_cmd: any = nil
                 for _, cmd in ipairs(submit_call.commands) do
                     if cmd.type == consts.COMMAND_TYPES.CREATE_DATA then
                         data_cmd = cmd
@@ -2082,11 +2158,11 @@ describe("Expr Output Routing", function()
                     end
                 end
 
-                expect(data_cmd).not_to_be_nil()
-                expect(data_cmd.payload.content.user.name).to_equal("Alice")
-                expect(data_cmd.payload.content.user.age).to_equal(25)
-                expect(data_cmd.payload.content.metadata.processed).to_be_true()
-                expect(type(data_cmd.payload.content.metadata.timestamp)).to_equal("number")
+                test.not_nil(data_cmd)
+                test.eq(data_cmd.payload.content.user.name, "Alice")
+                test.eq(data_cmd.payload.content.user.age, 25)
+                test.is_true(data_cmd.payload.content.metadata.processed)
+                test.eq(type(data_cmd.payload.content.metadata.timestamp), "number")
             end)
         end)
 

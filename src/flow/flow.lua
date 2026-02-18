@@ -24,7 +24,7 @@ local function get_registry_title(id)
         return nil
     end
 
-    local entry, err = registry.get(id)
+    local entry, err = registry.get(id :: string)
     if entry and entry.meta and (entry.meta.title or entry.meta.name) then
         return entry.meta.title or entry.meta.name
     end
@@ -180,7 +180,7 @@ function FlowBuilder:cycle(config)
 
     if not (cycle_config.metadata and cycle_config.metadata.title) then
         if config.func_id then
-            local registry_title = get_registry_title(config.func_id)
+            local registry_title = get_registry_title(config.func_id --[[@as string]])
             if registry_title then
                 if not cycle_config.metadata then
                     cycle_config.metadata = {}
@@ -341,7 +341,7 @@ function FlowBuilder:run()
         workflow_metadata.title = self.title or "Flow Builder Workflow"
         workflow_metadata.created_by = "flow_builder"
 
-        local dataflow_id, create_err = c:create_workflow(commands, {
+        local dataflow_id, create_err = (c --[[@as any]]):create_workflow(commands, {
             metadata = workflow_metadata
         })
 
@@ -349,7 +349,7 @@ function FlowBuilder:run()
             return nil, "Failed to create workflow: " .. create_err
         end
 
-        local outputs, exec_err = c:execute(dataflow_id, {
+        local outputs, exec_err = (c --[[@as any]]):execute(dataflow_id, {
             init_func_id = "userspace.dataflow.session:artifact"
         })
 
@@ -395,7 +395,7 @@ function FlowBuilder:start()
     workflow_metadata.title = self.title or "Flow Builder Workflow"
     workflow_metadata.created_by = "flow_builder"
 
-    local dataflow_id, create_err = c:create_workflow(commands, {
+    local dataflow_id, create_err = (c --[[@as any]]):create_workflow(commands, {
         metadata = workflow_metadata
     })
 
@@ -403,7 +403,7 @@ function FlowBuilder:start()
         return nil, "Failed to create workflow: " .. create_err
     end
 
-    local start_result, start_err = c:start(dataflow_id, {
+    local start_result, start_err = (c --[[@as any]]):start(dataflow_id, {
         init_func_id = "userspace.dataflow.session:artifact"
     })
 
@@ -419,7 +419,7 @@ function flow.create()
 end
 
 function flow.template()
-    return FlowBuilder.new():_mark_as_template()
+    return (FlowBuilder.new() :: any):_mark_as_template()
 end
 
 return flow

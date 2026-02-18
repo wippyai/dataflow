@@ -18,7 +18,7 @@ local function collect_inputs_as_array(n, ignored_set)
     for _, input in ipairs(input_data) do
         if not ignored_set[input.discriminator] then
             if input.content_type == state._deps.consts.CONTENT_TYPE.JSON then
-                local decoded, decode_err = json.decode(input.content)
+                local decoded, decode_err = json.decode(input.content :: string)
                 if decode_err == nil then
                     input.content = decoded
                 end
@@ -31,8 +31,24 @@ local function collect_inputs_as_array(n, ignored_set)
     return result
 end
 
+local function safe_inputs(n)
+    local ok, inputs_or_err, inputs_err = pcall(function()
+        return n:inputs()
+    end)
+
+    if not ok then
+        return nil, tostring(inputs_or_err)
+    end
+
+    if inputs_err then
+        return nil, tostring(inputs_err)
+    end
+
+    return inputs_or_err, nil
+end
+
 local function run(args)
-    local n, err = state._deps.node.new(args)
+    local n, err = state._deps.node.new(args) :: any
     if err then
         error(err)
     end
@@ -46,7 +62,7 @@ local function run(args)
         ignored_set[key] = true
     end
 
-    local inputs, inputs_err = n:inputs()
+    local inputs, inputs_err = safe_inputs(n)
     if inputs_err then
         return n:fail({
             code = "INPUT_VALIDATION_FAILED",

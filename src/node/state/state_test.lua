@@ -9,14 +9,13 @@ local function define_tests()
     describe("State Node Integration Tests", function()
         describe("Basic Collection", function()
             it("should collect single input without requirements", function()
-                local c, err = client.new()
-                expect(err).to_be_nil()
+                local c: any, err: string? = client.new()
+                test.is_nil(err)
 
-                local state_id = uuid.v7()
-                local input_data_id = uuid.v7()
+                local state_id: string = uuid.v7()
+                local input_data_id: string = uuid.v7()
 
                 local workflow_commands = {
-                    -- Create workflow input
                     {
                         type = consts.COMMAND_TYPES.CREATE_DATA,
                         payload = {
@@ -26,8 +25,6 @@ local function define_tests()
                             content_type = consts.CONTENT_TYPE.JSON
                         }
                     },
-
-                    -- Create state node WITHOUT input requirements
                     {
                         type = consts.COMMAND_TYPES.CREATE_NODE,
                         payload = {
@@ -44,8 +41,6 @@ local function define_tests()
                             }
                         }
                     },
-
-                    -- Create node input reference
                     {
                         type = consts.COMMAND_TYPES.CREATE_DATA,
                         payload = {
@@ -60,38 +55,36 @@ local function define_tests()
                     }
                 }
 
-                local dataflow_id, create_err = c:create_workflow(workflow_commands)
-                expect(create_err).to_be_nil()
+                local dataflow_id, create_err: string? = c:create_workflow(workflow_commands)
+                test.is_nil(create_err)
 
-                local result, exec_err = c:execute(dataflow_id)
-                expect(exec_err).to_be_nil()
-                expect(result.success).to_be_true()
+                local result: any, exec_err: string? = c:execute(dataflow_id)
+                test.is_nil(exec_err)
+                test.is_true(result.success)
 
-                -- Check output
-                local output = data_reader.with_dataflow(dataflow_id)
+                local output: any = (data_reader.with_dataflow(dataflow_id) :: any)
                     :with_data_types(consts.DATA_TYPE.WORKFLOW_OUTPUT)
                     :one()
 
-                expect(output).not_to_be_nil()
+                test.not_nil(output)
 
-                local content = output.content
+                local content: any = output.content
                 if type(content) == "string" then
-                    content = json.decode(content)
+                    content = json.decode(content :: string)
                 end
 
-                expect(content.main_input).not_to_be_nil()
-                expect(content.main_input.message).to_equal("test data")
+                test.not_nil(content.main_input)
+                test.eq(content.main_input.message, "test data")
             end)
 
             it("should collect single input with requirements", function()
-                local c, err = client.new()
-                expect(err).to_be_nil()
+                local c: any, err: string? = client.new()
+                test.is_nil(err)
 
-                local state_id = uuid.v7()
-                local input_data_id = uuid.v7()
+                local state_id: string = uuid.v7()
+                local input_data_id: string = uuid.v7()
 
                 local workflow_commands = {
-                    -- Create workflow input
                     {
                         type = consts.COMMAND_TYPES.CREATE_DATA,
                         payload = {
@@ -101,8 +94,6 @@ local function define_tests()
                             content_type = consts.CONTENT_TYPE.JSON
                         }
                     },
-
-                    -- Create state node WITH input requirements
                     {
                         type = consts.COMMAND_TYPES.CREATE_NODE,
                         payload = {
@@ -122,8 +113,6 @@ local function define_tests()
                             }
                         }
                     },
-
-                    -- Create node input reference with matching discriminator
                     {
                         type = consts.COMMAND_TYPES.CREATE_DATA,
                         payload = {
@@ -138,27 +127,26 @@ local function define_tests()
                     }
                 }
 
-                local dataflow_id, create_err = c:create_workflow(workflow_commands)
-                expect(create_err).to_be_nil()
+                local dataflow_id, create_err: string? = c:create_workflow(workflow_commands)
+                test.is_nil(create_err)
 
-                local result, exec_err = c:execute(dataflow_id)
-                expect(exec_err).to_be_nil()
-                expect(result.success).to_be_true()
+                local result: any, exec_err: string? = c:execute(dataflow_id)
+                test.is_nil(exec_err)
+                test.is_true(result.success)
 
-                -- Check output
-                local output = data_reader.with_dataflow(dataflow_id)
+                local output: any = (data_reader.with_dataflow(dataflow_id) :: any)
                     :with_data_types(consts.DATA_TYPE.WORKFLOW_OUTPUT)
                     :one()
 
-                expect(output).not_to_be_nil()
+                test.not_nil(output)
 
-                local content = output.content
+                local content: any = output.content
                 if type(content) == "string" then
-                    content = json.decode(content)
+                    content = json.decode(content :: string)
                 end
 
-                expect(content.required_input).not_to_be_nil()
-                expect(content.required_input.message).to_equal("required test")
+                test.not_nil(content.required_input)
+                test.eq(content.required_input.message, "required test")
             end)
         end)
 
@@ -166,13 +154,13 @@ local function define_tests()
             it("should wait for both branches before executing", function()
                 print("=== DIAMOND PATTERN TEST START ===")
 
-                local c, err = client.new()
-                expect(err).to_be_nil()
+                local c: any, err: string? = client.new()
+                test.is_nil(err)
 
-                local proc_a_id = uuid.v7()
-                local proc_b_id = uuid.v7()
-                local state_id = uuid.v7()
-                local input_data_id = uuid.v7()
+                local proc_a_id: string = uuid.v7()
+                local proc_b_id: string = uuid.v7()
+                local state_id: string = uuid.v7()
+                local input_data_id: string = uuid.v7()
 
                 print("proc_a_id:", proc_a_id)
                 print("proc_b_id:", proc_b_id)
@@ -180,7 +168,6 @@ local function define_tests()
                 print("input_data_id:", input_data_id)
 
                 local workflow_commands = {
-                    -- Input
                     {
                         type = consts.COMMAND_TYPES.CREATE_DATA,
                         payload = {
@@ -190,8 +177,6 @@ local function define_tests()
                             content_type = consts.CONTENT_TYPE.JSON
                         }
                     },
-
-                    -- Process A
                     {
                         type = consts.COMMAND_TYPES.CREATE_NODE,
                         payload = {
@@ -211,8 +196,6 @@ local function define_tests()
                             }
                         }
                     },
-
-                    -- Process B
                     {
                         type = consts.COMMAND_TYPES.CREATE_NODE,
                         payload = {
@@ -232,8 +215,6 @@ local function define_tests()
                             }
                         }
                     },
-
-                    -- State collector - waits for BOTH inputs
                     {
                         type = consts.COMMAND_TYPES.CREATE_NODE,
                         payload = {
@@ -253,8 +234,6 @@ local function define_tests()
                             }
                         }
                     },
-
-                    -- Connect input to both processors
                     {
                         type = consts.COMMAND_TYPES.CREATE_DATA,
                         payload = {
@@ -280,12 +259,12 @@ local function define_tests()
                 }
 
                 print("Creating diamond workflow...")
-                local dataflow_id, create_err = c:create_workflow(workflow_commands)
+                local dataflow_id, create_err: string? = c:create_workflow(workflow_commands)
                 print("dataflow_id:", dataflow_id)
-                expect(create_err).to_be_nil()
+                test.is_nil(create_err)
 
                 print("Executing diamond workflow...")
-                local result, exec_err = c:execute(dataflow_id)
+                local result: any, exec_err: string? = c:execute(dataflow_id)
                 print("exec_err:", exec_err)
                 print("result:", json.encode(result))
 
@@ -293,31 +272,28 @@ local function define_tests()
                     print("DIAMOND WORKFLOW FAILED!")
                     print("result.error:", result.error)
 
-                    -- Check all data in workflow
                     print("Checking all workflow data...")
-                    local all_data = data_reader.with_dataflow(dataflow_id):all()
+                    local all_data = (data_reader.with_dataflow(dataflow_id) :: any):all()
                     print("Total data records:", #all_data)
                     for i, data in ipairs(all_data) do
                         print(string.format("Data %d: type=%s, node_id=%s, key=%s, discriminator=%s, content_type=%s",
                             i, data.data_type, data.node_id or "nil", data.key or "nil", data.discriminator or "nil", data.content_type or "nil"))
                     end
 
-                    -- Check node inputs specifically
                     print("Checking NODE_INPUT data...")
-                    local node_inputs = data_reader.with_dataflow(dataflow_id)
+                    local node_inputs = (data_reader.with_dataflow(dataflow_id) :: any)
                         :with_data_types(consts.DATA_TYPE.NODE_INPUT)
                         :all()
                     print("Node input records:", #node_inputs)
-                    for i, input in ipairs(node_inputs) do
+                    for i, input_record in ipairs(node_inputs) do
                         print(string.format("Input %d: node_id=%s, discriminator=%s, key=%s",
-                            i, input.node_id or "nil", input.discriminator or "nil", input.key or "nil"))
+                            i, input_record.node_id or "nil", input_record.discriminator or "nil", input_record.key or "nil"))
                     end
                 else
                     print("DIAMOND WORKFLOW SUCCEEDED!")
 
-                    -- Check what outputs we got
                     print("Checking workflow outputs...")
-                    local outputs = data_reader.with_dataflow(dataflow_id)
+                    local outputs = (data_reader.with_dataflow(dataflow_id) :: any)
                         :with_data_types(consts.DATA_TYPE.WORKFLOW_OUTPUT)
                         :all()
                     print("Output records:", #outputs)
@@ -327,23 +303,22 @@ local function define_tests()
                     end
                 end
 
-                expect(exec_err).to_be_nil()
-                expect(result.success).to_be_true()
+                test.is_nil(exec_err)
+                test.is_true(result.success)
 
-                -- Check diamond output
-                local output = data_reader.with_dataflow(dataflow_id)
+                local output: any = (data_reader.with_dataflow(dataflow_id) :: any)
                     :with_data_types(consts.DATA_TYPE.WORKFLOW_OUTPUT)
                     :one()
 
-                expect(output).not_to_be_nil()
+                test.not_nil(output)
 
-                local content = output.content
+                local content: any = output.content
                 if type(content) == "string" then
-                    content = json.decode(content)
+                    content = json.decode(content :: string)
                 end
 
-                expect(content.branch_a).not_to_be_nil()
-                expect(content.branch_b).not_to_be_nil()
+                test.not_nil(content.branch_a)
+                test.not_nil(content.branch_b)
 
                 print("=== DIAMOND PATTERN TEST COMPLETE ===")
             end)
@@ -351,15 +326,14 @@ local function define_tests()
 
         describe("Transform Test", function()
             it("should use input_transform to restructure inputs", function()
-                local c, err = client.new()
-                expect(err).to_be_nil()
+                local c: any, err: string? = client.new()
+                test.is_nil(err)
 
-                local state_id = uuid.v7()
-                local input1_id = uuid.v7()
-                local input2_id = uuid.v7()
+                local state_id: string = uuid.v7()
+                local input1_id: string = uuid.v7()
+                local input2_id: string = uuid.v7()
 
                 local workflow_commands = {
-                    -- Two input data items
                     {
                         type = consts.COMMAND_TYPES.CREATE_DATA,
                         payload = {
@@ -378,8 +352,6 @@ local function define_tests()
                             content_type = consts.CONTENT_TYPE.JSON
                         }
                     },
-
-                    -- State node with transform
                     {
                         type = consts.COMMAND_TYPES.CREATE_NODE,
                         payload = {
@@ -404,8 +376,6 @@ local function define_tests()
                             }
                         }
                     },
-
-                    -- References with discriminators
                     {
                         type = consts.COMMAND_TYPES.CREATE_DATA,
                         payload = {
@@ -432,28 +402,27 @@ local function define_tests()
                     }
                 }
 
-                local dataflow_id, create_err = c:create_workflow(workflow_commands)
-                expect(create_err).to_be_nil()
+                local dataflow_id, create_err: string? = c:create_workflow(workflow_commands)
+                test.is_nil(create_err)
 
-                local result, exec_err = c:execute(dataflow_id)
-                expect(exec_err).to_be_nil()
-                expect(result.success).to_be_true()
+                local result: any, exec_err: string? = c:execute(dataflow_id)
+                test.is_nil(exec_err)
+                test.is_true(result.success)
 
-                -- Check transform output
-                local output = data_reader.with_dataflow(dataflow_id)
+                local output: any = (data_reader.with_dataflow(dataflow_id) :: any)
                     :with_data_types(consts.DATA_TYPE.WORKFLOW_OUTPUT)
                     :one()
 
-                expect(output).not_to_be_nil()
+                test.not_nil(output)
 
-                local content = output.content
+                local content: any = output.content
                 if type(content) == "string" then
-                    content = json.decode(content)
+                    content = json.decode(content :: string)
                 end
 
-                expect(content.summary).to_equal(2)
-                expect(content.user_name).to_equal("Alice")
-                expect(content.final_grade).to_equal("A")
+                test.eq(content.summary, 2)
+                test.eq(content.user_name, "Alice")
+                test.eq(content.final_grade, "A")
             end)
         end)
     end)

@@ -256,6 +256,12 @@ function handle_satisfy_yield(state, payload)
     local yield_id = payload.yield_id
     local reply_to = payload.reply_to
     local results = payload.results or {}
+    if type(parent_id) ~= "string" then
+        return true
+    end
+    if type(results) ~= "table" then
+        results = {}
+    end
 
     -- Queue yield satisfaction commands
     state.workflow_state:satisfy_yield(parent_id, results)
@@ -268,7 +274,7 @@ function handle_satisfy_yield(state, payload)
 
     -- Send reply to yielding process ONLY AFTER successful persistence
     local process_info = state.active_processes[parent_id]
-    if process_info and process_info.pid and reply_to then
+    if process_info and type(reply_to) == "string" then
         orchestrator.process.send(process_info.pid, reply_to, {
             yield_id = yield_id,
             response_data = {
@@ -355,10 +361,13 @@ local function handle_yield_request(state, msg_payload, from_pid)
     local yield_id = msg_payload and msg_payload.request_context and msg_payload.request_context.yield_id
     local yield_context = msg_payload and msg_payload.yield_context or {}
     local run_nodes = yield_context.run_nodes or {}
+    if type(run_nodes) ~= "table" then
+        run_nodes = {}
+    end
 
     if #run_nodes == 0 then
         local reply_to = msg_payload and msg_payload.request_context and msg_payload.request_context.reply_to
-        if reply_to and yield_id then
+        if type(reply_to) == "string" and yield_id then
             orchestrator.process.send(from_pid, reply_to, {
                 yield_id = yield_id,
                 response_data = {
@@ -385,9 +394,11 @@ local function handle_yield_request(state, msg_payload, from_pid)
 
         -- Only track non-template nodes in pending_children
         for _, child_id in ipairs(run_nodes) do
-            local child_node = state.workflow_state:get_node(child_id)
-            if child_node and child_node.status ~= consts.STATUS.TEMPLATE then
-                yield_info.pending_children[child_id] = consts.STATUS.PENDING
+            if type(child_id) == "string" then
+                local child_node = state.workflow_state:get_node(child_id)
+                if child_node and child_node.status ~= consts.STATUS.TEMPLATE then
+                    yield_info.pending_children[child_id] = consts.STATUS.PENDING
+                end
             end
         end
 
@@ -476,7 +487,9 @@ end
 ---@param event table Cancel event
 local function handle_cancellation(state, event)
     for node_id, process_info in pairs(state.active_processes) do
-        orchestrator.process.terminate(process_info.pid)
+        if type(process_info.pid) == "string" then
+            orchestrator.process.terminate(process_info.pid)
+        end
     end
 
     state.workflow_state:queue_commands({
@@ -511,11 +524,15 @@ local function run(args)
     if ws_err then
         return { success = false, error = "Failed to create workflow state: " .. ws_err }
     end
+    if not ws then
+        return { success = false, dataflow_id = dataflow_id, error = "Failed to create workflow state" }
+    end
+    local workflow_state = ws :: any
 
     -- Initialize state
     local state = {
         dataflow_id = dataflow_id,
-        workflow_state = ws,
+        workflow_state = workflow_state,
         active_processes = {},
         incoming_commit_queue = {},
         processed_commit_ids = {},
@@ -529,7 +546,7 @@ local function run(args)
     orchestrator.process.set_options({ trap_links = true })
 
     -- Load workflow state
-    local result, load_err = state.workflow_state:load_state()
+    local result, load_err = workflow_state:load_state()
     if load_err then
         return {
             success = false,
@@ -539,7 +556,7 @@ local function run(args)
     end
 
     -- Check for empty workflow
-    local nodes = state.workflow_state:get_nodes()
+    local nodes = workflow_state:get_nodes()
     local node_count = 0
     for _ in pairs(nodes) do
         node_count = node_count + 1
@@ -554,11 +571,11 @@ local function run(args)
     end
 
     -- Call init function if provided
-    if init_func_id then
+    if type(init_func_id) == "string" and init_func_id ~= "" then
         local executor = orchestrator.funcs.new()
-        local success, err = executor:call(init_func_id, {
+        local _, _ = executor:call(init_func_id, {
             dataflow_id = dataflow_id,
-            metadata = state.workflow_state:get_dataflow_metadata()
+            metadata = workflow_state:get_dataflow_metadata()
         })
     end
 
@@ -569,7 +586,11 @@ local function run(args)
     -- Initial scheduler call
     local continue = call_scheduler_and_handle(state)
     if not continue then
-        return state.exit_result
+        return state.exit_result or {
+            success = false,
+            dataflow_id = dataflow_id,
+            error = "Orchestrator exited without result"
+        }
     end
 
     -- Main processing loop
@@ -587,10 +608,14 @@ local function run(args)
             local msg = result.value
             local topic = msg:topic()
             local payload = msg:payload():data()
+            local payload_table = nil
+            if type(payload) == "table" then
+                payload_table = payload
+            end
             local from_pid = msg:from()
 
             if topic == consts.MESSAGE_TOPIC.COMMIT then
-                handle_commit_message(state, payload)
+                handle_commit_message(state, payload_table)
                 local success = process_pending_commits(state)
                 if success and state.running then
                     call_scheduler_and_handle(state)
@@ -599,7 +624,7 @@ local function run(args)
                 -- Process pending commits FIRST, before ANY yield handling
                 local success = process_pending_commits(state)
                 if success and state.running then
-                    handle_yield_request(state, payload, from_pid)
+                    handle_yield_request(state, payload_table, from_pid)
                     call_scheduler_and_handle(state)
                 end
             end

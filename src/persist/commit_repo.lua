@@ -215,13 +215,19 @@ function commit_repo.list_by_dataflow(dataflow_id, options)
     query_builder = query_builder:order_by("commit_id ASC")
 
     -- Add limit if specified
-    if options.limit and tonumber(options.limit) > 0 then
-        query_builder = query_builder:limit(tonumber(options.limit))
+    if options.limit then
+        local limit_num = tonumber(options.limit) or 0
+        if limit_num > 0 then
+            query_builder = query_builder:limit(limit_num)
+        end
     end
 
     -- Add offset if specified
-    if options.offset and tonumber(options.offset) >= 0 then
-        query_builder = query_builder:offset(tonumber(options.offset))
+    if options.offset then
+        local offset_num = tonumber(options.offset) or 0
+        if offset_num >= 0 then
+            query_builder = query_builder:offset(offset_num)
+        end
     end
 
     local executor = query_builder:run_with(db)

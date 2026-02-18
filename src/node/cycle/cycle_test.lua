@@ -5,6 +5,16 @@ local client = require("client")
 local consts = require("consts")
 local data_reader = require("data_reader")
 
+local function decode_json_content(content: any): any
+    if type(content) == "string" then
+        local decoded, decode_err = json.decode(content)
+        if not decode_err then
+            return decoded
+        end
+    end
+    return content
+end
+
 local function define_tests()
     describe("Cycle Node Integration Tests", function()
         describe("Basic Cycle Execution", function()
@@ -12,12 +22,12 @@ local function define_tests()
                 print("=== SIMPLE REFINEMENT CYCLE INTEGRATION TEST START ===")
 
                 local c, err = client.new()
-                expect(err).to_be_nil()
-                expect(c).not_to_be_nil()
+                test.is_nil(err)
+                test.not_nil(c)
 
-                local cycle_node_id = uuid.v7()
-                local input_data_id = uuid.v7()
-                local node_input_id = uuid.v7()
+                local cycle_node_id: string = uuid.v7()
+                local input_data_id: string = uuid.v7()
+                local node_input_id: string = uuid.v7()
 
                 local test_input = {
                     target_quality = 0.8,
@@ -78,13 +88,13 @@ local function define_tests()
                         title = "Simple Refinement Cycle Integration Test Workflow"
                     }
                 })
-                expect(create_err).to_be_nil()
-                expect(dataflow_id).not_to_be_nil()
+                test.is_nil(create_err)
+                test.not_nil(dataflow_id)
 
                 local result, exec_err = c:execute(dataflow_id)
-                expect(exec_err).to_be_nil()
-                expect(result).not_to_be_nil()
-                expect(result.success).to_be_true()
+                test.is_nil(exec_err)
+                test.not_nil(result)
+                test.is_true(result.success)
 
                 local output_data = data_reader.with_dataflow(dataflow_id)
                     :with_data_types(consts.DATA_TYPE.WORKFLOW_OUTPUT)
@@ -92,32 +102,26 @@ local function define_tests()
                     :fetch_options({ replace_references = true })
                     :one()
 
-                expect(output_data).not_to_be_nil()
+                test.not_nil(output_data)
 
-                local output_content = output_data.content
-                if type(output_content) == "string" then
-                    local decoded, decode_err = json.decode(output_content)
-                    if not decode_err then
-                        output_content = decoded
-                    end
-                end
+                local output_content = decode_json_content(output_data.content)
 
-                expect(output_content.refined_text).not_to_be_nil()
-                expect(output_content.refinement_complete).to_be_true()
-                expect(output_content.final_quality).to_be_greater_than_or_equal(0.8)
+                test.not_nil(output_content.refined_text)
+                test.is_true(output_content.refinement_complete)
+                test.gte(output_content.final_quality, 0.8)
 
-                print("✓ Simple refinement cycle completed successfully")
+                print("--- Simple refinement cycle completed successfully")
             end)
 
             it("should enforce custom max_iterations from config", function()
                 print("=== MAX ITERATIONS ENFORCEMENT TEST START ===")
 
                 local c, err = client.new()
-                expect(err).to_be_nil()
+                test.is_nil(err)
 
-                local cycle_node_id = uuid.v7()
-                local input_data_id = uuid.v7()
-                local node_input_id = uuid.v7()
+                local cycle_node_id: string = uuid.v7()
+                local input_data_id: string = uuid.v7()
+                local node_input_id: string = uuid.v7()
 
                 local test_input = { infinite_loop = true }
 
@@ -170,24 +174,24 @@ local function define_tests()
                         title = "Max Iterations Enforcement Test Workflow"
                     }
                 })
-                expect(create_err).to_be_nil()
+                test.is_nil(create_err)
 
                 local result, exec_err = c:execute(dataflow_id)
-                expect(exec_err).to_be_nil()
-                expect(result.success).to_be_false()
-                expect(result.error).to_contain("Maximum iterations")
-                expect(result.error).to_contain("3")
+                test.is_nil(exec_err)
+                test.is_false(result.success)
+                test.contains(result.error, "Maximum iterations")
+                test.contains(result.error, "3")
 
-                print("✓ Max iterations from config enforced correctly")
+                print("--- Max iterations from config enforced correctly")
             end)
 
             it("should handle missing func_id configuration", function()
                 local c, err = client.new()
-                expect(err).to_be_nil()
+                test.is_nil(err)
 
-                local cycle_node_id = uuid.v7()
-                local input_data_id = uuid.v7()
-                local node_input_id = uuid.v7()
+                local cycle_node_id: string = uuid.v7()
+                local input_data_id: string = uuid.v7()
+                local node_input_id: string = uuid.v7()
 
                 local test_input = { message = "test" }
 
@@ -239,21 +243,21 @@ local function define_tests()
                         title = "Missing Func ID Test Workflow"
                     }
                 })
-                expect(create_err).to_be_nil()
+                test.is_nil(create_err)
 
                 local result, exec_err = c:execute(dataflow_id)
-                expect(exec_err).to_be_nil()
-                expect(result.success).to_be_false()
-                expect(result.error).to_contain("Cycle requires either func_id or template nodes")
+                test.is_nil(exec_err)
+                test.is_false(result.success)
+                test.contains(result.error, "Cycle requires either func_id or template nodes")
 
-                print("✓ Cycle node correctly failed with missing func_id")
+                print("--- Cycle node correctly failed with missing func_id")
             end)
 
             it("should handle missing input data", function()
                 local c, err = client.new()
-                expect(err).to_be_nil()
+                test.is_nil(err)
 
-                local cycle_node_id = uuid.v7()
+                local cycle_node_id: string = uuid.v7()
 
                 local workflow_commands = {
                     {
@@ -284,23 +288,23 @@ local function define_tests()
                         title = "No Input Data Test Workflow"
                     }
                 })
-                expect(create_err).to_be_nil()
+                test.is_nil(create_err)
 
                 local result, exec_err = c:execute(dataflow_id)
-                expect(exec_err).to_be_nil()
-                expect(result.success).to_be_false()
-                expect(result.error).to_contain("No input data provided")
+                test.is_nil(exec_err)
+                test.is_false(result.success)
+                test.contains(result.error, "No input data provided")
 
-                print("✓ Cycle node correctly failed with no input data")
+                print("--- Cycle node correctly failed with no input data")
             end)
 
             it("should handle nonexistent function", function()
                 local c, err = client.new()
-                expect(err).to_be_nil()
+                test.is_nil(err)
 
-                local cycle_node_id = uuid.v7()
-                local input_data_id = uuid.v7()
-                local node_input_id = uuid.v7()
+                local cycle_node_id: string = uuid.v7()
+                local input_data_id: string = uuid.v7()
+                local node_input_id: string = uuid.v7()
 
                 local test_input = { message = "test" }
 
@@ -353,14 +357,14 @@ local function define_tests()
                         title = "Nonexistent Function Test Workflow"
                     }
                 })
-                expect(create_err).to_be_nil()
+                test.is_nil(create_err)
 
                 local result, exec_err = c:execute(dataflow_id)
-                expect(exec_err).to_be_nil()
-                expect(result.success).to_be_false()
-                expect(result.error).to_contain("failed")
+                test.is_nil(exec_err)
+                test.is_false(result.success)
+                test.contains(result.error, "failed")
 
-                print("✓ Cycle node correctly failed with nonexistent function")
+                print("--- Cycle node correctly failed with nonexistent function")
             end)
         end)
 
@@ -369,11 +373,11 @@ local function define_tests()
                 print("=== CONTINUE CONDITION EXPRESSION TEST START ===")
 
                 local c, err = client.new()
-                expect(err).to_be_nil()
+                test.is_nil(err)
 
-                local cycle_node_id = uuid.v7()
-                local input_data_id = uuid.v7()
-                local node_input_id = uuid.v7()
+                local cycle_node_id: string = uuid.v7()
+                local input_data_id: string = uuid.v7()
+                local node_input_id: string = uuid.v7()
 
                 local test_input = {
                     target_quality = 0.85,
@@ -435,11 +439,11 @@ local function define_tests()
                         title = "Expression Continue Condition Test Workflow"
                     }
                 })
-                expect(create_err).to_be_nil()
+                test.is_nil(create_err)
 
                 local result, exec_err = c:execute(dataflow_id)
-                expect(exec_err).to_be_nil()
-                expect(result.success).to_be_true()
+                test.is_nil(exec_err)
+                test.is_true(result.success)
 
                 local output_data = data_reader.with_dataflow(dataflow_id)
                     :with_data_types(consts.DATA_TYPE.WORKFLOW_OUTPUT)
@@ -447,31 +451,25 @@ local function define_tests()
                     :fetch_options({ replace_references = true })
                     :one()
 
-                expect(output_data).not_to_be_nil()
+                test.not_nil(output_data)
 
-                local output_content = output_data.content
-                if type(output_content) == "string" then
-                    local decoded, decode_err = json.decode(output_content)
-                    if not decode_err then
-                        output_content = decoded
-                    end
-                end
+                local output_content = decode_json_content(output_data.content)
 
-                expect(output_content.refinement_complete).to_be_true()
-                expect(output_content.final_quality).to_be_greater_than_or_equal(0.85)
+                test.is_true(output_content.refinement_complete)
+                test.gte(output_content.final_quality, 0.85)
 
-                print("✓ Continue condition expression controlled cycle correctly")
+                print("--- Continue condition expression controlled cycle correctly")
             end)
 
             it("should handle complex continue_condition expressions", function()
                 print("=== COMPLEX CONTINUE CONDITION TEST START ===")
 
                 local c, err = client.new()
-                expect(err).to_be_nil()
+                test.is_nil(err)
 
-                local cycle_node_id = uuid.v7()
-                local input_data_id = uuid.v7()
-                local node_input_id = uuid.v7()
+                local cycle_node_id: string = uuid.v7()
+                local input_data_id: string = uuid.v7()
+                local node_input_id: string = uuid.v7()
 
                 local test_input = {
                     target_quality = 0.9,
@@ -533,11 +531,11 @@ local function define_tests()
                         title = "Complex Continue Condition Test Workflow"
                     }
                 })
-                expect(create_err).to_be_nil()
+                test.is_nil(create_err)
 
                 local result, exec_err = c:execute(dataflow_id)
-                expect(exec_err).to_be_nil()
-                expect(result.success).to_be_true()
+                test.is_nil(exec_err)
+                test.is_true(result.success)
 
                 local output_data = data_reader.with_dataflow(dataflow_id)
                     :with_data_types(consts.DATA_TYPE.WORKFLOW_OUTPUT)
@@ -545,20 +543,14 @@ local function define_tests()
                     :fetch_options({ replace_references = true })
                     :one()
 
-                expect(output_data).not_to_be_nil()
+                test.not_nil(output_data)
 
-                local output_content = output_data.content
-                if type(output_content) == "string" then
-                    local decoded, decode_err = json.decode(output_content)
-                    if not decode_err then
-                        output_content = decoded
-                    end
-                end
+                local output_content = decode_json_content(output_data.content)
 
-                expect(output_content.refinement_complete).to_be_true()
-                expect(output_content.total_refinements).to_be_less_than_or_equal(6)
+                test.is_true(output_content.refinement_complete)
+                test.is_true(output_content.total_refinements <= 6)
 
-                print("✓ Complex continue condition expression worked correctly")
+                print("--- Complex continue condition expression worked correctly")
             end)
 
 
@@ -569,11 +561,11 @@ local function define_tests()
                 print("=== CONTINUE FUNCTION TEST START ===")
 
                 local c, err = client.new()
-                expect(err).to_be_nil()
+                test.is_nil(err)
 
-                local cycle_node_id = uuid.v7()
-                local input_data_id = uuid.v7()
-                local node_input_id = uuid.v7()
+                local cycle_node_id: string = uuid.v7()
+                local input_data_id: string = uuid.v7()
+                local node_input_id: string = uuid.v7()
 
                 local test_input = {
                     target_quality = 0.75,
@@ -635,11 +627,11 @@ local function define_tests()
                         title = "Continue Function Test Workflow"
                     }
                 })
-                expect(create_err).to_be_nil()
+                test.is_nil(create_err)
 
                 local result, exec_err = c:execute(dataflow_id)
-                expect(exec_err).to_be_nil()
-                expect(result.success).to_be_true()
+                test.is_nil(exec_err)
+                test.is_true(result.success)
 
                 local output_data = data_reader.with_dataflow(dataflow_id)
                     :with_data_types(consts.DATA_TYPE.WORKFLOW_OUTPUT)
@@ -647,31 +639,25 @@ local function define_tests()
                     :fetch_options({ replace_references = true })
                     :one()
 
-                expect(output_data).not_to_be_nil()
+                test.not_nil(output_data)
 
-                local output_content = output_data.content
-                if type(output_content) == "string" then
-                    local decoded, decode_err = json.decode(output_content)
-                    if not decode_err then
-                        output_content = decoded
-                    end
-                end
+                local output_content = decode_json_content(output_data.content)
 
-                expect(output_content.refinement_complete).to_be_true()
-                expect(output_content.final_quality).to_be_greater_than_or_equal(0.75)
+                test.is_true(output_content.refinement_complete)
+                test.gte(output_content.final_quality, 0.75)
 
-                print("✓ Continue function works correctly")
+                print("--- Continue function works correctly")
             end)
 
             it("should reject both continue_condition and continue_func_id", function()
                 print("=== INVALID CONTINUATION CONFIG TEST START ===")
 
                 local c, err = client.new()
-                expect(err).to_be_nil()
+                test.is_nil(err)
 
-                local cycle_node_id = uuid.v7()
-                local input_data_id = uuid.v7()
-                local node_input_id = uuid.v7()
+                local cycle_node_id: string = uuid.v7()
+                local input_data_id: string = uuid.v7()
+                local node_input_id: string = uuid.v7()
 
                 local test_input = {
                     target_quality = 0.8,
@@ -733,14 +719,14 @@ local function define_tests()
                         title = "Invalid Continuation Config Test Workflow"
                     }
                 })
-                expect(create_err).to_be_nil()
+                test.is_nil(create_err)
 
                 local result, exec_err = c:execute(dataflow_id)
-                expect(exec_err).to_be_nil()
-                expect(result.success).to_be_false()
-                expect(result.error).to_contain("Only one continuation method allowed")
+                test.is_nil(exec_err)
+                test.is_false(result.success)
+                test.contains(result.error, "Only one continuation method allowed")
 
-                print("✓ Multiple continuation methods correctly rejected")
+                print("--- Multiple continuation methods correctly rejected")
             end)
         end)
 
@@ -749,11 +735,11 @@ local function define_tests()
                 print("=== STATE PERSISTENCE TEST START ===")
 
                 local c, err = client.new()
-                expect(err).to_be_nil()
+                test.is_nil(err)
 
-                local cycle_node_id = uuid.v7()
-                local input_data_id = uuid.v7()
-                local node_input_id = uuid.v7()
+                local cycle_node_id: string = uuid.v7()
+                local input_data_id: string = uuid.v7()
+                local node_input_id: string = uuid.v7()
 
                 local test_input = {
                     target_quality = 0.9,
@@ -814,11 +800,11 @@ local function define_tests()
                         title = "State Persistence Test Workflow"
                     }
                 })
-                expect(create_err).to_be_nil()
+                test.is_nil(create_err)
 
                 local result, exec_err = c:execute(dataflow_id)
-                expect(exec_err).to_be_nil()
-                expect(result.success).to_be_true()
+                test.is_nil(exec_err)
+                test.is_true(result.success)
 
                 local output_data = data_reader.with_dataflow(dataflow_id)
                     :with_data_types(consts.DATA_TYPE.WORKFLOW_OUTPUT)
@@ -826,30 +812,24 @@ local function define_tests()
                     :fetch_options({ replace_references = true })
                     :one()
 
-                expect(output_data).not_to_be_nil()
+                test.not_nil(output_data)
 
-                local output_content = output_data.content
-                if type(output_content) == "string" then
-                    local decoded, decode_err = json.decode(output_content)
-                    if not decode_err then
-                        output_content = decoded
-                    end
-                end
+                local output_content = decode_json_content(output_data.content)
 
-                expect(output_content.refined_text).not_to_be_nil()
-                expect(output_content.refinement_complete).to_be_true()
-                expect(output_content.final_quality).to_be_greater_than_or_equal(0.9)
-                expect(output_content.total_refinements).to_be_greater_than(0)
+                test.not_nil(output_content.refined_text)
+                test.is_true(output_content.refinement_complete)
+                test.gte(output_content.final_quality, 0.9)
+                test.gt(output_content.total_refinements, 0)
 
-                print("✓ State persistence worked correctly")
+                print("--- State persistence worked correctly")
 
                 local state_data = data_reader.with_dataflow(dataflow_id)
                     :with_data_types("cycle.state")
                     :fetch_options({ replace_references = true })
                     :all()
 
-                expect(#state_data).to_be_greater_than(0)
-                print("✓ Cycle state data was persisted")
+                test.gt(#state_data, 0)
+                print("--- Cycle state data was persisted")
             end)
         end)
 
@@ -858,11 +838,11 @@ local function define_tests()
                 print("=== CYCLE CONTROL COMMANDS TEST START ===")
 
                 local c, err = client.new()
-                expect(err).to_be_nil()
+                test.is_nil(err)
 
-                local cycle_node_id = uuid.v7()
-                local input_data_id = uuid.v7()
-                local node_input_id = uuid.v7()
+                local cycle_node_id: string = uuid.v7()
+                local input_data_id: string = uuid.v7()
+                local node_input_id: string = uuid.v7()
 
                 local test_input = {
                     target_quality = 0.7,
@@ -923,11 +903,11 @@ local function define_tests()
                         title = "Cycle Control Commands Test Workflow"
                     }
                 })
-                expect(create_err).to_be_nil()
+                test.is_nil(create_err)
 
                 local result, exec_err = c:execute(dataflow_id)
-                expect(exec_err).to_be_nil()
-                expect(result.success).to_be_true()
+                test.is_nil(exec_err)
+                test.is_true(result.success)
 
                 local output_data = data_reader.with_dataflow(dataflow_id)
                     :with_data_types(consts.DATA_TYPE.WORKFLOW_OUTPUT)
@@ -935,40 +915,34 @@ local function define_tests()
                     :fetch_options({ replace_references = true })
                     :one()
 
-                expect(output_data).not_to_be_nil()
+                test.not_nil(output_data)
 
-                local output_content = output_data.content
-                if type(output_content) == "string" then
-                    local decoded, decode_err = json.decode(output_content)
-                    if not decode_err then
-                        output_content = decoded
-                    end
-                end
+                local output_content = decode_json_content(output_data.content)
 
-                expect(output_content.refinement_complete).to_be_true()
-                expect(output_content.refined_text).not_to_be_nil()
-                expect(output_content.total_refinements).to_be_greater_than(0)
+                test.is_true(output_content.refinement_complete)
+                test.not_nil(output_content.refined_text)
+                test.gt(output_content.total_refinements, 0)
 
-                print("✓ Cycle control commands executed successfully")
+                print("--- Cycle control commands executed successfully")
 
                 local child_nodes = data_reader.with_dataflow(dataflow_id)
                     :with_data_types(consts.DATA_TYPE.NODE_OUTPUT)
                     :fetch_options({ replace_references = true })
                     :all()
 
-                expect(#child_nodes).to_be_greater_than(0)
-                print("✓ Child nodes created via control commands")
+                test.gt(#child_nodes, 0)
+                print("--- Child nodes created via control commands")
             end)
         end)
 
         describe("Context and Metadata", function()
             it("should pass context to function and update metadata", function()
                 local c, err = client.new()
-                expect(err).to_be_nil()
+                test.is_nil(err)
 
-                local cycle_node_id = uuid.v7()
-                local input_data_id = uuid.v7()
-                local node_input_id = uuid.v7()
+                local cycle_node_id: string = uuid.v7()
+                local input_data_id: string = uuid.v7()
+                local node_input_id: string = uuid.v7()
 
                 local test_input = {
                     target_quality = 0.6,
@@ -1035,11 +1009,11 @@ local function define_tests()
                         title = "Context and Metadata Test Workflow"
                     }
                 })
-                expect(create_err).to_be_nil()
+                test.is_nil(create_err)
 
                 local result, exec_err = c:execute(dataflow_id)
-                expect(exec_err).to_be_nil()
-                expect(result.success).to_be_true()
+                test.is_nil(exec_err)
+                test.is_true(result.success)
 
                 local output_data = data_reader.with_dataflow(dataflow_id)
                     :with_data_types(consts.DATA_TYPE.WORKFLOW_OUTPUT)
@@ -1047,30 +1021,24 @@ local function define_tests()
                     :fetch_options({ replace_references = true })
                     :one()
 
-                expect(output_data).not_to_be_nil()
+                test.not_nil(output_data)
 
-                local output_content = output_data.content
-                if type(output_content) == "string" then
-                    local decoded, decode_err = json.decode(output_content)
-                    if not decode_err then
-                        output_content = decoded
-                    end
-                end
+                local output_content = decode_json_content(output_data.content)
 
-                expect(output_content.refinement_complete).to_be_true()
-                expect(output_content.refined_text).not_to_be_nil()
-                expect(output_content.final_quality).to_be_greater_than_or_equal(0.6)
+                test.is_true(output_content.refinement_complete)
+                test.not_nil(output_content.refined_text)
+                test.gte(output_content.final_quality, 0.6)
             end)
         end)
 
         describe("Template Discovery and Validation", function()
             it("should fail when no func_id or templates provided", function()
                 local c, err = client.new()
-                expect(err).to_be_nil()
+                test.is_nil(err)
 
-                local cycle_node_id = uuid.v7()
-                local input_data_id = uuid.v7()
-                local node_input_id = uuid.v7()
+                local cycle_node_id: string = uuid.v7()
+                local input_data_id: string = uuid.v7()
+                local node_input_id: string = uuid.v7()
 
                 local test_input = { message = "test input" }
 
@@ -1122,26 +1090,26 @@ local function define_tests()
                         title = "No Execution Target Test Workflow"
                     }
                 })
-                expect(create_err).to_be_nil()
+                test.is_nil(create_err)
 
                 local result, exec_err = c:execute(dataflow_id)
-                expect(exec_err).to_be_nil()
-                expect(result.success).to_be_false()
-                expect(result.error).to_contain("Cycle requires either func_id or template nodes")
+                test.is_nil(exec_err)
+                test.is_false(result.success)
+                test.contains(result.error, "Cycle requires either func_id or template nodes")
 
-                print("✓ Cycle correctly failed with no execution target")
+                print("--- Cycle correctly failed with no execution target")
             end)
 
             it("should detect and use template nodes", function()
                 print("=== CYCLE TEMPLATE DETECTION TEST START ===")
 
                 local c, err = client.new()
-                expect(err).to_be_nil()
+                test.is_nil(err)
 
-                local cycle_node_id = uuid.v7()
-                local template_node_id = uuid.v7()
-                local input_data_id = uuid.v7()
-                local node_input_id = uuid.v7()
+                local cycle_node_id: string = uuid.v7()
+                local template_node_id: string = uuid.v7()
+                local input_data_id: string = uuid.v7()
+                local node_input_id: string = uuid.v7()
 
                 local test_input = {
                     initial_value = 1,
@@ -1220,11 +1188,11 @@ local function define_tests()
                         title = "Template Detection Test Workflow"
                     }
                 })
-                expect(create_err).to_be_nil()
+                test.is_nil(create_err)
 
                 local result, exec_err = c:execute(dataflow_id)
-                expect(exec_err).to_be_nil()
-                expect(result.success).to_be_true()
+                test.is_nil(exec_err)
+                test.is_true(result.success)
 
                 local output_data = data_reader.with_dataflow(dataflow_id)
                     :with_data_types(consts.DATA_TYPE.WORKFLOW_OUTPUT)
@@ -1232,20 +1200,14 @@ local function define_tests()
                     :fetch_options({ replace_references = true })
                     :one()
 
-                expect(output_data).not_to_be_nil()
+                test.not_nil(output_data)
 
-                local output_content = output_data.content
-                if type(output_content) == "string" then
-                    local decoded, decode_err = json.decode(output_content)
-                    if not decode_err then
-                        output_content = decoded
-                    end
-                end
+                local output_content = decode_json_content(output_data.content)
 
-                expect(output_content.current_value).to_be_greater_than_or_equal(5)
-                expect(output_content.template_processed).to_be_true()
+                test.gte(output_content.current_value, 5)
+                test.is_true(output_content.template_processed)
 
-                print("✓ Template nodes detected and executed successfully")
+                print("--- Template nodes detected and executed successfully")
                 print("=== CYCLE TEMPLATE DETECTION TEST COMPLETE ===")
             end)
 
@@ -1253,12 +1215,12 @@ local function define_tests()
                 print("=== CYCLE TEMPLATE WITH EXPRESSION TEST START ===")
 
                 local c, err = client.new()
-                expect(err).to_be_nil()
+                test.is_nil(err)
 
-                local cycle_node_id = uuid.v7()
-                local template_node_id = uuid.v7()
-                local input_data_id = uuid.v7()
-                local node_input_id = uuid.v7()
+                local cycle_node_id: string = uuid.v7()
+                local template_node_id: string = uuid.v7()
+                local input_data_id: string = uuid.v7()
+                local node_input_id: string = uuid.v7()
 
                 local test_input = {
                     initial_value = 1,
@@ -1338,11 +1300,11 @@ local function define_tests()
                         title = "Template with Expression Detection Test Workflow"
                     }
                 })
-                expect(create_err).to_be_nil()
+                test.is_nil(create_err)
 
                 local result, exec_err = c:execute(dataflow_id)
-                expect(exec_err).to_be_nil()
-                expect(result.success).to_be_true()
+                test.is_nil(exec_err)
+                test.is_true(result.success)
 
                 local output_data = data_reader.with_dataflow(dataflow_id)
                     :with_data_types(consts.DATA_TYPE.WORKFLOW_OUTPUT)
@@ -1350,20 +1312,14 @@ local function define_tests()
                     :fetch_options({ replace_references = true })
                     :one()
 
-                expect(output_data).not_to_be_nil()
+                test.not_nil(output_data)
 
-                local output_content = output_data.content
-                if type(output_content) == "string" then
-                    local decoded, decode_err = json.decode(output_content)
-                    if not decode_err then
-                        output_content = decoded
-                    end
-                end
+                local output_content = decode_json_content(output_data.content)
 
-                expect(output_content.current_value).to_be_greater_than_or_equal(5)
-                expect(output_content.template_processed).to_be_true()
+                test.gte(output_content.current_value, 5)
+                test.is_true(output_content.template_processed)
 
-                print("✓ Template nodes with expression condition executed successfully")
+                print("--- Template nodes with expression condition executed successfully")
                 print("=== CYCLE TEMPLATE WITH EXPRESSION TEST COMPLETE ===")
             end)
         end)
@@ -1373,12 +1329,12 @@ local function define_tests()
                 print("=== CYCLE TEMPLATE CONTEXT TEST START ===")
 
                 local c, err = client.new()
-                expect(err).to_be_nil()
+                test.is_nil(err)
 
-                local cycle_node_id = uuid.v7()
-                local template_node_id = uuid.v7()
-                local input_data_id = uuid.v7()
-                local node_input_id = uuid.v7()
+                local cycle_node_id: string = uuid.v7()
+                local template_node_id: string = uuid.v7()
+                local input_data_id: string = uuid.v7()
+                local node_input_id: string = uuid.v7()
 
                 local test_input = {
                     message = "Template context test",
@@ -1459,11 +1415,11 @@ local function define_tests()
                         title = "Template Context Test Workflow"
                     }
                 })
-                expect(create_err).to_be_nil()
+                test.is_nil(create_err)
 
                 local result, exec_err = c:execute(dataflow_id)
-                expect(exec_err).to_be_nil()
-                expect(result.success).to_be_true()
+                test.is_nil(exec_err)
+                test.is_true(result.success)
 
                 local output_data = data_reader.with_dataflow(dataflow_id)
                     :with_data_types(consts.DATA_TYPE.WORKFLOW_OUTPUT)
@@ -1471,22 +1427,16 @@ local function define_tests()
                     :fetch_options({ replace_references = true })
                     :one()
 
-                expect(output_data).not_to_be_nil()
+                test.not_nil(output_data)
 
-                local output_content = output_data.content
-                if type(output_content) == "string" then
-                    local decoded, decode_err = json.decode(output_content)
-                    if not decode_err then
-                        output_content = decoded
-                    end
-                end
+                local output_content = decode_json_content(output_data.content)
 
-                expect(output_content.received_input).not_to_be_nil()
-                expect(output_content.received_state).not_to_be_nil()
-                expect(output_content.received_iteration).not_to_be_nil()
-                expect(output_content.final_accumulator).to_be_greater_than(0)
+                test.not_nil(output_content.received_input)
+                test.not_nil(output_content.received_state)
+                test.not_nil(output_content.received_iteration)
+                test.gt(output_content.final_accumulator, 0)
 
-                print("✓ Template received proper cycle context")
+                print("--- Template received proper cycle context")
                 print("=== CYCLE TEMPLATE CONTEXT TEST COMPLETE ===")
             end)
 
@@ -1494,13 +1444,13 @@ local function define_tests()
                 print("=== CYCLE TEMPLATE CHAIN TEST START ===")
 
                 local c, err = client.new()
-                expect(err).to_be_nil()
+                test.is_nil(err)
 
-                local cycle_node_id = uuid.v7()
-                local template1_id = uuid.v7()
-                local template2_id = uuid.v7()
-                local input_data_id = uuid.v7()
-                local node_input_id = uuid.v7()
+                local cycle_node_id: string = uuid.v7()
+                local template1_id: string = uuid.v7()
+                local template2_id: string = uuid.v7()
+                local input_data_id: string = uuid.v7()
+                local node_input_id: string = uuid.v7()
 
                 local test_input = {
                     start_value = 10,
@@ -1602,11 +1552,11 @@ local function define_tests()
                         title = "Template Chain Test Workflow"
                     }
                 })
-                expect(create_err).to_be_nil()
+                test.is_nil(create_err)
 
                 local result, exec_err = c:execute(dataflow_id)
-                expect(exec_err).to_be_nil()
-                expect(result.success).to_be_true()
+                test.is_nil(exec_err)
+                test.is_true(result.success)
 
                 local output_data = data_reader.with_dataflow(dataflow_id)
                     :with_data_types(consts.DATA_TYPE.WORKFLOW_OUTPUT)
@@ -1614,21 +1564,15 @@ local function define_tests()
                     :fetch_options({ replace_references = true })
                     :one()
 
-                expect(output_data).not_to_be_nil()
+                test.not_nil(output_data)
 
-                local output_content = output_data.content
-                if type(output_content) == "string" then
-                    local decoded, decode_err = json.decode(output_content)
-                    if not decode_err then
-                        output_content = decoded
-                    end
-                end
+                local output_content = decode_json_content(output_data.content)
 
-                expect(output_content.processed_by_chain).to_be_true()
-                expect(output_content.final_value).to_be_greater_than_or_equal(100)
-                expect(output_content.iterations_completed).to_be_greater_than(0)
+                test.is_true(output_content.processed_by_chain)
+                test.gte(output_content.final_value, 100)
+                test.gt(output_content.iterations_completed, 0)
 
-                print("✓ Template chain executed successfully within cycle")
+                print("--- Template chain executed successfully within cycle")
                 print("=== CYCLE TEMPLATE CHAIN TEST COMPLETE ===")
             end)
         end)
@@ -1638,12 +1582,12 @@ local function define_tests()
                 print("=== CYCLE TEMPLATE STATE PERSISTENCE TEST START ===")
 
                 local c, err = client.new()
-                expect(err).to_be_nil()
+                test.is_nil(err)
 
-                local cycle_node_id = uuid.v7()
-                local template_node_id = uuid.v7()
-                local input_data_id = uuid.v7()
-                local node_input_id = uuid.v7()
+                local cycle_node_id: string = uuid.v7()
+                local template_node_id: string = uuid.v7()
+                local input_data_id: string = uuid.v7()
+                local node_input_id: string = uuid.v7()
 
                 local test_input = {
                     initial_count = 0,
@@ -1725,11 +1669,11 @@ local function define_tests()
                         title = "Template State Persistence Test Workflow"
                     }
                 })
-                expect(create_err).to_be_nil()
+                test.is_nil(create_err)
 
                 local result, exec_err = c:execute(dataflow_id)
-                expect(exec_err).to_be_nil()
-                expect(result.success).to_be_true()
+                test.is_nil(exec_err)
+                test.is_true(result.success)
 
                 local output_data = data_reader.with_dataflow(dataflow_id)
                     :with_data_types(consts.DATA_TYPE.WORKFLOW_OUTPUT)
@@ -1737,29 +1681,23 @@ local function define_tests()
                     :fetch_options({ replace_references = true })
                     :one()
 
-                expect(output_data).not_to_be_nil()
+                test.not_nil(output_data)
 
-                local output_content = output_data.content
-                if type(output_content) == "string" then
-                    local decoded, decode_err = json.decode(output_content)
-                    if not decode_err then
-                        output_content = decoded
-                    end
-                end
+                local output_content = decode_json_content(output_data.content)
 
-                expect(output_content.final_count).to_be_greater_than_or_equal(25)
-                expect(output_content.total_iterations).to_be_greater_than(0)
-                expect(#output_content.iteration_history).to_equal(output_content.total_iterations)
-                expect(output_content.state_persisted).to_be_true()
+                test.gte(output_content.final_count, 25)
+                test.gt(output_content.total_iterations, 0)
+                test.eq(#output_content.iteration_history, output_content.total_iterations)
+                test.is_true(output_content.state_persisted)
 
                 local state_data = data_reader.with_dataflow(dataflow_id)
                     :with_data_types("cycle.state")
                     :fetch_options({ replace_references = true })
                     :all()
 
-                expect(#state_data).to_be_greater_than(0)
+                test.gt(#state_data, 0)
 
-                print("✓ Template state persistence working correctly")
+                print("--- Template state persistence working correctly")
                 print("=== CYCLE TEMPLATE STATE PERSISTENCE TEST COMPLETE ===")
             end)
         end)
@@ -1769,12 +1707,12 @@ local function define_tests()
                 print("=== CYCLE TEMPLATE ERROR HANDLING TEST START ===")
 
                 local c, err = client.new()
-                expect(err).to_be_nil()
+                test.is_nil(err)
 
-                local cycle_node_id = uuid.v7()
-                local template_node_id = uuid.v7()
-                local input_data_id = uuid.v7()
-                local node_input_id = uuid.v7()
+                local cycle_node_id: string = uuid.v7()
+                local template_node_id: string = uuid.v7()
+                local input_data_id: string = uuid.v7()
+                local node_input_id: string = uuid.v7()
 
                 local test_input = {
                     should_fail = true,
@@ -1853,14 +1791,14 @@ local function define_tests()
                         title = "Template Error Handling Test Workflow"
                     }
                 })
-                expect(create_err).to_be_nil()
+                test.is_nil(create_err)
 
                 local result, exec_err = c:execute(dataflow_id)
-                expect(exec_err).to_be_nil()
-                expect(result.success).to_be_false()
-                expect(result.error).to_contain("Template execution failed")
+                test.is_nil(exec_err)
+                test.is_false(result.success)
+                test.contains(result.error, "Template execution failed")
 
-                print("✓ Template execution errors handled correctly")
+                print("--- Template execution errors handled correctly")
                 print("=== CYCLE TEMPLATE ERROR HANDLING TEST COMPLETE ===")
             end)
         end)

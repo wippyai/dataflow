@@ -62,7 +62,7 @@ local function handler()
     end
 
     -- Get nodes for this dataflow
-    local nodes, nodes_err = node_reader.with_dataflow(dataflow_id):all()
+    local nodes, nodes_err = (node_reader.with_dataflow(dataflow_id) :: any):all()
     if nodes_err then
         res:set_status(http.STATUS.INTERNAL_ERROR)
         res:set_content_type(http.CONTENT.JSON)
@@ -74,8 +74,8 @@ local function handler()
     end
 
     -- Get data for this dataflow
-    local data, data_err = data_reader.with_dataflow(dataflow_id)
-        :fetch_options({ resolve_references = true })
+    local data, data_err = (data_reader.with_dataflow(dataflow_id)
+        :fetch_options({ resolve_references = true }) :: any)
         :all()
     if data_err then
         res:set_status(http.STATUS.INTERNAL_ERROR)

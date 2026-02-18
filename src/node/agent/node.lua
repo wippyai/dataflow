@@ -12,6 +12,13 @@ local tools = require("tools")
 local registry = require("registry")
 local funcs = require("funcs")
 
+type ToolCall = {
+    id: string,
+    name: string,
+    arguments: table?,
+    registry_id: string?,
+}
+
 local function merge_contexts(base_context, input_context)
     local merged = {}
     if base_context then
@@ -287,7 +294,7 @@ local function get_tool_title_by_registry_id(registry_id, tool_name)
     return tool_name
 end
 
-local function create_tool_viz_nodes(n, tool_calls, iteration, show_tool_calls, exit_tool_name)
+local function create_tool_viz_nodes(n, tool_calls: { ToolCall }?, iteration, show_tool_calls, exit_tool_name)
     local tool_call_to_node_id = {}
 
     if show_tool_calls == false or not tool_calls or #tool_calls == 0 then
@@ -377,7 +384,7 @@ local function update_tool_viz_nodes(n, tool_results, tool_call_to_node_id)
     end
 end
 
-local function execute_tools(agent_result, caller, session_context)
+local function execute_tools(agent_result: { tool_calls: { ToolCall }? }, caller, session_context)
     if not agent_result.tool_calls or #agent_result.tool_calls == 0 then
         return {}
     end
@@ -391,7 +398,7 @@ local function execute_tools(agent_result, caller, session_context)
     return tool_results or {}
 end
 
-local function process_tool_results(n, tool_results, iteration, exit_tool_name, agent_result, arena_config,
+local function process_tool_results(n, tool_results, iteration, exit_tool_name, agent_result: { tool_calls: { ToolCall }? }, arena_config,
                                     session_context)
     local control_responses = {}
     local control_delegations = {}
@@ -407,7 +414,7 @@ local function process_tool_results(n, tool_results, iteration, exit_tool_name, 
                 if arena_config.exit_func_id then
                     local validated_result, validation_err = funcs.new()
                         :with_context(session_context)
-                        :call(arena_config.exit_func_id, exit_arguments)
+                        :call(arena_config.exit_func_id :: string, exit_arguments)
 
                     if validation_err then
                         n:data(agent_consts.DATA_TYPE.AGENT_OBSERVATION, validation_err, {
@@ -570,6 +577,22 @@ local function get_delegation_data_id(n)
     return nil
 end
 
+local function safe_inputs(n)
+    local ok, inputs_or_err, inputs_err = pcall(function()
+        return n:inputs()
+    end)
+
+    if not ok then
+        return nil, tostring(inputs_or_err)
+    end
+
+    if inputs_err then
+        return nil, tostring(inputs_err)
+    end
+
+    return inputs_or_err, nil
+end
+
 local function run(args)
     local n, err = node_sdk.new(args)
     if err then
@@ -585,7 +608,7 @@ local function run(args)
         }, config_err)
     end
 
-    local inputs, inputs_err = n:inputs()
+    local inputs, inputs_err = safe_inputs(n)
     if inputs_err then
         return n:fail({
             code = agent_consts.ERROR.INPUT_VALIDATION_FAILED,
@@ -672,6 +695,12 @@ local function run(args)
             message = builder_err
         }, builder_err)
     end
+    if not builder then
+        return n:fail({
+            code = agent_consts.ERROR.PROMPT_BUILD_FAILED,
+            message = "Failed to initialize prompt builder"
+        }, "Failed to initialize prompt builder")
+    end
 
     builder:with_arena_config(config.arena):with_initial_input(input_data)
     local caller = tool_caller.new()
@@ -717,7 +746,7 @@ local function run(args)
             }, step_err)
         end
 
-        local regular_tool_calls = agent_result.tool_calls or {}
+        local regular_tool_calls = (agent_result.tool_calls or {}) :: { ToolCall }
         local delegate_calls = agent_result.delegate_calls or {}
 
         for _, tool_call in ipairs(regular_tool_calls) do
@@ -777,7 +806,7 @@ local function run(args)
             table.insert(delegate_calls, delegate_call)
         end
 
-        local remaining_iterations = max_iterations - iteration
+        local remaining_iterations = (max_iterations :: number) - iteration
         if remaining_iterations == 2 then
             local warning_msg = string.format(agent_consts.FEEDBACK.ITERATIONS_WARNING, remaining_iterations)
             n:data(agent_consts.DATA_TYPE.AGENT_OBSERVATION, warning_msg, {
@@ -829,8 +858,8 @@ local function run(args)
                 if changes_err then
                     return n:fail({
                         code = agent_consts.ERROR.STEP_FUNCTION_FAILED,
-                        message = changes_err
-                    }, changes_err)
+                        message = changes_err :: string
+                    }, changes_err :: string)
                 end
             end
 
@@ -855,8 +884,8 @@ local function run(args)
             if changes_err then
                 return n:fail({
                     code = agent_consts.ERROR.STEP_FUNCTION_FAILED,
-                    message = changes_err
-                }, changes_err)
+                    message = changes_err :: string
+                }, changes_err :: string)
             end
 
             local created_node_ids = {}
@@ -935,9 +964,15 @@ local function run(args)
     update_node_progress(n, iteration, max_iterations, total_tokens, tool_calls_count, final_status, agent_id, model_name)
 
     local output_content = final_result or { success = false, error = "No result produced" }
-    local success = final_result and final_result.success ~= false
+    local success = true
+    local final_error = nil
+    if type(output_content) == "table" then
+        success = output_content.success ~= false
+        final_error = output_content.error
+    end
     local message = success and agent_consts.STATUS.COMPLETED_SUCCESS or
-        (final_result and final_result.error and (agent_consts.STATUS.COMPLETED_ERROR .. final_result.error) or "Agent execution failed")
+        (type(final_error) == "string" and (agent_consts.STATUS.COMPLETED_ERROR .. final_error) or
+            "Agent execution failed")
 
     local delegation_data_id = get_delegation_data_id(n)
     if delegation_data_id then
@@ -946,7 +981,7 @@ local function run(args)
         })
     end
 
-    local output_content = final_result or { success = false, error = "No result produced" }
+    output_content = final_result or { success = false, error = "No result produced" }
     return n:complete(output_content, message)
 end
 

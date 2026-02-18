@@ -2,6 +2,13 @@ version: "1.0"
 namespace: userspace.dataflow
 
 entries:
+  - name: definition
+    kind: ns.definition
+    readme: file://README.md
+    meta:
+      title: Dataflow
+      description: Workflow execution engine with visual flow designer support
+
   # userspace.dataflow:client
   - name: client
     kind: library.lua
@@ -157,11 +164,63 @@ entries:
     method: run_tests
 
   # Requirements
+  - name: target_db
+    kind: ns.requirement
+    meta:
+      description: "Application database ID for dataflow persistence"
+    targets:
+      - entry: userspace.dataflow:target_db
+        path: .default
+      - entry: userspace.dataflow.migrations:01_create_dataflows_table
+        path: ".meta.target_db"
+      - entry: userspace.dataflow.migrations:02_create_nodes_table
+        path: ".meta.target_db"
+      - entry: userspace.dataflow.migrations:03_create_data_table
+        path: ".meta.target_db"
+      - entry: userspace.dataflow.migrations:05_create_dataflow_commits_table
+        path: ".meta.target_db"
+
   - name: web_host_origin_env
     kind: ns.requirement
     meta:
-    description: "Environment variable that defines the public web host origin URL"
+      description: "Environment variable that defines the public web host origin URL"
     default: "userspace.dataflow.env:web_host_origin"
     targets:
       - entry: userspace.dataflow.session.views:env_mapping
         path: ".mappings.web_host_origin"
+
+  # Dependencies
+  - name: dep.wippy.test
+    kind: ns.dependency
+    meta:
+      description: "Testing framework"
+    component: "wippy/test"
+    version: ">=v0.4.0"
+
+  - name: dep.wippy.migration
+    kind: ns.dependency
+    meta:
+      description: "Database migration framework"
+    component: "wippy/migration"
+    version: ">=v0.3.0"
+
+  - name: dep.wippy.agent
+    kind: ns.dependency
+    meta:
+      description: "Agent framework for agent node execution"
+    component: "wippy/agent"
+    version: "*"
+
+  - name: dep.wippy.llm
+    kind: ns.dependency
+    meta:
+      description: "LLM interface for prompt building"
+    component: "wippy/llm"
+    version: "*"
+
+  - name: dep.wippy.session
+    kind: ns.dependency
+    meta:
+      description: "Session artifact persistence"
+    component: "wippy/session"
+    version: "*"

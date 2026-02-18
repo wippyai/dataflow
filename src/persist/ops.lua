@@ -155,7 +155,7 @@ handlers[constants.COMMAND_TYPES.UPDATE_NODE] = function(tx, dataflow_id, op_id,
             -- Parse existing metadata
             local existing_metadata = {}
             if #existing_result > 0 and existing_result[1].metadata then
-                local existing_meta_str = existing_result[1].metadata
+                local existing_meta_str = existing_result[1].metadata :: string
                 if existing_meta_str and existing_meta_str ~= "" and existing_meta_str ~= "{}" then
                     local decoded, decode_err = json.decode(existing_meta_str)
                     if not decode_err and type(decoded) == "table" then
@@ -565,7 +565,7 @@ handlers[constants.COMMAND_TYPES.UPDATE_WORKFLOW] = function(tx, dataflow_id, op
             -- Parse existing metadata
             local existing_metadata = {}
             if #existing_result > 0 and existing_result[1].metadata then
-                local existing_meta_str = existing_result[1].metadata
+                local existing_meta_str = existing_result[1].metadata :: string
                 if existing_meta_str and existing_meta_str ~= "" and existing_meta_str ~= "{}" then
                     local decoded, decode_err = json.decode(existing_meta_str)
                     if not decode_err and type(decoded) == "table" then

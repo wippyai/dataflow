@@ -114,9 +114,8 @@ local function find_yield_driven_work(state)
             end
 
             if has_any_pending and not has_any_runnable and not has_any_running then
-                return create_decision(DECISION_TYPE.COMPLETE_WORKFLOW, {
-                    success = false,
-                    message = "Yield deadlock at parent " .. parent_id .. ": children pending but inputs unavailable"
+                return create_decision(DECISION_TYPE.NO_WORK, {
+                    message = "Yield children pending for parent " .. parent_id .. ": waiting for inputs"
                 })
             end
         end

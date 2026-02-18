@@ -8,7 +8,7 @@ local dataflow_repo = require("dataflow_repo")
 
 local function define_tests()
     describe("Workflow Repository", function()
-        local test_actor_id_global_scope = uuid.v7() -- For items not related to isolated list tests
+        local test_actor_id_global_scope = uuid.v7()
         local actor = security.actor()
         if actor then
             test_actor_id_global_scope = actor:id()
@@ -34,9 +34,9 @@ local function define_tests()
         after_all(function()
             if #created_dataflow_ids_for_global_cleanup == 0 then return end
             local db, err_db = sql.get("app:db")
-            if err_db then print("ERROR (global after_all): DB connect failed: " .. err_db) return end
+            if err_db then return end
             local tx, err_tx = db:begin()
-            if err_tx then print("ERROR (global after_all): Transaction begin failed: " .. err_tx); db:release(); return end
+            if err_tx then db:release(); return end
             local success_all = true
             for i = #created_dataflow_ids_for_global_cleanup, 1, -1 do
                 local id_to_delete = created_dataflow_ids_for_global_cleanup[i]
@@ -47,16 +47,14 @@ local function define_tests()
                 local _, err_delete = delete_exec:exec()
 
                 if err_delete then
-                    print("ERROR (global after_all): Delete failed for " .. id_to_delete .. ": " .. err_delete)
                     success_all = false
                 end
             end
             if success_all then
                 local _, err_commit = tx:commit()
-                if err_commit then print("ERROR (global after_all): Commit failed: " .. err_commit); tx:rollback() end
+                if err_commit then tx:rollback() end
             else
                 tx:rollback()
-                print("WARN (global after_all): Rolled back cleanup due to errors.")
             end
             db:release()
             created_dataflow_ids_for_global_cleanup = {}
@@ -101,7 +99,7 @@ local function define_tests()
                 })
 
             local dataflow_exec = dataflow_insert:run_with(tx)
-            local success, err_insert = dataflow_exec:exec()
+            local _, err_insert = dataflow_exec:exec()
 
             if err_insert then
                 tx:rollback()
@@ -109,8 +107,7 @@ local function define_tests()
                 return nil, "Failed to insert dataflow: " .. err_insert
             end
 
-            local commit_err
-            _, commit_err = tx:commit()
+            local _, commit_err = tx:commit()
             if commit_err then
                 tx:rollback()
                 db:release()
@@ -175,7 +172,7 @@ local function define_tests()
                 })
 
             local node_exec = node_insert:run_with(tx)
-            local success, err_insert = node_exec:exec()
+            local _, err_insert = node_exec:exec()
 
             if err_insert then
                 tx:rollback()
@@ -183,8 +180,7 @@ local function define_tests()
                 return nil, "Failed to insert node: " .. err_insert
             end
 
-            local commit_err
-            _, commit_err = tx:commit()
+            local _, commit_err = tx:commit()
             if commit_err then
                 tx:rollback()
                 db:release()
@@ -196,29 +192,34 @@ local function define_tests()
         end
 
         describe("Read (Get) Operations", function()
-            local wf_id_get; local get_metadata = { data = "to_get" }
+            local wf_id_get
+            local get_metadata = { data = "to_get" }
             before_all(function()
                 wf_id_get = uuid.v7()
                 local wf, err = create_test_dataflow(wf_id_get, test_actor_id_global_scope, "get_test_type",
                     { metadata = get_metadata })
-                expect(err).to_be_nil()
-                expect(wf).not_to_be_nil()
+                test.is_nil(err)
+                test.not_nil(wf)
             end)
 
             it("should get an existing dataflow by ID", function()
                 local wf, err = dataflow_repo.get(wf_id_get)
-                expect(err).to_be_nil(); expect(wf).not_to_be_nil()
-                expect(wf.dataflow_id).to_equal(wf_id_get);
-                expect(wf.metadata.data).to_equal(get_metadata.data)
+                test.is_nil(err)
+                test.not_nil(wf)
+                test.eq(wf.dataflow_id, wf_id_get)
+                test.eq(wf.metadata.data, get_metadata.data)
             end)
 
             it("should return error for non-existent dataflow ID", function()
-                local _, err = dataflow_repo.get(uuid.v7()); expect(err).to_contain("Workflow not found")
+                local _, err = dataflow_repo.get(uuid.v7())
+                test.is_true(string.find(err :: string, "Workflow not found", 1, true) ~= nil)
             end)
 
             it("should return error for nil or empty dataflow ID", function()
-                local _, err = dataflow_repo.get(nil); expect(err).to_contain("Workflow ID is required")
-                _, err = dataflow_repo.get(""); expect(err).to_contain("Workflow ID is required")
+                local _, err = dataflow_repo.get(nil)
+                test.is_true(string.find(err :: string, "Workflow ID is required", 1, true) ~= nil)
+                _, err = dataflow_repo.get("")
+                test.is_true(string.find(err :: string, "Workflow ID is required", 1, true) ~= nil)
             end)
         end)
 
@@ -231,15 +232,15 @@ local function define_tests()
 
                 -- Create test dataflow
                 local wf, err = create_test_dataflow(nodes_test_dataflow_id, test_actor_id_global_scope, "nodes_test_type")
-                expect(err).to_be_nil()
-                expect(wf).not_to_be_nil()
+                test.is_nil(err)
+                test.not_nil(wf)
 
                 -- Create test nodes with various config scenarios
                 local test_nodes = {
                     {
                         id = uuid.v7(),
                         type = "minimal_node",
-                        params = {} -- Empty config and metadata
+                        params = {}
                     },
                     {
                         id = uuid.v7(),
@@ -272,8 +273,8 @@ local function define_tests()
                         id = uuid.v7(),
                         type = "invalid_json_config_node",
                         params = {
-                            config = '{"invalid":json}', -- Invalid JSON
-                            metadata = '{"invalid":metadata}' -- Invalid JSON
+                            config = '{"invalid":json}',
+                            metadata = '{"invalid":metadata}'
                         }
                     },
                     {
@@ -288,8 +289,8 @@ local function define_tests()
 
                 for _, test_node in ipairs(test_nodes) do
                     local success, err_node = create_test_node(test_node.id, nodes_test_dataflow_id, test_node.type, test_node.params)
-                    expect(err_node).to_be_nil()
-                    expect(success).to_be_true()
+                    test.is_nil(err_node)
+                    test.is_true(success)
                     table.insert(node_ids, test_node.id)
                 end
             end)
@@ -297,9 +298,9 @@ local function define_tests()
             it("should get nodes for dataflow and parse config correctly", function()
                 local nodes, err = dataflow_repo.get_nodes_for_dataflow(nodes_test_dataflow_id)
 
-                expect(err).to_be_nil()
-                expect(nodes).not_to_be_nil()
-                expect(#nodes).to_equal(5)
+                test.is_nil(err)
+                test.not_nil(nodes)
+                test.eq(#nodes, 5)
 
                 -- Sort nodes by type for predictable testing
                 table.sort(nodes, function(a, b) return a.type < b.type end)
@@ -313,25 +314,25 @@ local function define_tests()
                     end
                 end
 
-                expect(complex_node).not_to_be_nil()
-                expect(complex_node.config).to_be_type("table")
-                expect(complex_node.config.timeout).to_equal(30)
-                expect(complex_node.config.retries).to_equal(3)
-                expect(complex_node.config.endpoints).to_be_type("table")
-                expect(#complex_node.config.endpoints).to_equal(2)
-                expect(complex_node.config.endpoints[1]).to_equal("api1.example.com")
-                expect(complex_node.config.settings).to_be_type("table")
-                expect(complex_node.config.settings.debug).to_be_true()
-                expect(complex_node.config.settings.verbose).to_be_false()
+                test.not_nil(complex_node)
+                test.is_table(complex_node.config)
+                test.eq(complex_node.config.timeout, 30)
+                test.eq(complex_node.config.retries, 3)
+                test.is_table(complex_node.config.endpoints)
+                test.eq(#complex_node.config.endpoints, 2)
+                test.eq(complex_node.config.endpoints[1], "api1.example.com")
+                test.is_table(complex_node.config.settings)
+                test.is_true(complex_node.config.settings.debug)
+                test.is_false(complex_node.config.settings.verbose)
 
-                expect(complex_node.metadata).to_be_type("table")
-                expect(complex_node.metadata.created_by).to_equal("test")
-                expect(complex_node.metadata.version).to_equal("1.0")
+                test.is_table(complex_node.metadata)
+                test.eq(complex_node.metadata.created_by, "test")
+                test.eq(complex_node.metadata.version, "1.0")
             end)
 
             it("should parse JSON string config correctly", function()
                 local nodes, err = dataflow_repo.get_nodes_for_dataflow(nodes_test_dataflow_id)
-                expect(err).to_be_nil()
+                test.is_nil(err)
 
                 local json_node = nil
                 for _, node in ipairs(nodes) do
@@ -341,24 +342,24 @@ local function define_tests()
                     end
                 end
 
-                expect(json_node).not_to_be_nil()
-                expect(json_node.config).to_be_type("table")
-                expect(json_node.config.batch_size).to_equal(100)
-                expect(json_node.config.parallel).to_be_true()
-                expect(json_node.config.features).to_be_type("table")
-                expect(#json_node.config.features).to_equal(2)
-                expect(json_node.config.features[1]).to_equal("logging")
-                expect(json_node.config.features[2]).to_equal("metrics")
+                test.not_nil(json_node)
+                test.is_table(json_node.config)
+                test.eq(json_node.config.batch_size, 100)
+                test.is_true(json_node.config.parallel)
+                test.is_table(json_node.config.features)
+                test.eq(#json_node.config.features, 2)
+                test.eq(json_node.config.features[1], "logging")
+                test.eq(json_node.config.features[2], "metrics")
 
-                expect(json_node.metadata).to_be_type("table")
-                expect(json_node.metadata.source).to_equal("json_test")
-                expect(json_node.metadata.tags).to_be_type("table")
-                expect(#json_node.metadata.tags).to_equal(2)
+                test.is_table(json_node.metadata)
+                test.eq(json_node.metadata.source, "json_test")
+                test.is_table(json_node.metadata.tags)
+                test.eq(#json_node.metadata.tags, 2)
             end)
 
             it("should handle minimal node with empty config", function()
                 local nodes, err = dataflow_repo.get_nodes_for_dataflow(nodes_test_dataflow_id)
-                expect(err).to_be_nil()
+                test.is_nil(err)
 
                 local minimal_node = nil
                 for _, node in ipairs(nodes) do
@@ -368,16 +369,16 @@ local function define_tests()
                     end
                 end
 
-                expect(minimal_node).not_to_be_nil()
-                expect(minimal_node.config).to_be_type("table")
-                expect(next(minimal_node.config)).to_be_nil() -- Empty table
-                expect(minimal_node.metadata).to_be_type("table")
-                expect(next(minimal_node.metadata)).to_be_nil() -- Empty table
+                test.not_nil(minimal_node)
+                test.is_table(minimal_node.config)
+                test.is_nil(next(minimal_node.config))
+                test.is_table(minimal_node.metadata)
+                test.is_nil(next(minimal_node.metadata))
             end)
 
             it("should handle invalid JSON gracefully", function()
                 local nodes, err = dataflow_repo.get_nodes_for_dataflow(nodes_test_dataflow_id)
-                expect(err).to_be_nil()
+                test.is_nil(err)
 
                 local invalid_node = nil
                 for _, node in ipairs(nodes) do
@@ -387,17 +388,17 @@ local function define_tests()
                     end
                 end
 
-                expect(invalid_node).not_to_be_nil()
+                test.not_nil(invalid_node)
                 -- Invalid JSON should default to empty table
-                expect(invalid_node.config).to_be_type("table")
-                expect(next(invalid_node.config)).to_be_nil() -- Empty table
-                expect(invalid_node.metadata).to_be_type("table")
-                expect(next(invalid_node.metadata)).to_be_nil() -- Empty table
+                test.is_table(invalid_node.config)
+                test.is_nil(next(invalid_node.config))
+                test.is_table(invalid_node.metadata)
+                test.is_nil(next(invalid_node.metadata))
             end)
 
             it("should handle empty string config", function()
                 local nodes, err = dataflow_repo.get_nodes_for_dataflow(nodes_test_dataflow_id)
-                expect(err).to_be_nil()
+                test.is_nil(err)
 
                 local empty_node = nil
                 for _, node in ipairs(nodes) do
@@ -407,40 +408,40 @@ local function define_tests()
                     end
                 end
 
-                expect(empty_node).not_to_be_nil()
-                expect(empty_node.config).to_be_type("table")
-                expect(next(empty_node.config)).to_be_nil() -- Empty table
-                expect(empty_node.metadata).to_be_type("table")
-                expect(next(empty_node.metadata)).to_be_nil() -- Empty table
+                test.not_nil(empty_node)
+                test.is_table(empty_node.config)
+                test.is_nil(next(empty_node.config))
+                test.is_table(empty_node.metadata)
+                test.is_nil(next(empty_node.metadata))
             end)
 
             it("should return error for missing dataflow ID", function()
                 local nodes, err = dataflow_repo.get_nodes_for_dataflow(nil)
-                expect(nodes).to_be_nil()
-                expect(err).to_contain("Workflow ID is required")
+                test.is_nil(nodes)
+                test.is_true(string.find(err :: string, "Workflow ID is required", 1, true) ~= nil)
 
                 nodes, err = dataflow_repo.get_nodes_for_dataflow("")
-                expect(nodes).to_be_nil()
-                expect(err).to_contain("Workflow ID is required")
+                test.is_nil(nodes)
+                test.is_true(string.find(err :: string, "Workflow ID is required", 1, true) ~= nil)
             end)
 
             it("should return empty array for dataflow with no nodes", function()
                 local empty_dataflow_id = uuid.v7()
-                local wf, err = create_test_dataflow(empty_dataflow_id, test_actor_id_global_scope, "empty_nodes_test")
-                expect(err).to_be_nil()
+                local _, err = create_test_dataflow(empty_dataflow_id, test_actor_id_global_scope, "empty_nodes_test")
+                test.is_nil(err)
 
                 local nodes, err_nodes = dataflow_repo.get_nodes_for_dataflow(empty_dataflow_id)
-                expect(err_nodes).to_be_nil()
-                expect(nodes).to_be_type("table")
-                expect(#nodes).to_equal(0)
+                test.is_nil(err_nodes)
+                test.is_table(nodes)
+                test.eq(#nodes, 0)
             end)
 
             it("should return error for non-existent dataflow", function()
                 local fake_dataflow_id = uuid.v7()
                 local nodes, err = dataflow_repo.get_nodes_for_dataflow(fake_dataflow_id)
-                expect(err).to_be_nil() -- Function doesn't validate dataflow exists
-                expect(nodes).to_be_type("table")
-                expect(#nodes).to_equal(0) -- Just returns empty array
+                test.is_nil(err)
+                test.is_table(nodes)
+                test.eq(#nodes, 0)
             end)
         end)
 
@@ -449,12 +450,12 @@ local function define_tests()
             local user1_id = list_operations_actor_id
             local user2_id = uuid.v7()
             local list_parent_id = uuid.v7()
-            local list_suite_temp_created_ids = {} -- For specific cleanup for this suite if needed
+            local list_suite_temp_created_ids = {}
 
             before_all(function()
                 -- Create parent dataflow
-                local p_wf, p_err = create_test_dataflow(list_parent_id, user1_id, "list_parent_type")
-                expect(p_err).to_be_nil()
+                local _, p_err = create_test_dataflow(list_parent_id, user1_id, "list_parent_type")
+                test.is_nil(p_err)
                 table.insert(list_suite_temp_created_ids, list_parent_id)
 
                 -- Create test dataflows for listing tests
@@ -471,65 +472,67 @@ local function define_tests()
                         status = item_spec.status,
                         parent_dataflow_id = item_spec.parent_dataflow_id
                     })
-                    expect(err_create).to_be_nil()
+                    test.is_nil(err_create)
                     table.insert(list_suite_temp_created_ids, item_spec.id)
                 end
             end)
 
             it("should list dataflows by actor_id", function()
                 local wfs, err = dataflow_repo.list_by_user(user1_id)
-                expect(err).to_be_nil()
-                expect(#wfs).to_equal(5) -- parent + 3 roots for U1 + 1 child for U1
-                for _, wf in ipairs(wfs) do expect(wf.actor_id).to_equal(user1_id) end
+                test.is_nil(err)
+                test.eq(#wfs, 5)
+                for _, wf in ipairs(wfs) do test.eq(wf.actor_id, user1_id) end
             end)
 
             it("should list by actor_id with status filter", function()
                 local wfs, err = dataflow_repo.list_by_user(user1_id, { status = "pending" })
-                expect(err).to_be_nil()
-                expect(#wfs).to_equal(3) -- parent(pending) + U1-A-Pend-Root + U1-B-Pend-Root
-                for _, wf in ipairs(wfs) do expect(wf.status).to_equal("pending") end
+                test.is_nil(err)
+                test.eq(#wfs, 3)
+                for _, wf in ipairs(wfs) do test.eq(wf.status, "pending") end
             end)
 
             it("should list by actor_id with type filter", function()
                 local wfs, err = dataflow_repo.list_by_user(user1_id, { type = "typeA" })
-                expect(err).to_be_nil()
-                expect(#wfs).to_equal(2) -- U1-A-Pend-Root + U1-A-Comp-Root
-                for _, wf in ipairs(wfs) do expect(wf.type).to_equal("typeA") end
+                test.is_nil(err)
+                test.eq(#wfs, 2)
+                for _, wf in ipairs(wfs) do test.eq(wf.type, "typeA") end
             end)
 
             it("should list by actor_id with parent_dataflow_id filter (specific parent)", function()
                 local wfs, err = dataflow_repo.list_by_user(user1_id, { parent_dataflow_id = list_parent_id })
-                expect(err).to_be_nil()
-                expect(#wfs).to_equal(1)
+                test.is_nil(err)
+                test.eq(#wfs, 1)
             end)
 
             it("should list by actor_id with parent_dataflow_id filter (NULL for root)", function()
                 local wfs, err = dataflow_repo.list_by_user(user1_id, { parent_dataflow_id = "NULL" })
-                expect(err).to_be_nil()
-                expect(#wfs).to_equal(4) -- parent + 3 U1 roots
-                for _, wf in ipairs(wfs) do expect(wf.parent_dataflow_id).to_be_nil() end
+                test.is_nil(err)
+                test.eq(#wfs, 4)
+                for _, wf in ipairs(wfs) do test.is_nil(wf.parent_dataflow_id) end
             end)
 
             it("should list by actor_id with limit and offset", function()
                 local wfs_all_u1, _ = dataflow_repo.list_by_user(user1_id)
                 local total_u1 = #wfs_all_u1
                 local wfs_p1, _ = dataflow_repo.list_by_user(user1_id, { limit = 2 })
-                expect(#wfs_p1).to_equal(2)
+                test.eq(#wfs_p1, 2)
                 if total_u1 > 2 then
                     local wfs_p2, _ = dataflow_repo.list_by_user(user1_id, { limit = 2, offset = 2 })
-                    expect(#wfs_p2).to_equal(math.min(2, total_u1 - 2))
-                    expect(wfs_p1[1].dataflow_id).not_to_equal(wfs_p2[1].dataflow_id)
+                    test.eq(#wfs_p2, math.min(2, total_u1 - 2))
+                    test.is_true((wfs_p1 :: any)[1].dataflow_id ~= (wfs_p2 :: any)[1].dataflow_id)
                 end
             end)
 
             it("should list children of a parent dataflow", function()
                 local children, err = dataflow_repo.list_children(list_parent_id)
-                expect(err).to_be_nil(); expect(#children).to_equal(1)
+                test.is_nil(err)
+                test.eq(#children, 1)
             end)
 
             it("should return empty list for user with no dataflows", function()
                 local wfs, err = dataflow_repo.list_by_user(uuid.v7())
-                expect(err).to_be_nil(); expect(#wfs).to_equal(0)
+                test.is_nil(err)
+                test.eq(#wfs, 0)
             end)
         end)
     end)

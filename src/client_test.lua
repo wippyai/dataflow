@@ -7,12 +7,11 @@ local consts = require("consts")
 
 local function define_tests()
     describe("Workflow Client", function()
-        local mock_deps
+        local mock_deps: any
         local captured_calls
-        local mock_security_actor
+        local mock_security_actor: any
 
         before_each(function()
-            -- Reset captured calls
             captured_calls = {
                 commit_execute = {},
                 funcs_call = {},
@@ -24,15 +23,13 @@ local function define_tests()
                 data_reader_calls = {}
             }
 
-            -- Mock security actor
             mock_security_actor = {
                 id = function() return "test-actor-123" end
             }
 
-            -- Create mock dependencies
             mock_deps = {
                 dataflow_repo = {
-                    get_by_user = function(dataflow_id, actor_id)
+                    get_by_user = function(dataflow_id: string, actor_id: string)
                         table.insert(captured_calls.dataflow_repo_get, {
                             dataflow_id = dataflow_id,
                             actor_id = actor_id
@@ -46,7 +43,7 @@ local function define_tests()
                     end
                 },
                 commit = {
-                    execute = function(dataflow_id, op_id, commands, options)
+                    execute = function(dataflow_id: string, op_id: string, commands: { any }, options: any?)
                         table.insert(captured_calls.commit_execute, {
                             dataflow_id = dataflow_id,
                             op_id = op_id,
@@ -57,19 +54,19 @@ local function define_tests()
                     end
                 },
                 data_reader = {
-                    with_dataflow = function(dataflow_id)
+                    with_dataflow = function(dataflow_id: string)
                         table.insert(captured_calls.data_reader_calls, {
                             method = "with_dataflow",
                             dataflow_id = dataflow_id
                         })
                         return {
-                            with_data_types = function(data_types)
+                            with_data_types = function(data_types: { string })
                                 table.insert(captured_calls.data_reader_calls, {
                                     method = "with_data_types",
                                     data_types = data_types
                                 })
                                 return {
-                                    fetch_options = function(options)
+                                    fetch_options = function(options: any?)
                                         table.insert(captured_calls.data_reader_calls, {
                                             method = "fetch_options",
                                             options = options
@@ -79,7 +76,6 @@ local function define_tests()
                                                 table.insert(captured_calls.data_reader_calls, {
                                                     method = "all"
                                                 })
-                                                -- Return mock workflow output data
                                                 return {
                                                     {
                                                         key = "result",
@@ -117,7 +113,7 @@ local function define_tests()
                     end
                 },
                 process = {
-                    spawn = function(process_type, host, args)
+                    spawn = function(process_type: string, host: string, args: any)
                         table.insert(captured_calls.process_spawn, {
                             process_type = process_type,
                             host = host,
@@ -126,16 +122,16 @@ local function define_tests()
                         return "mock-pid-456"
                     end,
                     registry = {
-                        lookup = function(process_name)
+                        lookup = function(process_name: string)
                             table.insert(captured_calls.process_lookup, { process_name = process_name })
                             return "mock-registry-pid-789"
                         end
                     },
-                    cancel = function(pid, timeout)
+                    cancel = function(pid: string, timeout: string)
                         table.insert(captured_calls.process_cancel, { pid = pid, timeout = timeout })
                         return true, nil
                     end,
-                    terminate = function(pid)
+                    terminate = function(pid: string)
                         table.insert(captured_calls.process_terminate, { pid = pid })
                         return true, nil
                     end
@@ -143,7 +139,7 @@ local function define_tests()
                 funcs = {
                     new = function()
                         return {
-                            call = function(self, func_name, args)
+                            call = function(_self: any, func_name: string, args: any)
                                 table.insert(captured_calls.funcs_call, {
                                     func_name = func_name,
                                     args = args
@@ -169,24 +165,22 @@ local function define_tests()
             it("should create client with current security actor", function()
                 local instance, err = client.new(mock_deps)
 
-                expect(err).to_be_nil()
-                expect(instance).not_to_be_nil()
-                expect(instance._actor_id).to_equal("test-actor-123")
-                expect(instance._deps).to_equal(mock_deps)
+                test.is_nil(err)
+                test.not_nil(instance)
+                test.eq(instance._actor_id, "test-actor-123")
+                test.eq(instance._deps, mock_deps)
             end)
 
             it("should create client with default dependencies when none provided", function()
-                -- This would use real dependencies, but we can't easily test that
-                -- without mocking the require() calls. For now, just test with mock deps
                 local instance, err = client.new(mock_deps)
 
-                expect(err).to_be_nil()
-                expect(instance).not_to_be_nil()
-                expect(instance._actor_id).to_equal("test-actor-123")
+                test.is_nil(err)
+                test.not_nil(instance)
+                test.eq(instance._actor_id, "test-actor-123")
             end)
 
             it("should fail when no security actor available", function()
-                local no_actor_deps = {}
+                local no_actor_deps: { [string]: any } = {}
                 for k, v in pairs(mock_deps) do
                     no_actor_deps[k] = v
                 end
@@ -196,27 +190,27 @@ local function define_tests()
 
                 local instance, err = client.new(no_actor_deps)
 
-                expect(instance).to_be_nil()
-                expect(err).to_contain("No current security actor available")
+                test.is_nil(instance)
+                test.contains(err, "No current security actor available")
             end)
 
             it("should fail when security actor has no id function", function()
-                local bad_actor_deps = {}
+                local bad_actor_deps: { [string]: any } = {}
                 for k, v in pairs(mock_deps) do
                     bad_actor_deps[k] = v
                 end
                 bad_actor_deps.security = {
-                    actor = function() return {} end -- Actor without id() function
+                    actor = function() return {} end
                 }
 
                 local instance, err = client.new(bad_actor_deps)
 
-                expect(instance).to_be_nil()
-                expect(err).to_contain("Security actor does not have id() method")
+                test.is_nil(instance)
+                test.contains(err, "Security actor does not have id() method")
             end)
 
             it("should fail when security actor id() returns empty string", function()
-                local empty_id_deps = {}
+                local empty_id_deps: { [string]: any } = {}
                 for k, v in pairs(mock_deps) do
                     empty_id_deps[k] = v
                 end
@@ -230,36 +224,34 @@ local function define_tests()
 
                 local instance, err = client.new(empty_id_deps)
 
-                expect(instance).to_be_nil()
-                expect(err).to_contain("Actor ID cannot be empty")
+                test.is_nil(instance)
+                test.contains(err, "Actor ID cannot be empty")
             end)
         end)
 
         describe("Create Workflow Method", function()
-            local test_client
+            local test_client: any
 
             before_each(function()
                 test_client, _ = client.new(mock_deps)
-                -- Debug: Verify client has data_reader
-                expect(test_client._deps).not_to_be_nil()
-                expect(test_client._deps.data_reader).not_to_be_nil()
+                test.not_nil(test_client._deps)
+                test.not_nil(test_client._deps.data_reader)
             end)
 
             it("should create workflow with no additional commands", function()
                 local dataflow_id, err = test_client:create_workflow()
 
-                expect(err).to_be_nil()
-                expect(dataflow_id).not_to_be_nil()
-                expect(type(dataflow_id)).to_equal("string")
+                test.is_nil(err)
+                test.not_nil(dataflow_id)
+                test.eq(type(dataflow_id), "string")
 
-                -- Verify commit.execute was called
-                expect(#captured_calls.commit_execute).to_equal(1)
+                test.eq(#captured_calls.commit_execute, 1)
                 local call = captured_calls.commit_execute[1]
-                expect(call.dataflow_id).to_equal(dataflow_id)
-                expect(#call.commands).to_equal(1)
-                expect(call.commands[1].type).to_equal(consts.COMMAND_TYPES.CREATE_WORKFLOW)
-                expect(call.commands[1].payload.actor_id).to_equal("test-actor-123")
-                expect(call.commands[1].payload.type).to_equal("workflow")
+                test.eq(call.dataflow_id, dataflow_id)
+                test.eq(#call.commands, 1)
+                test.eq(call.commands[1].type, consts.COMMAND_TYPES.CREATE_WORKFLOW)
+                test.eq(call.commands[1].payload.actor_id, "test-actor-123")
+                test.eq(call.commands[1].payload.type, "workflow")
             end)
 
             it("should create workflow with additional commands", function()
@@ -283,14 +275,14 @@ local function define_tests()
 
                 local dataflow_id, err = test_client:create_workflow(additional_commands)
 
-                expect(err).to_be_nil()
-                expect(dataflow_id).not_to_be_nil()
+                test.is_nil(err)
+                test.not_nil(dataflow_id)
 
                 local call = captured_calls.commit_execute[1]
-                expect(#call.commands).to_equal(3) -- CREATE_WORKFLOW + 2 additional
-                expect(call.commands[1].type).to_equal(consts.COMMAND_TYPES.CREATE_WORKFLOW)
-                expect(call.commands[2].type).to_equal(consts.COMMAND_TYPES.CREATE_NODE)
-                expect(call.commands[3].type).to_equal(consts.COMMAND_TYPES.CREATE_DATA)
+                test.eq(#call.commands, 3)
+                test.eq(call.commands[1].type, consts.COMMAND_TYPES.CREATE_WORKFLOW)
+                test.eq(call.commands[2].type, consts.COMMAND_TYPES.CREATE_NODE)
+                test.eq(call.commands[3].type, consts.COMMAND_TYPES.CREATE_DATA)
             end)
 
             it("should create workflow with custom options", function()
@@ -301,13 +293,13 @@ local function define_tests()
                     metadata = { version = "1.0" }
                 })
 
-                expect(err).to_be_nil()
-                expect(dataflow_id).to_equal(custom_id)
+                test.is_nil(err)
+                test.eq(dataflow_id, custom_id)
 
                 local call = captured_calls.commit_execute[1]
-                expect(call.dataflow_id).to_equal(custom_id)
-                expect(call.commands[1].payload.type).to_equal("custom_type")
-                expect(call.commands[1].payload.metadata.version).to_equal("1.0")
+                test.eq(call.dataflow_id, custom_id)
+                test.eq(call.commands[1].payload.type, "custom_type")
+                test.eq(call.commands[1].payload.metadata.version, "1.0")
             end)
 
             it("should handle commit execution failure", function()
@@ -317,40 +309,38 @@ local function define_tests()
 
                 local dataflow_id, err = test_client:create_workflow()
 
-                expect(dataflow_id).to_be_nil()
-                expect(err).to_equal("Database error")
+                test.is_nil(dataflow_id)
+                test.eq(err, "Database error")
             end)
         end)
 
         describe("Execute Method", function()
-            local test_client
+            local test_client: any
 
             before_each(function()
                 test_client, _ = client.new(mock_deps)
             end)
 
             it("should execute existing workflow synchronously with outputs", function()
-                -- Debug: Check if data_reader exists in mock_deps
-                expect(mock_deps.data_reader).not_to_be_nil()
-                expect(type(mock_deps.data_reader.with_dataflow)).to_equal("function")
+                test.not_nil(mock_deps.data_reader)
+                test.eq(type(mock_deps.data_reader.with_dataflow), "function")
 
                 local result, err = test_client:execute("existing-workflow-123")
 
-                expect(err).to_be_nil()
-                expect(result).not_to_be_nil()
-                expect(result.success).to_be_true()
-                expect(result.dataflow_id).to_equal("existing-workflow-123")
-                expect(result.data).not_to_be_nil()
-                expect(result.data.result).not_to_be_nil()
-                expect(result.data.result.message).to_equal("test output")
-                expect(result.data.backup).not_to_be_nil()
+                test.is_nil(err)
+                test.not_nil(result)
+                test.is_true(result.success)
+                test.eq(result.dataflow_id, "existing-workflow-123")
+                test.not_nil(result.data)
+                test.not_nil(result.data.result)
+                test.eq(result.data.result.message, "test output")
+                test.not_nil(result.data.backup)
 
-                -- Verify funcs was called correctly
-                expect(#captured_calls.funcs_call).to_equal(1)
+                test.eq(#captured_calls.funcs_call, 1)
                 local call = captured_calls.funcs_call[1]
-                expect(call.func_name).to_equal(consts.ORCHESTRATOR)
-                expect(call.args.dataflow_id).to_equal("existing-workflow-123")
-                expect(call.args.init_func_id).to_be_nil()
+                test.eq(call.func_name, consts.ORCHESTRATOR)
+                test.eq(call.args.dataflow_id, "existing-workflow-123")
+                test.is_nil(call.args.init_func_id)
             end)
 
             it("should execute workflow with init function", function()
@@ -358,11 +348,11 @@ local function define_tests()
                     init_func_id = "app:visualizer"
                 })
 
-                expect(err).to_be_nil()
-                expect(result.success).to_be_true()
+                test.is_nil(err)
+                test.is_true(result.success)
 
                 local call = captured_calls.funcs_call[1]
-                expect(call.args.init_func_id).to_equal("app:visualizer")
+                test.eq(call.args.init_func_id, "app:visualizer")
             end)
 
             it("should execute workflow without fetching outputs when disabled", function()
@@ -370,25 +360,24 @@ local function define_tests()
                     fetch_output = false
                 })
 
-                expect(err).to_be_nil()
-                expect(result.success).to_be_true()
-                expect(result.data).to_be_nil()
+                test.is_nil(err)
+                test.is_true(result.success)
+                test.is_nil(result.data)
 
-                -- Should not have called data_reader
-                local reader_calls = 0
+                local reader_calls: number = 0
                 for _, call in ipairs(captured_calls.data_reader_calls) do
                     if call.method == "with_dataflow" then
                         reader_calls = reader_calls + 1
                     end
                 end
-                expect(reader_calls).to_equal(0)
+                test.eq(reader_calls, 0)
             end)
 
             it("should fail with missing dataflow_id", function()
                 local result, err = test_client:execute("")
 
-                expect(result).to_be_nil()
-                expect(err).to_contain("Dataflow ID is required")
+                test.is_nil(result)
+                test.contains(err, "Dataflow ID is required")
             end)
 
             it("should handle funcs execution failure", function()
@@ -402,8 +391,8 @@ local function define_tests()
 
                 local result, err = test_client:execute("existing-workflow-123")
 
-                expect(result).to_be_nil()
-                expect(err).to_contain("Orchestrator failed")
+                test.is_nil(result)
+                test.contains(err, "Orchestrator failed")
             end)
 
             it("should handle orchestrator returning workflow failure", function()
@@ -421,33 +410,32 @@ local function define_tests()
 
                 local result, err = test_client:execute("existing-workflow-123")
 
-                expect(err).to_be_nil()
-                expect(result).not_to_be_nil()
-                expect(result.success).to_be_false()
-                expect(result.error).to_equal("Workflow deadlocked")
-                expect(result.data).to_be_nil()
+                test.is_nil(err)
+                test.not_nil(result)
+                test.is_false(result.success)
+                test.eq(result.error, "Workflow deadlocked")
+                test.is_nil(result.data)
             end)
         end)
 
         describe("Output Method", function()
-            local test_client
+            local test_client: any
 
             before_each(function()
                 test_client, _ = client.new(mock_deps)
-                -- Debug: Verify client has data_reader
-                expect(test_client._deps).not_to_be_nil()
-                expect(test_client._deps.data_reader).not_to_be_nil()
+                test.not_nil(test_client._deps)
+                test.not_nil(test_client._deps.data_reader)
             end)
 
             it("should fetch workflow outputs as key-value pairs", function()
                 local outputs, err = test_client:output("test-workflow-id")
 
-                expect(err).to_be_nil()
-                expect(outputs).not_to_be_nil()
-                expect(outputs.result).not_to_be_nil()
-                expect(outputs.result.message).to_equal("test output")
-                expect(outputs.backup).not_to_be_nil()
-                expect(outputs.backup.backup_data).to_equal("saved")
+                test.is_nil(err)
+                test.not_nil(outputs)
+                test.not_nil(outputs.result)
+                test.eq(outputs.result.message, "test output")
+                test.not_nil(outputs.backup)
+                test.eq(outputs.backup.backup_data, "saved")
             end)
 
             it("should return empty table when no outputs exist", function()
@@ -469,9 +457,9 @@ local function define_tests()
 
                 local outputs, err = test_client:output("test-workflow-id")
 
-                expect(err).to_be_nil()
-                expect(outputs).not_to_be_nil()
-                expect(next(outputs)).to_be_nil() -- empty table
+                test.is_nil(err)
+                test.not_nil(outputs)
+                test.is_nil(next(outputs))
             end)
 
             it("should handle root output correctly", function()
@@ -499,42 +487,40 @@ local function define_tests()
 
                 local outputs, err = test_client:output("test-workflow-id")
 
-                expect(err).to_be_nil()
-                expect(outputs).not_to_be_nil()
-                expect(outputs.root_data).to_equal("test")
+                test.is_nil(err)
+                test.not_nil(outputs)
+                test.eq(outputs.root_data, "test")
             end)
 
             it("should fail with missing dataflow_id", function()
                 local outputs, err = test_client:output("")
 
-                expect(outputs).to_be_nil()
-                expect(err).to_contain("Dataflow ID is required")
+                test.is_nil(outputs)
+                test.contains(err, "Dataflow ID is required")
             end)
         end)
 
         describe("Start Method", function()
-            local test_client
+            local test_client: any
 
             before_each(function()
                 test_client, _ = client.new(mock_deps)
-                -- Debug: Verify client has data_reader
-                expect(test_client._deps).not_to_be_nil()
-                expect(test_client._deps.data_reader).not_to_be_nil()
+                test.not_nil(test_client._deps)
+                test.not_nil(test_client._deps.data_reader)
             end)
 
             it("should start workflow asynchronously", function()
                 local dataflow_id, err = test_client:start("existing-workflow-456")
 
-                expect(err).to_be_nil()
-                expect(dataflow_id).to_equal("existing-workflow-456")
+                test.is_nil(err)
+                test.eq(dataflow_id, "existing-workflow-456")
 
-                -- Verify process.spawn was called
-                expect(#captured_calls.process_spawn).to_equal(1)
+                test.eq(#captured_calls.process_spawn, 1)
                 local spawn_call = captured_calls.process_spawn[1]
-                expect(spawn_call.process_type).to_equal(consts.ORCHESTRATOR)
-                expect(spawn_call.host).to_equal(consts.HOST_ID)
-                expect(spawn_call.args.dataflow_id).to_equal("existing-workflow-456")
-                expect(spawn_call.args.init_func_id).to_be_nil()
+                test.eq(spawn_call.process_type, consts.ORCHESTRATOR)
+                test.eq(spawn_call.host, consts.HOST_ID)
+                test.eq(spawn_call.args.dataflow_id, "existing-workflow-456")
+                test.is_nil(spawn_call.args.init_func_id)
             end)
 
             it("should start workflow with init function", function()
@@ -542,18 +528,18 @@ local function define_tests()
                     init_func_id = "app:setup"
                 })
 
-                expect(err).to_be_nil()
-                expect(dataflow_id).to_equal("existing-workflow-456")
+                test.is_nil(err)
+                test.eq(dataflow_id, "existing-workflow-456")
 
                 local spawn_call = captured_calls.process_spawn[1]
-                expect(spawn_call.args.init_func_id).to_equal("app:setup")
+                test.eq(spawn_call.args.init_func_id, "app:setup")
             end)
 
             it("should fail with missing dataflow_id", function()
                 local dataflow_id, err = test_client:start("")
 
-                expect(dataflow_id).to_be_nil()
-                expect(err).to_contain("Dataflow ID is required")
+                test.is_nil(dataflow_id)
+                test.contains(err, "Dataflow ID is required")
             end)
 
             it("should fail when process spawn fails", function()
@@ -561,51 +547,50 @@ local function define_tests()
 
                 local dataflow_id, err = test_client:start("existing-workflow-456")
 
-                expect(dataflow_id).to_be_nil()
-                expect(err).to_contain("Failed to spawn workflow process")
+                test.is_nil(dataflow_id)
+                test.contains(err, "Failed to spawn workflow process")
             end)
         end)
 
         describe("Cancel Method", function()
-            local test_client
+            local test_client: any
 
             before_each(function()
                 test_client, _ = client.new(mock_deps)
-                -- Debug: Verify client has data_reader
-                expect(test_client._deps).not_to_be_nil()
-                expect(test_client._deps.data_reader).not_to_be_nil()
+                test.not_nil(test_client._deps)
+                test.not_nil(test_client._deps.data_reader)
             end)
 
             it("should cancel workflow successfully", function()
                 local success, err, info = test_client:cancel("workflow-123", "45s")
 
-                expect(success).to_be_true()
-                expect(err).to_be_nil()
-                expect(info).not_to_be_nil()
-                expect(info.dataflow_id).to_equal("workflow-123")
-                expect(info.timeout).to_equal("45s")
-                expect(info.message).to_contain("Cancel signal sent")
+                test.is_true(success)
+                test.is_nil(err)
+                test.not_nil(info)
+                local i = info :: any
+                test.eq(i.dataflow_id, "workflow-123")
+                test.eq(i.timeout, "45s")
+                test.contains(i.message, "Cancel signal sent")
 
-                -- Verify calls were made
-                expect(#captured_calls.dataflow_repo_get).to_equal(1)
-                expect(#captured_calls.process_lookup).to_equal(1)
-                expect(#captured_calls.process_cancel).to_equal(1)
+                test.eq(#captured_calls.dataflow_repo_get, 1)
+                test.eq(#captured_calls.process_lookup, 1)
+                test.eq(#captured_calls.process_cancel, 1)
 
-                expect(captured_calls.process_lookup[1].process_name).to_equal("dataflow.workflow-123")
-                expect(captured_calls.process_cancel[1].timeout).to_equal("45s")
+                test.eq(captured_calls.process_lookup[1].process_name, "dataflow.workflow-123")
+                test.eq(captured_calls.process_cancel[1].timeout, "45s")
             end)
 
             it("should use default timeout", function()
                 test_client:cancel("workflow-123")
 
-                expect(captured_calls.process_cancel[1].timeout).to_equal("30s")
+                test.eq(captured_calls.process_cancel[1].timeout, "30s")
             end)
 
             it("should fail with missing dataflow_id", function()
                 local success, err = test_client:cancel("")
 
-                expect(success).to_be_false()
-                expect(err).to_contain("Workflow ID is required")
+                test.is_false(success)
+                test.contains(err, "Workflow ID is required")
             end)
 
             it("should fail when workflow not found", function()
@@ -613,8 +598,8 @@ local function define_tests()
 
                 local success, err = test_client:cancel("workflow-123")
 
-                expect(success).to_be_false()
-                expect(err).to_equal("Workflow not found")
+                test.is_false(success)
+                test.eq(err, "Workflow not found")
             end)
 
             it("should fail when workflow not in cancellable state", function()
@@ -624,8 +609,8 @@ local function define_tests()
 
                 local success, err = test_client:cancel("workflow-123")
 
-                expect(success).to_be_false()
-                expect(err).to_contain("cannot be cancelled in current state: completed")
+                test.is_false(success)
+                test.contains(err, "cannot be cancelled in current state: completed")
             end)
 
             it("should fail when process not found in registry", function()
@@ -633,8 +618,8 @@ local function define_tests()
 
                 local success, err = test_client:cancel("workflow-123")
 
-                expect(success).to_be_false()
-                expect(err).to_contain("Workflow process not found in registry")
+                test.is_false(success)
+                test.contains(err, "Workflow process not found in registry")
             end)
 
             it("should fail when cancel signal fails", function()
@@ -642,48 +627,46 @@ local function define_tests()
 
                 local success, err = test_client:cancel("workflow-123")
 
-                expect(success).to_be_false()
-                expect(err).to_contain("Failed to send cancel signal: Cancel failed")
+                test.is_false(success)
+                test.contains(err, "Failed to send cancel signal: Cancel failed")
             end)
         end)
 
         describe("Terminate Method", function()
-            local test_client
+            local test_client: any
 
             before_each(function()
                 test_client, _ = client.new(mock_deps)
-                -- Debug: Verify client has data_reader
-                expect(test_client._deps).not_to_be_nil()
-                expect(test_client._deps.data_reader).not_to_be_nil()
+                test.not_nil(test_client._deps)
+                test.not_nil(test_client._deps.data_reader)
             end)
 
             it("should terminate workflow successfully", function()
                 local success, err, info = test_client:terminate("workflow-456")
 
-                expect(success).to_be_true()
-                expect(err).to_be_nil()
-                expect(info).not_to_be_nil()
-                expect(info.dataflow_id).to_equal("workflow-456")
-                expect(info.process_terminated).to_be_true()
-                expect(info.status_updated).to_be_true()
+                test.is_true(success)
+                test.is_nil(err)
+                test.not_nil(info)
+                local i = info :: any
+                test.eq(i.dataflow_id, "workflow-456")
+                test.is_true(i.process_terminated)
+                test.is_true(i.status_updated)
 
-                -- Verify calls were made
-                expect(#captured_calls.dataflow_repo_get).to_equal(1)
-                expect(#captured_calls.process_lookup).to_equal(1)
-                expect(#captured_calls.process_terminate).to_equal(1)
-                expect(#captured_calls.commit_execute).to_equal(1)
+                test.eq(#captured_calls.dataflow_repo_get, 1)
+                test.eq(#captured_calls.process_lookup, 1)
+                test.eq(#captured_calls.process_terminate, 1)
+                test.eq(#captured_calls.commit_execute, 1)
 
-                -- Check commit call
                 local commit_call = captured_calls.commit_execute[1]
-                expect(commit_call.commands[1].type).to_equal(consts.COMMAND_TYPES.UPDATE_WORKFLOW)
-                expect(commit_call.commands[1].payload.status).to_equal("terminated")
+                test.eq(commit_call.commands[1].type, consts.COMMAND_TYPES.UPDATE_WORKFLOW)
+                test.eq(commit_call.commands[1].payload.status, "terminated")
             end)
 
             it("should fail with missing dataflow_id", function()
                 local success, err = test_client:terminate("")
 
-                expect(success).to_be_false()
-                expect(err).to_contain("Workflow ID is required")
+                test.is_false(success)
+                test.contains(err, "Workflow ID is required")
             end)
 
             it("should fail when workflow already finished", function()
@@ -693,8 +676,8 @@ local function define_tests()
 
                 local success, err = test_client:terminate("workflow-456")
 
-                expect(success).to_be_false()
-                expect(err).to_contain("already finished with status: completed")
+                test.is_false(success)
+                test.contains(err, "already finished with status: completed")
             end)
 
             it("should handle process not found gracefully", function()
@@ -702,20 +685,22 @@ local function define_tests()
 
                 local success, err, info = test_client:terminate("workflow-456")
 
-                expect(success).to_be_true()
-                expect(err).to_be_nil()
-                expect(info.process_terminated).to_be_false()
-                expect(info.status_updated).to_be_true()
+                test.is_true(success)
+                test.is_nil(err)
+                local i = info :: any
+                test.is_false(i.process_terminated)
+                test.is_true(i.status_updated)
             end)
 
             it("should handle process termination failure", function()
                 mock_deps.process.terminate = function() return false, "Terminate failed" end
 
-                local success, err, info = test_client:terminate("workflow-456")
+                local success, _err, info = test_client:terminate("workflow-456")
 
-                expect(success).to_be_true() -- Should still succeed with status update
-                expect(info.process_terminated).to_be_false()
-                expect(info.terminate_error).to_equal("Terminate failed")
+                test.is_true(success)
+                local i = info :: any
+                test.is_false(i.process_terminated)
+                test.eq(i.terminate_error, "Terminate failed")
             end)
 
             it("should fail when commit execution fails", function()
@@ -723,40 +708,39 @@ local function define_tests()
 
                 local success, err, info = test_client:terminate("workflow-456")
 
-                expect(success).to_be_false()
-                expect(err).to_contain("Failed to update workflow status: Commit failed")
-                expect(info).not_to_be_nil()
-                expect(info.process_terminated).to_be_true()
+                test.is_false(success)
+                test.contains(err, "Failed to update workflow status: Commit failed")
+                test.not_nil(info)
+                local i = info :: any
+                test.is_true(i.process_terminated)
             end)
         end)
 
         describe("Get Status Method", function()
-            local test_client
+            local test_client: any
 
             before_each(function()
                 test_client, _ = client.new(mock_deps)
-                -- Debug: Verify client has data_reader
-                expect(test_client._deps).not_to_be_nil()
-                expect(test_client._deps.data_reader).not_to_be_nil()
+                test.not_nil(test_client._deps)
+                test.not_nil(test_client._deps.data_reader)
             end)
 
             it("should get workflow status successfully", function()
                 local status, err = test_client:get_status("workflow-789")
 
-                expect(err).to_be_nil()
-                expect(status).to_equal("running")
+                test.is_nil(err)
+                test.eq(status, "running")
 
-                -- Verify dataflow_repo was called
-                expect(#captured_calls.dataflow_repo_get).to_equal(1)
-                expect(captured_calls.dataflow_repo_get[1].dataflow_id).to_equal("workflow-789")
-                expect(captured_calls.dataflow_repo_get[1].actor_id).to_equal("test-actor-123")
+                test.eq(#captured_calls.dataflow_repo_get, 1)
+                test.eq(captured_calls.dataflow_repo_get[1].dataflow_id, "workflow-789")
+                test.eq(captured_calls.dataflow_repo_get[1].actor_id, "test-actor-123")
             end)
 
             it("should fail with missing dataflow_id", function()
                 local status, err = test_client:get_status("")
 
-                expect(status).to_be_nil()
-                expect(err).to_contain("Workflow ID is required")
+                test.is_nil(status)
+                test.contains(err, "Workflow ID is required")
             end)
 
             it("should fail when workflow not found", function()
@@ -764,8 +748,8 @@ local function define_tests()
 
                 local status, err = test_client:get_status("workflow-789")
 
-                expect(status).to_be_nil()
-                expect(err).to_equal("Not found")
+                test.is_nil(status)
+                test.eq(err, "Not found")
             end)
 
             it("should return different statuses", function()
@@ -775,23 +759,21 @@ local function define_tests()
 
                 local status, err = test_client:get_status("workflow-789")
 
-                expect(err).to_be_nil()
-                expect(status).to_equal("completed")
+                test.is_nil(err)
+                test.eq(status, "completed")
             end)
         end)
 
         describe("Integration Scenarios", function()
-            local test_client
+            local test_client: any
 
             before_each(function()
                 test_client, _ = client.new(mock_deps)
-                -- Debug: Verify client has data_reader
-                expect(test_client._deps).not_to_be_nil()
-                expect(test_client._deps.data_reader).not_to_be_nil()
+                test.not_nil(test_client._deps)
+                test.not_nil(test_client._deps.data_reader)
             end)
 
             it("should handle complete workflow lifecycle", function()
-                -- Create workflow
                 local dataflow_id, create_err = test_client:create_workflow({
                     {
                         type = consts.COMMAND_TYPES.CREATE_NODE,
@@ -801,41 +783,35 @@ local function define_tests()
                         }
                     }
                 })
-                expect(create_err).to_be_nil()
-                expect(dataflow_id).not_to_be_nil()
+                test.is_nil(create_err)
+                test.not_nil(dataflow_id)
 
-                -- Execute workflow
                 local result, exec_err = test_client:execute(dataflow_id)
-                expect(exec_err).to_be_nil()
-                expect(result.success).to_be_true()
-                expect(result.data).not_to_be_nil()
+                test.is_nil(exec_err)
+                test.is_true(result.success)
+                test.not_nil(result.data)
 
-                -- Check status
                 local status, status_err = test_client:get_status(dataflow_id)
-                expect(status_err).to_be_nil()
-                expect(status).to_equal("running")
+                test.is_nil(status_err)
+                test.eq(status, "running")
 
-                -- Cancel workflow
                 local cancel_success, cancel_err = test_client:cancel(dataflow_id)
-                expect(cancel_success).to_be_true()
-                expect(cancel_err).to_be_nil()
+                test.is_true(cancel_success)
+                test.is_nil(cancel_err)
             end)
 
             it("should handle actor ownership verification", function()
-                -- All methods should verify actor ownership
                 test_client:get_status("test-workflow")
                 test_client:cancel("test-workflow")
                 test_client:terminate("test-workflow")
 
-                -- All should have called dataflow_repo.get_by_user with correct actor_id
-                expect(#captured_calls.dataflow_repo_get).to_equal(3)
+                test.eq(#captured_calls.dataflow_repo_get, 3)
                 for _, call in ipairs(captured_calls.dataflow_repo_get) do
-                    expect(call.actor_id).to_equal("test-actor-123")
+                    test.eq(call.actor_id, "test-actor-123")
                 end
             end)
 
             it("should handle create and start workflow separately", function()
-                -- Create workflow first
                 local dataflow_id, create_err = test_client:create_workflow({
                     {
                         type = consts.COMMAND_TYPES.CREATE_NODE,
@@ -845,17 +821,15 @@ local function define_tests()
                         }
                     }
                 })
-                expect(create_err).to_be_nil()
+                test.is_nil(create_err)
 
-                -- Start it asynchronously
                 local start_id, start_err = test_client:start(dataflow_id)
-                expect(start_err).to_be_nil()
-                expect(start_id).to_equal(dataflow_id)
+                test.is_nil(start_err)
+                test.eq(start_id, dataflow_id)
 
-                -- Verify proper orchestrator call
                 local spawn_call = captured_calls.process_spawn[1]
-                expect(spawn_call.process_type).to_equal(consts.ORCHESTRATOR)
-                expect(spawn_call.args.dataflow_id).to_equal(dataflow_id)
+                test.eq(spawn_call.process_type, consts.ORCHESTRATOR)
+                test.eq(spawn_call.args.dataflow_id, dataflow_id)
             end)
 
             it("should handle workflow failure with proper error structure", function()
@@ -873,12 +847,12 @@ local function define_tests()
 
                 local result, err = test_client:execute("failed-workflow")
 
-                expect(err).to_be_nil()
-                expect(result).not_to_be_nil()
-                expect(result.success).to_be_false()
-                expect(result.dataflow_id).to_equal("failed-workflow")
-                expect(result.error).to_equal("Node execution failed")
-                expect(result.data).to_be_nil()
+                test.is_nil(err)
+                test.not_nil(result)
+                test.is_false(result.success)
+                test.eq(result.dataflow_id, "failed-workflow")
+                test.eq(result.error, "Node execution failed")
+                test.is_nil(result.data)
             end)
         end)
     end)

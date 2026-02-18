@@ -136,7 +136,7 @@ end
 local function discover_templates(dataflow_id, parent_node_id, deps)
     local reader, reader_err = deps.node_reader.with_dataflow(dataflow_id)
     if reader_err then
-        return nil, "Failed to create node reader: " .. reader_err
+        return nil, "Failed to create node reader: " .. (reader_err :: string)
     end
 
     local templates, query_err = reader
@@ -145,7 +145,7 @@ local function discover_templates(dataflow_id, parent_node_id, deps)
         :all()
 
     if query_err then
-        return nil, "Failed to query template nodes: " .. query_err
+        return nil, "Failed to query template nodes: " .. (query_err :: string)
     end
 
     return templates, nil
@@ -191,16 +191,16 @@ function template_graph.build_for_node(parent_node, deps)
         local error_targets = config.error_targets or {}
 
         -- Track data target edges
-        for _, target in ipairs(data_targets) do
+        for _, target in ipairs(data_targets :: any) do
             if target.node_id and graph.nodes[target.node_id] then
-                table.insert(graph.edges[template.node_id], target.node_id)
+                table.insert(graph.edges[template.node_id] :: any, target.node_id)
             end
         end
 
         -- Track error target edges
-        for _, target in ipairs(error_targets) do
+        for _, target in ipairs(error_targets :: any) do
             if target.node_id and graph.nodes[target.node_id] then
-                table.insert(graph.edges[template.node_id], target.node_id)
+                table.insert(graph.edges[template.node_id] :: any, target.node_id)
             end
         end
     end
@@ -229,7 +229,7 @@ function template_graph.build_for_node(parent_node, deps)
 
     local has_cycles, cycle_desc = graph:has_cycles()
     if has_cycles then
-        return nil, "Template dependency graph has circular dependencies: " .. cycle_desc
+        return nil, "Template dependency graph has circular dependencies: " .. (cycle_desc :: string)
     end
 
     if #graph.roots == 0 then

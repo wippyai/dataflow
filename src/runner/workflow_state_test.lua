@@ -5,9 +5,25 @@ local sql = require("sql")
 local workflow_state = require("workflow_state")
 local consts = require("consts")
 
+type TestDataRecord = {
+    data_id: string?,
+    node_id: string?,
+    type: string,
+    discriminator: string?,
+    key: string?,
+    content: table | string | number | boolean | nil,
+    content_type: string?,
+    metadata: string?,
+}
+
 local function define_tests()
     describe("WorkflowState", function()
-        local test_ctx = {
+        local test_ctx: {
+            db: any?,
+            tx: any?,
+            dataflow_id: string?,
+            actor_id: string?,
+        } = {
             db = nil,
             tx = nil,
             dataflow_id = nil,
@@ -15,7 +31,6 @@ local function define_tests()
         }
 
         before_each(function()
-            -- Setup database connection
             local db, err_db = sql.get("app:db")
             if err_db then error("Failed to connect to database: " .. err_db) end
             test_ctx.db = db
@@ -27,10 +42,9 @@ local function define_tests()
             end
             test_ctx.tx = tx
 
-            -- Create test dataflow
             test_ctx.dataflow_id = uuid.v7()
             test_ctx.actor_id = "test-actor-" .. uuid.v7()
-            local now_ts = time.now():format(time.RFC3339NANO)
+            local now_ts: string = time.now():format(time.RFC3339NANO)
 
             local _, err_create = tx:execute([[
                 INSERT INTO dataflows (
@@ -68,11 +82,10 @@ local function define_tests()
             test_ctx.actor_id = nil
         end)
 
-        -- Helper to create test nodes
-        local function create_test_nodes(tx, dataflow_id, nodes)
+        local function create_test_nodes(tx: any, dataflow_id: string, nodes: {{[string]: any}})
             for _, node in ipairs(nodes) do
-                local now_ts = time.now():format(time.RFC3339NANO)
-                local parent_id = node.parent_node_id
+                local now_ts: string = time.now():format(time.RFC3339NANO)
+                local parent_id: string? = node.parent_node_id
                 if parent_id == "" then
                     parent_id = nil
                 end
@@ -97,10 +110,9 @@ local function define_tests()
             end
         end
 
-        -- Helper to create test data
-        local function create_test_data(tx, dataflow_id, data_records)
+        local function create_test_data(tx: any, dataflow_id: string, data_records: { TestDataRecord })
             for _, data in ipairs(data_records) do
-                local now_ts = time.now():format(time.RFC3339NANO)
+                local now_ts: string = time.now():format(time.RFC3339NANO)
                 local _, err = tx:execute([[
                     INSERT INTO dataflow_data (
                         data_id, dataflow_id, node_id, type, discriminator, key, content, content_type, metadata, created_at
@@ -125,44 +137,42 @@ local function define_tests()
 
         describe("Constructor", function()
             it("should create a new workflow state instance", function()
-                local ws, err = workflow_state.new(test_ctx.dataflow_id)
+                local ws = workflow_state.new(test_ctx.dataflow_id) :: any
 
-                expect(err).to_be_nil()
-                expect(ws).not_to_be_nil()
-                expect(ws.dataflow_id).to_equal(test_ctx.dataflow_id)
-                expect(ws.loaded).to_be_false()
-                expect(type(ws.nodes)).to_equal("table")
-                expect(type(ws.active_processes)).to_equal("table")
-                expect(type(ws.active_yields)).to_equal("table")
-                expect(ws.has_workflow_output).to_be_false()
-                expect(type(ws.queued_commands)).to_equal("table")
-                expect(#ws.queued_commands).to_equal(0)
+                test.not_nil(ws)
+                test.eq(ws.dataflow_id, test_ctx.dataflow_id)
+                test.is_false(ws.loaded)
+                test.eq(type(ws.nodes), "table")
+                test.eq(type(ws.active_processes), "table")
+                test.eq(type(ws.active_yields), "table")
+                test.is_false(ws.has_workflow_output)
+                test.eq(type(ws.queued_commands), "table")
+                test.eq(#ws.queued_commands, 0)
             end)
 
             it("should fail with missing dataflow_id", function()
                 local ws, err = workflow_state.new(nil)
 
-                expect(ws).to_be_nil()
-                expect(err).not_to_be_nil()
-                expect(err).to_contain("Dataflow ID is required")
+                test.is_nil(ws)
+                test.not_nil(err)
+                test.contains(err :: string, "Dataflow ID is required")
             end)
 
             it("should fail with empty dataflow_id", function()
                 local ws, err = workflow_state.new("")
 
-                expect(ws).to_be_nil()
-                expect(err).not_to_be_nil()
-                expect(err).to_contain("Dataflow ID is required")
+                test.is_nil(ws)
+                test.not_nil(err)
+                test.contains(err :: string, "Dataflow ID is required")
             end)
         end)
 
         describe("State Loading", function()
             it("should load dataflow and nodes from database", function()
-                -- Create test nodes with unique IDs
-                local node1_id = "node-" .. uuid.v7()
-                local node2_id = "node-" .. uuid.v7()
+                local node1_id: string = "node-" .. uuid.v7()
+                local node2_id: string = "node-" .. uuid.v7()
 
-                create_test_nodes(test_ctx.tx, test_ctx.dataflow_id, {
+                create_test_nodes(test_ctx.tx, test_ctx.dataflow_id :: string, {
                     {
                         node_id = node1_id,
                         type = "test_node",
@@ -175,56 +185,51 @@ local function define_tests()
                     }
                 })
 
-                -- Commit test data
                 test_ctx.tx:commit()
                 test_ctx.db:release()
                 test_ctx.tx = nil
                 test_ctx.db = nil
 
-                local ws, create_err = workflow_state.new(test_ctx.dataflow_id)
-                expect(create_err).to_be_nil()
-                expect(ws).not_to_be_nil()
+                local ws = workflow_state.new(test_ctx.dataflow_id) :: any
+                test.not_nil(ws)
 
                 local result, load_err = ws:load_state()
-                expect(load_err).to_be_nil()
-                expect(result).not_to_be_nil()
+                test.is_nil(load_err)
+                test.not_nil(result)
 
-                expect(ws.loaded).to_be_true()
-                expect(ws.nodes[node1_id]).not_to_be_nil()
-                expect(ws.nodes[node1_id].type).to_equal("test_node")
-                expect(ws.nodes[node2_id]).not_to_be_nil()
-                expect(ws.nodes[node2_id].parent_node_id).to_equal(node1_id)
+                test.is_true(ws.loaded)
+                test.not_nil(ws.nodes[node1_id])
+                test.eq(ws.nodes[node1_id].type, "test_node")
+                test.not_nil(ws.nodes[node2_id])
+                test.eq(ws.nodes[node2_id].parent_node_id, node1_id)
             end)
 
             it("should detect existing workflow output", function()
-                -- Create workflow output data
-                create_test_data(test_ctx.tx, test_ctx.dataflow_id, {
+                create_test_data(test_ctx.tx, test_ctx.dataflow_id :: string, {
                     {
                         type = consts.DATA_TYPE.WORKFLOW_OUTPUT,
                         content = '{"result": "test"}'
                     }
                 })
 
-                -- Commit test data
                 test_ctx.tx:commit()
                 test_ctx.db:release()
                 test_ctx.tx = nil
                 test_ctx.db = nil
 
-                local ws, create_err = workflow_state.new(test_ctx.dataflow_id)
-                expect(create_err).to_be_nil()
+                local ws = workflow_state.new(test_ctx.dataflow_id) :: any
+                test.not_nil(ws)
 
                 local result, load_err = ws:load_state()
-                expect(load_err).to_be_nil()
-                expect(result).not_to_be_nil()
+                test.is_nil(load_err)
+                test.not_nil(result)
 
-                expect(ws.has_workflow_output).to_be_true()
+                test.is_true(ws.has_workflow_output)
             end)
 
             it("should reset RUNNING nodes to PENDING on recovery", function()
-                -- Create a running node with unique ID
-                local running_node_id = "running-node-" .. uuid.v7()
-                create_test_nodes(test_ctx.tx, test_ctx.dataflow_id, {
+                local running_node_id: string = "running-node-" .. uuid.v7()
+                create_test_nodes(test_ctx.tx, test_ctx.dataflow_id :: string, {
                     {
                         node_id = running_node_id,
                         type = "test_node",
@@ -232,33 +237,31 @@ local function define_tests()
                     }
                 })
 
-                -- Commit test data
                 test_ctx.tx:commit()
                 test_ctx.db:release()
                 test_ctx.tx = nil
                 test_ctx.db = nil
 
-                local ws, create_err = workflow_state.new(test_ctx.dataflow_id)
-                expect(create_err).to_be_nil()
+                local ws = workflow_state.new(test_ctx.dataflow_id) :: any
+                test.not_nil(ws)
 
                 local result, load_err = ws:load_state()
-                expect(load_err).to_be_nil()
-                expect(result).not_to_be_nil()
+                test.is_nil(load_err)
+                test.not_nil(result)
 
-                expect(ws.nodes[running_node_id].status).to_equal(consts.STATUS.PENDING)
+                test.eq(ws.nodes[running_node_id].status, consts.STATUS.PENDING)
             end)
 
             it("should load existing node inputs", function()
-                -- Create test node and input data
-                local node_id = "input-node-" .. uuid.v7()
-                create_test_nodes(test_ctx.tx, test_ctx.dataflow_id, {
+                local node_id: string = "input-node-" .. uuid.v7()
+                create_test_nodes(test_ctx.tx, test_ctx.dataflow_id :: string, {
                     {
                         node_id = node_id,
                         type = "test_node"
                     }
                 })
 
-                create_test_data(test_ctx.tx, test_ctx.dataflow_id, {
+                create_test_data(test_ctx.tx, test_ctx.dataflow_id :: string, {
                     {
                         node_id = node_id,
                         type = consts.DATA_TYPE.NODE_INPUT,
@@ -267,53 +270,49 @@ local function define_tests()
                     }
                 })
 
-                -- Commit test data
                 test_ctx.tx:commit()
                 test_ctx.db:release()
                 test_ctx.tx = nil
                 test_ctx.db = nil
 
-                local ws, create_err = workflow_state.new(test_ctx.dataflow_id)
-                expect(create_err).to_be_nil()
+                local ws = workflow_state.new(test_ctx.dataflow_id) :: any
+                test.not_nil(ws)
 
-                -- Set input requirements
                 ws:set_input_requirements(node_id, {
                     required = { "config" },
                     optional = {}
                 })
 
                 local result, load_err = ws:load_state()
-                expect(load_err).to_be_nil()
-                expect(result).not_to_be_nil()
+                test.is_nil(load_err)
+                test.not_nil(result)
 
-                expect(ws.input_tracker.available[node_id]).not_to_be_nil()
-                expect(ws.input_tracker.available[node_id]["config"]).to_be_true()
+                test.not_nil(ws.input_tracker.available[node_id])
+                test.is_true(ws.input_tracker.available[node_id]["config"])
             end)
         end)
 
         describe("Error Query", function()
             it("should return nil when no nodes have failed", function()
-                -- Commit test transaction to avoid conflicts
                 test_ctx.tx:commit()
                 test_ctx.db:release()
                 test_ctx.tx = nil
                 test_ctx.db = nil
 
-                local ws, create_err = workflow_state.new(test_ctx.dataflow_id)
-                expect(create_err).to_be_nil()
+                local ws = workflow_state.new(test_ctx.dataflow_id) :: any
+                test.not_nil(ws)
 
-                local result, load_err = ws:load_state()
-                expect(load_err).to_be_nil()
+                local _result, load_err = ws:load_state()
+                test.is_nil(load_err)
 
                 local error_summary = ws:get_failed_node_errors()
-                expect(error_summary).to_be_nil()
+                test.is_nil(error_summary)
             end)
 
             it("should return formatted error details for failed nodes with simple string content", function()
-                local failed_node_id = uuid.v7()
+                local failed_node_id: string = uuid.v7()
 
-                -- Create failed node
-                create_test_nodes(test_ctx.tx, test_ctx.dataflow_id, {
+                create_test_nodes(test_ctx.tx, test_ctx.dataflow_id :: string, {
                     {
                         node_id = failed_node_id,
                         type = "test_node",
@@ -321,8 +320,7 @@ local function define_tests()
                     }
                 })
 
-                -- Create error result data with simple string content
-                create_test_data(test_ctx.tx, test_ctx.dataflow_id, {
+                create_test_data(test_ctx.tx, test_ctx.dataflow_id :: string, {
                     {
                         node_id = failed_node_id,
                         type = consts.DATA_TYPE.NODE_RESULT,
@@ -332,30 +330,28 @@ local function define_tests()
                     }
                 })
 
-                -- Commit test data
                 test_ctx.tx:commit()
                 test_ctx.db:release()
                 test_ctx.tx = nil
                 test_ctx.db = nil
 
-                local ws, create_err = workflow_state.new(test_ctx.dataflow_id)
-                expect(create_err).to_be_nil()
+                local ws = workflow_state.new(test_ctx.dataflow_id) :: any
+                test.not_nil(ws)
 
-                local result, load_err = ws:load_state()
-                expect(load_err).to_be_nil()
+                local _result, load_err = ws:load_state()
+                test.is_nil(load_err)
 
-                local error_summary = ws:get_failed_node_errors()
-                expect(error_summary).not_to_be_nil()
-                expect(error_summary).to_contain("Node [" .. failed_node_id .. "] failed")
-                expect(error_summary).to_contain("Function 'test_func' not found")
-                expect(string.find(error_summary, "{", 1, true)).to_be_nil() -- Should not contain JSON brackets
+                local error_summary = ws:get_failed_node_errors() :: string
+                test.not_nil(error_summary)
+                test.contains(error_summary, "Node [" .. failed_node_id .. "] failed")
+                test.contains(error_summary, "Function 'test_func' not found")
+                test.is_nil(string.find(error_summary, "{", 1, true))
             end)
 
             it("should extract error.message from JSON error content", function()
-                local failed_node_id = uuid.v7()
+                local failed_node_id: string = uuid.v7()
 
-                -- Create failed node
-                create_test_nodes(test_ctx.tx, test_ctx.dataflow_id, {
+                create_test_nodes(test_ctx.tx, test_ctx.dataflow_id :: string, {
                     {
                         node_id = failed_node_id,
                         type = "test_node",
@@ -363,9 +359,8 @@ local function define_tests()
                     }
                 })
 
-                -- Create error result data with structured JSON error (like from integration test)
-                local error_json = '{"success":false,"message":"Missing func_id in node config","error":{"code":"MISSING_FUNC_ID","message":"Function ID not specified in node configuration"},"data_ids":[]}'
-                create_test_data(test_ctx.tx, test_ctx.dataflow_id, {
+                local error_json: string = '{"success":false,"message":"Missing func_id in node config","error":{"code":"MISSING_FUNC_ID","message":"Function ID not specified in node configuration"},"data_ids":[]}'
+                create_test_data(test_ctx.tx, test_ctx.dataflow_id :: string, {
                     {
                         node_id = failed_node_id,
                         type = consts.DATA_TYPE.NODE_RESULT,
@@ -375,33 +370,29 @@ local function define_tests()
                     }
                 })
 
-                -- Commit test data
                 test_ctx.tx:commit()
                 test_ctx.db:release()
                 test_ctx.tx = nil
                 test_ctx.db = nil
 
-                local ws, create_err = workflow_state.new(test_ctx.dataflow_id)
-                expect(create_err).to_be_nil()
+                local ws = workflow_state.new(test_ctx.dataflow_id) :: any
+                test.not_nil(ws)
 
-                local result, load_err = ws:load_state()
-                expect(load_err).to_be_nil()
+                local _result, load_err = ws:load_state()
+                test.is_nil(load_err)
 
-                local error_summary = ws:get_failed_node_errors()
-                expect(error_summary).not_to_be_nil()
-                expect(error_summary).to_contain("Node [" .. failed_node_id .. "] failed")
-                -- Should extract the specific error.message
-                expect(error_summary).to_contain("Function ID not specified in node configuration")
-                -- Should NOT contain the raw JSON
-                expect(string.find(error_summary, '{"success"', 1, true)).to_be_nil()
-                expect(string.find(error_summary, '"data_ids"', 1, true)).to_be_nil()
+                local error_summary = ws:get_failed_node_errors() :: string
+                test.not_nil(error_summary)
+                test.contains(error_summary, "Node [" .. failed_node_id .. "] failed")
+                test.contains(error_summary, "Function ID not specified in node configuration")
+                test.is_nil(string.find(error_summary, '{"success"', 1, true))
+                test.is_nil(string.find(error_summary, '"data_ids"', 1, true))
             end)
 
             it("should extract top-level message from JSON when error.message not available", function()
-                local failed_node_id = uuid.v7()
+                local failed_node_id: string = uuid.v7()
 
-                -- Create failed node
-                create_test_nodes(test_ctx.tx, test_ctx.dataflow_id, {
+                create_test_nodes(test_ctx.tx, test_ctx.dataflow_id :: string, {
                     {
                         node_id = failed_node_id,
                         type = "test_node",
@@ -409,9 +400,8 @@ local function define_tests()
                     }
                 })
 
-                -- Create error result data with JSON that has message but no error.message
-                local error_json = '{"success":false,"message":"Configuration validation failed","details":"Missing required field"}'
-                create_test_data(test_ctx.tx, test_ctx.dataflow_id, {
+                local error_json: string = '{"success":false,"message":"Configuration validation failed","details":"Missing required field"}'
+                create_test_data(test_ctx.tx, test_ctx.dataflow_id :: string, {
                     {
                         node_id = failed_node_id,
                         type = consts.DATA_TYPE.NODE_RESULT,
@@ -421,32 +411,28 @@ local function define_tests()
                     }
                 })
 
-                -- Commit test data
                 test_ctx.tx:commit()
                 test_ctx.db:release()
                 test_ctx.tx = nil
                 test_ctx.db = nil
 
-                local ws, create_err = workflow_state.new(test_ctx.dataflow_id)
-                expect(create_err).to_be_nil()
+                local ws = workflow_state.new(test_ctx.dataflow_id) :: any
+                test.not_nil(ws)
 
-                local result, load_err = ws:load_state()
-                expect(load_err).to_be_nil()
+                local _result, load_err = ws:load_state()
+                test.is_nil(load_err)
 
-                local error_summary = ws:get_failed_node_errors()
-                expect(error_summary).not_to_be_nil()
-                expect(error_summary).to_contain("Node [" .. failed_node_id .. "] failed")
-                -- Should extract the top-level message
-                expect(error_summary).to_contain("Configuration validation failed")
-                -- Should NOT contain raw JSON
-                expect(string.find(error_summary, '{"success"', 1, true)).to_be_nil()
+                local error_summary = ws:get_failed_node_errors() :: string
+                test.not_nil(error_summary)
+                test.contains(error_summary, "Node [" .. failed_node_id .. "] failed")
+                test.contains(error_summary, "Configuration validation failed")
+                test.is_nil(string.find(error_summary, '{"success"', 1, true))
             end)
 
             it("should fall back to raw content for JSON without meaningful message", function()
-                local failed_node_id = uuid.v7()
+                local failed_node_id: string = uuid.v7()
 
-                -- Create failed node
-                create_test_nodes(test_ctx.tx, test_ctx.dataflow_id, {
+                create_test_nodes(test_ctx.tx, test_ctx.dataflow_id :: string, {
                     {
                         node_id = failed_node_id,
                         type = "test_node",
@@ -454,9 +440,8 @@ local function define_tests()
                     }
                 })
 
-                -- Create error result data with JSON that has no meaningful message fields
-                local error_json = '{"code":500,"details":["field1","field2"]}'
-                create_test_data(test_ctx.tx, test_ctx.dataflow_id, {
+                local error_json: string = '{"code":500,"details":["field1","field2"]}'
+                create_test_data(test_ctx.tx, test_ctx.dataflow_id :: string, {
                     {
                         node_id = failed_node_id,
                         type = consts.DATA_TYPE.NODE_RESULT,
@@ -466,30 +451,27 @@ local function define_tests()
                     }
                 })
 
-                -- Commit test data
                 test_ctx.tx:commit()
                 test_ctx.db:release()
                 test_ctx.tx = nil
                 test_ctx.db = nil
 
-                local ws, create_err = workflow_state.new(test_ctx.dataflow_id)
-                expect(create_err).to_be_nil()
+                local ws = workflow_state.new(test_ctx.dataflow_id) :: any
+                test.not_nil(ws)
 
-                local result, load_err = ws:load_state()
-                expect(load_err).to_be_nil()
+                local _result, load_err = ws:load_state()
+                test.is_nil(load_err)
 
-                local error_summary = ws:get_failed_node_errors()
-                expect(error_summary).not_to_be_nil()
-                expect(error_summary).to_contain("Node [" .. failed_node_id .. "] failed")
-                -- Should fall back to raw JSON content since no message fields
-                expect(error_summary).to_contain(error_json)
+                local error_summary = ws:get_failed_node_errors() :: string
+                test.not_nil(error_summary)
+                test.contains(error_summary, "Node [" .. failed_node_id .. "] failed")
+                test.contains(error_summary, error_json)
             end)
 
             it("should handle malformed JSON gracefully", function()
-                local failed_node_id = uuid.v7()
+                local failed_node_id: string = uuid.v7()
 
-                -- Create failed node
-                create_test_nodes(test_ctx.tx, test_ctx.dataflow_id, {
+                create_test_nodes(test_ctx.tx, test_ctx.dataflow_id :: string, {
                     {
                         node_id = failed_node_id,
                         type = "test_node",
@@ -497,9 +479,8 @@ local function define_tests()
                     }
                 })
 
-                -- Create error result data with malformed JSON
-                local malformed_json = '{"success":false,"message":"Incomplete JSON'
-                create_test_data(test_ctx.tx, test_ctx.dataflow_id, {
+                local malformed_json: string = '{"success":false,"message":"Incomplete JSON'
+                create_test_data(test_ctx.tx, test_ctx.dataflow_id :: string, {
                     {
                         node_id = failed_node_id,
                         type = consts.DATA_TYPE.NODE_RESULT,
@@ -509,31 +490,28 @@ local function define_tests()
                     }
                 })
 
-                -- Commit test data
                 test_ctx.tx:commit()
                 test_ctx.db:release()
                 test_ctx.tx = nil
                 test_ctx.db = nil
 
-                local ws, create_err = workflow_state.new(test_ctx.dataflow_id)
-                expect(create_err).to_be_nil()
+                local ws = workflow_state.new(test_ctx.dataflow_id) :: any
+                test.not_nil(ws)
 
-                local result, load_err = ws:load_state()
-                expect(load_err).to_be_nil()
+                local _result, load_err = ws:load_state()
+                test.is_nil(load_err)
 
-                local error_summary = ws:get_failed_node_errors()
-                expect(error_summary).not_to_be_nil()
-                expect(error_summary).to_contain("Node [" .. failed_node_id .. "] failed")
-                -- Should fall back to raw content when JSON parsing fails
-                expect(error_summary).to_contain(malformed_json)
+                local error_summary = ws:get_failed_node_errors() :: string
+                test.not_nil(error_summary)
+                test.contains(error_summary, "Node [" .. failed_node_id .. "] failed")
+                test.contains(error_summary, malformed_json)
             end)
 
             it("should handle multiple failed nodes", function()
-                local failed_node1_id = uuid.v7()
-                local failed_node2_id = uuid.v7()
+                local failed_node1_id: string = uuid.v7()
+                local failed_node2_id: string = uuid.v7()
 
-                -- Create failed nodes
-                create_test_nodes(test_ctx.tx, test_ctx.dataflow_id, {
+                create_test_nodes(test_ctx.tx, test_ctx.dataflow_id :: string, {
                     {
                         node_id = failed_node1_id,
                         type = "test_node",
@@ -546,8 +524,7 @@ local function define_tests()
                     }
                 })
 
-                -- Create error result data - mix of JSON and string
-                create_test_data(test_ctx.tx, test_ctx.dataflow_id, {
+                create_test_data(test_ctx.tx, test_ctx.dataflow_id :: string, {
                     {
                         node_id = failed_node1_id,
                         type = consts.DATA_TYPE.NODE_RESULT,
@@ -564,32 +541,30 @@ local function define_tests()
                     }
                 })
 
-                -- Commit test data
                 test_ctx.tx:commit()
                 test_ctx.db:release()
                 test_ctx.tx = nil
                 test_ctx.db = nil
 
-                local ws, create_err = workflow_state.new(test_ctx.dataflow_id)
-                expect(create_err).to_be_nil()
+                local ws = workflow_state.new(test_ctx.dataflow_id) :: any
+                test.not_nil(ws)
 
-                local result, load_err = ws:load_state()
-                expect(load_err).to_be_nil()
+                local _result, load_err = ws:load_state()
+                test.is_nil(load_err)
 
-                local error_summary = ws:get_failed_node_errors()
-                expect(error_summary).not_to_be_nil()
-                expect(error_summary).to_contain("Node [" .. failed_node1_id .. "] failed")
-                expect(error_summary).to_contain("Node [" .. failed_node2_id .. "] failed")
-                expect(error_summary).to_contain("First JSON error")
-                expect(error_summary).to_contain("Second string error")
-                expect(error_summary).to_contain(";") -- Multiple errors separated by semicolon
+                local error_summary = ws:get_failed_node_errors() :: string
+                test.not_nil(error_summary)
+                test.contains(error_summary, "Node [" .. failed_node1_id .. "] failed")
+                test.contains(error_summary, "Node [" .. failed_node2_id .. "] failed")
+                test.contains(error_summary, "First JSON error")
+                test.contains(error_summary, "Second string error")
+                test.contains(error_summary, ";")
             end)
 
             it("should handle failed nodes without error data", function()
-                local failed_node_id = uuid.v7()
+                local failed_node_id: string = uuid.v7()
 
-                -- Create failed node without error result data
-                create_test_nodes(test_ctx.tx, test_ctx.dataflow_id, {
+                create_test_nodes(test_ctx.tx, test_ctx.dataflow_id :: string, {
                     {
                         node_id = failed_node_id,
                         type = "test_node",
@@ -597,31 +572,29 @@ local function define_tests()
                     }
                 })
 
-                -- Commit test data
                 test_ctx.tx:commit()
                 test_ctx.db:release()
                 test_ctx.tx = nil
                 test_ctx.db = nil
 
-                local ws, create_err = workflow_state.new(test_ctx.dataflow_id)
-                expect(create_err).to_be_nil()
+                local ws = workflow_state.new(test_ctx.dataflow_id) :: any
+                test.not_nil(ws)
 
-                local result, load_err = ws:load_state()
-                expect(load_err).to_be_nil()
+                local _result, load_err = ws:load_state()
+                test.is_nil(load_err)
 
-                local error_summary = ws:get_failed_node_errors()
-                expect(error_summary).not_to_be_nil()
-                expect(error_summary).to_contain("Node [" .. failed_node_id .. "] failed")
-                expect(error_summary).to_contain("Unknown error")
+                local error_summary = ws:get_failed_node_errors() :: string
+                test.not_nil(error_summary)
+                test.contains(error_summary, "Node [" .. failed_node_id .. "] failed")
+                test.contains(error_summary, "Unknown error")
             end)
         end)
 
         describe("Scheduler Snapshot", function()
             it("should provide consistent state snapshot for scheduler", function()
-                local ws, create_err = workflow_state.new(test_ctx.dataflow_id)
-                expect(create_err).to_be_nil()
+                local ws = workflow_state.new(test_ctx.dataflow_id) :: any
+                test.not_nil(ws)
 
-                -- Set up some state
                 ws.nodes["node-1"] = {
                     status = consts.STATUS.PENDING,
                     type = "test_node"
@@ -632,29 +605,29 @@ local function define_tests()
                     optional = {}
                 })
 
-                local snapshot = ws:get_scheduler_snapshot()
+                local snapshot = ws:get_scheduler_snapshot() :: any
 
-                expect(snapshot.nodes["node-1"]).not_to_be_nil()
-                expect(snapshot.active_processes["node-1"]).to_be_true()
-                expect(snapshot.input_tracker.requirements["node-1"]).not_to_be_nil()
-                expect(snapshot.has_workflow_output).to_be_false()
+                test.not_nil(snapshot.nodes["node-1"])
+                test.is_true(snapshot.active_processes["node-1"])
+                test.not_nil(snapshot.input_tracker.requirements["node-1"])
+                test.is_false(snapshot.has_workflow_output)
             end)
         end)
 
         describe("Process Tracking", function()
             it("should track and untrack processes", function()
-                local ws, create_err = workflow_state.new(test_ctx.dataflow_id)
-                expect(create_err).to_be_nil()
+                local ws = workflow_state.new(test_ctx.dataflow_id) :: any
+                test.not_nil(ws)
 
                 ws:track_process("node-1", "pid-123")
 
-                expect(ws.active_processes["node-1"]).to_equal("pid-123")
-                expect(ws:is_node_active("node-1")).to_be_true()
+                test.eq(ws.active_processes["node-1"], "pid-123")
+                test.is_true(ws:is_node_active("node-1"))
             end)
 
             it("should handle process exits", function()
-                local ws, create_err = workflow_state.new(test_ctx.dataflow_id)
-                expect(create_err).to_be_nil()
+                local ws = workflow_state.new(test_ctx.dataflow_id) :: any
+                test.not_nil(ws)
 
                 ws.nodes["node-1"] = {
                     status = consts.STATUS.RUNNING,
@@ -662,29 +635,30 @@ local function define_tests()
                 }
                 ws:track_process("node-1", "pid-123")
 
-                local exit_info = ws:handle_process_exit("pid-123", true, "success result")
+                local exit_info = ws:handle_process_exit("pid-123", true, "success result") :: any
 
-                expect(exit_info.node_id).to_equal("node-1")
-                expect(exit_info.success).to_be_true()
-                expect(ws.active_processes["node-1"]).to_be_nil()
-                expect(ws.nodes["node-1"].status).to_equal(consts.STATUS.COMPLETED_SUCCESS)
-                expect(#ws.queued_commands).to_be_greater_than(0)
+                test.not_nil(exit_info)
+                test.eq(exit_info.node_id, "node-1")
+                test.is_true(exit_info.success)
+                test.is_nil(ws.active_processes["node-1"])
+                test.eq(ws.nodes["node-1"].status, consts.STATUS.COMPLETED_SUCCESS)
+                test.gt(#ws.queued_commands, 0)
             end)
 
             it("should handle process exit for unknown PID", function()
-                local ws, create_err = workflow_state.new(test_ctx.dataflow_id)
-                expect(create_err).to_be_nil()
+                local ws = workflow_state.new(test_ctx.dataflow_id) :: any
+                test.not_nil(ws)
 
                 local exit_info = ws:handle_process_exit("unknown-pid", true, "result")
 
-                expect(exit_info).to_be_nil()
+                test.is_nil(exit_info)
             end)
         end)
 
         describe("Yield Tracking", function()
             it("should track and satisfy yields", function()
-                local ws, create_err = workflow_state.new(test_ctx.dataflow_id)
-                expect(create_err).to_be_nil()
+                local ws = workflow_state.new(test_ctx.dataflow_id) :: any
+                test.not_nil(ws)
 
                 local yield_info = {
                     yield_id = "yield-123",
@@ -696,19 +670,18 @@ local function define_tests()
                 }
 
                 ws:track_yield("parent-1", yield_info)
-                expect(ws.active_yields["parent-1"]).not_to_be_nil()
-                expect(ws:is_node_active("parent-1")).to_be_true()
+                test.not_nil(ws.active_yields["parent-1"])
+                test.is_true(ws:is_node_active("parent-1"))
 
                 ws:satisfy_yield("parent-1", { result = "test" })
-                expect(ws.active_yields["parent-1"]).to_be_nil()
-                expect(#ws.queued_commands).to_be_greater_than(0)
+                test.is_nil(ws.active_yields["parent-1"])
+                test.gt(#ws.queued_commands, 0)
             end)
 
             it("should handle yield child completion", function()
-                local ws, create_err = workflow_state.new(test_ctx.dataflow_id)
-                expect(create_err).to_be_nil()
+                local ws = workflow_state.new(test_ctx.dataflow_id) :: any
+                test.not_nil(ws)
 
-                -- Set up parent-child relationship
                 ws.nodes["parent-1"] = { status = consts.STATUS.RUNNING, type = "parent" }
                 ws.nodes["child-1"] = {
                     status = consts.STATUS.RUNNING,
@@ -726,39 +699,39 @@ local function define_tests()
                 ws:track_yield("parent-1", yield_info)
                 ws:track_process("child-1", "child-pid")
 
-                local exit_info = ws:handle_process_exit("child-pid", true, "child result")
+                local exit_info = ws:handle_process_exit("child-pid", true, "child result") :: any
 
-                expect(exit_info.yield_complete).not_to_be_nil()
-                expect(exit_info.yield_complete.parent_id).to_equal("parent-1")
+                test.not_nil(exit_info)
+                test.not_nil(exit_info.yield_complete)
+                test.eq(exit_info.yield_complete.parent_id, "parent-1")
             end)
         end)
 
         describe("Input Tracking", function()
             it("should manage input requirements and availability", function()
-                local ws, create_err = workflow_state.new(test_ctx.dataflow_id)
-                expect(create_err).to_be_nil()
+                local ws = workflow_state.new(test_ctx.dataflow_id) :: any
+                test.not_nil(ws)
 
                 ws:set_input_requirements("node-1", {
                     required = { "config", "data" },
                     optional = { "metadata" }
                 })
 
-                expect(ws.input_tracker.requirements["node-1"]).not_to_be_nil()
-                expect(type(ws.input_tracker.requirements["node-1"].required)).to_equal("table")
-                expect(#ws.input_tracker.requirements["node-1"].required).to_equal(2)
-                expect(type(ws.input_tracker.available["node-1"])).to_equal("table")
+                test.not_nil(ws.input_tracker.requirements["node-1"])
+                test.eq(type(ws.input_tracker.requirements["node-1"].required), "table")
+                test.eq(#ws.input_tracker.requirements["node-1"].required, 2)
+                test.eq(type(ws.input_tracker.available["node-1"]), "table")
             end)
 
             it("should update input availability from data operations", function()
-                local ws, create_err = workflow_state.new(test_ctx.dataflow_id)
-                expect(create_err).to_be_nil()
+                local ws = workflow_state.new(test_ctx.dataflow_id) :: any
+                test.not_nil(ws)
 
                 ws:set_input_requirements("node-1", {
                     required = { "config" },
                     optional = {}
                 })
 
-                -- Simulate creating node input
                 local results = {
                     results = {
                         {
@@ -776,22 +749,21 @@ local function define_tests()
 
                 ws:_update_state_from_results(results)
 
-                expect(ws.input_tracker.available["node-1"]["config"]).to_be_true()
+                test.is_true(ws.input_tracker.available["node-1"]["config"])
             end)
         end)
 
         describe("Command Queuing and Persistence", function()
             it("should queue and persist commands", function()
-                -- Commit test transaction to avoid conflicts
                 test_ctx.tx:commit()
                 test_ctx.db:release()
                 test_ctx.tx = nil
                 test_ctx.db = nil
 
-                local ws, create_err = workflow_state.new(test_ctx.dataflow_id)
-                expect(create_err).to_be_nil()
+                local ws = workflow_state.new(test_ctx.dataflow_id) :: any
+                test.not_nil(ws)
 
-                local unique_node_id = "new-node-" .. uuid.v7()
+                local unique_node_id: string = "new-node-" .. uuid.v7()
                 ws:queue_commands({
                     type = consts.COMMAND_TYPES.CREATE_NODE,
                     payload = {
@@ -800,26 +772,26 @@ local function define_tests()
                     }
                 })
 
-                expect(#ws.queued_commands).to_equal(1)
+                test.eq(#ws.queued_commands, 1)
 
-                local result, err = ws:persist()
-                expect(err).to_be_nil()
-                expect(result.changes_made).to_be_true()
-                expect(#ws.queued_commands).to_equal(0)
+                local result = ws:persist() :: any
+                test.not_nil(result)
+                test.is_true(result.changes_made)
+                test.eq(#ws.queued_commands, 0)
             end)
 
             it("should handle empty command queue", function()
-                local ws, create_err = workflow_state.new(test_ctx.dataflow_id)
-                expect(create_err).to_be_nil()
+                local ws = workflow_state.new(test_ctx.dataflow_id) :: any
+                test.not_nil(ws)
 
-                local result, err = ws:persist()
-                expect(err).to_be_nil()
-                expect(result.changes_made).to_be_false()
+                local result = ws:persist() :: any
+                test.not_nil(result)
+                test.is_false(result.changes_made)
             end)
 
             it("should queue arrays of commands", function()
-                local ws, create_err = workflow_state.new(test_ctx.dataflow_id)
-                expect(create_err).to_be_nil()
+                local ws = workflow_state.new(test_ctx.dataflow_id) :: any
+                test.not_nil(ws)
 
                 ws:queue_commands({
                     {
@@ -832,14 +804,14 @@ local function define_tests()
                     }
                 })
 
-                expect(#ws.queued_commands).to_equal(2)
+                test.eq(#ws.queued_commands, 2)
             end)
         end)
 
         describe("State Updates from Results", function()
             it("should update node state from CREATE_NODE results", function()
-                local ws, create_err = workflow_state.new(test_ctx.dataflow_id)
-                expect(create_err).to_be_nil()
+                local ws = workflow_state.new(test_ctx.dataflow_id) :: any
+                test.not_nil(ws)
 
                 local results = {
                     results = {
@@ -858,14 +830,14 @@ local function define_tests()
 
                 ws:_update_state_from_results(results)
 
-                expect(ws.nodes["new-node"]).not_to_be_nil()
-                expect(ws.nodes["new-node"].type).to_equal("test_node")
-                expect(ws.nodes["new-node"].status).to_equal(consts.STATUS.PENDING)
+                test.not_nil(ws.nodes["new-node"])
+                test.eq(ws.nodes["new-node"].type, "test_node")
+                test.eq(ws.nodes["new-node"].status, consts.STATUS.PENDING)
             end)
 
             it("should update node state from UPDATE_NODE results", function()
-                local ws, create_err = workflow_state.new(test_ctx.dataflow_id)
-                expect(create_err).to_be_nil()
+                local ws = workflow_state.new(test_ctx.dataflow_id) :: any
+                test.not_nil(ws)
 
                 ws.nodes["existing-node"] = {
                     status = consts.STATUS.PENDING,
@@ -888,12 +860,12 @@ local function define_tests()
 
                 ws:_update_state_from_results(results)
 
-                expect(ws.nodes["existing-node"].status).to_equal(consts.STATUS.RUNNING)
+                test.eq(ws.nodes["existing-node"].status, consts.STATUS.RUNNING)
             end)
 
             it("should detect workflow output creation", function()
-                local ws, create_err = workflow_state.new(test_ctx.dataflow_id)
-                expect(create_err).to_be_nil()
+                local ws = workflow_state.new(test_ctx.dataflow_id) :: any
+                test.not_nil(ws)
 
                 local results = {
                     results = {
@@ -911,99 +883,86 @@ local function define_tests()
 
                 ws:_update_state_from_results(results)
 
-                expect(ws.has_workflow_output).to_be_true()
+                test.is_true(ws.has_workflow_output)
             end)
         end)
 
         describe("Commit Processing", function()
             it("should process commit IDs and update state", function()
-                -- Commit test transaction to avoid conflicts
                 test_ctx.tx:commit()
                 test_ctx.db:release()
                 test_ctx.tx = nil
                 test_ctx.db = nil
 
-                local ws, create_err = workflow_state.new(test_ctx.dataflow_id)
-                expect(create_err).to_be_nil()
+                local ws = workflow_state.new(test_ctx.dataflow_id) :: any
+                test.not_nil(ws)
 
-                -- This would normally come from commit.submit, but we'll simulate
-                -- For now, test that empty commit list works
-                local result, err = ws:process_commits({})
-                expect(err).to_be_nil()
-                expect(result.changes_made).to_be_false()
+                local result = ws:process_commits({}) :: any
+                test.not_nil(result)
+                test.is_false(result.changes_made)
             end)
         end)
 
         describe("Activity Tracking", function()
             it("should correctly identify active nodes", function()
-                local ws, create_err = workflow_state.new(test_ctx.dataflow_id)
-                expect(create_err).to_be_nil()
+                local ws = workflow_state.new(test_ctx.dataflow_id) :: any
+                test.not_nil(ws)
 
-                -- Node is active if running
                 ws:track_process("node-1", "pid-1")
-                expect(ws:is_node_active("node-1")).to_be_true()
+                test.is_true(ws:is_node_active("node-1"))
 
-                -- Node is active if yielding
                 ws:track_yield("node-2", { yield_id = "y1" })
-                expect(ws:is_node_active("node-2")).to_be_true()
+                test.is_true(ws:is_node_active("node-2"))
 
-                -- Node is active if child of active yield
                 ws:track_yield("parent", {
                     yield_id = "y2",
                     pending_children = { ["child"] = consts.STATUS.PENDING }
                 })
-                expect(ws:is_node_active("child")).to_be_true()
+                test.is_true(ws:is_node_active("child"))
 
-                -- Node is not active otherwise
-                expect(ws:is_node_active("inactive-node")).to_be_false()
+                test.is_false(ws:is_node_active("inactive-node"))
             end)
         end)
 
         describe("Edge Cases", function()
             it("should handle loading non-existent dataflow", function()
-                -- Close test transaction to avoid conflicts
                 test_ctx.tx:rollback()
                 test_ctx.db:release()
                 test_ctx.tx = nil
                 test_ctx.db = nil
 
-                -- Use a clearly fake ID that won't exist
-                local fake_id = "fake-dataflow-id-" .. uuid.v7()
-                local ws, create_err = workflow_state.new(fake_id)
-                expect(create_err).to_be_nil()
-                expect(ws).not_to_be_nil()
+                local fake_id: string = "fake-dataflow-id-" .. uuid.v7()
+                local ws = workflow_state.new(fake_id) :: any
+                test.not_nil(ws)
 
                 local result, load_err = ws:load_state()
 
-                -- Should fail when trying to load non-existent dataflow
-                expect(result).to_be_nil()
-                expect(load_err).not_to_be_nil()
-                expect(load_err).to_contain("not found")
+                test.is_nil(result)
+                test.not_nil(load_err)
+                test.contains(load_err :: string, "not found")
             end)
 
             it("should handle multiple load_state calls", function()
-                -- Commit test data first
                 test_ctx.tx:commit()
                 test_ctx.db:release()
                 test_ctx.tx = nil
                 test_ctx.db = nil
 
-                local ws, create_err = workflow_state.new(test_ctx.dataflow_id)
-                expect(create_err).to_be_nil()
+                local ws = workflow_state.new(test_ctx.dataflow_id) :: any
+                test.not_nil(ws)
 
-                local result1, load_err1 = ws:load_state()
-                expect(load_err1).to_be_nil()
-                expect(ws.loaded).to_be_true()
+                local _result1, load_err1 = ws:load_state()
+                test.is_nil(load_err1)
+                test.is_true(ws.loaded)
 
-                -- Second call should be no-op
-                local result2, load_err2 = ws:load_state()
-                expect(load_err2).to_be_nil()
-                expect(ws.loaded).to_be_true()
+                local _result2, load_err2 = ws:load_state()
+                test.is_nil(load_err2)
+                test.is_true(ws.loaded)
             end)
 
             it("should handle yield completion with no children", function()
-                local ws, create_err = workflow_state.new(test_ctx.dataflow_id)
-                expect(create_err).to_be_nil()
+                local ws = workflow_state.new(test_ctx.dataflow_id) :: any
+                test.not_nil(ws)
 
                 ws:track_yield("parent", {
                     yield_id = "empty-yield",
@@ -1011,23 +970,22 @@ local function define_tests()
                 })
 
                 ws:satisfy_yield("parent", {})
-                expect(ws.active_yields["parent"]).to_be_nil()
+                test.is_nil(ws.active_yields["parent"])
             end)
         end)
 
         describe("Yield Recovery", function()
             it("should reconstruct simple yield with pending children", function()
-                -- Create parent node that was RUNNING (will be reset to PENDING)
-                local parent_id = uuid.v7()
-                local child1_id = uuid.v7()
-                local child2_id = uuid.v7()
-                local yield_id = uuid.v7()
+                local parent_id: string = uuid.v7()
+                local child1_id: string = uuid.v7()
+                local child2_id: string = uuid.v7()
+                local yield_id: string = uuid.v7()
 
-                create_test_nodes(test_ctx.tx, test_ctx.dataflow_id, {
+                create_test_nodes(test_ctx.tx, test_ctx.dataflow_id :: string, {
                     {
                         node_id = parent_id,
                         type = "parent_node",
-                        status = consts.STATUS.RUNNING -- Will be reset to PENDING
+                        status = consts.STATUS.RUNNING
                     },
                     {
                         node_id = child1_id,
@@ -1043,8 +1001,7 @@ local function define_tests()
                     }
                 })
 
-                -- Create NODE_YIELD record showing the parent was yielding
-                create_test_data(test_ctx.tx, test_ctx.dataflow_id, {
+                create_test_data(test_ctx.tx, test_ctx.dataflow_id :: string, {
                     {
                         node_id = parent_id,
                         type = consts.DATA_TYPE.NODE_YIELD,
@@ -1062,43 +1019,37 @@ local function define_tests()
                     }
                 })
 
-                -- Commit test data
                 test_ctx.tx:commit()
                 test_ctx.db:release()
                 test_ctx.tx = nil
                 test_ctx.db = nil
 
-                local ws, create_err = workflow_state.new(test_ctx.dataflow_id)
-                expect(create_err).to_be_nil()
+                local ws = workflow_state.new(test_ctx.dataflow_id) :: any
+                test.not_nil(ws)
 
-                local result, load_err = ws:load_state()
-                expect(load_err).to_be_nil()
+                local _result, load_err = ws:load_state()
+                test.is_nil(load_err)
 
-                -- Verify parent was reset to PENDING
-                expect(ws.nodes[parent_id].status).to_equal(consts.STATUS.PENDING)
+                test.eq(ws.nodes[parent_id].status, consts.STATUS.PENDING)
 
-                -- Verify yield was reconstructed
-                expect(ws.active_yields[parent_id]).not_to_be_nil()
-                local yield_info = ws.active_yields[parent_id]
-                expect(yield_info.yield_id).to_equal(yield_id)
-                expect(yield_info.reply_to).to_equal("test.yield_reply." .. parent_id)
+                test.not_nil(ws.active_yields[parent_id])
+                local yield_info = ws.active_yields[parent_id] :: any
+                test.eq(yield_info.yield_id, yield_id)
+                test.eq(yield_info.reply_to, "test.yield_reply." .. parent_id)
 
-                -- Verify pending children state
-                expect(yield_info.pending_children[child1_id]).to_equal(consts.STATUS.PENDING)
-                expect(yield_info.pending_children[child2_id]).to_equal(consts.STATUS.COMPLETED_SUCCESS)
+                test.eq(yield_info.pending_children[child1_id], consts.STATUS.PENDING)
+                test.eq(yield_info.pending_children[child2_id], consts.STATUS.COMPLETED_SUCCESS)
 
-                -- Verify node is considered active
-                expect(ws:is_node_active(parent_id)).to_be_true()
+                test.is_true(ws:is_node_active(parent_id))
             end)
 
             it("should reconstruct yield that's ready to be satisfied", function()
-                -- Create parent and children where all children are complete
-                local parent_id = uuid.v7()
-                local child1_id = uuid.v7()
-                local child2_id = uuid.v7()
-                local yield_id = uuid.v7()
+                local parent_id: string = uuid.v7()
+                local child1_id: string = uuid.v7()
+                local child2_id: string = uuid.v7()
+                local yield_id: string = uuid.v7()
 
-                create_test_nodes(test_ctx.tx, test_ctx.dataflow_id, {
+                create_test_nodes(test_ctx.tx, test_ctx.dataflow_id :: string, {
                     {
                         node_id = parent_id,
                         type = "parent_node",
@@ -1118,7 +1069,7 @@ local function define_tests()
                     }
                 })
 
-                create_test_data(test_ctx.tx, test_ctx.dataflow_id, {
+                create_test_data(test_ctx.tx, test_ctx.dataflow_id :: string, {
                     {
                         node_id = parent_id,
                         type = consts.DATA_TYPE.NODE_YIELD,
@@ -1132,7 +1083,6 @@ local function define_tests()
                                     }
                                 }]], parent_id, yield_id, parent_id, child1_id, child2_id)
                     },
-                    -- Create NODE_RESULT records for completed children
                     {
                         node_id = child1_id,
                         type = consts.DATA_TYPE.NODE_RESULT,
@@ -1152,32 +1102,29 @@ local function define_tests()
                 test_ctx.tx = nil
                 test_ctx.db = nil
 
-                local ws, create_err = workflow_state.new(test_ctx.dataflow_id)
-                expect(create_err).to_be_nil()
+                local ws = workflow_state.new(test_ctx.dataflow_id) :: any
+                test.not_nil(ws)
 
-                local result, load_err = ws:load_state()
-                expect(load_err).to_be_nil()
+                local _result, load_err = ws:load_state()
+                test.is_nil(load_err)
 
-                -- Verify yield was reconstructed with all children complete
-                expect(ws.active_yields[parent_id]).not_to_be_nil()
-                local yield_info = ws.active_yields[parent_id]
+                test.not_nil(ws.active_yields[parent_id])
+                local yield_info = ws.active_yields[parent_id] :: any
 
-                -- Both children should be marked as complete
-                expect(yield_info.pending_children[child1_id]).to_equal(consts.STATUS.COMPLETED_SUCCESS)
-                expect(yield_info.pending_children[child2_id]).to_equal(consts.STATUS.COMPLETED_SUCCESS)
+                test.eq(yield_info.pending_children[child1_id], consts.STATUS.COMPLETED_SUCCESS)
+                test.eq(yield_info.pending_children[child2_id], consts.STATUS.COMPLETED_SUCCESS)
 
-                -- Results should be populated with data IDs
-                expect(yield_info.results[child1_id]).not_to_be_nil()
-                expect(yield_info.results[child2_id]).not_to_be_nil()
+                test.not_nil(yield_info.results[child1_id])
+                test.not_nil(yield_info.results[child2_id])
             end)
 
             it("should handle multiple yields to reconstruct", function()
-                local parent1_id = uuid.v7()
-                local parent2_id = uuid.v7()
-                local child1_id = uuid.v7()
-                local child2_id = uuid.v7()
+                local parent1_id: string = uuid.v7()
+                local parent2_id: string = uuid.v7()
+                local child1_id: string = uuid.v7()
+                local child2_id: string = uuid.v7()
 
-                create_test_nodes(test_ctx.tx, test_ctx.dataflow_id, {
+                create_test_nodes(test_ctx.tx, test_ctx.dataflow_id :: string, {
                     {
                         node_id = parent1_id,
                         type = "parent_node",
@@ -1202,7 +1149,7 @@ local function define_tests()
                     }
                 })
 
-                create_test_data(test_ctx.tx, test_ctx.dataflow_id, {
+                create_test_data(test_ctx.tx, test_ctx.dataflow_id :: string, {
                     {
                         node_id = parent1_id,
                         type = consts.DATA_TYPE.NODE_YIELD,
@@ -1230,29 +1177,27 @@ local function define_tests()
                 test_ctx.tx = nil
                 test_ctx.db = nil
 
-                local ws, create_err = workflow_state.new(test_ctx.dataflow_id)
-                expect(create_err).to_be_nil()
+                local ws = workflow_state.new(test_ctx.dataflow_id) :: any
+                test.not_nil(ws)
 
-                local result, load_err = ws:load_state()
-                expect(load_err).to_be_nil()
+                local _result, load_err = ws:load_state()
+                test.is_nil(load_err)
 
-                -- Both yields should be reconstructed
-                expect(ws.active_yields[parent1_id]).not_to_be_nil()
-                expect(ws.active_yields[parent2_id]).not_to_be_nil()
-                expect(ws.active_yields[parent1_id].yield_id).to_equal("yield1")
-                expect(ws.active_yields[parent2_id].yield_id).to_equal("yield2")
+                test.not_nil(ws.active_yields[parent1_id])
+                test.not_nil(ws.active_yields[parent2_id])
+                test.eq((ws.active_yields[parent1_id] :: any).yield_id, "yield1")
+                test.eq((ws.active_yields[parent2_id] :: any).yield_id, "yield2")
             end)
 
             it("should ignore yields for nodes that are no longer PENDING", function()
-                -- Create a node that completed successfully - its yield should not be reconstructed
-                local completed_parent_id = uuid.v7()
-                local child_id = uuid.v7()
+                local completed_parent_id: string = uuid.v7()
+                local child_id: string = uuid.v7()
 
-                create_test_nodes(test_ctx.tx, test_ctx.dataflow_id, {
+                create_test_nodes(test_ctx.tx, test_ctx.dataflow_id :: string, {
                     {
                         node_id = completed_parent_id,
                         type = "parent_node",
-                        status = consts.STATUS.COMPLETED_SUCCESS -- Already completed
+                        status = consts.STATUS.COMPLETED_SUCCESS
                     },
                     {
                         node_id = child_id,
@@ -1262,7 +1207,7 @@ local function define_tests()
                     }
                 })
 
-                create_test_data(test_ctx.tx, test_ctx.dataflow_id, {
+                create_test_data(test_ctx.tx, test_ctx.dataflow_id :: string, {
                     {
                         node_id = completed_parent_id,
                         type = consts.DATA_TYPE.NODE_YIELD,
@@ -1280,32 +1225,29 @@ local function define_tests()
                 test_ctx.tx = nil
                 test_ctx.db = nil
 
-                local ws, create_err = workflow_state.new(test_ctx.dataflow_id)
-                expect(create_err).to_be_nil()
+                local ws = workflow_state.new(test_ctx.dataflow_id) :: any
+                test.not_nil(ws)
 
-                local result, load_err = ws:load_state()
-                expect(load_err).to_be_nil()
+                local _result, load_err = ws:load_state()
+                test.is_nil(load_err)
 
-                -- No yield should be reconstructed for completed node
-                expect(ws.active_yields[completed_parent_id]).to_be_nil()
-                expect(ws:is_node_active(completed_parent_id)).to_be_false()
+                test.is_nil(ws.active_yields[completed_parent_id])
+                test.is_false(ws:is_node_active(completed_parent_id))
             end)
 
             it("should handle yields with missing child nodes", function()
-                -- Yield references a child that no longer exists
-                local parent_id = uuid.v7()
-                local missing_child_id = uuid.v7()
+                local parent_id: string = uuid.v7()
+                local missing_child_id: string = uuid.v7()
 
-                create_test_nodes(test_ctx.tx, test_ctx.dataflow_id, {
+                create_test_nodes(test_ctx.tx, test_ctx.dataflow_id :: string, {
                     {
                         node_id = parent_id,
                         type = "parent_node",
                         status = consts.STATUS.RUNNING
                     }
-                    -- Note: missing_child_id is not created
                 })
 
-                create_test_data(test_ctx.tx, test_ctx.dataflow_id, {
+                create_test_data(test_ctx.tx, test_ctx.dataflow_id :: string, {
                     {
                         node_id = parent_id,
                         type = consts.DATA_TYPE.NODE_YIELD,
@@ -1323,23 +1265,21 @@ local function define_tests()
                 test_ctx.tx = nil
                 test_ctx.db = nil
 
-                local ws, create_err = workflow_state.new(test_ctx.dataflow_id)
-                expect(create_err).to_be_nil()
+                local ws = workflow_state.new(test_ctx.dataflow_id) :: any
+                test.not_nil(ws)
 
-                local result, load_err = ws:load_state()
-                expect(load_err).to_be_nil()
+                local _result, load_err = ws:load_state()
+                test.is_nil(load_err)
 
-                -- Yield should be reconstructed but missing child treated as completed
-                expect(ws.active_yields[parent_id]).not_to_be_nil()
-                local yield_info = ws.active_yields[parent_id]
-                -- Missing child should be marked as completed (or not included)
-                expect(yield_info.pending_children[missing_child_id]).to_be_nil()
+                test.not_nil(ws.active_yields[parent_id])
+                local yield_info = ws.active_yields[parent_id] :: any
+                test.is_nil(yield_info.pending_children[missing_child_id])
             end)
 
             it("should handle empty yields (no run_nodes)", function()
-                local parent_id = uuid.v7()
+                local parent_id: string = uuid.v7()
 
-                create_test_nodes(test_ctx.tx, test_ctx.dataflow_id, {
+                create_test_nodes(test_ctx.tx, test_ctx.dataflow_id :: string, {
                     {
                         node_id = parent_id,
                         type = "parent_node",
@@ -1347,7 +1287,7 @@ local function define_tests()
                     }
                 })
 
-                create_test_data(test_ctx.tx, test_ctx.dataflow_id, {
+                create_test_data(test_ctx.tx, test_ctx.dataflow_id :: string, {
                     {
                         node_id = parent_id,
                         type = consts.DATA_TYPE.NODE_YIELD,
@@ -1365,25 +1305,23 @@ local function define_tests()
                 test_ctx.tx = nil
                 test_ctx.db = nil
 
-                local ws, create_err = workflow_state.new(test_ctx.dataflow_id)
-                expect(create_err).to_be_nil()
+                local ws = workflow_state.new(test_ctx.dataflow_id) :: any
+                test.not_nil(ws)
 
-                local result, load_err = ws:load_state()
-                expect(load_err).to_be_nil()
+                local _result, load_err = ws:load_state()
+                test.is_nil(load_err)
 
-                -- Empty yield should be immediately satisfiable
-                expect(ws.active_yields[parent_id]).not_to_be_nil()
-                local yield_info = ws.active_yields[parent_id]
-                expect(next(yield_info.pending_children)).to_be_nil() -- Empty table
+                test.not_nil(ws.active_yields[parent_id])
+                local yield_info = ws.active_yields[parent_id] :: any
+                test.is_nil(next(yield_info.pending_children))
             end)
 
             it("should reconstruct child path correctly", function()
-                -- Test nested yields: grandparent -> parent -> child
-                local grandparent_id = uuid.v7()
-                local parent_id = uuid.v7()
-                local child_id = uuid.v7()
+                local grandparent_id: string = uuid.v7()
+                local parent_id: string = uuid.v7()
+                local child_id: string = uuid.v7()
 
-                create_test_nodes(test_ctx.tx, test_ctx.dataflow_id, {
+                create_test_nodes(test_ctx.tx, test_ctx.dataflow_id :: string, {
                     {
                         node_id = grandparent_id,
                         type = "grandparent_node",
@@ -1403,8 +1341,7 @@ local function define_tests()
                     }
                 })
 
-                -- Create yields at both levels
-                create_test_data(test_ctx.tx, test_ctx.dataflow_id, {
+                create_test_data(test_ctx.tx, test_ctx.dataflow_id :: string, {
                     {
                         node_id = grandparent_id,
                         type = consts.DATA_TYPE.NODE_YIELD,
@@ -1434,57 +1371,53 @@ local function define_tests()
                 test_ctx.tx = nil
                 test_ctx.db = nil
 
-                local ws, create_err = workflow_state.new(test_ctx.dataflow_id)
-                expect(create_err).to_be_nil()
+                local ws = workflow_state.new(test_ctx.dataflow_id) :: any
+                test.not_nil(ws)
 
-                local result, load_err = ws:load_state()
-                expect(load_err).to_be_nil()
+                local _result, load_err = ws:load_state()
+                test.is_nil(load_err)
 
-                -- Both yields should be reconstructed with correct paths
-                expect(ws.active_yields[grandparent_id]).not_to_be_nil()
-                expect(ws.active_yields[parent_id]).not_to_be_nil()
+                test.not_nil(ws.active_yields[grandparent_id])
+                test.not_nil(ws.active_yields[parent_id])
 
-                local parent_yield = ws.active_yields[parent_id]
-                expect(type(parent_yield.child_path)).to_equal("table")
-                expect(parent_yield.child_path[1]).to_equal(grandparent_id)
+                local parent_yield = ws.active_yields[parent_id] :: any
+                test.eq(type(parent_yield.child_path), "table")
+                test.eq(parent_yield.child_path[1], grandparent_id)
             end)
 
             it("should reconstruct chain of active yields (grandparent->parent->child)", function()
-                -- Test scenario: 3-level chain where ALL levels were yielding when crashed
-                local grandparent_id = uuid.v7()
-                local parent_id = uuid.v7()
-                local child_id = uuid.v7()
-                local grandchild_id = uuid.v7()
+                local grandparent_id: string = uuid.v7()
+                local parent_id: string = uuid.v7()
+                local child_id: string = uuid.v7()
+                local grandchild_id: string = uuid.v7()
 
-                create_test_nodes(test_ctx.tx, test_ctx.dataflow_id, {
+                create_test_nodes(test_ctx.tx, test_ctx.dataflow_id :: string, {
                     {
                         node_id = grandparent_id,
                         type = "chain_grandparent",
-                        status = consts.STATUS.RUNNING -- Was yielding
+                        status = consts.STATUS.RUNNING
                     },
                     {
                         node_id = parent_id,
                         type = "chain_parent",
                         parent_node_id = grandparent_id,
-                        status = consts.STATUS.RUNNING -- Was also yielding
+                        status = consts.STATUS.RUNNING
                     },
                     {
                         node_id = child_id,
                         type = "chain_child",
                         parent_node_id = parent_id,
-                        status = consts.STATUS.RUNNING -- Was also yielding
+                        status = consts.STATUS.RUNNING
                     },
                     {
                         node_id = grandchild_id,
                         type = "chain_grandchild",
                         parent_node_id = child_id,
-                        status = consts.STATUS.PENDING -- Actual work node
+                        status = consts.STATUS.PENDING
                     }
                 })
 
-                -- Create NODE_YIELD records for each level
-                create_test_data(test_ctx.tx, test_ctx.dataflow_id, {
-                    -- Grandparent yield: spawned parent
+                create_test_data(test_ctx.tx, test_ctx.dataflow_id :: string, {
                     {
                         node_id = grandparent_id,
                         type = consts.DATA_TYPE.NODE_YIELD,
@@ -1497,7 +1430,6 @@ local function define_tests()
                                         "child_path": []
                                     }]], grandparent_id, grandparent_id, parent_id)
                     },
-                    -- Parent yield: spawned child
                     {
                         node_id = parent_id,
                         type = consts.DATA_TYPE.NODE_YIELD,
@@ -1510,7 +1442,6 @@ local function define_tests()
                                         "child_path": ["%s"]
                                     }]], parent_id, parent_id, child_id, grandparent_id)
                     },
-                    -- Child yield: spawned grandchild
                     {
                         node_id = child_id,
                         type = consts.DATA_TYPE.NODE_YIELD,
@@ -1530,68 +1461,75 @@ local function define_tests()
                 test_ctx.tx = nil
                 test_ctx.db = nil
 
-                local ws, create_err = workflow_state.new(test_ctx.dataflow_id)
-                expect(create_err).to_be_nil()
+                local ws = workflow_state.new(test_ctx.dataflow_id) :: any
+                test.not_nil(ws)
 
-                local result, load_err = ws:load_state()
-                expect(load_err).to_be_nil()
+                local _result, load_err = ws:load_state()
+                test.is_nil(load_err)
 
-                -- All three yielding nodes should be reset to PENDING
-                expect(ws.nodes[grandparent_id].status).to_equal(consts.STATUS.PENDING)
-                expect(ws.nodes[parent_id].status).to_equal(consts.STATUS.PENDING)
-                expect(ws.nodes[child_id].status).to_equal(consts.STATUS.PENDING)
-                expect(ws.nodes[grandchild_id].status).to_equal(consts.STATUS.PENDING)
+                test.eq(ws.nodes[grandparent_id].status, consts.STATUS.PENDING)
+                test.eq(ws.nodes[parent_id].status, consts.STATUS.PENDING)
+                test.eq(ws.nodes[child_id].status, consts.STATUS.PENDING)
+                test.eq(ws.nodes[grandchild_id].status, consts.STATUS.PENDING)
 
-                -- All three yields should be reconstructed
-                expect(ws.active_yields[grandparent_id]).not_to_be_nil()
-                expect(ws.active_yields[parent_id]).not_to_be_nil()
-                expect(ws.active_yields[child_id]).not_to_be_nil()
+                test.not_nil(ws.active_yields[grandparent_id])
+                test.not_nil(ws.active_yields[parent_id])
+                test.not_nil(ws.active_yields[child_id])
 
-                -- Verify yield structure
-                local gp_yield = ws.active_yields[grandparent_id]
-                local p_yield = ws.active_yields[parent_id]
-                local c_yield = ws.active_yields[child_id]
+                local gp_yield = ws.active_yields[grandparent_id] :: any
+                local p_yield = ws.active_yields[parent_id] :: any
+                local c_yield = ws.active_yields[child_id] :: any
 
-                expect(gp_yield.yield_id).to_equal("gp-chain-yield")
-                expect(gp_yield.pending_children[parent_id]).to_equal(consts.STATUS.PENDING)
+                test.eq(gp_yield.yield_id, "gp-chain-yield")
+                test.eq(gp_yield.pending_children[parent_id], consts.STATUS.PENDING)
 
-                expect(p_yield.yield_id).to_equal("p-chain-yield")
-                expect(p_yield.pending_children[child_id]).to_equal(consts.STATUS.PENDING)
-                expect(#p_yield.child_path).to_equal(1)
-                expect(p_yield.child_path[1]).to_equal(grandparent_id)
+                test.eq(p_yield.yield_id, "p-chain-yield")
+                test.eq(p_yield.pending_children[child_id], consts.STATUS.PENDING)
+                test.eq(#p_yield.child_path, 1)
+                test.eq(p_yield.child_path[1], grandparent_id)
 
-                expect(c_yield.yield_id).to_equal("c-chain-yield")
-                expect(c_yield.pending_children[grandchild_id]).to_equal(consts.STATUS.PENDING)
-                expect(#c_yield.child_path).to_equal(2)
-                expect(c_yield.child_path[1]).to_equal(grandparent_id)
-                expect(c_yield.child_path[2]).to_equal(parent_id)
+                test.eq(c_yield.yield_id, "c-chain-yield")
+                test.eq(c_yield.pending_children[grandchild_id], consts.STATUS.PENDING)
+                test.eq(#c_yield.child_path, 2)
+                test.eq(c_yield.child_path[1], grandparent_id)
+                test.eq(c_yield.child_path[2], parent_id)
 
-                -- All nodes should be considered active
-                expect(ws:is_node_active(grandparent_id)).to_be_true()
-                expect(ws:is_node_active(parent_id)).to_be_true()
-                expect(ws:is_node_active(child_id)).to_be_true()
-                expect(ws:is_node_active(grandchild_id)).to_be_true()
+                test.is_true(ws:is_node_active(grandparent_id))
+                test.is_true(ws:is_node_active(parent_id))
+                test.is_true(ws:is_node_active(child_id))
+                test.is_true(ws:is_node_active(grandchild_id))
 
-                -- Verify that scheduler would get the complete chain state
-                local snapshot = ws:get_scheduler_snapshot()
-                expect(next(snapshot.active_yields)).not_to_be_nil()
-                expect(snapshot.active_yields[grandparent_id]).not_to_be_nil()
-                expect(snapshot.active_yields[parent_id]).not_to_be_nil()
-                expect(snapshot.active_yields[child_id]).not_to_be_nil()
+                local snapshot = ws:get_scheduler_snapshot() :: any
+                test.not_nil(next(snapshot.active_yields))
+                test.not_nil(snapshot.active_yields[grandparent_id])
+                test.not_nil(snapshot.active_yields[parent_id])
+                test.not_nil(snapshot.active_yields[child_id])
             end)
         end)
 
         describe("Node Input Configuration", function()
-            local config_test_nodes = {}  -- Track nodes created in this section
+            local config_test_nodes: {string} = {}
+            local function has_value(values: {any}?, expected: string): boolean
+                if type(values) ~= "table" then
+                    return false
+                end
+
+                for _, value in ipairs(values) do
+                    if value == expected then
+                        return true
+                    end
+                end
+
+                return false
+            end
 
             after_all(function()
-                -- Clean up any nodes created in this test section
                 if #config_test_nodes > 0 then
                     local cleanup_db, err_db = sql.get("app:db")
                     if not err_db then
                         for _, node_id in ipairs(config_test_nodes) do
-                            cleanup_db:execute("DELETE FROM nodes WHERE node_id = ?", { node_id })
-                            cleanup_db:execute("DELETE FROM data WHERE node_id = ?", { node_id })
+                            cleanup_db:execute("DELETE FROM dataflow_nodes WHERE node_id = ?", { node_id })
+                            cleanup_db:execute("DELETE FROM dataflow_data WHERE node_id = ?", { node_id })
                         end
                         cleanup_db:release()
                     end
@@ -1605,11 +1543,11 @@ local function define_tests()
                 test_ctx.tx = nil
                 test_ctx.db = nil
 
-                local node_id = uuid.v7()
+                local node_id: string = uuid.v7()
                 table.insert(config_test_nodes, node_id)
 
-                local ws, create_err = workflow_state.new(test_ctx.dataflow_id)
-                expect(create_err).to_be_nil()
+                local ws = workflow_state.new(test_ctx.dataflow_id) :: any
+                test.not_nil(ws)
 
                 ws:queue_commands({
                     type = consts.COMMAND_TYPES.CREATE_NODE,
@@ -1626,13 +1564,13 @@ local function define_tests()
                     }
                 })
 
-                local result, err = ws:persist()
-                expect(err).to_be_nil()
+                local _result, err = ws:persist()
+                test.is_nil(err)
 
-                expect(ws.input_tracker.requirements[node_id]).not_to_be_nil()
-                expect(ws.input_tracker.requirements[node_id].required).to_contain("data")
-                expect(ws.input_tracker.requirements[node_id].required).to_contain("config")
-                expect(ws.input_tracker.requirements[node_id].optional).to_contain("metadata")
+                test.not_nil(ws.input_tracker.requirements[node_id])
+                test.is_true(has_value(ws.input_tracker.requirements[node_id].required, "data"))
+                test.is_true(has_value(ws.input_tracker.requirements[node_id].required, "config"))
+                test.is_true(has_value(ws.input_tracker.requirements[node_id].optional, "metadata"))
             end)
 
             it("should load input requirements from node config during load_state", function()
@@ -1641,11 +1579,11 @@ local function define_tests()
                 test_ctx.tx = nil
                 test_ctx.db = nil
 
-                local node_id = uuid.v7()
+                local node_id: string = uuid.v7()
                 table.insert(config_test_nodes, node_id)
 
-                local ws1, create_err1 = workflow_state.new(test_ctx.dataflow_id)
-                expect(create_err1).to_be_nil()
+                local ws1 = workflow_state.new(test_ctx.dataflow_id) :: any
+                test.not_nil(ws1)
 
                 ws1:queue_commands({
                     type = consts.COMMAND_TYPES.CREATE_NODE,
@@ -1662,18 +1600,18 @@ local function define_tests()
                     }
                 })
 
-                local persist_result, persist_err = ws1:persist()
-                expect(persist_err).to_be_nil()
+                local _persist_result, persist_err = ws1:persist()
+                test.is_nil(persist_err)
 
-                local ws2, create_err2 = workflow_state.new(test_ctx.dataflow_id)
-                expect(create_err2).to_be_nil()
+                local ws2 = workflow_state.new(test_ctx.dataflow_id) :: any
+                test.not_nil(ws2)
 
-                local load_result, load_err = ws2:load_state()
-                expect(load_err).to_be_nil()
+                local _load_result, load_err = ws2:load_state()
+                test.is_nil(load_err)
 
-                expect(ws2.input_tracker.requirements[node_id]).not_to_be_nil()
-                expect(ws2.input_tracker.requirements[node_id].required).to_contain("input_data")
-                expect(ws2.input_tracker.requirements[node_id].optional).to_contain("extra_params")
+                test.not_nil(ws2.input_tracker.requirements[node_id])
+                test.is_true(has_value(ws2.input_tracker.requirements[node_id].required, "input_data"))
+                test.is_true(has_value(ws2.input_tracker.requirements[node_id].optional, "extra_params"))
             end)
 
             it("should handle nodes without input configuration gracefully", function()
@@ -1682,11 +1620,11 @@ local function define_tests()
                 test_ctx.tx = nil
                 test_ctx.db = nil
 
-                local node_id = uuid.v7()
+                local node_id: string = uuid.v7()
                 table.insert(config_test_nodes, node_id)
 
-                local ws, create_err = workflow_state.new(test_ctx.dataflow_id)
-                expect(create_err).to_be_nil()
+                local ws = workflow_state.new(test_ctx.dataflow_id) :: any
+                test.not_nil(ws)
 
                 ws:queue_commands({
                     type = consts.COMMAND_TYPES.CREATE_NODE,
@@ -1697,11 +1635,11 @@ local function define_tests()
                     }
                 })
 
-                local persist_result, persist_err = ws:persist()
-                expect(persist_err).to_be_nil()
+                local _persist_result, persist_err = ws:persist()
+                test.is_nil(persist_err)
 
-                expect(ws.nodes[node_id]).not_to_be_nil()
-                expect(ws.input_tracker.requirements[node_id]).to_be_nil()
+                test.not_nil(ws.nodes[node_id])
+                test.is_nil(ws.input_tracker.requirements[node_id])
             end)
 
             it("should provide scheduler snapshot with loaded input requirements", function()
@@ -1710,11 +1648,11 @@ local function define_tests()
                 test_ctx.tx = nil
                 test_ctx.db = nil
 
-                local node_id = uuid.v7()
+                local node_id: string = uuid.v7()
                 table.insert(config_test_nodes, node_id)
 
-                local ws, create_err = workflow_state.new(test_ctx.dataflow_id)
-                expect(create_err).to_be_nil()
+                local ws = workflow_state.new(test_ctx.dataflow_id) :: any
+                test.not_nil(ws)
 
                 ws:queue_commands({
                     type = consts.COMMAND_TYPES.CREATE_NODE,
@@ -1731,14 +1669,14 @@ local function define_tests()
                     }
                 })
 
-                local persist_result, persist_err = ws:persist()
-                expect(persist_err).to_be_nil()
+                local _persist_result, persist_err = ws:persist()
+                test.is_nil(persist_err)
 
-                local snapshot = ws:get_scheduler_snapshot()
+                local snapshot = ws:get_scheduler_snapshot() :: any
 
-                expect(snapshot.input_tracker.requirements[node_id]).not_to_be_nil()
-                expect(snapshot.input_tracker.requirements[node_id].required).to_contain("essential_data")
-                expect(snapshot.input_tracker.requirements[node_id].optional).to_contain("nice_to_have")
+                test.not_nil(snapshot.input_tracker.requirements[node_id])
+                test.is_true(has_value(snapshot.input_tracker.requirements[node_id].required, "essential_data"))
+                test.is_true(has_value(snapshot.input_tracker.requirements[node_id].optional, "nice_to_have"))
             end)
         end)
 

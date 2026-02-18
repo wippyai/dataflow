@@ -47,7 +47,7 @@ local function handler()
     end
 
     -- Terminate the workflow
-    local success, err, info = workflow_client:terminate(dataflow_id)
+    local success, err, info = (workflow_client :: any):terminate(dataflow_id)
 
     if not success then
         -- Determine appropriate HTTP status based on error

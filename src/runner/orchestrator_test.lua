@@ -1,250 +1,301 @@
 local test = require("test")
-local uuid = require("uuid")
-local time = require("time")
 local orchestrator = require("orchestrator")
 local consts = require("consts")
 
+type MockWorkflowState = {
+    load_state: (self: MockWorkflowState) -> (MockWorkflowState?, string?),
+    get_nodes: () -> { [string]: any },
+    get_dataflow_metadata: () -> { [string]: any },
+    get_scheduler_snapshot: () -> { [string]: any },
+    get_failed_node_errors: () -> string?,
+    track_process: (self: MockWorkflowState, node_id: string, pid: string) -> MockWorkflowState,
+    queue_commands: (self: MockWorkflowState, commands: any) -> MockWorkflowState,
+    persist: (self: MockWorkflowState) -> ({ changes_made: boolean }?, string?),
+    get_node: (self: MockWorkflowState, node_id: string) -> { [string]: any }?,
+    handle_process_exit: (self: MockWorkflowState, pid: string, success: boolean, result: any) -> string?,
+    process_commits: (self: MockWorkflowState, commit_ids: any) -> ({ changes_made: boolean }?, string?),
+    track_yield: (self: MockWorkflowState, node_id: string, yield_info: any) -> MockWorkflowState,
+    satisfy_yield: (self: MockWorkflowState, parent_id: string, results: any) -> MockWorkflowState,
+    has_workflow_output: boolean,
+}
+
+type MockScheduler = {
+    find_next_work: (snapshot: any) -> { type: string, payload: any },
+    DECISION_TYPE: { [string]: string },
+}
+
+type MockProcess = {
+    registry: { register: (name: string) -> nil, unregister: (name: string) -> nil },
+    set_options: (options: any) -> nil,
+    spawn_linked_monitored: (node_type: string, host: string, args: any) -> (string?, string?),
+    send: (dest: string, topic: string, payload: any) -> nil,
+    terminate: (pid: string) -> nil,
+    inbox: () -> any,
+    events: () -> any,
+    event: { [string]: string },
+}
+
 local function define_tests()
     describe("Orchestrator", function()
-        local mock_workflow_state
-        local mock_scheduler
-        local mock_process
-        local mock_funcs
+        local mock_workflow_state = nil :: MockWorkflowState
+        local mock_scheduler = nil :: MockScheduler
+        local mock_process = nil :: MockProcess
 
         before_each(function()
-            -- Mock workflow state
             mock_workflow_state = {
-                load_state = function(self) return self, nil end,
-                get_nodes = function()
+                load_state = function(self: MockWorkflowState): (MockWorkflowState?, string?)
+                    return self, nil
+                end,
+                get_nodes = function(): { [string]: any }
                     return {
                         ["node-1"] = {
                             type = "test_node",
                             status = consts.STATUS.PENDING,
-                            parent_node_id = nil
-                        }
+                            parent_node_id = nil,
+                        },
                     }
                 end,
-                get_dataflow_metadata = function() return { test = "metadata" } end,
-                get_scheduler_snapshot = function()
+                get_dataflow_metadata = function(): { [string]: any }
+                    return { test = "metadata" }
+                end,
+                get_scheduler_snapshot = function(): { [string]: any }
                     return {
                         nodes = {
                             ["node-1"] = {
                                 type = "test_node",
-                                status = consts.STATUS.PENDING
-                            }
+                                status = consts.STATUS.PENDING,
+                            },
                         },
                         active_yields = {},
                         active_processes = {},
                         input_tracker = {
                             requirements = {},
-                            available = { ["node-1"] = { input = true } }
+                            available = { ["node-1"] = { input = true } },
                         },
-                        has_workflow_output = false
+                        has_workflow_output = false,
                     }
                 end,
-                get_failed_node_errors = function() return nil end,
-                track_process = function(self, node_id, pid) return self end,
-                queue_commands = function(self, commands) return self end,
-                persist = function(self) return { changes_made = true }, nil end,
-                get_node = function(self, node_id)
+                get_failed_node_errors = function(): string?
+                    return nil
+                end,
+                track_process = function(self: MockWorkflowState, _node_id: string, _pid: string): MockWorkflowState
+                    return self
+                end,
+                queue_commands = function(self: MockWorkflowState, _commands: any): MockWorkflowState
+                    return self
+                end,
+                persist = function(_self: MockWorkflowState): ({ changes_made: boolean }?, string?)
+                    return { changes_made = true }, nil
+                end,
+                get_node = function(_self: MockWorkflowState, _node_id: string): { [string]: any }?
                     return {
                         type = "test_node",
                         status = consts.STATUS.PENDING,
-                        parent_node_id = nil
+                        parent_node_id = nil,
                     }
                 end,
-                handle_process_exit = function(self, pid, success, result) return nil end,
-                process_commits = function(self, commit_ids) return { changes_made = false }, nil end,
-                track_yield = function(self, node_id, yield_info) return self end,
-                satisfy_yield = function(self, parent_id, results) return self end,
-                has_workflow_output = false
+                handle_process_exit = function(_self: MockWorkflowState, _pid: string, _success: boolean, _result: any): string?
+                    return nil
+                end,
+                process_commits = function(_self: MockWorkflowState, _commit_ids: any): ({ changes_made: boolean }?, string?)
+                    return { changes_made = false }, nil
+                end,
+                track_yield = function(self: MockWorkflowState, _node_id: string, _yield_info: any): MockWorkflowState
+                    return self
+                end,
+                satisfy_yield = function(self: MockWorkflowState, _parent_id: string, _results: any): MockWorkflowState
+                    return self
+                end,
+                has_workflow_output = false,
             }
 
-            -- Mock scheduler
             mock_scheduler = {
-                find_next_work = function(snapshot)
+                find_next_work = function(_snapshot: any): { type: string, payload: any }
                     return {
                         type = "complete_workflow",
-                        payload = { success = true, message = "Test complete" }
+                        payload = { success = true, message = "Test complete" },
                     }
                 end,
                 DECISION_TYPE = {
                     EXECUTE_NODES = "execute_nodes",
                     SATISFY_YIELD = "satisfy_yield",
                     COMPLETE_WORKFLOW = "complete_workflow",
-                    NO_WORK = "no_work"
-                }
+                    NO_WORK = "no_work",
+                },
             }
 
-            -- Mock process - keep it simple for non-channel tests
             mock_process = {
                 registry = {
-                    register = function(name) end,
-                    unregister = function(name) end
+                    register = function(_name: string) end,
+                    unregister = function(_name: string) end,
                 },
-                set_options = function(options) end,
-                spawn_linked_monitored = function(node_type, host, args)
+                set_options = function(_options: any) end,
+                spawn_linked_monitored = function(_node_type: string, _host: string, _args: any): (string?, string?)
                     return "mock-pid-123", nil
                 end,
-                send = function(dest, topic, payload) end,
-                terminate = function(pid) end,
-                inbox = function()
+                send = function(_dest: string, _topic: string, _payload: any) end,
+                terminate = function(_pid: string) end,
+                inbox = function(): any
                     return {
-                        case_receive = function()
-                            return { channel = "inbox", case = function() return false end }
-                        end
+                        case_receive = function(): any
+                            return { channel = "inbox", case = function(): boolean return false end }
+                        end,
                     }
                 end,
-                events = function()
+                events = function(): any
                     return {
-                        case_receive = function()
-                            return { channel = "events", case = function() return false end }
-                        end
+                        case_receive = function(): any
+                            return { channel = "events", case = function(): boolean return false end }
+                        end,
                     }
                 end,
                 event = {
                     EXIT = "pid.exit",
                     LINK_DOWN = "pid.link.down",
-                    CANCEL = "pid.cancel"
-                }
+                    CANCEL = "pid.cancel",
+                },
             }
 
-            -- Mock funcs
-            mock_funcs = {
-                new = function()
-                    return {
-                        call = function(self, func_id, args)
-                            return { success = true }, nil
-                        end
-                    }
-                end
-            }
-
-            -- Mock channel to exit immediately (no message processing)
             local mock_channel = {
-                select = function(cases)
-                    return { ok = false } -- Always exit immediately
-                end
+                select = function(_cases: any): { ok: boolean }
+                    return { ok = false }
+                end,
             }
 
-            -- Replace global channel
             channel = mock_channel
 
-            -- Replace orchestrator dependencies
             orchestrator.workflow_state = {
-                new = function(dataflow_id) return mock_workflow_state, nil end
+                new = function(_dataflow_id: string): (MockWorkflowState?, string?)
+                    return mock_workflow_state, nil
+                end,
             }
             orchestrator.scheduler = mock_scheduler
             orchestrator.process = mock_process
-            orchestrator.funcs = mock_funcs
+            orchestrator.funcs = {
+                new = function(): any
+                    return {
+                        call = function(_self: any, _func_id: string, _args: any): (any?, string?)
+                            return { success = true }, nil
+                        end,
+                    }
+                end,
+            }
         end)
 
         describe("Initialization", function()
             it("should fail with missing dataflow_id", function()
                 local result = orchestrator.run({})
 
-                expect(result.success).to_be_false()
-                expect(result.error).to_contain("Missing required dataflow_id")
+                test.is_false(result.success)
+                test.contains(result.error, "Missing required dataflow_id")
             end)
 
             it("should fail with nil args", function()
                 local result = orchestrator.run(nil)
 
-                expect(result.success).to_be_false()
-                expect(result.error).to_contain("Missing required dataflow_id")
+                test.is_false(result.success)
+                test.contains(result.error, "Missing required dataflow_id")
             end)
 
             it("should fail with empty string dataflow_id", function()
                 local result = orchestrator.run({ dataflow_id = "" })
 
-                expect(result.success).to_be_false()
-                expect(result.error).to_contain("Missing required dataflow_id")
+                test.is_false(result.success)
+                test.contains(result.error, "Missing required dataflow_id")
             end)
 
             it("should handle workflow state creation failure", function()
-                orchestrator.workflow_state.new = function(dataflow_id)
+                orchestrator.workflow_state.new = function(_dataflow_id: string): (MockWorkflowState?, string?)
                     return nil, "Failed to create workflow state"
                 end
 
                 local result = orchestrator.run({ dataflow_id = "test-workflow" })
 
-                expect(result.success).to_be_false()
-                expect(result.error).to_contain("Failed to create workflow state")
+                test.is_false(result.success)
+                test.contains(result.error, "Failed to create workflow state")
             end)
 
             it("should handle workflow state loading failure", function()
-                mock_workflow_state.load_state = function(self)
+                mock_workflow_state.load_state = function(_self: MockWorkflowState): (MockWorkflowState?, string?)
                     return nil, "Failed to load state"
                 end
 
                 local result = orchestrator.run({ dataflow_id = "test-workflow" })
 
-                expect(result.success).to_be_false()
-                expect(result.error).to_contain("Failed to load workflow state")
+                test.is_false(result.success)
+                test.contains(result.error, "Failed to load workflow state")
             end)
 
             it("should handle empty workflow", function()
-                mock_workflow_state.get_nodes = function() return {} end
+                mock_workflow_state.get_nodes = function(): { [string]: any }
+                    return {}
+                end
 
                 local result = orchestrator.run({ dataflow_id = "empty-workflow" })
 
-                expect(result.success).to_be_true()
-                expect(result.output.message).to_contain("Empty workflow")
-                expect(result.dataflow_id).to_equal("empty-workflow")
+                test.is_true(result.success)
+                test.not_nil(result.output)
+                test.contains(result.output.message, "Empty workflow")
+                test.eq(result.dataflow_id, "empty-workflow")
             end)
 
             it("should call init function if provided", function()
                 local init_called = false
-                local init_args = nil
+                local init_args: any = nil
 
-                mock_funcs.new = function()
-                    return {
-                        call = function(self, func_id, args)
-                            init_called = true
-                            init_args = args
-                            return { success = true }, nil
-                        end
-                    }
-                end
+                orchestrator.funcs = {
+                    new = function(): any
+                        return {
+                            call = function(_self: any, _func_id: string, args: any): (any?, string?)
+                                init_called = true
+                                init_args = args
+                                return { success = true }, nil
+                            end,
+                        }
+                    end,
+                }
 
                 local result = orchestrator.run({
                     dataflow_id = "test-workflow",
-                    init_func_id = "app:test_init"
+                    init_func_id = "app:test_init",
                 })
 
-                expect(result.success).to_be_true()
-                expect(init_called).to_be_true()
-                expect(init_args.dataflow_id).to_equal("test-workflow")
-                expect(init_args.metadata).to_have_key("test")
+                test.is_true(result.success)
+                test.is_true(init_called)
+                test.not_nil(init_args)
+                test.eq(init_args.dataflow_id, "test-workflow")
+                test.has_key(init_args.metadata, "test")
             end)
 
             it("should continue if init function fails", function()
-                mock_funcs.new = function()
-                    return {
-                        call = function(self, func_id, args)
-                            return nil, "Init function failed"
-                        end
-                    }
-                end
+                orchestrator.funcs = {
+                    new = function(): any
+                        return {
+                            call = function(_self: any, _func_id: string, _args: any): (any?, string?)
+                                return nil, "Init function failed"
+                            end,
+                        }
+                    end,
+                }
 
                 local result = orchestrator.run({
                     dataflow_id = "test-workflow",
-                    init_func_id = "app:failing_init"
+                    init_func_id = "app:failing_init",
                 })
 
-                expect(result.success).to_be_true() -- Should continue despite init failure
+                test.is_true(result.success)
             end)
         end)
 
         describe("Node Execution", function()
             it("should execute node when scheduler returns execute_nodes", function()
-                local spawn_calls = {}
-                mock_process.spawn_linked_monitored = function(node_type, host, args)
+                local spawn_calls: { { node_type: string, host: string, args: any } } = {}
+                mock_process.spawn_linked_monitored = function(node_type: string, host: string, args: any): (string?, string?)
                     table.insert(spawn_calls, { node_type = node_type, host = host, args = args })
                     return "test-pid", nil
                 end
 
-                mock_scheduler.find_next_work = function(snapshot)
+                mock_scheduler.find_next_work = function(_snapshot: any): { type: string, payload: any }
                     return {
                         type = "execute_nodes",
                         payload = {
@@ -253,29 +304,29 @@ local function define_tests()
                                     node_id = "node-1",
                                     node_type = "test_node",
                                     path = {},
-                                    trigger_reason = "root_ready"
-                                }
-                            }
-                        }
+                                    trigger_reason = "root_ready",
+                                },
+                            },
+                        },
                     }
                 end
 
                 local result = orchestrator.run({ dataflow_id = "test-workflow" })
 
-                expect(result.success).to_be_true()
-                expect(#spawn_calls).to_equal(1)
-                expect(spawn_calls[1].node_type).to_equal("test_node")
-                expect(spawn_calls[1].host).to_equal(consts.HOST_ID)
-                expect(spawn_calls[1].args.dataflow_id).to_equal("test-workflow")
-                expect(spawn_calls[1].args.node_id).to_equal("node-1")
+                test.is_true(result.success)
+                test.eq(#spawn_calls, 1)
+                test.eq(spawn_calls[1].node_type, "test_node")
+                test.eq(spawn_calls[1].host, consts.HOST_ID)
+                test.eq(spawn_calls[1].args.dataflow_id, "test-workflow")
+                test.eq(spawn_calls[1].args.node_id, "node-1")
             end)
 
             it("should handle spawn failures", function()
-                mock_process.spawn_linked_monitored = function()
+                mock_process.spawn_linked_monitored = function(_node_type: string, _host: string, _args: any): (string?, string?)
                     return nil, "Spawn failed"
                 end
 
-                mock_scheduler.find_next_work = function(snapshot)
+                mock_scheduler.find_next_work = function(_snapshot: any): { type: string, payload: any }
                     return {
                         type = "execute_nodes",
                         payload = {
@@ -284,26 +335,26 @@ local function define_tests()
                                     node_id = "node-1",
                                     node_type = "test_node",
                                     path = {},
-                                    trigger_reason = "root_ready"
-                                }
-                            }
-                        }
+                                    trigger_reason = "root_ready",
+                                },
+                            },
+                        },
                     }
                 end
 
                 local result = orchestrator.run({ dataflow_id = "test-workflow" })
 
-                expect(result.success).to_be_false()
-                expect(result.error).to_contain("Node spawn failures")
-                expect(result.error).to_contain("node-1")
+                test.is_false(result.success)
+                test.contains(result.error, "Node spawn failures")
+                test.contains(result.error, "node-1")
             end)
 
             it("should handle persist failures during execution", function()
-                mock_workflow_state.persist = function(self)
+                mock_workflow_state.persist = function(_self: MockWorkflowState): ({ changes_made: boolean }?, string?)
                     return nil, "Persist failed"
                 end
 
-                mock_scheduler.find_next_work = function(snapshot)
+                mock_scheduler.find_next_work = function(_snapshot: any): { type: string, payload: any }
                     return {
                         type = "execute_nodes",
                         payload = {
@@ -312,27 +363,27 @@ local function define_tests()
                                     node_id = "node-1",
                                     node_type = "test_node",
                                     path = {},
-                                    trigger_reason = "root_ready"
-                                }
-                            }
-                        }
+                                    trigger_reason = "root_ready",
+                                },
+                            },
+                        },
                     }
                 end
 
                 local result = orchestrator.run({ dataflow_id = "test-workflow" })
 
-                expect(result.success).to_be_false()
-                expect(result.error).to_contain("Failed to persist RUNNING status")
+                test.is_false(result.success)
+                test.contains(result.error, "Failed to persist RUNNING status")
             end)
 
             it("should handle multiple nodes execution", function()
-                local spawn_calls = {}
-                mock_process.spawn_linked_monitored = function(node_type, host, args)
+                local spawn_calls: { string } = {}
+                mock_process.spawn_linked_monitored = function(_node_type: string, _host: string, args: any): (string?, string?)
                     table.insert(spawn_calls, args.node_id)
                     return "test-pid-" .. args.node_id, nil
                 end
 
-                mock_scheduler.find_next_work = function(snapshot)
+                mock_scheduler.find_next_work = function(_snapshot: any): { type: string, payload: any }
                     return {
                         type = "execute_nodes",
                         payload = {
@@ -341,178 +392,190 @@ local function define_tests()
                                     node_id = "node-1",
                                     node_type = "test_node",
                                     path = {},
-                                    trigger_reason = "root_ready"
+                                    trigger_reason = "root_ready",
                                 },
                                 {
                                     node_id = "node-2",
                                     node_type = "test_node",
                                     path = {},
-                                    trigger_reason = "root_ready"
-                                }
-                            }
-                        }
+                                    trigger_reason = "root_ready",
+                                },
+                            },
+                        },
                     }
                 end
 
-                mock_workflow_state.get_node = function(self, node_id)
+                mock_workflow_state.get_node = function(_self: MockWorkflowState, _node_id: string): { [string]: any }?
                     return {
                         type = "test_node",
                         status = consts.STATUS.PENDING,
-                        parent_node_id = nil
+                        parent_node_id = nil,
                     }
                 end
 
                 local result = orchestrator.run({ dataflow_id = "test-workflow" })
 
-                expect(result.success).to_be_true()
-                expect(#spawn_calls).to_equal(2)
-                expect(spawn_calls).to_contain("node-1")
-                expect(spawn_calls).to_contain("node-2")
+                test.is_true(result.success)
+                test.eq(#spawn_calls, 2)
+
+                local saw_node_1 = false
+                local saw_node_2 = false
+                for _, node_id in ipairs(spawn_calls) do
+                    if node_id == "node-1" then
+                        saw_node_1 = true
+                    elseif node_id == "node-2" then
+                        saw_node_2 = true
+                    end
+                end
+
+                test.is_true(saw_node_1)
+                test.is_true(saw_node_2)
             end)
         end)
 
         describe("Yield Handling", function()
             it("should handle yield satisfaction", function()
-                local send_calls = {}
-                mock_process.send = function(dest, topic, payload)
+                local send_calls: { { dest: string, topic: string, payload: any } } = {}
+                mock_process.send = function(dest: string, topic: string, payload: any)
                     table.insert(send_calls, { dest = dest, topic = topic, payload = payload })
                 end
 
-                mock_scheduler.find_next_work = function(snapshot)
+                mock_scheduler.find_next_work = function(_snapshot: any): { type: string, payload: any }
                     return {
                         type = "satisfy_yield",
                         payload = {
                             parent_id = "parent-1",
                             yield_id = "yield-123",
                             reply_to = "yield_reply",
-                            results = { ["child-1"] = "result-data" }
-                        }
+                            results = { ["child-1"] = "result-data" },
+                        },
                     }
                 end
 
                 local result = orchestrator.run({ dataflow_id = "test-workflow" })
 
-                expect(result.success).to_be_true()
+                test.is_true(result.success)
             end)
 
             it("should handle persist failures during yield satisfaction", function()
                 local persist_call_count = 0
-                mock_workflow_state.persist = function(self)
+                mock_workflow_state.persist = function(_self: MockWorkflowState): ({ changes_made: boolean }?, string?)
                     persist_call_count = persist_call_count + 1
-                    if persist_call_count == 1 then -- Succeed first time
+                    if persist_call_count == 1 then
                         return { changes_made = true }, nil
-                    else -- Fail on yield satisfaction persist
+                    else
                         return nil, "Persist failed"
                     end
                 end
 
-                mock_scheduler.find_next_work = function(snapshot)
+                mock_scheduler.find_next_work = function(_snapshot: any): { type: string, payload: any }
                     return {
                         type = "satisfy_yield",
                         payload = {
                             parent_id = "parent-1",
                             yield_id = "yield-123",
                             reply_to = "yield_reply",
-                            results = {}
-                        }
+                            results = {},
+                        },
                     }
                 end
 
                 local result = orchestrator.run({ dataflow_id = "test-workflow" })
 
-                expect(result.success).to_be_true() -- Should continue even if yield persist fails
+                test.is_true(result.success)
             end)
         end)
 
         describe("Workflow Completion", function()
             it("should handle successful completion", function()
-                mock_scheduler.find_next_work = function(snapshot)
+                mock_scheduler.find_next_work = function(_snapshot: any): { type: string, payload: any }
                     return {
                         type = "complete_workflow",
-                        payload = { success = true, message = "All nodes completed" }
+                        payload = { success = true, message = "All nodes completed" },
                     }
                 end
 
                 local result = orchestrator.run({ dataflow_id = "test-workflow" })
 
-                expect(result.success).to_be_true()
-                expect(result.output.message).to_equal("All nodes completed")
-                expect(result.dataflow_id).to_equal("test-workflow")
-                expect(result.error).to_be_nil()
+                test.is_true(result.success)
+                test.not_nil(result.output)
+                test.eq(result.output.message, "All nodes completed")
+                test.eq(result.dataflow_id, "test-workflow")
+                test.is_nil(result.error)
             end)
 
             it("should handle failed completion with error details", function()
-                mock_workflow_state.get_failed_node_errors = function()
+                mock_workflow_state.get_failed_node_errors = function(): string?
                     return "Node [node-1] failed: Test error"
                 end
 
-                mock_scheduler.find_next_work = function(snapshot)
+                mock_scheduler.find_next_work = function(_snapshot: any): { type: string, payload: any }
                     return {
                         type = "complete_workflow",
-                        payload = { success = false, message = "Workflow deadlocked" }
+                        payload = { success = false, message = "Workflow deadlocked" },
                     }
                 end
 
                 local result = orchestrator.run({ dataflow_id = "test-workflow" })
 
-                expect(result.success).to_be_false()
-                expect(result.error).to_contain("Node [node-1] failed: Test error")
-                expect(result.dataflow_id).to_equal("test-workflow")
-                expect(result.output).to_be_nil()
+                test.is_false(result.success)
+                test.contains(result.error, "Node [node-1] failed: Test error")
+                test.eq(result.dataflow_id, "test-workflow")
+                test.is_nil(result.output)
             end)
 
             it("should handle failed completion without specific errors", function()
-                mock_workflow_state.get_failed_node_errors = function()
+                mock_workflow_state.get_failed_node_errors = function(): string?
                     return nil
                 end
 
-                mock_scheduler.find_next_work = function(snapshot)
+                mock_scheduler.find_next_work = function(_snapshot: any): { type: string, payload: any }
                     return {
                         type = "complete_workflow",
-                        payload = { success = false, message = "Custom failure message" }
+                        payload = { success = false, message = "Custom failure message" },
                     }
                 end
 
                 local result = orchestrator.run({ dataflow_id = "test-workflow" })
 
-                expect(result.success).to_be_false()
-                expect(result.error).to_equal("Custom failure message")
+                test.is_false(result.success)
+                test.eq(result.error, "Custom failure message")
             end)
         end)
 
         describe("Scheduler Integration", function()
             it("should handle NO_WORK decision", function()
-                mock_scheduler.find_next_work = function(snapshot)
+                mock_scheduler.find_next_work = function(_snapshot: any): { type: string, payload: any }
                     return {
                         type = "no_work",
-                        payload = { message = "Waiting for events" }
+                        payload = { message = "Waiting for events" },
                     }
                 end
 
                 local result = orchestrator.run({ dataflow_id = "test-workflow" })
 
-                expect(result.success).to_be_true() -- Should exit gracefully when no work
+                test.is_true(result.success)
             end)
 
             it("should pass correct snapshot to scheduler", function()
-                local snapshot_received = nil
-                mock_scheduler.find_next_work = function(snapshot)
+                local snapshot_received: any = nil
+                mock_scheduler.find_next_work = function(snapshot: any): { type: string, payload: any }
                     snapshot_received = snapshot
                     return {
                         type = "complete_workflow",
-                        payload = { success = true, message = "Test" }
+                        payload = { success = true, message = "Test" },
                     }
                 end
 
                 local result = orchestrator.run({ dataflow_id = "test-workflow" })
 
-                expect(result.success).to_be_true()
-                expect(snapshot_received).not_to_be_nil()
-                expect(snapshot_received.nodes).to_be_type("table")
-                expect(snapshot_received.active_yields).to_be_type("table")
-                expect(snapshot_received.active_processes).to_be_type("table")
-                expect(snapshot_received.input_tracker).to_be_type("table")
-                expect(snapshot_received.has_workflow_output).to_be_type("boolean")
+                test.is_true(result.success)
+                test.not_nil(snapshot_received)
+                test.is_table(snapshot_received.nodes)
+                test.is_table(snapshot_received.active_yields)
+                test.is_table(snapshot_received.active_processes)
+                test.is_table(snapshot_received.input_tracker)
+                test.eq(type(snapshot_received.has_workflow_output), "boolean")
             end)
         end)
 
@@ -521,22 +584,23 @@ local function define_tests()
                 local decisions = {
                     { type = "no_work", expected_success = true },
                     { type = "complete_workflow", payload = { success = true, message = "Done" }, expected_success = true },
-                    { type = "complete_workflow", payload = { success = false, message = "Failed" }, expected_success = false }
+                    { type = "complete_workflow", payload = { success = false, message = "Failed" }, expected_success = false },
                 }
 
                 for _, decision in ipairs(decisions) do
-                    mock_scheduler.find_next_work = function(snapshot)
+                    mock_scheduler.find_next_work = function(_snapshot: any): { type: string, payload: any }
                         return {
                             type = decision.type,
-                            payload = decision.payload or {}
+                            payload = decision.payload or {},
                         }
                     end
 
                     local result = orchestrator.run({ dataflow_id = "test-workflow-" .. decision.type })
 
-                    expect(result.success).to_equal(decision.expected_success)
+                    test.eq(result.success, decision.expected_success)
                     if decision.payload and decision.payload.message and decision.expected_success then
-                        expect(result.output.message).to_equal(decision.payload.message)
+                        test.not_nil(result.output)
+                        test.eq(result.output.message, decision.payload.message)
                     end
                 end
             end)
@@ -544,60 +608,54 @@ local function define_tests()
             it("should properly inject dependencies and call workflow state methods", function()
                 local load_state_called = false
                 local get_nodes_called = false
-                local get_metadata_called = false
                 local get_snapshot_called = false
 
-                mock_workflow_state.load_state = function(self)
+                mock_workflow_state.load_state = function(self: MockWorkflowState): (MockWorkflowState?, string?)
                     load_state_called = true
                     return self, nil
                 end
 
-                mock_workflow_state.get_nodes = function()
+                mock_workflow_state.get_nodes = function(): { [string]: any }
                     get_nodes_called = true
                     return { ["test-node"] = { type = "test", status = "pending" } }
                 end
 
-                mock_workflow_state.get_dataflow_metadata = function()
-                    get_metadata_called = true
-                    return { test = "data" }
-                end
-
-                mock_workflow_state.get_scheduler_snapshot = function()
+                mock_workflow_state.get_scheduler_snapshot = function(): { [string]: any }
                     get_snapshot_called = true
                     return {
                         nodes = {},
                         active_yields = {},
                         active_processes = {},
                         input_tracker = { requirements = {}, available = {} },
-                        has_workflow_output = false
+                        has_workflow_output = false,
                     }
                 end
 
                 local result = orchestrator.run({ dataflow_id = "test-workflow" })
 
-                expect(result.success).to_be_true()
-                expect(load_state_called).to_be_true()
-                expect(get_nodes_called).to_be_true()
-                expect(get_snapshot_called).to_be_true()
+                test.is_true(result.success)
+                test.is_true(load_state_called)
+                test.is_true(get_nodes_called)
+                test.is_true(get_snapshot_called)
             end)
 
             it("should handle workflow state method failures properly", function()
-                -- Test load_state failure
-                mock_workflow_state.load_state = function(self)
+                mock_workflow_state.load_state = function(_self: MockWorkflowState): (MockWorkflowState?, string?)
                     return nil, "Load failed"
                 end
 
                 local result1 = orchestrator.run({ dataflow_id = "test-workflow" })
-                expect(result1.success).to_be_false()
-                expect(result1.error).to_contain("Load failed")
+                test.is_false(result1.success)
+                test.contains(result1.error, "Load failed")
 
-                -- Test persist failure during node execution
-                mock_workflow_state.load_state = function(self) return self, nil end
-                mock_workflow_state.persist = function(self)
+                mock_workflow_state.load_state = function(self: MockWorkflowState): (MockWorkflowState?, string?)
+                    return self, nil
+                end
+                mock_workflow_state.persist = function(_self: MockWorkflowState): ({ changes_made: boolean }?, string?)
                     return nil, "Persist failed"
                 end
 
-                mock_scheduler.find_next_work = function(snapshot)
+                mock_scheduler.find_next_work = function(_snapshot: any): { type: string, payload: any }
                     return {
                         type = "execute_nodes",
                         payload = {
@@ -606,88 +664,88 @@ local function define_tests()
                                     node_id = "test-node",
                                     node_type = "test_type",
                                     path = {},
-                                    trigger_reason = "root_ready"
-                                }
-                            }
-                        }
+                                    trigger_reason = "root_ready",
+                                },
+                            },
+                        },
                     }
                 end
 
                 local result2 = orchestrator.run({ dataflow_id = "test-workflow" })
-                expect(result2.success).to_be_false()
-                expect(result2.error).to_contain("Persist failed")
+                test.is_false(result2.success)
+                test.contains(result2.error, "Persist failed")
             end)
 
             it("should maintain consistent error format", function()
-                mock_scheduler.find_next_work = function(snapshot)
+                mock_scheduler.find_next_work = function(_snapshot: any): { type: string, payload: any }
                     return {
                         type = "complete_workflow",
-                        payload = { success = false, message = "Test failure" }
+                        payload = { success = false, message = "Test failure" },
                     }
                 end
 
                 local result = orchestrator.run({ dataflow_id = "test-workflow" })
 
-                expect(result.success).to_be_false()
-                expect(result.error).to_be_type("string")
-                expect(result.dataflow_id).to_equal("test-workflow")
-                expect(result.output).to_be_nil()
+                test.is_false(result.success)
+                test.eq(type(result.error), "string")
+                test.eq(result.dataflow_id, "test-workflow")
+                test.is_nil(result.output)
             end)
         end)
 
         describe("Integration Points", function()
             it("should correctly setup process registry and options", function()
-                local registry_calls = {}
-                local options_calls = {}
+                local registry_calls: { string } = {}
+                local options_calls: { any } = {}
 
-                mock_process.registry.register = function(name)
+                mock_process.registry.register = function(name: string)
                     table.insert(registry_calls, name)
                 end
 
-                mock_process.set_options = function(options)
+                mock_process.set_options = function(options: any)
                     table.insert(options_calls, options)
                 end
 
                 local result = orchestrator.run({ dataflow_id = "test-registry" })
 
-                expect(result.success).to_be_true()
-                expect(#registry_calls).to_equal(1)
-                expect(registry_calls[1]).to_equal("dataflow.test-registry")
-                expect(#options_calls).to_equal(1)
-                expect(options_calls[1].trap_links).to_be_true()
+                test.is_true(result.success)
+                test.eq(#registry_calls, 1)
+                test.eq(registry_calls[1], "dataflow.test-registry")
+                test.eq(#options_calls, 1)
+                local first_options = options_calls[1]
+                test.not_nil(first_options)
+                test.is_true((first_options :: { trap_links: boolean }).trap_links)
             end)
 
             it("should properly format success and failure results", function()
-                -- Test success case
-                mock_scheduler.find_next_work = function(snapshot)
+                mock_scheduler.find_next_work = function(_snapshot: any): { type: string, payload: any }
                     return {
                         type = "complete_workflow",
-                        payload = { success = true, message = "Success result" }
+                        payload = { success = true, message = "Success result" },
                     }
                 end
 
                 local success_result = orchestrator.run({ dataflow_id = "success-test" })
 
-                expect(success_result.success).to_be_true()
-                expect(success_result.dataflow_id).to_equal("success-test")
-                expect(success_result.output).not_to_be_nil()
-                expect(success_result.output.message).to_equal("Success result")
-                expect(success_result.error).to_be_nil()
+                test.is_true(success_result.success)
+                test.eq(success_result.dataflow_id, "success-test")
+                test.not_nil(success_result.output)
+                test.eq(success_result.output.message, "Success result")
+                test.is_nil(success_result.error)
 
-                -- Test failure case
-                mock_scheduler.find_next_work = function(snapshot)
+                mock_scheduler.find_next_work = function(_snapshot: any): { type: string, payload: any }
                     return {
                         type = "complete_workflow",
-                        payload = { success = false, message = "Failure result" }
+                        payload = { success = false, message = "Failure result" },
                     }
                 end
 
                 local failure_result = orchestrator.run({ dataflow_id = "failure-test" })
 
-                expect(failure_result.success).to_be_false()
-                expect(failure_result.dataflow_id).to_equal("failure-test")
-                expect(failure_result.error).to_equal("Failure result")
-                expect(failure_result.output).to_be_nil()
+                test.is_false(failure_result.success)
+                test.eq(failure_result.dataflow_id, "failure-test")
+                test.eq(failure_result.error, "Failure result")
+                test.is_nil(failure_result.output)
             end)
         end)
     end)

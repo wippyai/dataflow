@@ -1,5 +1,6 @@
 local uuid = require("uuid")
 local json = require("json")
+local time = require("time")
 local consts = require("consts")
 
 local default_deps = {
@@ -233,21 +234,109 @@ function iterator.collect_results(parent_node, iteration_info, deps)
     end
 
     local reader, reader_err = deps.data_reader.with_dataflow(parent_node.dataflow_id)
-    if reader_err then
-        return nil, "Failed to create data reader: " .. reader_err
+    if not reader then
+        return nil, "Failed to create data reader: " .. tostring(reader_err or "unknown")
     end
 
-    local errors = reader
-        :with_nodes(iteration_node_ids)
-        :with_data_types(consts.DATA_TYPE.ITERATION_ERROR)
-        :all()
+    local output_data = {}
+    for attempt = 1, 15 do
+        output_data = {}
+
+        local parent_query_err = nil
+        if parent_node.node_id and iteration_info.iteration then
+            local iteration_discriminator = string.format("iteration.%06d", iteration_info.iteration)
+            local parent_rows, err_parent = (reader :: any)
+                :with_nodes(parent_node.node_id)
+                :with_data_types({
+                    consts.DATA_TYPE.ITERATION_RESULT,
+                    consts.DATA_TYPE.ITERATION_ERROR
+                })
+                :with_data_discriminators(iteration_discriminator)
+                :fetch_options({ replace_references = true })
+                :all()
+            if err_parent then
+                parent_query_err = err_parent
+            elseif parent_rows then
+                for _, row in ipairs(parent_rows) do
+                    table.insert(output_data, row)
+                end
+            end
+        end
+
+        if #output_data == 0 then
+            local child_rows, child_query_err = (reader :: any)
+                :with_nodes(iteration_node_ids)
+                :with_data_types({
+                    consts.DATA_TYPE.ITERATION_RESULT,
+                    consts.DATA_TYPE.ITERATION_ERROR,
+                    consts.DATA_TYPE.NODE_OUTPUT,
+                    consts.DATA_TYPE.NODE_RESULT
+                })
+                :fetch_options({ replace_references = true })
+                :all()
+            if child_query_err then
+                return nil, "Failed to query output data: " .. tostring(child_query_err)
+            end
+
+            if child_rows then
+                for _, row in ipairs(child_rows) do
+                    table.insert(output_data, row)
+                end
+            end
+        end
+
+        if #output_data > 0 then
+            break
+        end
+
+        if parent_query_err then
+            return nil, "Failed to query output data: " .. tostring(parent_query_err)
+        end
+
+        if attempt < 15 then
+            time.sleep("10ms")
+        end
+    end
+
+    if #output_data == 0 then
+        return nil, "No output data found for iteration"
+    end
+
+    local parsed_outputs = {}
+    local errors: {any} = {}
+
+    for _, output in ipairs(output_data) do
+        local parsed_output = {}
+        for k, v in pairs(output) do
+            parsed_output[k] = v
+        end
+
+        if parsed_output.content_type == consts.CONTENT_TYPE.JSON and type(parsed_output.content) == "string" then
+            local parsed_content, parse_err = json.decode(parsed_output.content)
+            if not parse_err then
+                parsed_output.content = parsed_content
+            end
+        end
+
+        local output_type = parsed_output.type or parsed_output.data_type
+        local discriminator = parsed_output.discriminator or ""
+
+        if output_type == consts.DATA_TYPE.ITERATION_ERROR or
+            (output_type == consts.DATA_TYPE.NODE_RESULT and discriminator == "result.error") or
+            discriminator == "error" or
+            string.find(discriminator, "error", 1, true) ~= nil then
+            table.insert(errors, parsed_output.content)
+        elseif output_type ~= consts.DATA_TYPE.NODE_RESULT then
+            table.insert(parsed_outputs, parsed_output)
+        end
+    end
 
     if #errors > 0 then
         local error_messages = {}
-        for _, error_data in ipairs(errors) do
-            local error_content = error_data.content
+        for _, error_content in ipairs(errors) do
             if type(error_content) == "table" then
-                error_content = error_content.error or error_content.message or tostring(error_content)
+                local error_table = error_content :: {[string]: any}
+                error_content = error_table.error or error_table.message or tostring(error_content)
             end
             table.insert(error_messages, tostring(error_content))
         end
@@ -255,7 +344,11 @@ function iterator.collect_results(parent_node, iteration_info, deps)
         return nil, table.concat(error_messages, "; ")
     end
 
-    return true, nil
+    if #parsed_outputs == 1 then
+        return parsed_outputs[1].content, nil
+    end
+
+    return parsed_outputs, nil
 end
 
 return iterator
