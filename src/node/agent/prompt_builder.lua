@@ -112,7 +112,11 @@ function prompt_builder:_format_action(action_item, builder)
             if not call_id then
                 return "Tool call missing ID in action"
             end
-            builder:add_function_call(tool_call.name, tool_call.arguments, call_id)
+            local opts = nil
+            if tool_call.provider_metadata then
+                opts = { provider_metadata = tool_call.provider_metadata }
+            end
+            builder:add_function_call(tool_call.name, tool_call.arguments, call_id, opts)
         end
     end
 
@@ -123,7 +127,11 @@ function prompt_builder:_format_action(action_item, builder)
             if not call_id then
                 return "Delegate call missing ID in action"
             end
-            builder:add_function_call(delegate_call.name, delegate_call.arguments, call_id)
+            local opts = nil
+            if delegate_call.provider_metadata then
+                opts = { provider_metadata = delegate_call.provider_metadata }
+            end
+            builder:add_function_call(delegate_call.name, delegate_call.arguments, call_id, opts)
         end
     end
 
