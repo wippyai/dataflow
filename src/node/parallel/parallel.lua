@@ -19,12 +19,20 @@ parallel._deps = {
 parallel.DEFAULTS = {
     BATCH_SIZE = 1,
     ITERATION_INPUT_KEY = "default",
-    FAILURE_STRATEGY = "collect_errors"
+    ON_ERROR = "continue",
+    FILTER = "all",
+    UNWRAP = false
 }
 
-parallel.FAILURE_STRATEGIES = {
+parallel.ON_ERROR_STRATEGIES = {
     FAIL_FAST = "fail_fast",
-    COLLECT_ERRORS = "collect_errors"
+    CONTINUE = "continue"
+}
+
+parallel.FILTER_STRATEGIES = {
+    ALL = "all",
+    SUCCESSES = "successes",
+    FAILURES = "failures"
 }
 
 parallel.EXTRACTORS = {
@@ -40,6 +48,7 @@ parallel.ERRORS = {
     ITERATION_FAILED = "ITERATION_FAILED",
     TEMPLATE_DISCOVERY_FAILED = "TEMPLATE_DISCOVERY_FAILED",
     INVALID_ON_ERROR_STRATEGY = "INVALID_ON_ERROR_STRATEGY",
+    INVALID_FILTER_STRATEGY = "INVALID_FILTER_STRATEGY",
     INVALID_BATCH_SIZE = "INVALID_BATCH_SIZE",
     INVALID_PIPELINE_STEP = "INVALID_PIPELINE_STEP",
     INVALID_EXTRACTOR = "INVALID_EXTRACTOR"
@@ -62,9 +71,15 @@ parallel.extractors = ({
     end
 }) :: {[string]: ExtractorFn}
 
-local function validate_failure_strategy(strategy)
-    return strategy == parallel.FAILURE_STRATEGIES.FAIL_FAST or
-        strategy == parallel.FAILURE_STRATEGIES.COLLECT_ERRORS
+local function validate_on_error_strategy(strategy)
+    return strategy == parallel.ON_ERROR_STRATEGIES.FAIL_FAST or
+        strategy == parallel.ON_ERROR_STRATEGIES.CONTINUE
+end
+
+local function validate_filter_strategy(strategy)
+    return strategy == parallel.FILTER_STRATEGIES.ALL or
+        strategy == parallel.FILTER_STRATEGIES.SUCCESSES or
+        strategy == parallel.FILTER_STRATEGIES.FAILURES
 end
 
 local function validate_batch_size(size)
@@ -417,7 +432,7 @@ local function maybe_materialize_passthrough_inputs(n, inputs, passthrough_keys)
     return passthrough_inputs, nil
 end
 
-local function process_reduction_pipeline(config, parallel_result, failure_strategy)
+local function process_reduction_pipeline(config: any, parallel_result, on_error)
     local reduction_extract = config.reduction_extract
     local reduction_steps = config.reduction_steps
 
@@ -435,7 +450,7 @@ local function process_reduction_pipeline(config, parallel_result, failure_strat
         for _, step in ipairs(reduction_steps) do
             local next_value, step_err = parallel.execute_reduction_pipeline_step(step, current)
             if step_err then
-                if failure_strategy == parallel.FAILURE_STRATEGIES.FAIL_FAST then
+                if on_error == parallel.ON_ERROR_STRATEGIES.FAIL_FAST then
                     return nil, "Reduction pipeline failed: " .. step_err
                 end
                 return parallel_result, nil
@@ -463,12 +478,25 @@ local function run(args)
         }, "Missing source_array_key in config")
     end
 
-    local failure_strategy = config.failure_strategy or config.on_error or parallel.DEFAULTS.FAILURE_STRATEGY
-    if not validate_failure_strategy(failure_strategy) then
+    local on_error = config.on_error or parallel.DEFAULTS.ON_ERROR
+    if not validate_on_error_strategy(on_error) then
         return n:fail({
             code = parallel.ERRORS.INVALID_ON_ERROR_STRATEGY,
-            message = "Invalid failure strategy: " .. tostring(failure_strategy)
-        }, "Invalid failure strategy")
+            message = "Invalid on_error: " .. tostring(on_error)
+        }, "Invalid on_error strategy")
+    end
+
+    local filter = config.filter or parallel.DEFAULTS.FILTER
+    if not validate_filter_strategy(filter) then
+        return n:fail({
+            code = parallel.ERRORS.INVALID_FILTER_STRATEGY,
+            message = "Invalid filter: " .. tostring(filter)
+        }, "Invalid filter strategy")
+    end
+
+    local unwrap = config.unwrap
+    if unwrap == nil then
+        unwrap = parallel.DEFAULTS.UNWRAP
     end
 
     local batch_size = config.batch_size or parallel.DEFAULTS.BATCH_SIZE
@@ -616,7 +644,7 @@ local function run(args)
         )
 
         if create_err then
-            if failure_strategy == parallel.FAILURE_STRATEGIES.FAIL_FAST then
+            if on_error == parallel.ON_ERROR_STRATEGIES.FAIL_FAST then
                 return fail_iteration(n, "Iteration creation failed: " .. tostring(create_err))
             end
 
@@ -633,7 +661,7 @@ local function run(args)
         if #run_nodes > 0 then
             local _, yield_err = n:yield({ run_nodes = run_nodes })
             if yield_err then
-                if failure_strategy == parallel.FAILURE_STRATEGIES.FAIL_FAST then
+                if on_error == parallel.ON_ERROR_STRATEGIES.FAIL_FAST then
                     return fail_iteration(n, "Yield failed: " .. tostring(yield_err))
                 end
 
@@ -647,7 +675,7 @@ local function run(args)
         for _, iteration in ipairs(iterations) do
             local iteration_result, collect_err = parallel._deps.iterator.collect_results(n, iteration)
             if collect_err then
-                if failure_strategy == parallel.FAILURE_STRATEGIES.FAIL_FAST then
+                if on_error == parallel.ON_ERROR_STRATEGIES.FAIL_FAST then
                     return fail_iteration(n, "Iteration failed: " .. tostring(collect_err))
                 end
                 add_failure(parallel_result, iteration, tostring(collect_err))
@@ -662,7 +690,7 @@ local function run(args)
                     local step_result, step_err = parallel.execute_item_pipeline_step(step, processed_result)
                     if step_err then
                         local pipeline_err = "Item pipeline failed: " .. tostring(step_err)
-                        if failure_strategy == parallel.FAILURE_STRATEGIES.FAIL_FAST then
+                        if on_error == parallel.ON_ERROR_STRATEGIES.FAIL_FAST then
                             return fail_iteration(n, pipeline_err)
                         end
 
@@ -694,12 +722,45 @@ local function run(args)
     end
 
     local final_output = parallel_result
-    if config.reduction_extract ~= nil or (config.reduction_steps and #config.reduction_steps > 0) then
-        local reduced_output, reduction_err = process_reduction_pipeline(config, parallel_result, failure_strategy)
+
+    local has_reduction = config.reduction_extract ~= nil or (config.reduction_steps and #config.reduction_steps > 0)
+    if has_reduction then
+        local reduced_output, reduction_err = process_reduction_pipeline(config, parallel_result, on_error)
         if reduction_err then
             return fail_iteration(n, reduction_err)
         end
         final_output = reduced_output
+    else
+        local filtered = {}
+        if filter == parallel.FILTER_STRATEGIES.SUCCESSES then
+            for _, entry in ipairs(parallel_result.successes or {}) do
+                if unwrap then
+                    table.insert(filtered, entry.result)
+                else
+                    table.insert(filtered, entry)
+                end
+            end
+        elseif filter == parallel.FILTER_STRATEGIES.FAILURES then
+            for _, entry in ipairs(parallel_result.failures or {}) do
+                table.insert(filtered, entry)
+            end
+        else
+            for _, entry in ipairs(parallel_result.successes or {}) do
+                if unwrap then
+                    table.insert(filtered, entry.result)
+                else
+                    table.insert(filtered, entry)
+                end
+            end
+            for _, entry in ipairs(parallel_result.failures or {}) do
+                if unwrap then
+                    table.insert(filtered, { error = entry.error })
+                else
+                    table.insert(filtered, entry)
+                end
+            end
+        end
+        final_output = filtered
     end
 
     return n:complete(final_output, "Parallel processing completed successfully")

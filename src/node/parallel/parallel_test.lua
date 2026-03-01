@@ -14,7 +14,7 @@ local function define_tests()
                     config = function(_self: any)
                         return {
                             source_array_key = "items",
-                            failure_strategy = "invalid_strategy"
+                            on_error = "invalid_strategy"
                         }
                     end,
                     inputs = function(_self: any)
@@ -562,7 +562,7 @@ local function define_tests()
                     config = function(_self: any)
                         return {
                             source_array_key = "items",
-                            failure_strategy = parallel.FAILURE_STRATEGIES.FAIL_FAST
+                            on_error = parallel.ON_ERROR_STRATEGIES.FAIL_FAST
                         }
                     end,
                     inputs = function(_self: any)
@@ -704,7 +704,7 @@ local function define_tests()
                 test.is_true(result.success)
                 test.is_true(item_pipeline_called)
                 test.eq(item_pipeline_input, "large_result")
-                test.eq(result.result.successes[1].result, "processed_large_result")
+                test.eq(result.result[1].result, "processed_large_result")
             end)
 
             it("should handle item pipeline errors with fail_fast strategy", function()
@@ -712,7 +712,7 @@ local function define_tests()
                     config = function(_self: any)
                         return {
                             source_array_key = "items",
-                            failure_strategy = parallel.FAILURE_STRATEGIES.FAIL_FAST,
+                            on_error = parallel.ON_ERROR_STRATEGIES.FAIL_FAST,
                             item_steps = {
                                 { type = "map", func_id = "failing_transform" }
                             }
@@ -799,12 +799,12 @@ local function define_tests()
                 test.contains(result.error.message, "Item pipeline failed")
             end)
 
-            it("should handle item pipeline errors with collect_errors strategy", function()
+            it("should handle item pipeline errors with continue strategy", function()
                 local mock_node = {
                     config = function(_self: any)
                         return {
                             source_array_key = "items",
-                            failure_strategy = parallel.FAILURE_STRATEGIES.COLLECT_ERRORS,
+                            on_error = parallel.ON_ERROR_STRATEGIES.CONTINUE,
                             item_steps = {
                                 { type = "map", func_id = "failing_transform" }
                             }
@@ -887,9 +887,8 @@ local function define_tests()
 
                 local result = parallel.run({})
                 test.is_true(result.success)
-                test.not_nil(result.result.failures)
-                test.eq(result.result.failure_count, 1)
-                test.contains(result.result.failures[1].error, "Item pipeline failed")
+                test.eq(#result.result, 1)
+                test.contains(result.result[1].error, "Item pipeline failed")
             end)
 
             it("should support multi-step item pipelines", function()
@@ -987,7 +986,7 @@ local function define_tests()
                 test.eq(step_calls[1], "step1")
                 test.eq(step_calls[2], "step2")
                 test.eq(step_calls[3], "step3")
-                test.eq(result.result.successes[1].result, "final")
+                test.eq(result.result[1].result, "final")
             end)
 
             it("should handle item filtering correctly", function()
@@ -1070,8 +1069,8 @@ local function define_tests()
 
                 local result = parallel.run({})
                 test.is_true(result.success)
-                test.eq(result.result.success_count, 1)
-                test.eq(result.result.successes[1].result, "result_2")
+                test.eq(#result.result, 1)
+                test.eq(result.result[1].result, "result_2")
             end)
         end)
 
@@ -1366,7 +1365,7 @@ local function define_tests()
                 local step = { type = "map", func_id = "transform" }
                 local data = { "a", "b", "c" }
 
-                local result, err = parallel.execute_reduction_pipeline_step(step, data)
+                local result: any, err = parallel.execute_reduction_pipeline_step(step, data)
                 test.is_nil(err)
                 test.eq(#result, 3)
                 test.eq(result[1], "transformed_a")
@@ -1396,7 +1395,7 @@ local function define_tests()
                     { category = "A", value = 3 }
                 }
 
-                local result, err = parallel.execute_reduction_pipeline_step(step, data)
+                local result: any, err = parallel.execute_reduction_pipeline_step(step, data)
                 test.is_nil(err)
                 test.not_nil(result["A"])
                 test.not_nil(result["B"])
@@ -1494,7 +1493,7 @@ local function define_tests()
                     }
                 }
 
-                local result, err = parallel.execute_reduction_pipeline_step(step, { "value1", "value2" })
+                local result: any, err = parallel.execute_reduction_pipeline_step(step, { "value1", "value2" })
 
                 test.is_nil(err)
                 test.not_nil(result.aggregated)
@@ -1606,7 +1605,7 @@ local function define_tests()
                                     source_array_key = "items",
                                     iteration_input_key = "default",
                                     batch_size = 1,
-                                    failure_strategy = "collect_errors",
+                                    on_error = "continue",
                                     data_targets = {
                                         {
                                             data_type = consts.DATA_TYPE.WORKFLOW_OUTPUT,
@@ -1694,23 +1693,17 @@ local function define_tests()
                         end
                     end
 
-                    test.not_nil(output_content.successes)
-                    test.not_nil(output_content.failures)
-                    test.eq(#output_content.successes, 3)
-                    test.eq(#output_content.failures, 0)
-                    test.eq(output_content.success_count, 3)
-                    test.eq(output_content.failure_count, 0)
-                    test.eq(output_content.total_iterations, 3)
+                    test.eq(#output_content, 3)
 
-                    for i, success in ipairs(output_content.successes) do
-                        test.eq(success.iteration, i)
-                        test.not_nil(success.item)
-                        test.contains(success.item.message, "Process item")
-                        test.not_nil(success.result)
+                    for i, entry in ipairs(output_content) do
+                        test.eq(entry.iteration, i)
+                        test.not_nil(entry.item)
+                        test.contains(entry.item.message, "Process item")
+                        test.not_nil(entry.result)
 
-                        local parsed_result: any = success.result
-                        if type(success.result) == "string" then
-                            local decoded, decode_err = json.decode(success.result)
+                        local parsed_result: any = entry.result
+                        if type(entry.result) == "string" then
+                            local decoded, decode_err = json.decode(entry.result)
                             if not decode_err then
                                 parsed_result = decoded
                             end
@@ -1718,7 +1711,7 @@ local function define_tests()
 
                         test.eq(parsed_result.processed_by, "test_function")
                         test.is_true(parsed_result.success)
-                        print("  Iteration", i, "processed:", success.item.message)
+                        print("  Iteration", i, "processed:", entry.item.message)
                     end
 
                     print("=== BASIC MAP-REDUCE INTEGRATION TEST COMPLETE ===")
@@ -1755,7 +1748,7 @@ local function define_tests()
                                 config = {
                                     source_array_key = "items",
                                     batch_size = 2,
-                                    failure_strategy = "collect_errors",
+                                    on_error = "continue",
                                     data_targets = {
                                         {
                                             data_type = consts.DATA_TYPE.WORKFLOW_OUTPUT,
@@ -1838,10 +1831,9 @@ local function define_tests()
                         end
                     end
 
-                    test.eq(output_content.success_count, 5)
-                    test.eq(output_content.total_iterations, 5)
+                    test.eq(#output_content, 5)
 
-                    print("Batch processing completed with", output_content.success_count, "successes")
+                    print("Batch processing completed with", #output_content, "successes")
                     print("=== BATCH PROCESSING TEST COMPLETE ===")
                 end)
             end)
@@ -1874,7 +1866,7 @@ local function define_tests()
                                 status = consts.STATUS.PENDING,
                                 config = {
                                     source_array_key = "items",
-                                    failure_strategy = "collect_errors",
+                                    on_error = "continue",
                                     item_steps = {
                                         {
                                             type = "map",
@@ -1966,12 +1958,12 @@ local function define_tests()
                         end
                     end
 
-                    test.eq(output_content.success_count, 2)
+                    test.eq(#output_content, 2)
 
-                    for _, success in ipairs(output_content.successes) do
-                        test.eq(success.result.compressed_by, "compress_item")
-                        test.not_nil(success.result.original_data)
-                        print("Item compressed:", success.item.message)
+                    for _, entry in ipairs(output_content) do
+                        test.eq(entry.result.compressed_by, "compress_item")
+                        test.not_nil(entry.result.original_data)
+                        print("Item compressed:", entry.item.message)
                     end
 
                     print("=== ITEM PIPELINE COMPRESS TEST COMPLETE ===")
@@ -2005,7 +1997,7 @@ local function define_tests()
                                 status = consts.STATUS.PENDING,
                                 config = {
                                     source_array_key = "items",
-                                    failure_strategy = "collect_errors",
+                                    on_error = "continue",
                                     item_steps = {
                                         {
                                             type = "filter",
@@ -2098,12 +2090,11 @@ local function define_tests()
                         end
                     end
 
-                    test.eq(output_content.success_count, 2)
-                    test.eq(output_content.total_iterations, 3)
+                    test.eq(#output_content, 2)
 
-                    for _, success in ipairs(output_content.successes) do
-                        test.gte(success.item.value, 20)
-                        print("Item passed filter:", success.item.message, "value:", success.item.value)
+                    for _, entry in ipairs(output_content) do
+                        test.gte(entry.item.value, 20)
+                        print("Item passed filter:", entry.item.message, "value:", entry.item.value)
                     end
 
                     print("=== ITEM PIPELINE VALIDATION TEST COMPLETE ===")
@@ -2139,7 +2130,7 @@ local function define_tests()
                                 status = consts.STATUS.PENDING,
                                 config = {
                                     source_array_key = "items",
-                                    failure_strategy = "collect_errors",
+                                    on_error = "continue",
                                     reduction_extract = "successes",
                                     reduction_steps = {
                                         {
@@ -2274,7 +2265,7 @@ local function define_tests()
                                 status = consts.STATUS.PENDING,
                                 config = {
                                     source_array_key = "items",
-                                    failure_strategy = "collect_errors",
+                                    on_error = "continue",
                                     reduction_extract = "successes",
                                     reduction_steps = {
                                         {
@@ -2434,7 +2425,7 @@ local function define_tests()
                                 config = {
                                     source_array_key = "items",
                                     batch_size = 1,
-                                    failure_strategy = "fail_fast",
+                                    on_error = "fail_fast",
                                     data_targets = {
                                         {
                                             data_type = consts.DATA_TYPE.WORKFLOW_OUTPUT,
@@ -2507,8 +2498,8 @@ local function define_tests()
                     print("=== FAIL_FAST INTEGRATION TEST COMPLETE ===")
                 end)
 
-                it("should handle collect_errors strategy correctly", function()
-                    print("=== COLLECT_ERRORS INTEGRATION TEST START ===")
+                it("should handle continue strategy correctly", function()
+                    print("=== CONTINUE STRATEGY INTEGRATION TEST START ===")
 
                     local c, err = client.new()
                     test.is_nil(err)
@@ -2536,7 +2527,7 @@ local function define_tests()
                                 config = {
                                     source_array_key = "items",
                                     batch_size = 1,
-                                    failure_strategy = "collect_errors",
+                                    on_error = "continue",
                                     data_targets = {
                                         {
                                             data_type = consts.DATA_TYPE.WORKFLOW_OUTPUT,
@@ -2619,14 +2610,24 @@ local function define_tests()
                         end
                     end
 
-                    test.eq(output_content.success_count, 2)
-                    test.eq(output_content.failure_count, 1)
-                    test.eq(output_content.total_iterations, 3)
+                    test.eq(#output_content, 3)
 
-                    print("Collect_errors strategy processed all items:")
-                    print("  Successes:", output_content.success_count)
-                    print("  Failures:", output_content.failure_count)
-                    print("=== COLLECT_ERRORS INTEGRATION TEST COMPLETE ===")
+                    local successes = 0
+                    local failures = 0
+                    for _, entry in ipairs(output_content) do
+                        if entry.error then
+                            failures = failures + 1
+                        else
+                            successes = successes + 1
+                        end
+                    end
+                    test.eq(successes, 2)
+                    test.eq(failures, 1)
+
+                    print("Continue strategy processed all items:")
+                    print("  Successes:", successes)
+                    print("  Failures:", failures)
+                    print("=== CONTINUE STRATEGY INTEGRATION TEST COMPLETE ===")
                 end)
             end)
         end)
