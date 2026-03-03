@@ -1656,6 +1656,7 @@ local function define_tests()
                                 data_type = consts.DATA_TYPE.NODE_INPUT,
                                 node_id = parallel_node_id,
                                 key = input_data_id,
+                                discriminator = "default",
                                 content = "",
                                 content_type = "dataflow/reference"
                             }
@@ -1798,6 +1799,7 @@ local function define_tests()
                                 data_type = consts.DATA_TYPE.NODE_INPUT,
                                 node_id = parallel_node_id,
                                 key = input_data_id,
+                                discriminator = "default",
                                 content = "",
                                 content_type = "dataflow/reference"
                             }
@@ -1925,6 +1927,7 @@ local function define_tests()
                                 data_type = consts.DATA_TYPE.NODE_INPUT,
                                 node_id = parallel_node_id,
                                 key = input_data_id,
+                                discriminator = "default",
                                 content = "",
                                 content_type = "dataflow/reference"
                             }
@@ -2057,6 +2060,7 @@ local function define_tests()
                                 data_type = consts.DATA_TYPE.NODE_INPUT,
                                 node_id = parallel_node_id,
                                 key = input_data_id,
+                                discriminator = "default",
                                 content = "",
                                 content_type = "dataflow/reference"
                             }
@@ -2194,6 +2198,7 @@ local function define_tests()
                                 data_type = consts.DATA_TYPE.NODE_INPUT,
                                 node_id = parallel_node_id,
                                 key = input_data_id,
+                                discriminator = "default",
                                 content = "",
                                 content_type = "dataflow/reference"
                             }
@@ -2340,6 +2345,7 @@ local function define_tests()
                                 data_type = consts.DATA_TYPE.NODE_INPUT,
                                 node_id = parallel_node_id,
                                 key = input_data_id,
+                                discriminator = "default",
                                 content = "",
                                 content_type = "dataflow/reference"
                             }
@@ -2475,6 +2481,7 @@ local function define_tests()
                                 data_type = consts.DATA_TYPE.NODE_INPUT,
                                 node_id = parallel_node_id,
                                 key = input_data_id,
+                                discriminator = "default",
                                 content = "",
                                 content_type = "dataflow/reference"
                             }
@@ -2489,10 +2496,9 @@ local function define_tests()
                     test.is_nil(create_err)
 
                     local result, exec_err = c:execute(dataflow_id)
-                    test.is_nil(exec_err)
-
-                    test.is_false(result.success)
-                    test.contains(result.error, "Iteration failed")
+                    test.is_nil(result)
+                    test.not_nil(exec_err)
+                    test.contains(exec_err, "Iteration failed")
 
                     print("Fail_fast strategy correctly failed the workflow")
                     print("=== FAIL_FAST INTEGRATION TEST COMPLETE ===")
@@ -2577,6 +2583,7 @@ local function define_tests()
                                 data_type = consts.DATA_TYPE.NODE_INPUT,
                                 node_id = parallel_node_id,
                                 key = input_data_id,
+                                discriminator = "default",
                                 content = "",
                                 content_type = "dataflow/reference"
                             }

@@ -363,9 +363,9 @@ local function define_tests()
                                     required = { "user_data", "grade_data" }
                                 },
                                 input_transform = {
-                                    summary = "len(input)",
-                                    user_name = "input.user_data.content.name",
-                                    final_grade = "input.grade_data.content.grade"
+                                    summary = "len(inputs)",
+                                    user_name = "inputs.user_data.name",
+                                    final_grade = "inputs.grade_data.grade"
                                 },
                                 data_targets = {
                                     {

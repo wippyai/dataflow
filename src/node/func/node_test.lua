@@ -63,6 +63,7 @@ local function define_tests()
                             data_type = consts.DATA_TYPE.NODE_INPUT,
                             node_id = node_id,
                             key = input_data_id,
+                            discriminator = "default",
                             content = "",
                             content_type = "dataflow/reference"
                         }
@@ -161,6 +162,7 @@ local function define_tests()
                             data_type = consts.DATA_TYPE.NODE_INPUT,
                             node_id = node_id,
                             key = input_data_id,
+                            discriminator = "default",
                             content = "",
                             content_type = "dataflow/reference"
                         }
@@ -236,6 +238,7 @@ local function define_tests()
                             data_type = consts.DATA_TYPE.NODE_INPUT,
                             node_id = node_id,
                             key = input_data_id,
+                            discriminator = "default",
                             content = "",
                             content_type = "dataflow/reference"
                         }
@@ -250,9 +253,9 @@ local function define_tests()
                 test.is_nil(create_err)
 
                 local result, exec_err = c:execute(dataflow_id)
-                test.is_nil(exec_err)
-                test.is_false(result.success)
-                test.contains(result.error, "Function ID not specified")
+                test.not_nil(exec_err)
+                test.is_nil(result)
+                test.contains(exec_err, "Function ID not specified")
 
                 print("Function node correctly failed with missing func_id")
             end)
@@ -294,9 +297,9 @@ local function define_tests()
                 test.is_nil(create_err)
 
                 local result, exec_err = c:execute(dataflow_id)
-                test.is_nil(exec_err)
-                test.is_false(result.success)
-                test.contains(result.error, "No input data provided")
+                test.not_nil(exec_err)
+                test.is_nil(result)
+                test.contains(exec_err, "No input data provided")
 
                 print("Function node correctly failed with no input data")
             end)
@@ -348,6 +351,7 @@ local function define_tests()
                             data_type = consts.DATA_TYPE.NODE_INPUT,
                             node_id = node_id,
                             key = input_data_id,
+                            discriminator = "default",
                             content = "",
                             content_type = "dataflow/reference"
                         }
@@ -362,9 +366,9 @@ local function define_tests()
                 test.is_nil(create_err)
 
                 local result, exec_err = c:execute(dataflow_id)
-                test.is_nil(exec_err)
-                test.is_false(result.success)
-                test.contains(result.error, "failed")
+                test.not_nil(exec_err)
+                test.is_nil(result)
+                test.contains(exec_err, "failed")
 
                 print("Function node correctly failed with nonexistent function")
             end)
@@ -426,6 +430,7 @@ local function define_tests()
                             data_type = consts.DATA_TYPE.NODE_INPUT,
                             node_id = node_id,
                             key = input_data_id,
+                            discriminator = "default",
                             content = "",
                             content_type = "dataflow/reference"
                         }
@@ -514,6 +519,7 @@ local function define_tests()
                             data_type = consts.DATA_TYPE.NODE_INPUT,
                             node_id = node_id,
                             key = input_data_id,
+                            discriminator = "default",
                             content = "",
                             content_type = "dataflow/reference"
                         }
@@ -660,6 +666,7 @@ local function define_tests()
                             data_type = consts.DATA_TYPE.NODE_INPUT,
                             node_id = node_id,
                             key = input_data_id,
+                            discriminator = "default",
                             content = "",
                             content_type = "dataflow/reference"
                         }
@@ -753,6 +760,7 @@ local function define_tests()
                             data_type = consts.DATA_TYPE.NODE_INPUT,
                             node_id = node_id,
                             key = input_data_id,
+                            discriminator = "default",
                             content = "",
                             content_type = "dataflow/reference"
                         }
@@ -843,6 +851,7 @@ local function define_tests()
                             data_type = consts.DATA_TYPE.NODE_INPUT,
                             node_id = node_id,
                             key = input_data_id,
+                            discriminator = "default",
                             content = "",
                             content_type = "dataflow/reference"
                         }

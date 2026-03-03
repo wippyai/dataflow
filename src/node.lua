@@ -61,10 +61,19 @@ local function create_transform_env(raw_inputs)
         end
     end
 
+    local primary_input
+    if input_count == 1 then
+        for _, content in pairs(inputs_by_key) do
+            primary_input = content
+            break
+        end
+    else
+        primary_input = default_content
+    end
+
     return {
-        input = raw_inputs,
-        inputs = inputs_by_key,
-        default = default_content
+        input = primary_input,
+        inputs = inputs_by_key
     }
 end
 
@@ -186,8 +195,7 @@ function methods:_transform_inputs_with_expr(raw_inputs, transform_config)
         result[field_name] = {
             content = content,
             metadata = {},
-            key = field_name,
-            discriminator = nil
+            discriminator = field_name
         }
     end
     return result, nil
@@ -237,7 +245,7 @@ function methods:inputs()
     if transform_config then
         local transformed, err = self:_transform_inputs_with_expr(raw_inputs, transform_config)
         if err then
-            error(err)
+            return nil, err
         end
         self._cached_inputs = transformed
         return transformed, nil
@@ -249,12 +257,12 @@ end
 
 function methods:input(key)
     if not key then
-        error("Input key is required")
+        return nil, "Input key is required"
     end
 
     local inputs_map, err = self:inputs()
     if err then
-        error(err)
+        return nil, err
     end
     return inputs_map[key], nil
 end
@@ -639,7 +647,12 @@ function methods:complete(output_content, message, extra_metadata)
     if output_content ~= nil then
         local routed_ids, route_err = self:_route_outputs(output_content)
         if route_err then
-            error(route_err)
+            return {
+                success = false,
+                message = "Node [" .. self.node_id .. "] failed to route outputs: " .. (route_err :: string),
+                error = route_err,
+                data_ids = table.create(0, 0)
+            }
         end
         data_ids = routed_ids
     end

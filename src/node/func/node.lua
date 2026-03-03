@@ -54,8 +54,12 @@ local function merge_inputs_with_base_args(inputs, base_args)
         end
 
         if input_count == 1 then
-            for _, input in pairs(inputs) do
-                return input.content
+            for discriminator, input in pairs(inputs) do
+                if discriminator == "default" or discriminator == "" then
+                    return input.content
+                else
+                    return {[discriminator] = input.content}
+                end
             end
         end
 
