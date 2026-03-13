@@ -21,12 +21,9 @@ entries:
     file: ":memory:"
 
   - name: env_storage
-    kind: env.storage.file
+    kind: env.storage.os
     meta:
       type: envstorage
-      comment: Local env storage for bootloader/session/llm requirements
-    file_path: ./.wippy/test.env
-    auto_create: true
 
   - name: processes
     kind: process.host
