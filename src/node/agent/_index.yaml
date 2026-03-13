@@ -130,4 +130,27 @@ entries:
       agent_consts: userspace.dataflow.node.agent:consts
       data_reader: userspace.dataflow.persist:data_reader
     method: prompt_builder
-    
+
+  # userspace.dataflow.node.agent:agent_truncation_test
+  - name: agent_truncation_test
+    kind: function.lua
+    meta:
+      name: Agent Node Truncation Test
+      type: test
+      comment: Integration test verifying agent node handles truncated LLM responses
+      group: Workflow / Agent Node
+      tags:
+        - dataflow
+        - agent
+        - truncation
+        - test
+    source: file://agent_truncation_test.lua
+    modules:
+      - uuid
+    imports:
+      client: userspace.dataflow:client
+      consts: userspace.dataflow:consts
+      data_reader: userspace.dataflow.persist:data_reader
+      agent_consts: userspace.dataflow.node.agent:consts
+      test: wippy.test:test
+    method: run_tests
