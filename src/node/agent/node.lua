@@ -746,6 +746,28 @@ local function run(args)
             }, step_err)
         end
 
+        if agent_result.truncated then
+            total_tokens = accumulate_tokens(total_tokens, agent_result.tokens)
+
+            local status_msg = build_status_message(iteration, max_iterations, total_tokens, tool_calls_count, false, false)
+            update_node_progress(n, iteration, max_iterations, total_tokens, tool_calls_count, status_msg, agent_id, model_name)
+
+            store_agent_action(n, agent_result, iteration, agent_id, model_name, exit_tool_name, {})
+
+            n:data(agent_consts.DATA_TYPE.AGENT_OBSERVATION, agent_consts.FEEDBACK.OUTPUT_TRUNCATED, {
+                key = iteration .. "_truncation_warning",
+                content_type = consts.CONTENT_TYPE.TEXT,
+                node_id = n.node_id,
+                metadata = {
+                    iteration = iteration,
+                    truncated = true
+                }
+            })
+
+            n:yield()
+            goto continue_loop
+        end
+
         local regular_tool_calls = (agent_result.tool_calls or {}) :: { ToolCall }
         local delegate_calls = agent_result.delegate_calls or {}
 
@@ -946,6 +968,8 @@ local function run(args)
             task_complete, final_result = check_completion(tool_calling, agent_result, iteration, min_iterations,
                 exit_tool_name, n)
         end
+
+        ::continue_loop::
     end
 
     if not task_complete and iteration >= max_iterations then
