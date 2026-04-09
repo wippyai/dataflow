@@ -161,9 +161,11 @@ end
 
 function methods:_reset_running_nodes()
     local reset_commands = {}
+    self._reset_node_ids = {}
 
     for node_id, node_data in pairs(self.nodes) do
         if node_data.status == consts.STATUS.RUNNING then
+            self._reset_node_ids[node_id] = true
             table.insert(reset_commands, {
                 type = consts.COMMAND_TYPES.UPDATE_NODE,
                 payload = {
@@ -242,12 +244,22 @@ function methods:_reconstruct_active_yields()
                 end
             end
 
+            -- signal yields for reset nodes should not be reconstructed
+            -- (node process is dead, will re-yield when re-run)
+            local is_signal_yield = yield_context.wait_for_signal
+            local was_reset = self._reset_node_ids and self._reset_node_ids[parent_node_id]
+            if is_signal_yield and was_reset then
+                goto continue
+            end
+
             local yield_info = {
                 yield_id = yield_id,
                 reply_to = reply_to,
                 pending_children = pending_children,
                 results = results,
-                child_path = child_path
+                child_path = child_path,
+                wait_for_signal = yield_context.wait_for_signal,
+                signal_id = yield_context.signal_id,
             }
 
             self.active_yields[parent_node_id] = yield_info
@@ -623,6 +635,21 @@ function methods:handle_process_exit(pid, success, result)
 end
 
 function methods:track_yield(node_id, yield_info)
+    -- for signal yields, check if matching signal data already exists in DB
+    -- (e.g. signal arrived while orchestrator was down, node re-ran and re-yielded)
+    if yield_info.wait_for_signal and yield_info.signal_id and not yield_info.signal_data then
+        local signal_records = data_reader.with_dataflow(self.dataflow_id)
+            :with_data_types(consts.DATA_TYPE.NODE_SIGNAL)
+            :all()
+        for _, sig in ipairs(signal_records) do
+            local sig_key = sig.key or sig.discriminator
+            if sig_key == yield_info.signal_id then
+                yield_info.signal_data = sig.content
+                break
+            end
+        end
+    end
+
     self.active_yields[node_id] = yield_info
     return self
 end

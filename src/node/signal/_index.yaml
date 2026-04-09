@@ -50,3 +50,25 @@ entries:
       commit: userspace.dataflow.persist:commit
       data_reader: userspace.dataflow.persist:data_reader
     method: run_tests
+
+  - name: recovery_test
+    kind: function.lua
+    meta:
+      type: test
+      suite: signal_recovery
+      comment: Signal node recovery and durability tests
+    source: file://recovery_test.lua
+    modules:
+      - sql
+      - json
+      - uuid
+      - time
+      - process
+      - security
+      - funcs
+    imports:
+      test: wippy.test:test
+      consts: userspace.dataflow:consts
+      client: userspace.dataflow:client
+      data_reader: userspace.dataflow.persist:data_reader
+    method: run_tests

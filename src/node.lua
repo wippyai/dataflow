@@ -406,7 +406,9 @@ function methods.yield(self: table, options)
                 yield_id = yield_id,
                 reply_to = self._yield_reply_topic,
                 yield_context = {
-                    run_nodes = options.run_nodes or table.create(0, 0)
+                    run_nodes = options.run_nodes or table.create(0, 0),
+                    wait_for_signal = options.wait_for_signal,
+                    signal_id = options.signal_id,
                 }
             },
             content_type = consts.CONTENT_TYPE.JSON,
@@ -429,7 +431,9 @@ function methods.yield(self: table, options)
             reply_to = self._yield_reply_topic
         },
         yield_context = {
-            run_nodes = options.run_nodes or table.create(0, 0)
+            run_nodes = options.run_nodes or table.create(0, 0),
+            wait_for_signal = options.wait_for_signal,
+            signal_id = options.signal_id,
         }
     }
 
