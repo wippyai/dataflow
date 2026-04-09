@@ -20,10 +20,9 @@ local function run(args)
         signal_id = uuid.v7()
     end
 
-    local consts = signal._deps.consts
-
-    -- yield with wait_for_signal flag; orchestrator will not reply until
-    -- an external commit delivers NODE_SIGNAL data with matching signal_id
+    -- yield with wait_for_signal flag
+    -- orchestrator tracks the yield and waits for external NODE_SIGNAL commit
+    -- this blocks until the signal arrives or the process is terminated
     local results, yield_err = n:yield({
         wait_for_signal = true,
         signal_id = signal_id,
@@ -34,6 +33,12 @@ local function run(args)
             code = "SIGNAL_YIELD_FAILED",
             message = tostring(yield_err)
         }, "Signal yield failed: " .. tostring(yield_err))
+    end
+
+    -- nil results means the channel was closed (graceful shutdown)
+    -- the yield state is persisted, so on restart it resumes
+    if results == nil then
+        return 0
     end
 
     return n:complete(results, "Signal received: " .. signal_id)
