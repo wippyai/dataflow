@@ -373,6 +373,17 @@ function methods:_update_state_from_results(results)
                 end
                 local key = payload.discriminator or payload.key or "default"
                 self.input_tracker.available[payload.node_id][key] = true
+            elseif payload.data_type == consts.DATA_TYPE.NODE_SIGNAL then
+                -- deliver signal data to the matching waiting yield
+                local signal_id = payload.key or payload.discriminator
+                if signal_id then
+                    for node_id, yield_info in pairs(self.active_yields) do
+                        if yield_info.wait_for_signal and yield_info.signal_id == signal_id then
+                            yield_info.signal_data = payload.content
+                            break
+                        end
+                    end
+                end
             end
         end
 

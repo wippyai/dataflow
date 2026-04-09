@@ -1,0 +1,52 @@
+version: "1.0"
+namespace: userspace.dataflow.node.signal
+
+entries:
+  - name: node
+    kind: process.lua
+    meta:
+      name: Signal Wait Node
+      comment: Pauses workflow execution until an external signal is received
+      tags:
+        - dataflow
+        - node
+        - signal
+        - wait
+        - hil
+        - durable
+      description: "A dataflow node that yields and waits for an external signal.\nThe yield state is persisted to database, surviving process crashes.\nExternal code sends a signal via client:signal(dataflow_id, signal_id, data)\nto resume the workflow.\n"
+      default_host: app:processes
+    source: file://node.lua
+    modules:
+      - json
+      - uuid
+    imports:
+      consts: userspace.dataflow:consts
+      node: userspace.dataflow:node
+    method: run
+
+  - name: signal_test
+    kind: function.lua
+    meta:
+      type: test
+      suite: signal
+      comment: Signal node tests
+    source: file://signal_test.lua
+    modules:
+      - sql
+      - json
+      - uuid
+      - time
+      - security
+      - funcs
+    imports:
+      test: wippy.test:test
+      consts: userspace.dataflow:consts
+      signal_node: userspace.dataflow.node.signal:node
+      client: userspace.dataflow:client
+      scheduler: userspace.dataflow.runner:scheduler
+      workflow_state: userspace.dataflow.runner:workflow_state
+      dataflow_repo: userspace.dataflow.persist:dataflow_repo
+      commit: userspace.dataflow.persist:commit
+      data_reader: userspace.dataflow.persist:data_reader
+    method: run_tests

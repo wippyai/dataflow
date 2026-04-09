@@ -398,8 +398,21 @@ local function handle_yield_request(state, msg_payload, from_pid)
     end
 
     if #run_nodes == 0 then
+        local wait_for_signal = yield_context.wait_for_signal
         local reply_to = msg_payload and msg_payload.request_context and msg_payload.request_context.reply_to
-        if type(reply_to) == "string" and yield_id then
+
+        if wait_for_signal then
+            -- signal yield: track the yield and wait for external SATISFY_SIGNAL commit
+            local yield_info = {
+                yield_id = yield_id,
+                reply_to = reply_to,
+                signal_id = yield_context.signal_id or yield_id,
+                pending_children = {},
+                results = {},
+                wait_for_signal = true,
+            }
+            state.workflow_state:track_yield(node_id, yield_info)
+        elseif type(reply_to) == "string" and yield_id then
             orchestrator.process.send(from_pid, reply_to, {
                 yield_id = yield_id,
                 response_data = {
@@ -573,8 +586,16 @@ local function run(args)
         exit_result = nil
     }
 
-    -- Register process and set options
-    orchestrator.process.registry.register("dataflow." .. dataflow_id)
+    -- Register process — if another orchestrator is already running, exit
+    local _, reg_err = orchestrator.process.registry.register("dataflow." .. dataflow_id)
+    if reg_err then
+        return {
+            success = true,
+            dataflow_id = dataflow_id,
+            error = nil,
+            message = "Another orchestrator is already running for this workflow"
+        }
+    end
     orchestrator.process.set_options({ trap_links = true })
 
     -- Load workflow state

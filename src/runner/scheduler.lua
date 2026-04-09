@@ -74,7 +74,19 @@ end
 
 local function find_yield_driven_work(state)
     for parent_id, yield_info in pairs(state.active_yields) do
-        if yield_children_complete(yield_info) then
+        -- signal yields wait for external data, not child completion
+        if yield_info.wait_for_signal then
+            -- check if signal data has arrived
+            if yield_info.signal_data then
+                return create_decision(DECISION_TYPE.SATISFY_YIELD, {
+                    parent_id = parent_id,
+                    yield_id = yield_info.yield_id,
+                    reply_to = yield_info.reply_to,
+                    results = yield_info.signal_data
+                })
+            end
+            -- signal not received yet, skip this yield
+        elseif yield_children_complete(yield_info) then
             return create_decision(DECISION_TYPE.SATISFY_YIELD, {
                 parent_id = parent_id,
                 yield_id = yield_info.yield_id,

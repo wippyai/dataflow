@@ -239,6 +239,27 @@ function FlowBuilder:parallel(config)
     return self:_add_operation(compiler.OP_TYPES.PARALLEL, parallel_config)
 end
 
+function FlowBuilder:signal(config)
+    config = config or {}
+
+    local signal_config = {
+        signal_id = config.signal_id,
+        timeout = config.timeout,
+        inputs = config.inputs,
+        metadata = config.metadata,
+        input_transform = config.input_transform,
+    }
+
+    if not (signal_config.metadata and signal_config.metadata.title) then
+        if not signal_config.metadata then
+            signal_config.metadata = {}
+        end
+        signal_config.metadata.title = "Signal: " .. (config.signal_id or "auto")
+    end
+
+    return self:_add_operation(compiler.OP_TYPES.SIGNAL, signal_config)
+end
+
 function FlowBuilder:join(config)
     config = config or {}
 

@@ -383,4 +383,48 @@ function methods:get_status(dataflow_id)
     return workflow.status, nil
 end
 
+-- Send a signal to a waiting signal node in a workflow.
+-- If the orchestrator is dead, respawns it to process the signal from the outbox.
+function methods:signal(dataflow_id, signal_id, data)
+    if not dataflow_id or dataflow_id == "" then
+        return nil, "Workflow ID is required"
+    end
+    if not signal_id or signal_id == "" then
+        return nil, "Signal ID is required"
+    end
+
+    -- 1. Write signal commit to outbox (durable, survives crashes)
+    local op_id = uuid.v7()
+    local result, err = self._deps.commit.submit(dataflow_id, op_id, {
+        {
+            type = consts.COMMAND_TYPES.CREATE_DATA,
+            payload = {
+                data_id = uuid.v7(),
+                data_type = consts.DATA_TYPE.NODE_SIGNAL,
+                content = data or {},
+                content_type = consts.CONTENT_TYPE.JSON,
+                key = signal_id,
+            }
+        }
+    })
+
+    if err then
+        return nil, "Failed to send signal: " .. tostring(err)
+    end
+
+    -- 2. Check if orchestrator is alive
+    local pid = self._deps.process.registry.lookup("dataflow." .. dataflow_id)
+    if not pid then
+        -- Orchestrator is dead — respawn it.
+        -- It will load state from DB + pending commits (including our signal).
+        -- If another caller also respawns, the duplicate orchestrator detects
+        -- the name conflict on registry.register and exits gracefully.
+        self._deps.process.spawn(consts.ORCHESTRATOR, consts.HOST_ID, {
+            dataflow_id = dataflow_id
+        })
+    end
+
+    return result, nil
+end
+
 return client

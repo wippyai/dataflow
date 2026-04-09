@@ -12,6 +12,7 @@ compiler.OP_TYPES = {
     AGENT = "agent",
     CYCLE = "cycle",
     PARALLEL = "parallel",
+    SIGNAL = "signal",
     STATE = "state",
     USE = "use",
     AS = "as",
@@ -490,6 +491,18 @@ function compiler.build_graph(operations, session_context)
 
             if op.config.template then
                 graph:create_template_nodes(op.config.template, node_id)
+            end
+        elseif op.type == compiler.OP_TYPES.SIGNAL then
+            local config = {
+                signal_id = op.config.signal_id,
+                timeout = op.config.timeout,
+                inputs = op.config.inputs,
+                input_transform = op.config.input_transform,
+            }
+
+            local node_id, err = graph:create_node("userspace.dataflow.node.signal:node", config, op.config.metadata)
+            if err then
+                return nil, err
             end
         elseif op.type == compiler.OP_TYPES.STATE then
             local config = {
