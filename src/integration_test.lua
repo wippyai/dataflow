@@ -81,12 +81,10 @@ local function define_tests()
                             data_id = node_input_id,
                             data_type = consts.DATA_TYPE.NODE_INPUT,
                             node_id = node_id,
-                            key = input_data_id, -- Reference to the input data
+                            key = input_data_id,
+                            discriminator = "default",
                             content = "",
-                            content_type = "dataflow/reference",
-                            metadata = {
-                                input_key = "default"
-                            }
+                            content_type = "dataflow/reference"
                         }
                     }
                 }
@@ -247,6 +245,7 @@ local function define_tests()
                             data_type = consts.DATA_TYPE.NODE_INPUT,
                             node_id = node_id,
                             key = input_data_id,
+                            discriminator = "default",
                             content = "",
                             content_type = "dataflow/reference"
                         }
@@ -340,6 +339,7 @@ local function define_tests()
                             data_type = consts.DATA_TYPE.NODE_INPUT,
                             node_id = node_id,
                             key = input_data_id,
+                            discriminator = "default",
                             content = "",
                             content_type = "dataflow/reference"
                         }
@@ -355,7 +355,6 @@ local function define_tests()
 
                 local result, exec_err = (c :: any):execute(dataflow_id :: string)
                 test.not_nil(exec_err)
-
                 -- Function => node failure => failed workflow
                 test.is_false(result.success)
                 test.contains(result.error, "Intentional semantic failure")
@@ -412,6 +411,7 @@ local function define_tests()
                             data_type = consts.DATA_TYPE.NODE_INPUT,
                             node_id = node_id,
                             key = input_data_id,
+                            discriminator = "default",
                             content = "",
                             content_type = "dataflow/reference"
                         }
@@ -427,7 +427,6 @@ local function define_tests()
 
                 local result, exec_err = (c :: any):execute(dataflow_id :: string)
                 test.not_nil(exec_err)
-
                 -- Should fail at workflow level because func node fails
                 test.is_false(result.success)
                 test.contains(result.error, "failed")
@@ -497,6 +496,7 @@ local function define_tests()
                             data_type = consts.DATA_TYPE.NODE_INPUT,
                             node_id = node_id,
                             key = input_data_id,
+                            discriminator = "default",
                             content = "",
                             content_type = "dataflow/reference"
                         }
@@ -512,7 +512,6 @@ local function define_tests()
 
                 local result, exec_err = (c :: any):execute(dataflow_id :: string)
                 test.not_nil(exec_err)
-
                 -- Should fail at workflow level
                 test.is_false(result.success)
                 test.contains(result.error, "failed")
@@ -571,6 +570,7 @@ local function define_tests()
                             data_type = consts.DATA_TYPE.NODE_INPUT,
                             node_id = node_id,
                             key = input_data_id,
+                            discriminator = "default",
                             content = "",
                             content_type = "dataflow/reference"
                         }
@@ -586,7 +586,6 @@ local function define_tests()
 
                 local result, exec_err = (c :: any):execute(dataflow_id :: string)
                 test.not_nil(exec_err)
-
                 -- Should fail at workflow level
                 test.is_false(result.success)
                 test.contains(result.error, "failed")
@@ -637,7 +636,6 @@ local function define_tests()
 
                 local result, exec_err = (c :: any):execute(dataflow_id :: string)
                 test.not_nil(exec_err)
-
                 -- Should fail at workflow level
                 test.is_false(result.success)
                 test.contains(result.error, "No input data provided")
@@ -691,6 +689,7 @@ local function define_tests()
                             data_type = consts.DATA_TYPE.NODE_INPUT,
                             node_id = node_id,
                             key = input_data_id,
+                            discriminator = "default",
                             content = "",
                             content_type = "dataflow/reference"
                         }
@@ -706,8 +705,7 @@ local function define_tests()
 
                 local result, exec_err = (c :: any):execute(dataflow_id :: string)
                 test.not_nil(exec_err)
-
-                -- Should succeed even without data targets
+                -- Workflow fails without data targets producing output.
                 test.is_false(result.success)
                 test.contains(result.error, "Workflow completed without producing outpu")
             end)
@@ -767,6 +765,7 @@ local function define_tests()
                             data_type = consts.DATA_TYPE.NODE_INPUT,
                             node_id = node_id,
                             key = input_data_id,
+                            discriminator = "default",
                             content = "",
                             content_type = "dataflow/reference"
                         }
@@ -855,6 +854,7 @@ local function define_tests()
                             data_type = consts.DATA_TYPE.NODE_INPUT,
                             node_id = node_id,
                             key = input_data_id,
+                            discriminator = "default",
                             content = "",
                             content_type = "dataflow/reference"
                         }
@@ -984,6 +984,7 @@ local function define_tests()
                             data_type = consts.DATA_TYPE.NODE_INPUT,
                             node_id = node_a_id,
                             key = input_data_id,
+                            discriminator = "default",
                             content = "",
                             content_type = "dataflow/reference"
                         }
@@ -1160,6 +1161,7 @@ local function define_tests()
                             data_type = consts.DATA_TYPE.NODE_INPUT,
                             node_id = node_a_id,
                             key = input_data_id,
+                            discriminator = "default",
                             content = "",
                             content_type = "dataflow/reference"
                         }
@@ -1456,6 +1458,7 @@ local function define_tests()
                             data_type = consts.DATA_TYPE.NODE_INPUT,
                             node_id = node_a_id,
                             key = input_data_id,
+                            discriminator = "default",
                             content = "",
                             content_type = "dataflow/reference"
                         }

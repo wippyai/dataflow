@@ -61,10 +61,19 @@ local function create_transform_env(raw_inputs)
         end
     end
 
+    local primary_input
+    if input_count == 1 then
+        for _, content in pairs(inputs_by_key) do
+            primary_input = content
+            break
+        end
+    else
+        primary_input = default_content
+    end
+
     return {
-        input = raw_inputs,
-        inputs = inputs_by_key,
-        default = default_content
+        input = primary_input,
+        inputs = inputs_by_key
     }
 end
 
@@ -186,8 +195,7 @@ function methods:_transform_inputs_with_expr(raw_inputs, transform_config)
         result[field_name] = {
             content = content,
             metadata = {},
-            key = field_name,
-            discriminator = nil
+            discriminator = field_name
         }
     end
     return result, nil

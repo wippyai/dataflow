@@ -21,12 +21,26 @@ parallel._deps = {
 parallel.DEFAULTS = {
     BATCH_SIZE = 1,
     ITERATION_INPUT_KEY = "default",
-    FAILURE_STRATEGY = "collect_errors"
+    FAILURE_STRATEGY = "collect_errors",
+    ON_ERROR = "continue",
+    FILTER = "all",
+    UNWRAP = false
+}
+
+parallel.ON_ERROR_STRATEGIES = {
+    FAIL_FAST = "fail_fast",
+    CONTINUE = "continue"
 }
 
 parallel.FAILURE_STRATEGIES = {
-    FAIL_FAST = "fail_fast",
+    FAIL_FAST = parallel.ON_ERROR_STRATEGIES.FAIL_FAST,
     COLLECT_ERRORS = "collect_errors"
+}
+
+parallel.FILTER_STRATEGIES = {
+    ALL = "all",
+    SUCCESSES = "successes",
+    FAILURES = "failures"
 }
 
 parallel.EXTRACTORS = {
@@ -42,6 +56,7 @@ parallel.ERRORS = {
     ITERATION_FAILED = "ITERATION_FAILED",
     TEMPLATE_DISCOVERY_FAILED = "TEMPLATE_DISCOVERY_FAILED",
     INVALID_ON_ERROR_STRATEGY = "INVALID_ON_ERROR_STRATEGY",
+    INVALID_FILTER_STRATEGY = "INVALID_FILTER_STRATEGY",
     INVALID_BATCH_SIZE = "INVALID_BATCH_SIZE",
     INVALID_PIPELINE_STEP = "INVALID_PIPELINE_STEP",
     INVALID_EXTRACTOR = "INVALID_EXTRACTOR"
@@ -73,9 +88,24 @@ parallel.extractors = ({
     end
 }) :: {[string]: ExtractorFn}
 
-local function validate_failure_strategy(strategy)
-    return strategy == parallel.FAILURE_STRATEGIES.FAIL_FAST or
-        strategy == parallel.FAILURE_STRATEGIES.COLLECT_ERRORS
+local function normalize_on_error_strategy(strategy)
+    if strategy == parallel.FAILURE_STRATEGIES.COLLECT_ERRORS then
+        return parallel.ON_ERROR_STRATEGIES.CONTINUE
+    end
+
+    return strategy
+end
+
+local function validate_on_error_strategy(strategy)
+    strategy = normalize_on_error_strategy(strategy)
+    return strategy == parallel.ON_ERROR_STRATEGIES.FAIL_FAST or
+        strategy == parallel.ON_ERROR_STRATEGIES.CONTINUE
+end
+
+local function validate_filter_strategy(strategy)
+    return strategy == parallel.FILTER_STRATEGIES.ALL or
+        strategy == parallel.FILTER_STRATEGIES.SUCCESSES or
+        strategy == parallel.FILTER_STRATEGIES.FAILURES
 end
 
 local function validate_batch_size(size)
@@ -468,7 +498,7 @@ local function maybe_materialize_passthrough_inputs(n, inputs, passthrough_keys)
     return passthrough_inputs, nil
 end
 
-local function process_reduction_pipeline(config, parallel_result, failure_strategy)
+local function process_reduction_pipeline(config: any, parallel_result, on_error)
     local reduction_extract = config.reduction_extract
     local reduction_steps = config.reduction_steps
 
@@ -486,7 +516,7 @@ local function process_reduction_pipeline(config, parallel_result, failure_strat
         for _, step in ipairs(reduction_steps) do
             local next_value, step_err = parallel.execute_reduction_pipeline_step(step, current)
             if step_err then
-                if failure_strategy == parallel.FAILURE_STRATEGIES.FAIL_FAST then
+                if on_error == parallel.ON_ERROR_STRATEGIES.FAIL_FAST then
                     return nil, "Reduction pipeline failed: " .. step_err
                 end
                 return parallel_result, nil
@@ -1349,12 +1379,23 @@ local function run(args)
         }, "Missing source_array_key in config")
     end
 
-    local failure_strategy = config.failure_strategy or config.on_error or parallel.DEFAULTS.FAILURE_STRATEGY
-    if not validate_failure_strategy(failure_strategy) then
+    local raw_on_error = config.failure_strategy or config.on_error or parallel.DEFAULTS.FAILURE_STRATEGY
+    local failure_strategy = normalize_on_error_strategy(raw_on_error)
+    if not validate_on_error_strategy(failure_strategy) then
         return n:fail({
             code = parallel.ERRORS.INVALID_ON_ERROR_STRATEGY,
-            message = "Invalid failure strategy: " .. tostring(failure_strategy)
-        }, "Invalid failure strategy")
+            message = "Invalid on_error/failure_strategy: " .. tostring(raw_on_error)
+        }, "Invalid on_error strategy")
+    end
+
+    if has_legacy_output_directive(config) then
+        local filter = resolve_legacy_output_directives(config)
+        if not validate_filter_strategy(filter) then
+            return n:fail({
+                code = parallel.ERRORS.INVALID_FILTER_STRATEGY,
+                message = "Invalid filter: " .. tostring(filter)
+            }, "Invalid filter strategy")
+        end
     end
 
     local batch_size = config.batch_size or parallel.DEFAULTS.BATCH_SIZE

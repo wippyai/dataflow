@@ -387,7 +387,7 @@ local function define_tests()
                     dataflow_id = "test-dataflow-456",
                     node = {
                         config = {
-                            input_transform = "input.user_data.content.name + ' is ' + string(input.user_data.content.age) + ' years old'"
+                            input_transform = "inputs.user_data.name + ' is ' + string(inputs.user_data.age) + ' years old'"
                         }
                     }
                 }
@@ -410,11 +410,11 @@ local function define_tests()
                     node = {
                         config = {
                             input_transform = {
-                                user_name = "input.user_data.content.name",
-                                user_age = "input.user_data.content.age",
-                                total_cost = "input.order_data.content.price * input.order_data.content.quantity",
-                                is_adult = "input.user_data.content.age >= 18",
-                                greeting = "input.message.content + ', ' + input.user_data.content.name"
+                                user_name = "inputs.user_data.name",
+                                user_age = "inputs.user_data.age",
+                                total_cost = "inputs.order_data.price * inputs.order_data.quantity",
+                                is_adult = "inputs.user_data.age >= 18",
+                                greeting = "inputs.message + ', ' + inputs.user_data.name"
                             }
                         }
                     }
@@ -474,9 +474,9 @@ local function define_tests()
                     node = {
                         config = {
                             input_transform = {
-                                item_count = "len(input.inventory.content.items)",
-                                has_expensive_items = "any(input.inventory.content.items, {.price > 25})",
-                                cheap_items = "filter(input.inventory.content.items, {.price <= 15})"
+                                item_count = "len(inputs.inventory.items)",
+                                has_expensive_items = "any(inputs.inventory.items, {.price > 25})",
+                                cheap_items = "filter(inputs.inventory.items, {.price <= 15})"
                             }
                         }
                     }
@@ -501,11 +501,11 @@ local function define_tests()
                     node = {
                         config = {
                             input_transform = {
-                                calculated_score = "input.user_data.content.score * 1.2",
-                                rounded_score = "round(input.user_data.content.score * 1.15)",
-                                score_grade = "input.user_data.content.score >= 90 ? 'A' : input.user_data.content.score >= 80 ? 'B' : 'C'",
-                                power_calc = "input.user_data.content.age ** 2",
-                                abs_diff = "abs(input.user_data.content.score - 90)"
+                                calculated_score = "inputs.user_data.score * 1.2",
+                                rounded_score = "round(inputs.user_data.score * 1.15)",
+                                score_grade = "inputs.user_data.score >= 90 ? 'A' : inputs.user_data.score >= 80 ? 'B' : 'C'",
+                                power_calc = "inputs.user_data.age ** 2",
+                                abs_diff = "abs(inputs.user_data.score - 90)"
                             }
                         }
                     }
@@ -531,11 +531,11 @@ local function define_tests()
                     node = {
                         config = {
                             input_transform = {
-                                upper_name = "upper(input.user_data.content.name)",
-                                name_length = "len(input.user_data.content.name)",
-                                contains_john = "input.user_data.content.name contains 'John'",
-                                starts_with_j = "input.user_data.content.name startsWith 'J'",
-                                trimmed_message = "trim('  ' + input.message.content + '  ')"
+                                upper_name = "upper(inputs.user_data.name)",
+                                name_length = "len(inputs.user_data.name)",
+                                contains_john = "inputs.user_data.name contains 'John'",
+                                starts_with_j = "inputs.user_data.name startsWith 'J'",
+                                trimmed_message = "trim('  ' + inputs.message + '  ')"
                             }
                         }
                     }
@@ -561,7 +561,7 @@ local function define_tests()
                     node = {
                         config = {
                             input_transform = {
-                                processed_name = "upper(input.user_data.content.name)"
+                                processed_name = "upper(inputs.user_data.name)"
                             }
                         }
                     }
@@ -575,9 +575,8 @@ local function define_tests()
                 test.not_nil(inputs)
                 test.not_nil(inputs.processed_name)
                 test.eq(inputs.processed_name.content, "JOHN")
-                test.eq(inputs.processed_name.key, "processed_name")
+                test.eq(inputs.processed_name.discriminator, "processed_name")
                 test.eq(type(inputs.processed_name.metadata), "table")
-                test.is_nil(inputs.processed_name.discriminator)
             end)
 
             it("should return original inputs when no transform config", function()
@@ -604,7 +603,7 @@ local function define_tests()
                     dataflow_id = "test-dataflow-456",
                     node = {
                         config = {
-                            input_transform = "input.user_data.content.name"
+                            input_transform = "inputs.user_data.name"
                         }
                     }
                 }
@@ -773,8 +772,8 @@ local function define_tests()
                     node = {
                         config = {
                             input_transform = {
-                                theme = "input.nested_data.content.user.profile.settings.theme",
-                                has_dark_theme = "input.nested_data.content.user.profile.settings.theme == 'dark'"
+                                theme = "inputs.nested_data.user.profile.settings.theme",
+                                has_dark_theme = "inputs.nested_data.user.profile.settings.theme == 'dark'"
                             }
                         }
                     }
@@ -798,7 +797,7 @@ local function define_tests()
                         config = {
                             input_transform = {
                                 current_time = "now()",
-                                age_category = "input.user_data.content.age >= 65 ? 'senior' : input.user_data.content.age >= 18 ? 'adult' : 'minor'"
+                                age_category = "inputs.user_data.age >= 65 ? 'senior' : inputs.user_data.age >= 18 ? 'adult' : 'minor'"
                             }
                         }
                     }
@@ -855,8 +854,8 @@ local function define_tests()
                     node = {
                         config = {
                             input_transform = {
-                                is_valid_name = "input.user_data.content.name matches '^[A-Za-z]+$'",
-                                contains_digits = "input.message.content matches '\\\\d+'"
+                                is_valid_name = "inputs.user_data.name matches '^[A-Za-z]+$'",
+                                contains_digits = "inputs.message matches '\\\\d+'"
                             }
                         }
                     }

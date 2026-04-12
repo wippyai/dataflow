@@ -899,6 +899,7 @@ local function define_tests()
                             data_type = consts.DATA_TYPE.NODE_INPUT,
                             node_id = node_id,
                             key = input_data_id,
+                            discriminator = "default",
                             content = "",
                             content_type = consts.CONTENT_TYPE.REFERENCE
                         }
