@@ -536,6 +536,14 @@ local function has_legacy_output_directive(config)
     return config.filter ~= nil or config.unwrap ~= nil or config.output_shape ~= nil
 end
 
+local function should_apply_output_shape(config, started_from_recovery)
+    if has_legacy_output_directive(config) then
+        return true
+    end
+
+    return not started_from_recovery
+end
+
 local function resolve_legacy_output_directives(config)
     local filter = config.filter
     local unwrap = config.unwrap
@@ -1370,6 +1378,9 @@ local function run(args)
     end
 
     local config: any = n:config() or {}
+    if config.item_steps == nil and config.item_pipeline ~= nil then
+        config.item_steps = config.item_pipeline
+    end
 
     local source_array_key = config.source_array_key
     if type(source_array_key) ~= "string" or source_array_key == "" then
@@ -1597,7 +1608,7 @@ local function run(args)
             return fail_iteration(n, reduction_err)
         end
         final_output = reduced_output
-    elseif has_legacy_output_directive(config) then
+    elseif should_apply_output_shape(config, started_from_recovery) then
         final_output = apply_legacy_output_shape(config, parallel_result)
     end
 
