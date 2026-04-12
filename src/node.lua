@@ -649,7 +649,7 @@ function methods:complete(output_content, message, extra_metadata)
                 message = "Node [" .. self.node_id .. "] failed to set status message: " .. (msg_err :: string),
                 error = msg_err,
                 data_ids = table.create(0, 0)
-            }
+            }, msg_err
         end
     end
 
@@ -657,7 +657,12 @@ function methods:complete(output_content, message, extra_metadata)
     if output_content ~= nil then
         local routed_ids, route_err = self:_route_outputs(output_content)
         if route_err then
-            return nil, route_err
+            return {
+                success = false,
+                message = "Node [" .. self.node_id .. "] failed to route outputs: " .. tostring(route_err),
+                error = route_err,
+                data_ids = table.create(0, 0)
+            }, route_err
         end
         data_ids = routed_ids
     end
@@ -669,7 +674,7 @@ function methods:complete(output_content, message, extra_metadata)
             message = "Node [" .. self.node_id .. "] failed to submit final commands: " .. (err or "unknown"),
             error = err,
             data_ids = table.create(0, 0)
-        }
+        }, err
     end
 
     return {
@@ -709,7 +714,7 @@ function methods:fail(error_details, message, extra_metadata)
             message = "Node [" .. self.node_id .. "] failed to submit final commands: " .. (err or "unknown"),
             error = err,
             data_ids = table.create(0, 0)
-        }
+        }, err
     end
 
     return {
