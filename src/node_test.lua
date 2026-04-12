@@ -1386,6 +1386,7 @@ local function define_tests()
                 local result, err = failing_node:yield()
 
                 test.is_nil(result)
+                test.not_nil(err)
                 test.contains(err, "Failed to send yield signal")
             end)
 
@@ -1412,6 +1413,7 @@ local function define_tests()
                 local result, err = failing_node:yield({ run_nodes = { "child-1" } })
 
                 test.is_nil(result)
+                test.not_nil(err)
                 test.contains(err, "Yield channel closed")
             end)
         end)
@@ -2043,7 +2045,8 @@ local function define_tests()
 
                 local result, err = test_node_bad:complete({ message = "test" })
 
-                test.is_nil(result)
+                test.not_nil(result)
+                test.eq(result.success, false)
                 test.not_nil(err)
                 test.contains(err, "Output transform failed")
             end)
@@ -2068,7 +2071,8 @@ local function define_tests()
 
                 local result, error_msg = test_node_bad:complete({ message = "test" })
 
-                test.is_nil(result)
+                test.not_nil(result)
+                test.eq(result.success, false)
                 test.contains(error_msg, "Output transform failed")
             end)
 
@@ -2092,7 +2096,8 @@ local function define_tests()
 
                 local result, error_msg = test_node_bad_condition:complete({ message = "test" })
 
-                test.is_nil(result)
+                test.not_nil(result)
+                test.eq(result.success, false)
                 test.contains(error_msg, "Output condition evaluation failed")
             end)
 
@@ -2188,7 +2193,8 @@ local function define_tests()
 
                 local result, error_msg = test_node_type_error:complete({ number = 42 })
 
-                test.is_nil(result)
+                test.not_nil(result)
+                test.eq(result.success, false)
                 test.contains(error_msg, "Output transform failed")
             end)
 
