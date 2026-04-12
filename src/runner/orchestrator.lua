@@ -133,15 +133,30 @@ end
 ---@param state table Orchestrator state
 ---@return boolean continue Whether to continue processing
 local function call_scheduler_and_handle(state)
-    local snapshot = state.workflow_state:get_scheduler_snapshot()
-    local decision = orchestrator.scheduler.find_next_work(snapshot)
+    -- loop through SATISFY_YIELD decisions: they mutate state (clear active_yields)
+    -- but don't guarantee forward progress on their own, especially when the yield's
+    -- parent process is dead (recovery case). keep scheduling until a node starts,
+    -- the workflow completes, or no more work can be dispatched.
+    local max_iterations = 64
+    while max_iterations > 0 do
+        max_iterations = max_iterations - 1
 
-    if decision.type == orchestrator.scheduler.DECISION_TYPE.EXECUTE_NODES then
-        return handle_execute_nodes(state, decision.payload)
-    elseif decision.type == orchestrator.scheduler.DECISION_TYPE.SATISFY_YIELD then
-        return handle_satisfy_yield(state, decision.payload)
-    elseif decision.type == orchestrator.scheduler.DECISION_TYPE.COMPLETE_WORKFLOW then
-        return handle_complete_workflow(state, decision.payload)
+        local snapshot = state.workflow_state:get_scheduler_snapshot()
+        local decision = orchestrator.scheduler.find_next_work(snapshot)
+
+        if decision.type == orchestrator.scheduler.DECISION_TYPE.EXECUTE_NODES then
+            return handle_execute_nodes(state, decision.payload)
+        elseif decision.type == orchestrator.scheduler.DECISION_TYPE.COMPLETE_WORKFLOW then
+            return handle_complete_workflow(state, decision.payload)
+        elseif decision.type == orchestrator.scheduler.DECISION_TYPE.SATISFY_YIELD then
+            local cont = handle_satisfy_yield(state, decision.payload)
+            if not cont or not state.running then
+                return cont
+            end
+            -- re-enter the loop: yield satisfied, state changed, re-schedule
+        else
+            return true
+        end
     end
 
     return true
@@ -709,6 +724,10 @@ local function run(args)
             else
                 local continue = handle_process_event(state, event)
                 if continue and state.running then
+                    -- load pending commits from DB before scheduling
+                    -- exiting node may have submitted output data (commit in DB but message not yet received)
+                    load_startup_pending_commits(state)
+                    process_pending_commits(state)
                     call_scheduler_and_handle(state)
                 end
             end

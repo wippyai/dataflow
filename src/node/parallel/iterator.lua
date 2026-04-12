@@ -9,6 +9,14 @@ local default_deps = {
 
 local iterator = {}
 
+local function build_iteration_discriminator(iteration_index, attempt_id)
+    local padded_iteration = string.format("%06d", iteration_index)
+    if type(attempt_id) == "string" and attempt_id ~= "" then
+        return "iteration." .. padded_iteration .. "." .. attempt_id
+    end
+    return "iteration." .. padded_iteration
+end
+
 function iterator.remap_template_config(config, uuid_mapping)
     if not config then
         return {}
@@ -54,20 +62,20 @@ function iterator.remap_template_config(config, uuid_mapping)
     return remapped
 end
 
-function iterator.redirect_terminals_to_parent(config, parent_node_id, iteration_index, source_node_id)
-    local padded_iteration = string.format("%06d", iteration_index)
-
+function iterator.redirect_terminals_to_parent(config, parent_node_id, iteration_index, source_node_id, attempt_id)
+    local iteration_discriminator = build_iteration_discriminator(iteration_index, attempt_id)
     local new_data_targets = {}
     for _, target in ipairs(config.data_targets or {}) do
         if not target.node_id and target.data_type == consts.DATA_TYPE.NODE_OUTPUT then
             table.insert(new_data_targets, {
                 data_type = consts.DATA_TYPE.ITERATION_RESULT,
                 node_id = parent_node_id,
-                discriminator = "iteration." .. padded_iteration,
+                discriminator = iteration_discriminator,
                 content_type = target.content_type,
                 metadata = {
                     source_node_id = source_node_id,
-                    iteration = iteration_index
+                    iteration = iteration_index,
+                    attempt_id = attempt_id
                 }
             })
         else
@@ -81,12 +89,13 @@ function iterator.redirect_terminals_to_parent(config, parent_node_id, iteration
             table.insert(new_error_targets, {
                 data_type = consts.DATA_TYPE.ITERATION_ERROR,
                 node_id = parent_node_id,
-                discriminator = "iteration." .. padded_iteration,
+                discriminator = iteration_discriminator,
                 key = target.key or "error",
                 content_type = target.content_type,
                 metadata = {
                     source_node_id = source_node_id,
-                    iteration = iteration_index
+                    iteration = iteration_index,
+                    attempt_id = attempt_id
                 }
             })
         else
@@ -100,8 +109,15 @@ function iterator.redirect_terminals_to_parent(config, parent_node_id, iteration
 end
 
 function iterator.create_iteration(parent_node, template_graph, input_item, iteration_index, iteration_input_key,
-                                   passthrough_inputs, deps)
+                                   passthrough_inputs, options, deps)
+    if deps == nil and options ~= nil and options.data_reader ~= nil then
+        deps = options
+        options = nil
+    end
+
+    options = options or {}
     deps = deps or default_deps
+    local attempt_id = options.attempt_id
 
     local uuid_mapping = {}
 
@@ -134,7 +150,8 @@ function iterator.create_iteration(parent_node, template_graph, input_item, iter
             remapped_config,
             parent_node.node_id,
             iteration_index,
-            actual_node_id
+            actual_node_id,
+            attempt_id
         )
 
         local merged_metadata = {}
@@ -197,12 +214,19 @@ function iterator.create_iteration(parent_node, template_graph, input_item, iter
         input_item = input_item,
         uuid_mapping = uuid_mapping,
         root_nodes = root_nodes,
-        child_path = child_path
+        child_path = child_path,
+        attempt_id = attempt_id
     }
 end
 
 function iterator.create_batch(parent_node, template_graph, items, batch_start, batch_end, iteration_input_key,
-                               passthrough_inputs, deps)
+                               passthrough_inputs, options, deps)
+    if deps == nil and options ~= nil and options.data_reader ~= nil then
+        deps = options
+        options = nil
+    end
+
+    options = options or {}
     deps = deps or default_deps
 
     if not parent_node or not template_graph or not items then
@@ -214,10 +238,27 @@ function iterator.create_batch(parent_node, template_graph, items, batch_start, 
     end
 
     local iterations = {}
+    local selected_iterations = options.iteration_indices
+    local indices = {}
 
-    for i = batch_start, batch_end do
+    if type(selected_iterations) == "table" and #selected_iterations > 0 then
+        for _, iteration_index in ipairs(selected_iterations) do
+            if type(iteration_index) ~= "number" or iteration_index < batch_start or
+               iteration_index > batch_end or iteration_index ~= math.floor(iteration_index) then
+                return nil, "Invalid batch range"
+            end
+            table.insert(indices, iteration_index)
+        end
+        table.sort(indices)
+    else
+        for i = batch_start, batch_end do
+            table.insert(indices, i)
+        end
+    end
+
+    for _, i in ipairs(indices) do
         local iteration_info = iterator.create_iteration(
-            parent_node, template_graph, items[i], i, iteration_input_key, passthrough_inputs, deps
+            parent_node, template_graph, items[i], i, iteration_input_key, passthrough_inputs, options, deps
         )
         table.insert(iterations, iteration_info)
     end
@@ -244,7 +285,10 @@ function iterator.collect_results(parent_node, iteration_info, deps)
 
         local parent_query_err = nil
         if parent_node.node_id and iteration_info.iteration then
-            local iteration_discriminator = string.format("iteration.%06d", iteration_info.iteration)
+            local iteration_discriminator = build_iteration_discriminator(
+                iteration_info.iteration :: number,
+                iteration_info.attempt_id
+            )
             local parent_rows, err_parent = (reader :: any)
                 :with_nodes(parent_node.node_id)
                 :with_data_types({
@@ -263,7 +307,7 @@ function iterator.collect_results(parent_node, iteration_info, deps)
             end
         end
 
-        if #output_data == 0 then
+        if #output_data == 0 and #iteration_node_ids > 0 then
             local child_rows, child_query_err = (reader :: any)
                 :with_nodes(iteration_node_ids)
                 :with_data_types({

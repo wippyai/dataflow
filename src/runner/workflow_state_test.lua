@@ -2,8 +2,20 @@ local test = require("test")
 local uuid = require("uuid")
 local time = require("time")
 local sql = require("sql")
+local json = require("json")
+local commit = require("commit")
 local workflow_state = require("workflow_state")
 local consts = require("consts")
+local data_reader = require("data_reader")
+
+local function rebind(query, db_type)
+    if db_type ~= "postgres" then return query end
+    local i = 0
+    return (query:gsub("%?", function()
+        i = i + 1
+        return "$" .. i
+    end))
+end
 
 type TestDataRecord = {
     data_id: string?,
@@ -14,6 +26,7 @@ type TestDataRecord = {
     content: table | string | number | boolean | nil,
     content_type: string?,
     metadata: string?,
+    created_at: string?,
 }
 
 local function define_tests()
@@ -43,14 +56,14 @@ local function define_tests()
             test_ctx.tx = tx
 
             test_ctx.dataflow_id = uuid.v7()
-            test_ctx.actor_id = "test-actor-" .. uuid.v7()
+            test_ctx.actor_id = uuid.v7()
             local now_ts: string = time.now():format(time.RFC3339NANO)
 
-            local _, err_create = tx:execute([[
+            local _, err_create = tx:execute(rebind([[
                 INSERT INTO dataflows (
                     dataflow_id, actor_id, type, status, metadata, created_at, updated_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?)
-            ]], {
+            ]], tx:db_type()), {
                 test_ctx.dataflow_id,
                 test_ctx.actor_id,
                 "test_workflow",
@@ -85,22 +98,41 @@ local function define_tests()
         local function create_test_nodes(tx: any, dataflow_id: string, nodes: {{[string]: any}})
             for _, node in ipairs(nodes) do
                 local now_ts: string = time.now():format(time.RFC3339NANO)
-                local parent_id: string? = node.parent_node_id
+                local parent_id = (node :: any).parent_node_id
                 if parent_id == "" then
                     parent_id = nil
                 end
 
-                local _, err = tx:execute([[
+                local config = (node :: any).config or "{}"
+                if type(config) == "table" then
+                    local encoded_config, config_err = json.encode(config)
+                    if config_err then
+                        error("Failed to encode test node config: " .. config_err)
+                    end
+                    config = encoded_config
+                end
+
+                local metadata = (node :: any).metadata or "{}"
+                if type(metadata) == "table" then
+                    local encoded_metadata, metadata_err = json.encode(metadata)
+                    if metadata_err then
+                        error("Failed to encode test node metadata: " .. metadata_err)
+                    end
+                    metadata = encoded_metadata
+                end
+
+                local _, err = tx:execute(rebind([[
                     INSERT INTO dataflow_nodes (
-                        node_id, dataflow_id, parent_node_id, type, status, metadata, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ]], {
+                        node_id, dataflow_id, parent_node_id, type, status, config, metadata, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ]], tx:db_type()), {
                     node.node_id,
                     dataflow_id,
                     parent_id,
                     node.type,
                     node.status or consts.STATUS.PENDING,
-                    "{}",
+                    config,
+                    metadata,
                     now_ts,
                     now_ts
                 })
@@ -112,12 +144,12 @@ local function define_tests()
 
         local function create_test_data(tx: any, dataflow_id: string, data_records: { TestDataRecord })
             for _, data in ipairs(data_records) do
-                local now_ts: string = time.now():format(time.RFC3339NANO)
-                local _, err = tx:execute([[
+                local created_at: string = data.created_at or time.now():format(time.RFC3339NANO)
+                local _, err = tx:execute(rebind([[
                     INSERT INTO dataflow_data (
                         data_id, dataflow_id, node_id, type, discriminator, key, content, content_type, metadata, created_at
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ]], {
+                ]], tx:db_type()), {
                     data.data_id or uuid.v7(),
                     dataflow_id,
                     data.node_id,
@@ -127,7 +159,7 @@ local function define_tests()
                     data.content or "",
                     data.content_type or "application/json",
                     data.metadata or "{}",
-                    now_ts
+                    created_at
                 })
                 if err then
                     error("Failed to create test data: " .. err)
@@ -169,8 +201,8 @@ local function define_tests()
 
         describe("State Loading", function()
             it("should load dataflow and nodes from database", function()
-                local node1_id: string = "node-" .. uuid.v7()
-                local node2_id: string = "node-" .. uuid.v7()
+                local node1_id: string = uuid.v7()
+                local node2_id: string = uuid.v7()
 
                 create_test_nodes(test_ctx.tx, test_ctx.dataflow_id :: string, {
                     {
@@ -228,7 +260,7 @@ local function define_tests()
             end)
 
             it("should reset RUNNING nodes to PENDING on recovery", function()
-                local running_node_id: string = "running-node-" .. uuid.v7()
+                local running_node_id: string = uuid.v7()
                 create_test_nodes(test_ctx.tx, test_ctx.dataflow_id :: string, {
                     {
                         node_id = running_node_id,
@@ -252,8 +284,157 @@ local function define_tests()
                 test.eq(ws.nodes[running_node_id].status, consts.STATUS.PENDING)
             end)
 
+            it("recovers RUNNING nodes that already wrote final output", function()
+                local running_node_id: string = uuid.v7()
+
+                create_test_nodes(test_ctx.tx, test_ctx.dataflow_id :: string, {
+                    {
+                        node_id = running_node_id,
+                        type = "test_node",
+                        status = consts.STATUS.RUNNING,
+                        config = {
+                            data_targets = {
+                                {
+                                    data_type = consts.DATA_TYPE.WORKFLOW_OUTPUT,
+                                    key = "result",
+                                    content_type = consts.CONTENT_TYPE.JSON
+                                }
+                            }
+                        }
+                    }
+                })
+
+                create_test_data(test_ctx.tx, test_ctx.dataflow_id :: string, {
+                    {
+                        node_id = running_node_id,
+                        type = consts.DATA_TYPE.WORKFLOW_OUTPUT,
+                        key = "result",
+                        content = '{"ok":true}',
+                        content_type = consts.CONTENT_TYPE.JSON
+                    }
+                })
+
+                test_ctx.tx:commit()
+                test_ctx.db:release()
+                test_ctx.tx = nil
+                test_ctx.db = nil
+
+                local ws = workflow_state.new(test_ctx.dataflow_id) :: any
+                local _result, load_err = ws:load_state()
+
+                test.is_nil(load_err)
+                test.eq(ws.nodes[running_node_id].status, consts.STATUS.COMPLETED_SUCCESS)
+
+                local node_result = data_reader.with_dataflow(test_ctx.dataflow_id :: string)
+                    :with_nodes(running_node_id)
+                    :with_data_types(consts.DATA_TYPE.NODE_RESULT)
+                    :one()
+                test.not_nil(node_result)
+                test.eq(node_result.discriminator, "result.success")
+            end)
+
+            it("resets downstream completed nodes and removes stale routed data when an upstream producer restarts", function()
+                local upstream_id: string = uuid.v7()
+                local downstream_id: string = uuid.v7()
+
+                create_test_nodes(test_ctx.tx, test_ctx.dataflow_id :: string, {
+                    {
+                        node_id = upstream_id,
+                        type = "root_node",
+                        status = consts.STATUS.COMPLETED_SUCCESS,
+                        config = {
+                            data_targets = {
+                                {
+                                    data_type = consts.DATA_TYPE.NODE_INPUT,
+                                    node_id = downstream_id,
+                                    discriminator = "default"
+                                }
+                            }
+                        }
+                    },
+                    {
+                        node_id = downstream_id,
+                        type = "leaf_node",
+                        status = consts.STATUS.COMPLETED_SUCCESS,
+                        config = {
+                            data_targets = {
+                                {
+                                    data_type = consts.DATA_TYPE.WORKFLOW_OUTPUT,
+                                    key = "result",
+                                    content_type = consts.CONTENT_TYPE.JSON
+                                }
+                            },
+                            inputs = {
+                                required = { "default" }
+                            }
+                        }
+                    }
+                })
+
+                create_test_data(test_ctx.tx, test_ctx.dataflow_id :: string, {
+                    {
+                        node_id = downstream_id,
+                        type = consts.DATA_TYPE.NODE_INPUT,
+                        discriminator = "default",
+                        content = '{"stale":true}',
+                        content_type = consts.CONTENT_TYPE.JSON
+                    },
+                    {
+                        node_id = downstream_id,
+                        type = consts.DATA_TYPE.WORKFLOW_OUTPUT,
+                        key = "result",
+                        content = '{"stale_output":true}',
+                        content_type = consts.CONTENT_TYPE.JSON
+                    }
+                })
+
+                test_ctx.tx:commit()
+                test_ctx.db:release()
+                test_ctx.tx = nil
+                test_ctx.db = nil
+
+                local ws = workflow_state.new(test_ctx.dataflow_id) :: any
+                local _result, load_err = ws:load_state()
+
+                test.is_nil(load_err)
+
+                ws._reset_node_ids = { [upstream_id] = true }
+                local recovery_commands = {}
+                ws:_propagate_reset_to_dependents(recovery_commands)
+
+                local commit_result, commit_err = commit.execute(
+                    test_ctx.dataflow_id :: string,
+                    uuid.v7(),
+                    recovery_commands,
+                    { publish = false }
+                )
+
+                test.is_nil(commit_err)
+                test.not_nil(commit_result)
+
+                ws:_load_existing_data()
+
+                test.eq(ws.nodes[downstream_id].status, consts.STATUS.PENDING)
+                test.is_nil(ws.input_tracker.available[downstream_id]["default"])
+                test.is_false(ws.has_workflow_output)
+
+                local stale_input = data_reader.with_dataflow(test_ctx.dataflow_id :: string)
+                    :with_nodes(downstream_id)
+                    :with_data_types(consts.DATA_TYPE.NODE_INPUT)
+                    :with_data_discriminators("default")
+                    :one()
+                local stale_output = data_reader.with_dataflow(test_ctx.dataflow_id :: string)
+                    :with_nodes(downstream_id)
+                    :with_data_types(consts.DATA_TYPE.WORKFLOW_OUTPUT)
+                    :with_data_keys("result")
+                    :one()
+
+                test.is_nil(stale_input)
+                test.is_nil(stale_output)
+            end)
+
             it("should load existing node inputs", function()
-                local node_id: string = "input-node-" .. uuid.v7()
+                local node_id: string = uuid.v7()
                 create_test_nodes(test_ctx.tx, test_ctx.dataflow_id :: string, {
                     {
                         node_id = node_id,
@@ -763,7 +944,7 @@ local function define_tests()
                 local ws = workflow_state.new(test_ctx.dataflow_id) :: any
                 test.not_nil(ws)
 
-                local unique_node_id: string = "new-node-" .. uuid.v7()
+                local unique_node_id: string = uuid.v7()
                 ws:queue_commands({
                     type = consts.COMMAND_TYPES.CREATE_NODE,
                     payload = {
@@ -931,7 +1112,7 @@ local function define_tests()
                 test_ctx.tx = nil
                 test_ctx.db = nil
 
-                local fake_id: string = "fake-dataflow-id-" .. uuid.v7()
+                local fake_id: string = uuid.v7()
                 local ws = workflow_state.new(fake_id) :: any
                 test.not_nil(ws)
 
@@ -1116,6 +1297,152 @@ local function define_tests()
 
                 test.not_nil(yield_info.results[child1_id])
                 test.not_nil(yield_info.results[child2_id])
+            end)
+
+            it("picks most recent unsatisfied yield on reconstruct", function()
+                local parent_id: string = uuid.v7()
+                local older_unsatisfied_yield_id: string = uuid.v7()
+                local newer_satisfied_yield_id: string = uuid.v7()
+                local older_yield_data_id: string = uuid.v7()
+                local newer_yield_data_id: string = uuid.v7()
+                local shared_created_at = "2026-04-11T00:00:00.000000000Z"
+
+                create_test_nodes(test_ctx.tx, test_ctx.dataflow_id :: string, {
+                    {
+                        node_id = parent_id,
+                        type = "parent_node",
+                        status = consts.STATUS.RUNNING
+                    }
+                })
+
+                create_test_data(test_ctx.tx, test_ctx.dataflow_id :: string, {
+                    {
+                        data_id = older_yield_data_id,
+                        node_id = parent_id,
+                        type = consts.DATA_TYPE.NODE_YIELD,
+                        key = older_unsatisfied_yield_id,
+                        created_at = shared_created_at,
+                        content = string.format([[{
+                                    "node_id": "%s",
+                                    "yield_id": "%s",
+                                    "reply_to": "test.yield_reply.%s",
+                                    "yield_context": {"run_nodes": []}
+                                }]], parent_id, older_unsatisfied_yield_id, parent_id)
+                    }
+                })
+
+                create_test_data(test_ctx.tx, test_ctx.dataflow_id :: string, {
+                    {
+                        data_id = newer_yield_data_id,
+                        node_id = parent_id,
+                        type = consts.DATA_TYPE.NODE_YIELD,
+                        key = newer_satisfied_yield_id,
+                        created_at = shared_created_at,
+                        content = string.format([[{
+                                    "node_id": "%s",
+                                    "yield_id": "%s",
+                                    "reply_to": "test.yield_reply.%s",
+                                    "yield_context": {"run_nodes": []}
+                                }]], parent_id, newer_satisfied_yield_id, parent_id)
+                    },
+                    {
+                        node_id = parent_id,
+                        type = consts.DATA_TYPE.NODE_YIELD_RESULT,
+                        key = newer_satisfied_yield_id,
+                        content = "{}"
+                    }
+                })
+
+                test_ctx.tx:commit()
+                test_ctx.db:release()
+                test_ctx.tx = nil
+                test_ctx.db = nil
+
+                local ws = workflow_state.new(test_ctx.dataflow_id) :: any
+                test.not_nil(ws)
+
+                local _result, load_err = ws:load_state()
+                test.is_nil(load_err)
+
+                test.not_nil(ws.active_yields[parent_id])
+                test.eq((ws.active_yields[parent_id] :: any).yield_id, older_unsatisfied_yield_id)
+            end)
+
+            it("prefers the highest v7 data_id when yield rows share created_at", function()
+                local parent_id: string = uuid.v7()
+                local first_data_id: string = uuid.v7()
+                local second_data_id: string = uuid.v7()
+                local third_data_id: string = uuid.v7()
+                local shared_created_at = "2026-04-11T00:00:00.000000000Z"
+                local first_yield_id = "yield-first"
+                local second_yield_id = "yield-second"
+                local third_yield_id = "yield-third"
+
+                test.is_true(first_data_id < second_data_id)
+                test.is_true(second_data_id < third_data_id)
+
+                create_test_nodes(test_ctx.tx, test_ctx.dataflow_id :: string, {
+                    {
+                        node_id = parent_id,
+                        type = "parent_node",
+                        status = consts.STATUS.PENDING
+                    }
+                })
+
+                create_test_data(test_ctx.tx, test_ctx.dataflow_id :: string, {
+                    {
+                        data_id = first_data_id,
+                        node_id = parent_id,
+                        type = consts.DATA_TYPE.NODE_YIELD,
+                        key = first_yield_id,
+                        created_at = shared_created_at,
+                        content = string.format([[{
+                                    "node_id": "%s",
+                                    "yield_id": "%s",
+                                    "reply_to": "test.yield_reply.%s",
+                                    "yield_context": {"run_nodes": []}
+                                }]], parent_id, first_yield_id, parent_id)
+                    },
+                    {
+                        data_id = second_data_id,
+                        node_id = parent_id,
+                        type = consts.DATA_TYPE.NODE_YIELD,
+                        key = second_yield_id,
+                        created_at = shared_created_at,
+                        content = string.format([[{
+                                    "node_id": "%s",
+                                    "yield_id": "%s",
+                                    "reply_to": "test.yield_reply.%s",
+                                    "yield_context": {"run_nodes": []}
+                                }]], parent_id, second_yield_id, parent_id)
+                    },
+                    {
+                        data_id = third_data_id,
+                        node_id = parent_id,
+                        type = consts.DATA_TYPE.NODE_YIELD,
+                        key = third_yield_id,
+                        created_at = shared_created_at,
+                        content = string.format([[{
+                                    "node_id": "%s",
+                                    "yield_id": "%s",
+                                    "reply_to": "test.yield_reply.%s",
+                                    "yield_context": {"run_nodes": []}
+                                }]], parent_id, third_yield_id, parent_id)
+                    }
+                })
+
+                test_ctx.tx:commit()
+                test_ctx.db:release()
+                test_ctx.tx = nil
+                test_ctx.db = nil
+
+                local ws = workflow_state.new(test_ctx.dataflow_id) :: any
+                test.not_nil(ws)
+
+                local _result, load_err = ws:load_state()
+                test.is_nil(load_err)
+                test.not_nil(ws.active_yields[parent_id])
+                test.eq((ws.active_yields[parent_id] :: any).yield_id, third_yield_id)
             end)
 
             it("should handle multiple yields to reconstruct", function()
@@ -1527,9 +1854,10 @@ local function define_tests()
                 if #config_test_nodes > 0 then
                     local cleanup_db, err_db = sql.get("app:db")
                     if not err_db then
+                        local dt = cleanup_db:type()
                         for _, node_id in ipairs(config_test_nodes) do
-                            cleanup_db:execute("DELETE FROM dataflow_nodes WHERE node_id = ?", { node_id })
-                            cleanup_db:execute("DELETE FROM dataflow_data WHERE node_id = ?", { node_id })
+                            cleanup_db:execute(rebind("DELETE FROM dataflow_nodes WHERE node_id = ?", dt), { node_id })
+                            cleanup_db:execute(rebind("DELETE FROM dataflow_data WHERE node_id = ?", dt), { node_id })
                         end
                         cleanup_db:release()
                     end

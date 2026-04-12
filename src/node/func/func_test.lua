@@ -250,7 +250,7 @@ local function define_tests()
                 test.is_nil(create_err)
 
                 local result, exec_err = c:execute(dataflow_id)
-                test.is_nil(exec_err)
+                test.not_nil(exec_err)
                 test.is_false(result.success)
                 test.contains(result.error, "Function ID not specified")
 
@@ -294,7 +294,7 @@ local function define_tests()
                 test.is_nil(create_err)
 
                 local result, exec_err = c:execute(dataflow_id)
-                test.is_nil(exec_err)
+                test.not_nil(exec_err)
                 test.is_false(result.success)
                 test.contains(result.error, "No input data provided")
 
@@ -362,7 +362,7 @@ local function define_tests()
                 test.is_nil(create_err)
 
                 local result, exec_err = c:execute(dataflow_id)
-                test.is_nil(exec_err)
+                test.not_nil(exec_err)
                 test.is_false(result.success)
                 test.contains(result.error, "failed")
 
@@ -602,6 +602,98 @@ local function define_tests()
                 test.is_true(result.success)
 
                 print("Function node used first available input correctly")
+            end)
+
+            it("BC_REGRESSION_C4_func_single_named_input_wrapped", function()
+                local c, err = client.new()
+                test.is_nil(err)
+                test.not_nil(c)
+
+                local node_id: string = uuid.v7()
+                local input_data_id: string = uuid.v7()
+                local node_input_id: string = uuid.v7()
+
+                local test_input = {
+                    message = "wrapped named input"
+                }
+
+                local workflow_commands = {
+                    {
+                        type = consts.COMMAND_TYPES.CREATE_NODE,
+                        payload = {
+                            node_id = node_id,
+                            node_type = "userspace.dataflow.node.func:node",
+                            status = consts.STATUS.PENDING,
+                            config = {
+                                func_id = "userspace.dataflow.node.func:test_func",
+                                data_targets = {
+                                    {
+                                        data_type = consts.DATA_TYPE.WORKFLOW_OUTPUT,
+                                        key = "result",
+                                        content_type = consts.CONTENT_TYPE.JSON
+                                    }
+                                }
+                            },
+                            metadata = {
+                                title = "Single Named Input Wrapped Regression Node"
+                            }
+                        }
+                    },
+                    {
+                        type = consts.COMMAND_TYPES.CREATE_DATA,
+                        payload = {
+                            data_id = input_data_id,
+                            data_type = consts.DATA_TYPE.WORKFLOW_INPUT,
+                            content = test_input,
+                            content_type = consts.CONTENT_TYPE.JSON
+                        }
+                    },
+                    {
+                        type = consts.COMMAND_TYPES.CREATE_DATA,
+                        payload = {
+                            data_id = node_input_id,
+                            data_type = consts.DATA_TYPE.NODE_INPUT,
+                            node_id = node_id,
+                            discriminator = "my_data",
+                            key = input_data_id,
+                            content = "",
+                            content_type = "dataflow/reference"
+                        }
+                    }
+                }
+
+                local dataflow_id, create_err = c:create_workflow(workflow_commands, {
+                    metadata = {
+                        title = "Single Named Input Wrapped Regression Workflow"
+                    }
+                })
+                test.is_nil(create_err)
+                test.not_nil(dataflow_id)
+
+                local result, exec_err = c:execute(dataflow_id)
+                test.is_nil(exec_err)
+                test.not_nil(result)
+                test.is_true(result.success)
+
+                local output_data = data_reader.with_dataflow(dataflow_id)
+                    :with_data_types(consts.DATA_TYPE.WORKFLOW_OUTPUT)
+                    :fetch_options({ replace_references = true })
+                    :one()
+
+                test.not_nil(output_data)
+
+                local output_content: any = output_data.content
+                if type(output_content) == "string" then
+                    local decoded, _decode_err = json.decode(output_content)
+                    if not _decode_err then
+                        output_content = decoded
+                    end
+                end
+
+                test.not_nil(output_content.input_echo)
+                test.is_nil(output_content.input_echo.message)
+                test.not_nil(output_content.input_echo.my_data)
+                test.eq(output_content.input_echo.my_data.message, test_input.message)
             end)
         end)
     end)

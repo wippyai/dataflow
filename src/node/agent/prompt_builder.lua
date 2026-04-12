@@ -6,6 +6,151 @@ local agent_consts = require("agent_consts")
 local prompt_builder = {}
 local mt = { __index = prompt_builder }
 
+local function row_id(row)
+    if type(row) ~= "table" then
+        return ""
+    end
+    return tostring(row.data_id or "")
+end
+
+local function sort_history_rows(history_rows)
+    table.sort(history_rows, function(a, b)
+        return row_id(a) < row_id(b)
+    end)
+    return history_rows
+end
+
+local function find_latest_compaction_marker(history_rows)
+    for i = #history_rows, 1, -1 do
+        local item = history_rows[i]
+        if item.type == agent_consts.DATA_TYPE.AGENT_MEMORY
+           and item.metadata
+           and item.metadata.compaction_marker == true then
+            return item
+        end
+    end
+
+    return nil
+end
+
+local function is_structured_result_row(row)
+    if type(row) ~= "table" then
+        return false
+    end
+
+    local metadata = row.metadata or {}
+    if type(metadata.tool_call_id) ~= "string" or metadata.tool_call_id == "" then
+        return false
+    end
+    if type(metadata.tool_name) ~= "string" or metadata.tool_name == "" then
+        return false
+    end
+
+    return row.type == agent_consts.DATA_TYPE.AGENT_OBSERVATION
+        or row.type == agent_consts.DATA_TYPE.AGENT_DELEGATION
+end
+
+local function apply_latest_marker(history_rows)
+    if not history_rows or #history_rows == 0 then
+        return history_rows or {}, nil
+    end
+
+    sort_history_rows(history_rows)
+
+    local latest_marker = find_latest_compaction_marker(history_rows)
+    if not latest_marker then
+        return history_rows, nil
+    end
+
+    local cut_before = tostring((latest_marker.metadata or {}).compacted_before_data_id or "")
+    local filtered = { latest_marker }
+    for _, item in ipairs(history_rows) do
+        if item ~= latest_marker then
+            local keep = row_id(item) > cut_before or is_structured_result_row(item)
+            if keep then
+                filtered[#filtered + 1] = item
+            end
+        end
+    end
+
+    return filtered, latest_marker
+end
+
+local function clone_table(tbl)
+    if type(tbl) ~= "table" then
+        return nil
+    end
+
+    local copy = {}
+    for key, value in pairs(tbl) do
+        copy[key] = value
+    end
+    return copy
+end
+
+local function merge_provider_metadata(base_provider_metadata, override_provider_metadata)
+    if type(base_provider_metadata) ~= "table" then
+        return clone_table(override_provider_metadata)
+    end
+
+    if type(override_provider_metadata) ~= "table" then
+        return clone_table(base_provider_metadata)
+    end
+
+    local merged_provider_metadata = clone_table(base_provider_metadata)
+    for key, value in pairs(override_provider_metadata) do
+        merged_provider_metadata[key] = value
+    end
+
+    return merged_provider_metadata
+end
+
+local function extract_message_meta(metadata, provider_metadata_override)
+    if type(metadata) ~= "table" then
+        if type(provider_metadata_override) == "table" then
+            return {
+                provider_metadata = clone_table(provider_metadata_override)
+            }
+        end
+        return nil
+    end
+
+    local llm_meta = metadata.llm_meta
+    local message_meta = nil
+    if type(llm_meta) == "table" then
+        message_meta = clone_table(llm_meta)
+    end
+
+    local resolved_provider_metadata = nil
+    if type(message_meta) == "table" and type(message_meta.provider_metadata) == "table" then
+        resolved_provider_metadata = clone_table(message_meta.provider_metadata)
+    elseif type(metadata.provider_metadata) == "table" then
+        resolved_provider_metadata = clone_table(metadata.provider_metadata)
+    end
+
+    if type(provider_metadata_override) == "table" then
+        resolved_provider_metadata = merge_provider_metadata(
+            resolved_provider_metadata,
+            provider_metadata_override
+        )
+    end
+
+    if type(message_meta) == "table" then
+        if type(resolved_provider_metadata) == "table" then
+            message_meta.provider_metadata = resolved_provider_metadata
+        end
+        return message_meta
+    end
+
+    if type(resolved_provider_metadata) == "table" then
+        return {
+            provider_metadata = resolved_provider_metadata
+        }
+    end
+
+    return nil
+end
+
 function prompt_builder.new(dataflow_id, node_id, node_path)
     if not dataflow_id then
         return nil, "dataflow_id is required"
@@ -23,6 +168,7 @@ function prompt_builder.new(dataflow_id, node_id, node_path)
     self.node_path = node_path
     self._arena_config = nil
     self._initial_input = nil
+    self._pending_history = {}
 
     return self, nil
 end
@@ -34,6 +180,11 @@ end
 
 function prompt_builder:with_initial_input(initial_input)
     self._initial_input = initial_input
+    return self
+end
+
+function prompt_builder:with_pending_history(pending_history)
+    self._pending_history = pending_history or {}
     return self
 end
 
@@ -64,15 +215,39 @@ function prompt_builder:_load_conversation_history()
         return nil, "Failed to load conversation history: " .. err
     end
 
-    if #history_items == 0 then
-        return history_items, nil
+    local merged_history = {}
+    local seen_data_ids = {}
+
+    local function append_rows(rows)
+        for _, row in ipairs(rows or {}) do
+            local row_data_id = tostring(row.data_id or "")
+            if row_data_id == "" or not seen_data_ids[row_data_id] then
+                merged_history[#merged_history + 1] = row
+                if row_data_id ~= "" then
+                    seen_data_ids[row_data_id] = true
+                end
+            end
+        end
     end
 
-    table.sort(history_items, function(a, b)
-        return (a.created_at or "") < (b.created_at or "")
-    end)
+    append_rows(history_items)
+    append_rows(self._pending_history)
 
-    return history_items, nil
+    if #merged_history == 0 then
+        return merged_history, nil
+    end
+
+    -- sort by UUID v7 data_id; matches recovery ordering and is monotonic
+    -- regardless of created_at resolution ties across backends.
+    sort_history_rows(merged_history)
+
+    -- find the latest compaction marker (if any). compaction writes an
+    -- AGENT_MEMORY row with metadata.compaction_marker = true and records
+    -- the history cut-line as metadata.compacted_before_data_id. rows at or
+    -- before the cut-line are dropped, except structured function results
+    -- which stay visible so the next turn keeps tool-call continuity.
+    local filtered = apply_latest_marker(merged_history)
+    return filtered, nil
 end
 
 function prompt_builder:_format_action(action_item, builder)
@@ -101,7 +276,7 @@ function prompt_builder:_format_action(action_item, builder)
     -- Always add assistant message if there are tool calls, delegate calls, or text content
     -- This ensures tool calls have a proper assistant message to attach to
     if has_tool_calls or has_delegate_calls or has_text_content then
-        local message_meta = metadata.llm_meta or {}
+        local message_meta = extract_message_meta(metadata)
         builder:add_assistant(text_content or "", message_meta)
     end
 
@@ -112,7 +287,8 @@ function prompt_builder:_format_action(action_item, builder)
             if not call_id then
                 return "Tool call missing ID in action"
             end
-            builder:add_function_call(tool_call.name, tool_call.arguments, call_id)
+            local call_options = extract_message_meta(metadata, tool_call.provider_metadata)
+            builder:add_function_call(tool_call.name, tool_call.arguments, call_id, call_options)
         end
     end
 
@@ -123,7 +299,8 @@ function prompt_builder:_format_action(action_item, builder)
             if not call_id then
                 return "Delegate call missing ID in action"
             end
-            builder:add_function_call(delegate_call.name, delegate_call.arguments, call_id)
+            local call_options = extract_message_meta(metadata, delegate_call.provider_metadata)
+            builder:add_function_call(delegate_call.name, delegate_call.arguments, call_id, call_options)
         end
     end
 
@@ -157,11 +334,13 @@ function prompt_builder:_format_observation(obs_item, builder)
             result_content = tostring(content)
         end
 
-        builder:add_function_result(tool_name, result_content, tool_call_id)
+        local result_options = extract_message_meta(metadata)
+        builder:add_function_result(tool_name, result_content, tool_call_id, result_options)
     else
         local feedback_content = tostring(content)
         if feedback_content and feedback_content ~= "" then
-            builder:add_developer(feedback_content)
+            local message_meta = extract_message_meta(metadata)
+            builder:add_developer(feedback_content, message_meta)
         end
     end
 
@@ -175,7 +354,7 @@ function prompt_builder:_format_memory(memory_item, builder)
     end
 
     local metadata = memory_item.metadata or {}
-    local message_meta = metadata.llm_meta or {}
+    local message_meta = extract_message_meta(metadata)
     builder:add_developer(content, message_meta)
     return nil
 end
@@ -203,10 +382,12 @@ function prompt_builder:_format_delegation(delegation_item, builder)
             result_content = tostring(content)
         end
 
-        builder:add_function_result(tool_name, result_content, tool_call_id)
+        local result_options = extract_message_meta(metadata)
+        builder:add_function_result(tool_name, result_content, tool_call_id, result_options)
     else
         local delegation_text = "Delegation result: " .. tostring(content)
-        builder:add_developer(delegation_text)
+        local message_meta = extract_message_meta(metadata)
+        builder:add_developer(delegation_text, message_meta)
     end
 
     return nil

@@ -2,6 +2,158 @@ version: "1.0"
 namespace: userspace.dataflow.node.agent.stub
 
 entries:
+  - name: recovery_store
+    kind: store.memory
+    meta:
+      comment: Shared state for agent recovery test metrics and idempotent tool effects
+      test_only: true
+    max_size: 256
+    cleanup_interval: "5m"
+
+  - name: recovery_helpers
+    kind: library.lua
+    meta:
+      comment: Shared helpers for deterministic agent recovery test doubles
+      test_only: true
+    source: file://recovery_helpers.lua
+    modules:
+      - json
+      - store
+    method: helpers
+
+  - name: recovery_generate
+    kind: function.lua
+    meta:
+      type: llm_function
+      comment: Deterministic LLM generator for agent recovery tests
+      test_only: true
+    source: file://recovery_generate.lua
+    imports:
+      helpers: userspace.dataflow.node.agent.stub:recovery_helpers
+    method: handler
+
+  - name: recovery_tool
+    kind: function.lua
+    meta:
+      type: tool
+      name: recovery_tool
+      title: Recovery Tool
+      test_only: true
+      comment: Idempotent test tool for agent crash recovery scenarios
+      input_schema:
+        type: object
+        properties:
+          scenario_id:
+            type: string
+          step:
+            type: number
+          delay_ms:
+            type: number
+        required:
+          - scenario_id
+    source: file://recovery_tool.lua
+    modules:
+      - ctx
+      - time
+    imports:
+      helpers: userspace.dataflow.node.agent.stub:recovery_helpers
+    method: handler
+
+  - name: recovery_metrics_reset
+    kind: function.lua
+    meta:
+      test_only: true
+      comment: Reset deterministic agent recovery test metrics for a scenario
+    source: file://recovery_metrics_reset.lua
+    imports:
+      helpers: userspace.dataflow.node.agent.stub:recovery_helpers
+    method: handler
+
+  - name: recovery_metrics_get
+    kind: function.lua
+    meta:
+      test_only: true
+      comment: Read deterministic agent recovery test metrics for a scenario
+    source: file://recovery_metrics_get.lua
+    imports:
+      helpers: userspace.dataflow.node.agent.stub:recovery_helpers
+    method: handler
+
+  - name: compaction_summarizer
+    kind: function.lua
+    meta:
+      test_only: true
+      comment: Deterministic summarizer stub for agent compaction tests
+    source: file://compaction_summarizer.lua
+    imports:
+      helpers: userspace.dataflow.node.agent.stub:recovery_helpers
+    method: handler
+
+  - name: empty_memory_summarizer
+    kind: function.lua
+    meta:
+      test_only: true
+      comment: Compaction summarizer stub that returns empty memory (tests soft-failure path)
+    source: file://empty_memory_summarizer.lua
+    method: handler
+
+  - name: oversize_summarizer
+    kind: function.lua
+    meta:
+      test_only: true
+      comment: Compaction summarizer stub returning a 100k-char memory (tests size cap)
+    source: file://oversize_summarizer.lua
+    method: handler
+
+  - name: recovery_driver
+    kind: contract.binding
+    meta:
+      name: Recovery Test Driver
+      comment: Deterministic LLM driver for agent recovery tests
+      test_only: true
+    contracts:
+      - contract: wippy.llm:generator
+        methods:
+          generate: userspace.dataflow.node.agent.stub:recovery_generate
+
+  - name: recovery_provider
+    kind: registry.entry
+    meta:
+      name: recovery-test
+      type: llm.provider
+      title: Recovery Test Provider
+      comment: Mock provider for deterministic agent recovery testing
+      test_only: true
+    driver:
+      id: userspace.dataflow.node.agent.stub:recovery_driver
+
+  - name: recovery_model
+    kind: registry.entry
+    meta:
+      name: recovery-test-model
+      type: llm.model
+      title: Recovery Test Model
+      comment: Mock model for deterministic agent recovery testing
+      test_only: true
+    providers:
+      - id: userspace.dataflow.node.agent.stub:recovery_provider
+        provider_model: recovery-test-model
+
+  - name: recovery_test_agent
+    kind: registry.entry
+    meta:
+      type: agent.gen1
+      name: recovery-test-agent
+      title: Recovery Test Agent
+      comment: Deterministic agent for crash recovery testing
+      test_only: true
+    model: recovery-test-model
+    temperature: 0
+    max_tokens: 100
+    prompt: |
+      You are a deterministic recovery test agent. Follow the scenario encoded in the user input.
+    tools: []
+
   - name: truncation_generate
     kind: function.lua
     meta:

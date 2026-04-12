@@ -81,6 +81,7 @@ consts.DATA_TYPE = {
     WORKFLOW_LOG = "dataflow.log",
     CONTEXT_DATA = "context.data",
     ARTIFACT = "artifact.data",
+    PARALLEL_PROGRESS = "parallel.progress",
     ITERATION_RESULT = "iteration.result",
     ITERATION_ERROR = "iteration.error"
 }

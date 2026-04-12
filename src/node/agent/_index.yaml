@@ -40,6 +40,7 @@ entries:
     source: file://control_handler.lua
     modules:
       - json
+      - time
       - uuid
     imports:
       agent_consts: userspace.dataflow.node.agent:consts
@@ -179,5 +180,57 @@ entries:
       consts: userspace.dataflow:consts
       data_reader: userspace.dataflow.persist:data_reader
       agent_consts: userspace.dataflow.node.agent:consts
+      test: wippy.test:test
+    method: run_tests
+
+  - name: agent_recovery_test
+    kind: function.lua
+    meta:
+      name: Agent Recovery Tests
+      type: test
+      comment: Chaos and recovery tests for durable agent turn persistence across orchestrator crashes
+      group: Workflow / Agent Node
+      tags:
+        - dataflow
+        - agent
+        - recovery
+        - chaos
+        - test
+    source: file://agent_recovery_test.lua
+    modules:
+      - time
+      - uuid
+    imports:
+      agent_consts: userspace.dataflow.node.agent:consts
+      client: userspace.dataflow:client
+      consts: userspace.dataflow:consts
+      data_reader: userspace.dataflow.persist:data_reader
+      node_reader: userspace.dataflow.persist:node_reader
+      test: wippy.test:test
+    method: run_tests
+
+  - name: agent_compaction_test
+    kind: function.lua
+    meta:
+      name: Agent Compaction Tests
+      type: test
+      comment: Conversation compaction tests for the dataflow agent node (token threshold + summarizer)
+      group: Workflow / Agent Node
+      timeout: "120s"
+      tags:
+        - dataflow
+        - agent
+        - compaction
+        - test
+    source: file://agent_compaction_test.lua
+    modules:
+      - time
+      - uuid
+    imports:
+      agent_consts: userspace.dataflow.node.agent:consts
+      client: userspace.dataflow:client
+      consts: userspace.dataflow:consts
+      data_reader: userspace.dataflow.persist:data_reader
+      prompt_builder: userspace.dataflow.node.agent:prompt_builder
       test: wippy.test:test
     method: run_tests

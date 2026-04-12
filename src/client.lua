@@ -139,12 +139,19 @@ function methods:execute(dataflow_id, options)
         error = orch_result.error
     }
 
-    -- Handle workflow failure
+    -- Handle workflow failure: return both result AND error so callers can
+    -- use either pattern: `if err then` or `if not result.success then`.
     if not orch_result.success then
-        if not result.error then
-            result.error = "Workflow failed"
-        end
-        return result, nil
+        local err_message = result.error or "Workflow failed"
+        result.error = err_message
+        return result, errors.new({
+            message = err_message,
+            kind = "WorkflowFailed",
+            details = {
+                dataflow_id = result.dataflow_id,
+                success = false
+            }
+        })
     end
 
     -- Handle successful workflow - fetch outputs if requested

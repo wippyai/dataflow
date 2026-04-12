@@ -119,6 +119,7 @@ entries:
         creates child nodes for processing in each iteration.
     source: file://refine_test_func.lua
     modules:
+      - time
       - uuid
       - ctx
     imports:
@@ -140,6 +141,24 @@ entries:
     source: file://state_persistence_template_func.lua
     modules:
       - ctx
+    method: run
+
+  - name: signal_wait_test_func
+    kind: function.lua
+    meta:
+      name: Signal Wait Test Function
+      comment: Cycle function that yields through a nested signal node each iteration
+      tags:
+        - cycle
+        - signal
+        - recovery
+        - test
+    source: file://signal_wait_test_func.lua
+    modules:
+      - ctx
+      - uuid
+    imports:
+      consts: userspace.dataflow:consts
     method: run
     
   # userspace.dataflow.node.cycle.stub:validate_template_func

@@ -1,4 +1,5 @@
 local uuid = require("uuid")
+local time = require("time")
 local consts = require("consts")
 local ctx = require("ctx")
 
@@ -24,13 +25,18 @@ local function run(context)
             quality_score = state.quality_score or 0.3,
             target_quality = input.target_quality or 0.8,
             current_text = input.initial_text or "Default text to refine",
-            refinement_history = {}
+            refinement_history = {},
+            resume_delay_ms = input.resume_delay_ms or state.resume_delay_ms
         }
         print("[REFINE] Initial state - quality:", state.quality_score, "target:", state.target_quality)
     end
 
     -- Update state based on last result from child node
     if last_result and type(last_result) == "table" then
+        if state.resume_delay_ms and state.resume_delay_ms > 0 then
+            time.sleep(tostring(state.resume_delay_ms) .. "ms")
+        end
+
         print("[REFINE] Processing last_result, quality_score:", last_result.quality_score)
 
         if last_result.refined_text then

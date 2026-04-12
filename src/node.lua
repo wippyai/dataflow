@@ -194,11 +194,18 @@ function methods:_transform_inputs_with_expr(raw_inputs, transform_config)
 end
 
 function methods:_load_raw_inputs()
-    local input_data = (self._deps.data_reader.with_dataflow(self.dataflow_id) :: any)
-        :with_nodes(self.node_id)
-        :with_data_types(consts.DATA_TYPE.NODE_INPUT)
-        :fetch_options({ replace_references = true })
-        :all()
+    local ok, input_data_or_err = pcall(function()
+        return (self._deps.data_reader.with_dataflow(self.dataflow_id) :: any)
+            :with_nodes(self.node_id)
+            :with_data_types(consts.DATA_TYPE.NODE_INPUT)
+            :fetch_options({ replace_references = true })
+            :all()
+    end)
+    if not ok then
+        return nil, "Node [" .. self.node_id .. "] failed to query inputs: " .. tostring(input_data_or_err)
+    end
+
+    local input_data = input_data_or_err
 
     local inputs_map = table.create(0, #input_data)
 
@@ -223,21 +230,24 @@ function methods:_load_raw_inputs()
         }
     end
 
-    return inputs_map
+    return inputs_map, nil
 end
 
 function methods:inputs()
     if self._cached_inputs then
-        return self._cached_inputs
+        return self._cached_inputs, nil
     end
 
-    local raw_inputs = self:_load_raw_inputs()
+    local raw_inputs, raw_inputs_err = self:_load_raw_inputs()
+    if raw_inputs_err then
+        return nil, raw_inputs_err
+    end
 
     local transform_config = self._config.input_transform
     if transform_config then
         local transformed, err = self:_transform_inputs_with_expr(raw_inputs, transform_config)
         if err then
-            error(err)
+            return nil, err
         end
         self._cached_inputs = transformed
         return transformed, nil
@@ -249,12 +259,12 @@ end
 
 function methods:input(key)
     if not key then
-        error("Input key is required")
+        return nil, "Input key is required"
     end
 
     local inputs_map, err = self:inputs()
     if err then
-        error(err)
+        return nil, err
     end
     return inputs_map[key], nil
 end
@@ -471,15 +481,11 @@ function methods:_route_outputs(content)
 
     local resolved_content = resolve_dataflow_references(self, content)
 
-    local ok, inputs_or_err = pcall(function()
-        local values = self:inputs()
-        return values
-    end)
-    if not ok then
-        return nil, "Node [" .. self.node_id .. "] failed to load inputs for output routing: " .. tostring(inputs_or_err)
+    local inputs_map, inputs_err = self:inputs()
+    if inputs_err then
+        return nil, "Node [" .. self.node_id .. "] failed to load inputs for output routing: " .. tostring(inputs_err)
     end
 
-    local inputs_map = inputs_or_err
     local env = {
         output = resolved_content,
         input = inputs_map or {},
@@ -643,7 +649,7 @@ function methods:complete(output_content, message, extra_metadata)
     if output_content ~= nil then
         local routed_ids, route_err = self:_route_outputs(output_content)
         if route_err then
-            error(route_err)
+            return nil, route_err
         end
         data_ids = routed_ids
     end

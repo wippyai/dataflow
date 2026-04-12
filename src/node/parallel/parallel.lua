@@ -12,6 +12,8 @@ parallel._deps = {
     template_graph = require("template_graph"),
     iterator = require("iterator"),
     funcs = require("funcs"),
+    json = require("json"),
+    time = require("time"),
     uuid = require("uuid"),
     consts = require("consts")
 }
@@ -45,18 +47,27 @@ parallel.ERRORS = {
     INVALID_EXTRACTOR = "INVALID_EXTRACTOR"
 }
 
+parallel.RECOVERY_READ_ATTEMPTS = 5
+parallel.RECOVERY_READ_DELAY = "25ms"
+
+local function create_array(size)
+    return table.create(math.floor(size or 0), 0)
+end
+
 parallel.extractors = ({
     [parallel.EXTRACTORS.SUCCESSES] = function(parallel_result)
-        local results = {}
-        for _, entry in ipairs(parallel_result.successes or {}) do
-            table.insert(results, entry.result)
+        local successes = parallel_result.successes or {}
+        local results = create_array(#successes)
+        for index, entry in ipairs(successes) do
+            results[index] = entry.result
         end
         return results
     end,
     [parallel.EXTRACTORS.FAILURES] = function(parallel_result)
-        local failures = {}
-        for _, entry in ipairs(parallel_result.failures or {}) do
-            table.insert(failures, entry)
+        local input_failures = parallel_result.failures or {}
+        local failures = create_array(#input_failures)
+        for index, entry in ipairs(input_failures) do
+            failures[index] = entry
         end
         return failures
     end
@@ -87,6 +98,18 @@ local function merge_context(base, additions)
     end
 
     return merged
+end
+
+local function count_array_entries(values)
+    if type(values) ~= "table" then
+        return 0
+    end
+
+    local count = 0
+    for _ in ipairs(values) do
+        count = count + 1
+    end
+    return count
 end
 
 local function call_func(func_id: string, data: any, context: {[string]: any}?)
@@ -263,7 +286,7 @@ function parallel.execute_reduction_pipeline_step(step, data)
 
     if step.type == "map" then
         local func_id = step.func_id :: string
-        local mapped = {}
+        local mapped = create_array(#data)
         for index, item in ipairs(data) do
             local ctx = nil
             if step.context ~= nil then
@@ -277,14 +300,15 @@ function parallel.execute_reduction_pipeline_step(step, data)
             if map_err then
                 return nil, map_err
             end
-            table.insert(mapped, mapped_item)
+            mapped[index] = mapped_item
         end
         return mapped, nil
     end
 
     if step.type == "filter" then
         local func_id = step.func_id :: string
-        local filtered = {}
+        local filtered = create_array(#data)
+        local filtered_count = 0
         for index, item in ipairs(data) do
             local ctx = nil
             if step.context ~= nil then
@@ -299,7 +323,8 @@ function parallel.execute_reduction_pipeline_step(step, data)
                 return nil, filter_err
             end
             if keep == true then
-                table.insert(filtered, item)
+                filtered_count = filtered_count + 1
+                filtered[filtered_count] = item
             end
         end
         return filtered, nil
@@ -323,7 +348,7 @@ function parallel.execute_reduction_pipeline_step(step, data)
 
         local key_str = tostring(key)
         if grouped[key_str] == nil then
-            grouped[key_str] = {}
+            grouped[key_str] = create_array(1)
         end
         table.insert(grouped[key_str], item)
     end
@@ -332,16 +357,30 @@ function parallel.execute_reduction_pipeline_step(step, data)
 end
 
 local function gather_run_nodes(iterations)
-    local run_nodes = {}
+    local total_run_nodes = 0
+    for _, iteration in ipairs(iterations) do
+        if type(iteration.root_nodes) == "table" and #iteration.root_nodes > 0 then
+            total_run_nodes = total_run_nodes + #iteration.root_nodes
+        elseif type(iteration.uuid_mapping) == "table" then
+            for _ in pairs(iteration.uuid_mapping) do
+                total_run_nodes = total_run_nodes + 1
+            end
+        end
+    end
+
+    local run_nodes = create_array(total_run_nodes)
+    local run_node_count = 0
 
     for _, iteration in ipairs(iterations) do
         if type(iteration.root_nodes) == "table" and #iteration.root_nodes > 0 then
             for _, node_id in ipairs(iteration.root_nodes) do
-                table.insert(run_nodes, node_id)
+                run_node_count = run_node_count + 1
+                run_nodes[run_node_count] = node_id
             end
         elseif type(iteration.uuid_mapping) == "table" then
             for _, node_id in pairs(iteration.uuid_mapping) do
-                table.insert(run_nodes, node_id)
+                run_node_count = run_node_count + 1
+                run_nodes[run_node_count] = node_id
             end
         end
     end
@@ -356,7 +395,7 @@ local function fail_iteration(n, message)
     }, message)
 end
 
-local function add_failure(parallel_result, iteration, err_message)
+local function add_failure(parallel_result, iteration: any, err_message)
     parallel_result.failure_count = parallel_result.failure_count + 1
     parallel_result.failures[parallel_result.failure_count] = {
         iteration = iteration.iteration or iteration.iteration_index,
@@ -365,7 +404,7 @@ local function add_failure(parallel_result, iteration, err_message)
     }
 end
 
-local function add_success(parallel_result, iteration, result)
+local function add_success(parallel_result, iteration: any, result)
     parallel_result.success_count = parallel_result.success_count + 1
     parallel_result.successes[parallel_result.success_count] = {
         iteration = iteration.iteration or iteration.iteration_index,
@@ -373,6 +412,18 @@ local function add_success(parallel_result, iteration, result)
         result = result
     }
 end
+
+local function create_parallel_result(items)
+    return {
+        successes = create_array(#items),
+        failures = create_array(#items),
+        success_count = 0,
+        failure_count = 0,
+        total_iterations = #items
+    }
+end
+
+local build_iteration_record
 
 local function maybe_materialize_passthrough_inputs(n, inputs, passthrough_keys)
     if type(passthrough_keys) ~= "table" or #passthrough_keys == 0 then
@@ -447,13 +498,848 @@ local function process_reduction_pipeline(config, parallel_result, failure_strat
     return current, nil
 end
 
+local function has_reduction_pipeline(config)
+    return config.reduction_extract ~= nil or (config.reduction_steps and #config.reduction_steps > 0)
+end
+
+local function has_legacy_output_directive(config)
+    return config.filter ~= nil or config.unwrap ~= nil or config.output_shape ~= nil
+end
+
+local function resolve_legacy_output_directives(config)
+    local filter = config.filter
+    local unwrap = config.unwrap
+    local output_shape = config.output_shape
+
+    if type(output_shape) == "table" then
+        if filter == nil then
+            filter = output_shape.filter
+        end
+        if unwrap == nil then
+            unwrap = output_shape.unwrap
+        end
+    elseif type(output_shape) == "string" then
+        local normalized = string.lower(output_shape)
+
+        if filter == nil then
+            if string.find(normalized, "failure", 1, true) ~= nil then
+                filter = parallel.EXTRACTORS.FAILURES
+            elseif string.find(normalized, "success", 1, true) ~= nil then
+                filter = parallel.EXTRACTORS.SUCCESSES
+            elseif string.find(normalized, "all", 1, true) ~= nil then
+                filter = "all"
+            end
+        end
+
+        if unwrap == nil then
+            if string.find(normalized, "unwrap", 1, true) ~= nil then
+                unwrap = true
+            elseif normalized == "wrapped" then
+                unwrap = false
+            end
+        end
+    end
+
+    if filter == nil then
+        filter = "all"
+    end
+
+    return filter, unwrap == true
+end
+
+local function copy_parallel_entries(entries, entry_count)
+    local copied = {}
+    if type(entries) ~= "table" then
+        return copied
+    end
+
+    local max_index = type(entry_count) == "number" and entry_count or #entries
+    for index = 1, max_index do
+        local entry = entries[index]
+        if entry ~= nil then
+            copied[#copied + 1] = entry
+        end
+    end
+
+    return copied
+end
+
+local function collect_all_parallel_entries(parallel_result)
+    local ordered = {}
+    local entries_by_iteration = {}
+
+    for index = 1, (parallel_result.success_count or 0) do
+        local entry = parallel_result.successes[index]
+        if type(entry) == "table" and type(entry.iteration) == "number" then
+            entries_by_iteration[entry.iteration] = entry
+        end
+    end
+
+    for index = 1, (parallel_result.failure_count or 0) do
+        local entry = parallel_result.failures[index]
+        if type(entry) == "table" and type(entry.iteration) == "number" then
+            entries_by_iteration[entry.iteration] = entry
+        end
+    end
+
+    for iteration = 1, (parallel_result.total_iterations or 0) do
+        local entry = entries_by_iteration[iteration]
+        if entry ~= nil then
+            ordered[#ordered + 1] = entry
+        end
+    end
+
+    return ordered
+end
+
+local function apply_legacy_output_shape(config, parallel_result)
+    local filter, unwrap = resolve_legacy_output_directives(config)
+    local shaped_output
+
+    if filter == parallel.EXTRACTORS.SUCCESSES then
+        shaped_output = copy_parallel_entries(parallel_result.successes, parallel_result.success_count)
+    elseif filter == parallel.EXTRACTORS.FAILURES then
+        shaped_output = copy_parallel_entries(parallel_result.failures, parallel_result.failure_count)
+    else
+        shaped_output = collect_all_parallel_entries(parallel_result)
+    end
+
+    if not unwrap then
+        return shaped_output
+    end
+
+    local unwrapped = {}
+    for _, entry in ipairs(shaped_output) do
+        if type(entry) == "table" then
+            if entry.result ~= nil then
+                unwrapped[#unwrapped + 1] = entry.result
+            else
+                unwrapped[#unwrapped + 1] = entry.error
+            end
+        else
+            unwrapped[#unwrapped + 1] = entry
+        end
+    end
+
+    return unwrapped
+end
+
+local PARALLEL_PROGRESS_CURSOR_KEY = "cursor"
+local PARALLEL_PROGRESS_OUTCOME = {
+    SUCCESS = "success",
+    FAILURE = "failure",
+    FILTERED = "filtered"
+}
+
+local function iteration_progress_key(iteration_index)
+    return string.format("iteration.%06d", iteration_index)
+end
+
+local function decode_data_content(row)
+    local content = row.content
+    if row.content_type == parallel._deps.consts.CONTENT_TYPE.JSON and type(content) == "string" then
+        local decoded, decode_err = parallel._deps.json.decode(content)
+        if not decode_err then
+            return decoded
+        end
+    end
+    return content
+end
+
+local function sort_data_rows(rows)
+    table.sort(rows, function(a, b)
+        local a_created = tostring(a.created_at or "")
+        local b_created = tostring(b.created_at or "")
+
+        if a_created == b_created then
+            return tostring(a.data_id or "") < tostring(b.data_id or "")
+        end
+
+        return a_created < b_created
+    end)
+
+    return rows
+end
+
+local function extract_iteration_index(row, total_iterations)
+    local metadata = row.metadata
+    local iteration_index = metadata and tonumber(metadata.iteration)
+
+    if not iteration_index then
+        local discriminator = tostring(row.discriminator or "")
+        local matched_iteration = string.match(discriminator, "^iteration%.(%d+)")
+        if matched_iteration then
+            iteration_index = tonumber(matched_iteration)
+        end
+    end
+
+    if iteration_index and iteration_index >= 1 and iteration_index <= total_iterations then
+        return iteration_index
+    end
+
+    return nil
+end
+
+local function extract_error_message(content)
+    if type(content) ~= "table" then
+        return tostring(content)
+    end
+
+    local error_table = content :: {[string]: any}
+    return tostring(error_table.error or error_table.message or content)
+end
+
+local function build_completion_from_output_row(row, total_iterations)
+    local iteration_index = extract_iteration_index(row, total_iterations)
+    if iteration_index == nil then
+        return nil
+    end
+
+    local content = decode_data_content(row)
+    local outcome = row.type == parallel._deps.consts.DATA_TYPE.ITERATION_ERROR and
+        PARALLEL_PROGRESS_OUTCOME.FAILURE or
+        PARALLEL_PROGRESS_OUTCOME.SUCCESS
+
+    return {
+        iteration = iteration_index,
+        outcome = outcome,
+        attempt_id = row.metadata and row.metadata.attempt_id,
+        result = outcome == PARALLEL_PROGRESS_OUTCOME.SUCCESS and content or nil,
+        error = outcome == PARALLEL_PROGRESS_OUTCOME.FAILURE and extract_error_message(content) or nil
+    }
+end
+
+local function normalize_submitted_iterations(submitted_iterations, batch_start, batch_end)
+    local normalized = create_array(math.max(batch_end - batch_start + 1, 0))
+    local seen = {}
+    local normalized_count = 0
+
+    if type(submitted_iterations) == "table" and #submitted_iterations > 0 then
+        for _, iteration_index in ipairs(submitted_iterations) do
+            if type(iteration_index) == "number" and iteration_index >= batch_start and
+               iteration_index <= batch_end and iteration_index == math.floor(iteration_index) and
+               not seen[iteration_index] then
+                seen[iteration_index] = true
+                normalized_count = normalized_count + 1
+                normalized[normalized_count] = iteration_index
+            end
+        end
+    end
+
+    if normalized_count == 0 then
+        for iteration_index = batch_start, batch_end do
+            normalized_count = normalized_count + 1
+            normalized[normalized_count] = iteration_index
+        end
+    else
+        table.sort(normalized)
+    end
+
+    return normalized
+end
+
+local function normalize_progress_cursor(content, total_iterations)
+    local cursor = {
+        next_batch_start = 1,
+        active_batch = nil
+    }
+
+    if type(content) ~= "table" then
+        return cursor
+    end
+
+    local next_batch_start = tonumber(content.next_batch_start) or 1
+    next_batch_start = math.max(1, math.min(next_batch_start, total_iterations + 1))
+    cursor.next_batch_start = next_batch_start
+
+    if type(content.active_batch) == "table" then
+        local batch_start = tonumber(content.active_batch.batch_start)
+        local batch_end = tonumber(content.active_batch.batch_end)
+        local attempt_id = content.active_batch.attempt_id
+
+        if batch_start and batch_end and batch_start >= 1 and batch_start <= batch_end and
+           batch_end <= total_iterations and type(attempt_id) == "string" and attempt_id ~= "" then
+            cursor.active_batch = {
+                batch_start = batch_start,
+                batch_end = batch_end,
+                attempt_id = attempt_id,
+                submitted_iterations = normalize_submitted_iterations(
+                    content.active_batch.submitted_iterations,
+                    batch_start,
+                    batch_end
+                )
+            }
+        end
+    end
+
+    return cursor
+end
+
+local function normalize_iteration_completion(content, iteration_index)
+    if type(content) ~= "table" then
+        return nil
+    end
+
+    local outcome = content.outcome
+    if outcome ~= PARALLEL_PROGRESS_OUTCOME.SUCCESS and
+       outcome ~= PARALLEL_PROGRESS_OUTCOME.FAILURE and
+       outcome ~= PARALLEL_PROGRESS_OUTCOME.FILTERED then
+        return nil
+    end
+
+    return {
+        iteration = iteration_index,
+        outcome = outcome,
+        attempt_id = content.attempt_id,
+        result = content.result,
+        error = content.error
+    }
+end
+
+local function advance_cursor(cursor: any, completed_iterations: any, total_iterations, next_batch_start)
+    cursor.next_batch_start = math.max(1, math.min(next_batch_start, total_iterations + 1))
+
+    while cursor.next_batch_start <= total_iterations and completed_iterations[cursor.next_batch_start] ~= nil do
+        cursor.next_batch_start = cursor.next_batch_start + 1
+    end
+end
+
+local function load_parallel_progress(n, total_iterations)
+    local progress: any = {
+        cursor = {
+            next_batch_start = 1,
+            active_batch = nil
+        },
+        completed_iterations = {}
+    }
+
+    -- unit tests pass a mock node without :query; treat as fresh progress
+    if type(n.query) ~= "function" then
+        return progress
+    end
+
+    local ok, rows = pcall(function()
+        return (n:query() :: any)
+            :with_nodes(n.node_id)
+            :with_data_types({
+                parallel._deps.consts.DATA_TYPE.PARALLEL_PROGRESS,
+                parallel._deps.consts.DATA_TYPE.ITERATION_RESULT,
+                parallel._deps.consts.DATA_TYPE.ITERATION_ERROR
+            })
+            :all()
+    end)
+
+    if not ok or not rows then
+        return progress
+    end
+
+    sort_data_rows(rows)
+
+    for _, row in ipairs(rows) do
+        if row.type == parallel._deps.consts.DATA_TYPE.PARALLEL_PROGRESS then
+            local key = row.key or ""
+            local content = decode_data_content(row)
+
+            if key == PARALLEL_PROGRESS_CURSOR_KEY then
+                progress.cursor = normalize_progress_cursor(content, total_iterations)
+            else
+                local matched_iteration = string.match(key, "^iteration%.(%d+)$")
+                if matched_iteration then
+                    local iteration_index = tonumber(matched_iteration)
+                    if iteration_index and iteration_index >= 1 and iteration_index <= total_iterations then
+                        local completion = normalize_iteration_completion(content, iteration_index)
+                        if completion ~= nil then
+                            progress.completed_iterations[iteration_index] = completion
+                        end
+                    end
+                end
+            end
+        else
+            local completion = build_completion_from_output_row(row, total_iterations)
+            if completion ~= nil then
+                progress.completed_iterations[completion.iteration] = completion
+            end
+        end
+    end
+
+    if progress.cursor.active_batch and progress.cursor.active_batch.batch_end < progress.cursor.next_batch_start then
+        progress.cursor.active_batch = nil
+    end
+
+    advance_cursor(progress.cursor, progress.completed_iterations :: any, total_iterations, progress.cursor.next_batch_start)
+
+    return progress
+end
+
+local function can_persist_parallel_progress(n)
+    return type(n.data) == "function" and type(n.submit) == "function"
+end
+
+local function queue_parallel_cursor(n, cursor: any)
+    if not can_persist_parallel_progress(n) then
+        return true, nil
+    end
+
+    local _, data_err = n:data(parallel._deps.consts.DATA_TYPE.PARALLEL_PROGRESS, {
+        next_batch_start = cursor.next_batch_start,
+        active_batch = cursor.active_batch
+    }, {
+        node_id = n.node_id,
+        key = PARALLEL_PROGRESS_CURSOR_KEY
+    })
+
+    if data_err then
+        return nil, data_err
+    end
+
+    return true, nil
+end
+
+local function persist_parallel_cursor(n, cursor: any)
+    if not can_persist_parallel_progress(n) then
+        return true, nil
+    end
+
+    local queued, queue_err = queue_parallel_cursor(n, cursor)
+    if not queued then
+        return nil, queue_err
+    end
+
+    return n:submit()
+end
+
+local function persist_iteration_completion(n, completion: any)
+    if not can_persist_parallel_progress(n) then
+        return true, nil
+    end
+
+    local _, data_err = n:data(parallel._deps.consts.DATA_TYPE.PARALLEL_PROGRESS, {
+        iteration = completion.iteration,
+        outcome = completion.outcome,
+        attempt_id = completion.attempt_id,
+        result = completion.result,
+        error = completion.error
+    }, {
+        node_id = n.node_id,
+        key = iteration_progress_key(completion.iteration)
+    })
+
+    if data_err then
+        return nil, data_err
+    end
+
+    return n:submit()
+end
+
+local function apply_iteration_completion(parallel_result, iteration: any, completion: any)
+    if completion.outcome == PARALLEL_PROGRESS_OUTCOME.SUCCESS then
+        add_success(parallel_result, iteration, completion.result)
+    elseif completion.outcome == PARALLEL_PROGRESS_OUTCOME.FAILURE then
+        add_failure(parallel_result, iteration, tostring(completion.error or "Iteration failed"))
+    end
+end
+
+local function build_iteration_completion(iteration: any, outcome, extras)
+    extras = extras or {}
+
+    return {
+        iteration = iteration.iteration,
+        outcome = outcome,
+        attempt_id = extras.attempt_id or iteration.attempt_id,
+        result = extras.result,
+        error = extras.error
+    }
+end
+
+local function rebuild_parallel_result(items, completed_iterations)
+    local parallel_result = create_parallel_result(items)
+
+    for iteration_index = 1, #items do
+        local completion = completed_iterations[iteration_index]
+        if completion ~= nil then
+            apply_iteration_completion(
+                parallel_result,
+                build_iteration_record(items, iteration_index, completion.attempt_id),
+                completion
+            )
+        end
+    end
+
+    return parallel_result
+end
+
+local function has_recovery_progress(progress: any)
+    if progress.cursor.active_batch ~= nil or progress.cursor.next_batch_start > 1 then
+        return true
+    end
+
+    return next(progress.completed_iterations) ~= nil
+end
+
+local function process_iteration_output(config: any, failure_strategy, parallel_result, iteration: any, iteration_result)
+    local processed_result = iteration_result
+
+    if config.item_steps and #config.item_steps > 0 then
+        local filtered_out = false
+
+        for _, step in ipairs(config.item_steps) do
+            local step_result, step_err = parallel.execute_item_pipeline_step(step, processed_result)
+            if step_err then
+                local pipeline_err = "Item pipeline failed: " .. tostring(step_err)
+                if failure_strategy == parallel.FAILURE_STRATEGIES.FAIL_FAST then
+                    return nil, pipeline_err
+                end
+
+                local completion = build_iteration_completion(iteration, PARALLEL_PROGRESS_OUTCOME.FAILURE, {
+                    error = pipeline_err
+                })
+                add_failure(parallel_result, iteration, pipeline_err)
+                return completion, nil
+            end
+
+            if step.type == "filter" then
+                if not step_result then
+                    filtered_out = true
+                    break
+                end
+            else
+                processed_result = step_result
+            end
+        end
+
+        if filtered_out then
+            return build_iteration_completion(iteration, PARALLEL_PROGRESS_OUTCOME.FILTERED, {}), nil
+        end
+    end
+
+    local completion = build_iteration_completion(iteration, PARALLEL_PROGRESS_OUTCOME.SUCCESS, {
+        result = processed_result
+    })
+    add_success(parallel_result, iteration, processed_result)
+    return completion, nil
+end
+
+local function collect_iteration_completion(n, config: any, failure_strategy, parallel_result, iteration: any)
+    local iteration_result, collect_err = parallel._deps.iterator.collect_results(n, iteration)
+    if collect_err then
+        if failure_strategy == parallel.FAILURE_STRATEGIES.FAIL_FAST then
+            return nil, "Iteration failed: " .. tostring(collect_err)
+        end
+
+        local completion = build_iteration_completion(iteration, PARALLEL_PROGRESS_OUTCOME.FAILURE, {
+            error = tostring(collect_err)
+        })
+        add_failure(parallel_result, iteration, completion.error)
+        return completion, nil
+    end
+
+    return process_iteration_output(config, failure_strategy, parallel_result, iteration, iteration_result)
+end
+
+local function recover_iteration_completion(n, config: any, failure_strategy, parallel_result, iteration: any)
+    local iteration_result, collect_err = parallel._deps.iterator.collect_results(n, iteration)
+    if collect_err then
+        if string.find(tostring(collect_err), "No output data found for iteration", 1, true) ~= nil then
+            return nil, nil
+        end
+
+        if failure_strategy == parallel.FAILURE_STRATEGIES.FAIL_FAST then
+            return nil, "Iteration failed: " .. tostring(collect_err)
+        end
+
+        local completion = build_iteration_completion(iteration, PARALLEL_PROGRESS_OUTCOME.FAILURE, {
+            error = tostring(collect_err)
+        })
+        add_failure(parallel_result, iteration, completion.error)
+        return completion, nil
+    end
+
+    return process_iteration_output(config, failure_strategy, parallel_result, iteration, iteration_result)
+end
+
+build_iteration_record = function(items, iteration_index: number, attempt_id)
+    return {
+        iteration = iteration_index,
+        input_item = items[iteration_index],
+        attempt_id = attempt_id,
+        uuid_mapping = {}
+    }
+end
+
+local function collect_pending_iterations(progress: any)
+    local active_batch = progress.cursor.active_batch
+    if active_batch == nil then
+        return create_array(0)
+    end
+
+    local pending_iterations = create_array(count_array_entries(active_batch.submitted_iterations))
+    local pending_count = 0
+
+    for _, iteration_index in ipairs(active_batch.submitted_iterations or {}) do
+        if progress.completed_iterations[iteration_index] == nil then
+            pending_count = pending_count + 1
+            pending_iterations[pending_count] = iteration_index
+        end
+    end
+
+    return pending_iterations
+end
+
+local function merge_loaded_completions(parallel_result, items, progress: any, loaded_progress: any, iteration_indices)
+    for _, iteration_index in ipairs(iteration_indices) do
+        if progress.completed_iterations[iteration_index] == nil then
+            local completion = loaded_progress.completed_iterations[iteration_index]
+            if completion ~= nil then
+                progress.completed_iterations[iteration_index] = completion
+                apply_iteration_completion(
+                    parallel_result,
+                    build_iteration_record(items, iteration_index, completion.attempt_id),
+                    completion
+                )
+            end
+        end
+    end
+end
+
+local function await_late_iteration_rows(n, parallel_result, items, progress: any, pending_iterations)
+    if #pending_iterations == 0 then
+        return pending_iterations
+    end
+
+    if type(parallel._deps.time) ~= "table" or type(parallel._deps.time.sleep) ~= "function" then
+        return pending_iterations
+    end
+
+    for _ = 1, parallel.RECOVERY_READ_ATTEMPTS do
+        parallel._deps.time.sleep(parallel.RECOVERY_READ_DELAY)
+
+        local loaded_progress = load_parallel_progress(n, #items)
+        merge_loaded_completions(parallel_result, items, progress, loaded_progress, pending_iterations)
+
+        pending_iterations = collect_pending_iterations(progress)
+        if #pending_iterations == 0 then
+            return pending_iterations
+        end
+    end
+
+    return pending_iterations
+end
+
+local function discard_queued_commands(n)
+    if type(n._queued_commands) == "table" then
+        n._queued_commands = table.create(10, 0)
+    end
+end
+
+local function recover_active_batch(n, config: any, failure_strategy, parallel_result, items, progress: any)
+    local active_batch: any = progress.cursor.active_batch
+    if active_batch == nil then
+        return {}, nil
+    end
+
+    local pending_iterations = create_array(count_array_entries(active_batch.submitted_iterations))
+    local pending_count = 0
+
+    for _, iteration_index in ipairs(active_batch.submitted_iterations or {}) do
+        if progress.completed_iterations[iteration_index] == nil then
+            local iteration = build_iteration_record(items, iteration_index :: number, active_batch.attempt_id)
+            local completion, recover_err = recover_iteration_completion(
+                n,
+                config,
+                failure_strategy,
+                parallel_result,
+                iteration
+            )
+
+            if recover_err then
+                return nil, recover_err
+            end
+
+            if completion ~= nil then
+                progress.completed_iterations[iteration_index] = completion
+
+                local submit_ok, submit_err = persist_iteration_completion(n, completion)
+                if not submit_ok then
+                    return nil, "Failed to persist parallel iteration progress: " .. tostring(submit_err)
+                end
+            else
+                pending_count = pending_count + 1
+                pending_iterations[pending_count] = iteration_index
+            end
+        end
+    end
+
+    if pending_count > 0 then
+        pending_iterations = await_late_iteration_rows(n, parallel_result, items, progress, pending_iterations)
+    end
+
+    if #pending_iterations == 0 then
+        progress.cursor.active_batch = nil
+        advance_cursor(progress.cursor, progress.completed_iterations :: any, #items, (active_batch.batch_end :: number) + 1)
+
+        local submit_ok, submit_err = persist_parallel_cursor(n, progress.cursor)
+        if not submit_ok then
+            return nil, "Failed to persist parallel cursor: " .. tostring(submit_err)
+        end
+    end
+
+    return pending_iterations, nil
+end
+
+local function process_batch(n, template_graph, items, batch_start, batch_end, iteration_input_key,
+                             passthrough_inputs, config: any, failure_strategy, parallel_result, progress: any, selected_iterations)
+    selected_iterations = normalize_submitted_iterations(selected_iterations, batch_start, batch_end)
+
+    if #selected_iterations == 0 then
+        return nil
+    end
+
+    local attempt_id = parallel._deps.uuid.v7()
+
+    progress.cursor.active_batch = {
+        batch_start = batch_start,
+        batch_end = batch_end,
+        attempt_id = attempt_id,
+        submitted_iterations = selected_iterations
+    }
+    progress.cursor.next_batch_start = batch_start
+
+    local iterations, create_err = parallel._deps.iterator.create_batch(
+        n,
+        template_graph,
+        items,
+        batch_start,
+        batch_end,
+        iteration_input_key,
+        passthrough_inputs,
+        {
+            attempt_id = attempt_id,
+            iteration_indices = selected_iterations
+        }
+    )
+    iterations = iterations :: {any}
+
+    if create_err then
+        discard_queued_commands(n)
+
+        if failure_strategy == parallel.FAILURE_STRATEGIES.FAIL_FAST then
+            return "Iteration creation failed: " .. tostring(create_err)
+        end
+
+        for _, iteration_index in ipairs(selected_iterations) do
+            local completion = build_iteration_completion(
+                build_iteration_record(items, iteration_index, attempt_id),
+                PARALLEL_PROGRESS_OUTCOME.FAILURE,
+                { error = "Iteration creation failed: " .. tostring(create_err) }
+            )
+
+            progress.completed_iterations[iteration_index] = completion
+            apply_iteration_completion(parallel_result, build_iteration_record(items, iteration_index, attempt_id), completion)
+
+            local submit_ok, submit_err = persist_iteration_completion(n, completion)
+            if not submit_ok then
+                return "Failed to persist parallel iteration progress: " .. tostring(submit_err)
+            end
+        end
+
+        progress.cursor.active_batch = nil
+        advance_cursor(progress.cursor, progress.completed_iterations :: any, #items, batch_end + 1)
+
+        local submit_ok, submit_err = persist_parallel_cursor(n, progress.cursor)
+        if not submit_ok then
+            return "Failed to persist parallel cursor: " .. tostring(submit_err)
+        end
+
+        return nil
+    end
+
+    local cursor_ok, cursor_err = queue_parallel_cursor(n, progress.cursor)
+    if not cursor_ok then
+        discard_queued_commands(n)
+        return "Failed to persist parallel cursor: " .. tostring(cursor_err)
+    end
+
+    local run_nodes = gather_run_nodes(iterations)
+    if #run_nodes > 0 then
+        local _, yield_err = n:yield({ run_nodes = run_nodes })
+        if yield_err then
+            discard_queued_commands(n)
+
+            if failure_strategy == parallel.FAILURE_STRATEGIES.FAIL_FAST then
+                return "Yield failed: " .. tostring(yield_err)
+            end
+
+            for _, iteration in ipairs(iterations) do
+                local completion = build_iteration_completion(iteration :: any, PARALLEL_PROGRESS_OUTCOME.FAILURE, {
+                    error = "Yield failed: " .. tostring(yield_err)
+                })
+
+                progress.completed_iterations[iteration.iteration] = completion
+                add_failure(parallel_result, iteration :: any, completion.error)
+
+                local submit_ok, submit_err = persist_iteration_completion(n, completion)
+                if not submit_ok then
+                    return "Failed to persist parallel iteration progress: " .. tostring(submit_err)
+                end
+            end
+
+            progress.cursor.active_batch = nil
+            advance_cursor(progress.cursor, progress.completed_iterations :: any, #items, batch_end + 1)
+
+            local submit_ok, submit_err = persist_parallel_cursor(n, progress.cursor)
+            if not submit_ok then
+                return "Failed to persist parallel cursor: " .. tostring(submit_err)
+            end
+
+            return nil
+        end
+    else
+        local submit_ok, submit_err = n:submit()
+        if not submit_ok then
+            discard_queued_commands(n)
+            return "Failed to submit parallel batch: " .. tostring(submit_err)
+        end
+    end
+
+    for _, iteration in ipairs(iterations) do
+        local completion, iteration_err = collect_iteration_completion(
+            n,
+            config,
+            failure_strategy,
+            parallel_result,
+            iteration :: any
+        )
+
+        if iteration_err then
+            return iteration_err
+        end
+
+        progress.completed_iterations[iteration.iteration] = completion
+
+        local submit_ok, submit_err = persist_iteration_completion(n, completion)
+        if not submit_ok then
+            return "Failed to persist parallel iteration progress: " .. tostring(submit_err)
+        end
+    end
+
+    progress.cursor.active_batch = nil
+    advance_cursor(progress.cursor, progress.completed_iterations :: any, #items, batch_end + 1)
+
+    local submit_ok, submit_err = persist_parallel_cursor(n, progress.cursor)
+    if not submit_ok then
+        return "Failed to persist parallel cursor: " .. tostring(submit_err)
+    end
+
+    return nil
+end
+
 local function run(args)
     local n, err = parallel._deps.node.new(args)
     if err then
         error(err)
     end
 
-    local config = n:config() or {}
+    local config: any = n:config() or {}
 
     local source_array_key = config.source_array_key
     if type(source_array_key) ~= "string" or source_array_key == "" then
@@ -559,11 +1445,13 @@ local function run(args)
         }, "Invalid input structure for parallel")
     end
 
-    local passthrough_keys = {}
+    local passthrough_keys = create_array(type(config.passthrough_keys) == "table" and #config.passthrough_keys or 0)
+    local passthrough_key_count = 0
     if type(config.passthrough_keys) == "table" then
         for _, key in ipairs(config.passthrough_keys) do
             if type(key) == "string" then
-                table.insert(passthrough_keys, key)
+                passthrough_key_count = passthrough_key_count + 1
+                passthrough_keys[passthrough_key_count] = key
             end
         end
     end
@@ -592,114 +1480,84 @@ local function run(args)
         }, "No template nodes found")
     end
 
-    local parallel_result = {
-        successes = {},
-        failures = {},
-        success_count = 0,
-        failure_count = 0,
-        total_iterations = #items
-    }
+    local progress: any = load_parallel_progress(n, #items)
+    local started_from_recovery = has_recovery_progress(progress)
+
+    local parallel_result = rebuild_parallel_result(items, progress.completed_iterations)
 
     local iteration_input_key = config.iteration_input_key or parallel.DEFAULTS.ITERATION_INPUT_KEY
 
-    for batch_start = 1, #items, batch_size do
+    local pending_active_iterations, recover_err = recover_active_batch(
+        n,
+        config,
+        failure_strategy,
+        parallel_result,
+        items,
+        progress
+    )
+    if recover_err then
+        return fail_iteration(n, recover_err)
+    end
+
+    if progress.cursor.active_batch ~= nil and #pending_active_iterations > 0 then
+        local active_batch = progress.cursor.active_batch
+        local batch_err = process_batch(
+            n,
+            template_graph,
+            items,
+            active_batch.batch_start,
+            active_batch.batch_end,
+            iteration_input_key,
+            passthrough_inputs,
+            config,
+            failure_strategy,
+            parallel_result,
+            progress,
+            pending_active_iterations
+        )
+
+        if batch_err then
+            return fail_iteration(n, batch_err)
+        end
+    end
+
+    while progress.cursor.next_batch_start <= #items do
+        local batch_start = progress.cursor.next_batch_start :: number
         local batch_end = math.min(batch_start + batch_size - 1, #items)
 
-        local iterations, create_err = parallel._deps.iterator.create_batch(
+        local batch_err = process_batch(
             n,
             template_graph,
             items,
             batch_start,
             batch_end,
             iteration_input_key,
-            passthrough_inputs
+            passthrough_inputs,
+            config,
+            failure_strategy,
+            parallel_result,
+            progress,
+            nil
         )
 
-        if create_err then
-            if failure_strategy == parallel.FAILURE_STRATEGIES.FAIL_FAST then
-                return fail_iteration(n, "Iteration creation failed: " .. tostring(create_err))
-            end
-
-            for i = batch_start, batch_end do
-                add_failure(parallel_result, {
-                    iteration = i,
-                    input_item = items[i]
-                }, "Iteration creation failed: " .. tostring(create_err))
-            end
-            goto continue_batch
+        if batch_err then
+            return fail_iteration(n, batch_err)
         end
+    end
 
-        local run_nodes = gather_run_nodes(iterations)
-        if #run_nodes > 0 then
-            local _, yield_err = n:yield({ run_nodes = run_nodes })
-            if yield_err then
-                if failure_strategy == parallel.FAILURE_STRATEGIES.FAIL_FAST then
-                    return fail_iteration(n, "Yield failed: " .. tostring(yield_err))
-                end
-
-                for _, iteration in ipairs(iterations) do
-                    add_failure(parallel_result, iteration, "Yield failed: " .. tostring(yield_err))
-                end
-                goto continue_batch
-            end
-        end
-
-        for _, iteration in ipairs(iterations) do
-            local iteration_result, collect_err = parallel._deps.iterator.collect_results(n, iteration)
-            if collect_err then
-                if failure_strategy == parallel.FAILURE_STRATEGIES.FAIL_FAST then
-                    return fail_iteration(n, "Iteration failed: " .. tostring(collect_err))
-                end
-                add_failure(parallel_result, iteration, tostring(collect_err))
-                goto continue_iteration
-            end
-
-            local processed_result = iteration_result
-            if config.item_steps and #config.item_steps > 0 then
-                local filtered_out = false
-
-                for _, step in ipairs(config.item_steps) do
-                    local step_result, step_err = parallel.execute_item_pipeline_step(step, processed_result)
-                    if step_err then
-                        local pipeline_err = "Item pipeline failed: " .. tostring(step_err)
-                        if failure_strategy == parallel.FAILURE_STRATEGIES.FAIL_FAST then
-                            return fail_iteration(n, pipeline_err)
-                        end
-
-                        add_failure(parallel_result, iteration, pipeline_err)
-                        goto continue_iteration
-                    end
-
-                    if step.type == "filter" then
-                        if not step_result then
-                            filtered_out = true
-                            break
-                        end
-                    else
-                        processed_result = step_result
-                    end
-                end
-
-                if filtered_out then
-                    goto continue_iteration
-                end
-            end
-
-            add_success(parallel_result, iteration, processed_result)
-
-            ::continue_iteration::
-        end
-
-        ::continue_batch::
+    if started_from_recovery and type(n.query) == "function" then
+        parallel_result = rebuild_parallel_result(items, load_parallel_progress(n, #items).completed_iterations)
     end
 
     local final_output = parallel_result
-    if config.reduction_extract ~= nil or (config.reduction_steps and #config.reduction_steps > 0) then
+    if has_reduction_pipeline(config) then
         local reduced_output, reduction_err = process_reduction_pipeline(config, parallel_result, failure_strategy)
         if reduction_err then
             return fail_iteration(n, reduction_err)
         end
         final_output = reduced_output
+    elseif has_legacy_output_directive(config) then
+        final_output = apply_legacy_output_shape(config, parallel_result)
     end
 
     return n:complete(final_output, "Parallel processing completed successfully")

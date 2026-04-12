@@ -56,6 +56,51 @@ entries:
     imports:
       migration: wippy.migration:migration
     method: migrate
+
+  - name: 04_add_data_uniqueness_guards
+    kind: function.lua
+    meta:
+      type: migration
+      tags:
+        - dataflows
+        - dataflow
+        - data
+        - uniqueness
+      description: Add hard unique indexes for workflow outputs and successful node results
+      depends_on:
+        - ns:wippy.migration
+      target_db: app:db
+      timestamp: "2026-04-11T09:20:00Z"
+    source: file://04_add_data_uniqueness_guards.lua
+    imports:
+      migration: wippy.migration:migration
+    method: migrate
+
+  - name: migration_04_test
+    kind: function.lua
+    meta:
+      name: Migration 04 Regression Tests
+      type: test
+      suite: Workflow
+      group: Workflow
+      tags:
+        - dataflow
+        - migrations
+        - regression
+        - tests
+      description: Validates migration 04 deduplication and idempotent reruns.
+    source: file://migration_04_test.lua
+    modules:
+      - sql
+      - uuid
+      - time
+    imports:
+      migration_01: userspace.dataflow.migrations:01_create_dataflows_table
+      migration_02: userspace.dataflow.migrations:02_create_nodes_table
+      migration_03: userspace.dataflow.migrations:03_create_data_table
+      migration_04: userspace.dataflow.migrations:04_add_data_uniqueness_guards
+      test: wippy.test:test
+    method: run_tests
     
   # userspace.dataflow.migrations:05_create_dataflow_commits_table
   - name: 05_create_dataflow_commits_table

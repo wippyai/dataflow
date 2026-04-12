@@ -354,7 +354,7 @@ local function define_tests()
                 test.is_nil(create_err)
 
                 local result, exec_err = (c :: any):execute(dataflow_id :: string)
-                test.is_nil(exec_err)
+                test.not_nil(exec_err)
 
                 -- Function => node failure => failed workflow
                 test.is_false(result.success)
@@ -426,7 +426,7 @@ local function define_tests()
                 test.is_nil(create_err)
 
                 local result, exec_err = (c :: any):execute(dataflow_id :: string)
-                test.is_nil(exec_err)
+                test.not_nil(exec_err)
 
                 -- Should fail at workflow level because func node fails
                 test.is_false(result.success)
@@ -511,7 +511,7 @@ local function define_tests()
                 test.is_nil(create_err)
 
                 local result, exec_err = (c :: any):execute(dataflow_id :: string)
-                test.is_nil(exec_err)
+                test.not_nil(exec_err)
 
                 -- Should fail at workflow level
                 test.is_false(result.success)
@@ -585,7 +585,7 @@ local function define_tests()
                 test.is_nil(create_err)
 
                 local result, exec_err = (c :: any):execute(dataflow_id :: string)
-                test.is_nil(exec_err)
+                test.not_nil(exec_err)
 
                 -- Should fail at workflow level
                 test.is_false(result.success)
@@ -636,7 +636,7 @@ local function define_tests()
                 test.is_nil(create_err)
 
                 local result, exec_err = (c :: any):execute(dataflow_id :: string)
-                test.is_nil(exec_err)
+                test.not_nil(exec_err)
 
                 -- Should fail at workflow level
                 test.is_false(result.success)
@@ -705,7 +705,7 @@ local function define_tests()
                 test.is_nil(create_err)
 
                 local result, exec_err = (c :: any):execute(dataflow_id :: string)
-                test.is_nil(exec_err)
+                test.not_nil(exec_err)
 
                 -- Should succeed even without data targets
                 test.is_false(result.success)

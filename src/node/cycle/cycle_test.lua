@@ -3,6 +3,7 @@ local uuid = require("uuid")
 local json = require("json")
 local client = require("client")
 local consts = require("consts")
+local cycle = require("cycle")
 local data_reader = require("data_reader")
 
 local function decode_json_content(content: any): any
@@ -17,6 +18,106 @@ end
 
 local function define_tests()
     describe("Cycle Node Integration Tests", function()
+        describe("Unit Tests - Recovery", function()
+            it("BC_REGRESSION_C5_cycle_legacy_state_resume", function()
+                local load_persisted_state = cycle._load_persisted_state
+                local original_node_reader = cycle._deps.node_reader
+                local child_fallback_used = false
+
+                cycle._deps.node_reader = {
+                    with_dataflow = function(_dataflow_id)
+                        child_fallback_used = true
+                        return nil, "unexpected child fallback"
+                    end
+                }
+
+                local legacy_state = {
+                    refinement_count = 2,
+                    quality_score = 0.6
+                }
+
+                local function_result = {
+                    state = legacy_state,
+                    continue = true,
+                    result = {
+                        rebuilt_from = "cycle.function_result",
+                        quality_score = 0.75
+                    }
+                }
+
+                local function build_query()
+                    return {
+                        _data_type = nil,
+                        _data_key = nil,
+                        with_data_types = function(self, data_type)
+                            self._data_type = type(data_type) == "table" and data_type[1] or data_type
+                            return self
+                        end,
+                        with_nodes = function(self, _nodes)
+                            return self
+                        end,
+                        with_data_keys = function(self, data_key)
+                            self._data_key = type(data_key) == "table" and data_key[1] or data_key
+                            return self
+                        end,
+                        fetch_options = function(self, _options)
+                            return self
+                        end,
+                        all = function(self)
+                            if self._data_type == cycle.CYCLE_STATE_DATA_TYPE and self._data_key == "cycle_state" then
+                                return {
+                                    {
+                                        content = legacy_state,
+                                        metadata = { iteration = 3 }
+                                    }
+                                }, nil
+                            end
+
+                            if self._data_type == cycle.CYCLE_FUNCTION_RESULT_DATA_TYPE and
+                                self._data_key == "function_result_3" then
+                                return {
+                                    {
+                                        content = function_result,
+                                        metadata = { iteration = 3 }
+                                    }
+                                }, nil
+                            end
+
+                            return {}, nil
+                        end
+                    }
+                end
+
+                local mock_node = {
+                    node_id = "cycle-node",
+                    dataflow_id = "dataflow-id",
+                    query = function(_self)
+                        return build_query()
+                    end
+                }
+
+                local ok, loaded_state, start_iteration, last_result = pcall(load_persisted_state, mock_node, {
+                    refinement_count = 0,
+                    quality_score = 0.3
+                })
+                cycle._deps.node_reader = original_node_reader
+
+                if not ok then
+                    error(loaded_state)
+                end
+
+                local rebuilt_last_result = last_result :: any
+
+                test.eq(start_iteration, 3)
+                test.eq((loaded_state :: any).refinement_count, 2)
+                test.eq((loaded_state :: any).quality_score, 0.6)
+                test.not_nil(rebuilt_last_result)
+                test.eq(rebuilt_last_result.rebuilt_from, "cycle.function_result")
+                test.eq(rebuilt_last_result.quality_score, 0.75)
+                test.is_false(child_fallback_used)
+            end)
+        end)
+
         describe("Basic Cycle Execution", function()
             it("should execute simple refinement cycle end-to-end", function()
                 print("=== SIMPLE REFINEMENT CYCLE INTEGRATION TEST START ===")
@@ -177,7 +278,7 @@ local function define_tests()
                 test.is_nil(create_err)
 
                 local result, exec_err = c:execute(dataflow_id)
-                test.is_nil(exec_err)
+                test.not_nil(exec_err)
                 test.is_false(result.success)
                 test.contains(result.error, "Maximum iterations")
                 test.contains(result.error, "3")
@@ -246,7 +347,7 @@ local function define_tests()
                 test.is_nil(create_err)
 
                 local result, exec_err = c:execute(dataflow_id)
-                test.is_nil(exec_err)
+                test.not_nil(exec_err)
                 test.is_false(result.success)
                 test.contains(result.error, "Cycle requires either func_id or template nodes")
 
@@ -291,7 +392,7 @@ local function define_tests()
                 test.is_nil(create_err)
 
                 local result, exec_err = c:execute(dataflow_id)
-                test.is_nil(exec_err)
+                test.not_nil(exec_err)
                 test.is_false(result.success)
                 test.contains(result.error, "No input data provided")
 
@@ -360,7 +461,7 @@ local function define_tests()
                 test.is_nil(create_err)
 
                 local result, exec_err = c:execute(dataflow_id)
-                test.is_nil(exec_err)
+                test.not_nil(exec_err)
                 test.is_false(result.success)
                 test.contains(result.error, "failed")
 
@@ -722,7 +823,7 @@ local function define_tests()
                 test.is_nil(create_err)
 
                 local result, exec_err = c:execute(dataflow_id)
-                test.is_nil(exec_err)
+                test.not_nil(exec_err)
                 test.is_false(result.success)
                 test.contains(result.error, "Only one continuation method allowed")
 
@@ -1093,7 +1194,7 @@ local function define_tests()
                 test.is_nil(create_err)
 
                 local result, exec_err = c:execute(dataflow_id)
-                test.is_nil(exec_err)
+                test.not_nil(exec_err)
                 test.is_false(result.success)
                 test.contains(result.error, "Cycle requires either func_id or template nodes")
 
@@ -1794,7 +1895,7 @@ local function define_tests()
                 test.is_nil(create_err)
 
                 local result, exec_err = c:execute(dataflow_id)
-                test.is_nil(exec_err)
+                test.not_nil(exec_err)
                 test.is_false(result.success)
                 test.contains(result.error, "Template execution failed")
 

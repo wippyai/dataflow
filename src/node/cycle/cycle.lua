@@ -22,7 +22,8 @@ cycle._deps = {
     funcs = require("funcs"),
     consts = require("consts"),
     template_graph = require("template_graph"),
-    data_reader = require("data_reader")
+    data_reader = require("data_reader"),
+    node_reader = require("node_reader")
 }
 
 cycle.DEFAULTS = table.freeze({
@@ -32,6 +33,26 @@ cycle.DEFAULTS = table.freeze({
 
 cycle.CYCLE_STATE_DATA_TYPE = "cycle.state"
 cycle.CYCLE_FUNCTION_RESULT_DATA_TYPE = "cycle.function_result"
+
+local query_node_outputs
+local parse_output_rows
+
+local function create_array(size)
+    return table.create(size or 0, 0)
+end
+
+local function decode_json_content(content: any)
+    if type(content) ~= "string" then
+        return content
+    end
+
+    local decoded, decode_err = json.decode(content)
+    if not decode_err then
+        return decoded
+    end
+
+    return content
+end
 
 local function build_cycle_context(base_context, dataflow_id, node_id, path, iteration_number)
     local execution_context = {}
@@ -50,14 +71,120 @@ local function build_cycle_context(base_context, dataflow_id, node_id, path, ite
     return execution_context
 end
 
-local function persist_state(n, state, iteration_number)
-    n:data(cycle.CYCLE_STATE_DATA_TYPE, state, {
+local function persist_state(n, state, iteration_number, last_result)
+    n:data(cycle.CYCLE_STATE_DATA_TYPE, {
+        _cycle_persisted = true,
+        state = state,
+        last_result = last_result
+    }, {
         node_id = n.node_id,
         key = "cycle_state",
         metadata = {
-            iteration = iteration_number
+            iteration = iteration_number,
+            last_result = last_result
         }
     })
+end
+
+local function unpack_persisted_state(content: any, metadata: any, initial_state: any)
+    local decoded_content = decode_json_content(content)
+    local state = decoded_content
+    local last_result = metadata and metadata.last_result
+
+    if type(last_result) == "string" then
+        local decoded_last_result = decode_json_content(last_result)
+        if type(decoded_last_result) == "table" then
+            last_result = decoded_last_result
+        end
+    end
+
+    if type(decoded_content) == "table" and decoded_content._cycle_persisted == true then
+        state = decoded_content.state
+        if decoded_content.last_result ~= nil then
+            last_result = decoded_content.last_result
+        end
+    end
+
+    return state or initial_state, last_result
+end
+
+local function is_legacy_persisted_state(content: any)
+    local decoded_content = decode_json_content(content)
+    return type(decoded_content) == "table" and (decoded_content :: any)._cycle_persisted == nil
+end
+
+local function extract_iteration_result(result_row: any)
+    if not result_row then
+        return nil
+    end
+
+    local decoded_content = decode_json_content(result_row.content :: any)
+    if type(decoded_content) == "table" then
+        return decoded_content.result
+    end
+
+    return decoded_content
+end
+
+local function load_iteration_function_result(n, iteration_number)
+    local ok, rows_or_err = pcall(function()
+        return (n:query() :: any)
+            :with_data_types(cycle.CYCLE_FUNCTION_RESULT_DATA_TYPE)
+            :with_nodes({ n.node_id })
+            :with_data_keys("function_result_" .. iteration_number)
+            :fetch_options({ replace_references = true })
+            :all()
+    end)
+
+    if not ok or not rows_or_err or #rows_or_err == 0 then
+        return nil
+    end
+
+    return extract_iteration_result(rows_or_err[#rows_or_err])
+end
+
+local function load_iteration_child_result(n, iteration_number)
+    local reader, reader_err = cycle._deps.node_reader.with_dataflow(n.dataflow_id)
+    if reader_err then
+        return nil
+    end
+
+    local child_nodes, nodes_err = reader
+        :with_parent_nodes(n.node_id)
+        :fetch_options({ config = false })
+        :all()
+
+    if nodes_err or not child_nodes or #child_nodes == 0 then
+        return nil
+    end
+
+    local child_node_ids = {}
+    for _, child in ipairs(child_nodes) do
+        local child_iteration = tonumber(child.metadata and child.metadata.iteration)
+        if child_iteration == iteration_number then
+            table.insert(child_node_ids, child.node_id)
+        end
+    end
+
+    if #child_node_ids == 0 then
+        return nil
+    end
+
+    local output_data, query_err = query_node_outputs(n, child_node_ids)
+    if query_err or not output_data or #output_data == 0 then
+        return nil
+    end
+
+    return parse_output_rows(output_data)
+end
+
+local function rebuild_legacy_last_result(n, iteration_number)
+    local function_result = load_iteration_function_result(n, iteration_number)
+    if function_result ~= nil then
+        return function_result
+    end
+
+    return load_iteration_child_result(n, iteration_number)
 end
 
 local function persist_function_result(n, result, iteration_number)
@@ -80,11 +207,11 @@ local function load_persisted_state(n, initial_state)
         :all()
 
     if query_err then
-        return initial_state, 1
+        return initial_state, 1, nil
     end
 
     if not state_data or #state_data == 0 then
-        return initial_state, 1
+        return initial_state, 1, nil
     end
 
     local latest_state = nil
@@ -99,10 +226,20 @@ local function load_persisted_state(n, initial_state)
     end
 
     if not latest_state then
-        return initial_state, 1
+        return initial_state, 1, nil
     end
 
-    return latest_state.content or initial_state, max_iteration + 1
+    local content, last_result = unpack_persisted_state(
+        latest_state.content :: any,
+        latest_state.metadata :: any,
+        initial_state
+    )
+
+    if is_legacy_persisted_state(latest_state.content :: any) then
+        return content, max_iteration, rebuild_legacy_last_result(n, max_iteration)
+    end
+
+    return content, max_iteration + 1, last_result
 end
 
 local function execute_function_iteration(executor, func_id, context, events_channel)
@@ -145,8 +282,8 @@ local function remap_template_config(config, uuid_mapping)
     end
 
     if config.data_targets then
-        remapped.data_targets = {}
-        for _, target in ipairs(config.data_targets) do
+        remapped.data_targets = create_array(#config.data_targets)
+        for index, target in ipairs(config.data_targets) do
             local remapped_target = {}
             for tk, tv in pairs(target) do
                 remapped_target[tk] = tv
@@ -156,13 +293,13 @@ local function remap_template_config(config, uuid_mapping)
                 remapped_target.node_id = uuid_mapping[target.node_id]
             end
 
-            table.insert(remapped.data_targets, remapped_target)
+            remapped.data_targets[index] = remapped_target
         end
     end
 
     if config.error_targets then
-        remapped.error_targets = {}
-        for _, target in ipairs(config.error_targets) do
+        remapped.error_targets = create_array(#config.error_targets)
+        for index, target in ipairs(config.error_targets) do
             local remapped_target = {}
             for tk, tv in pairs(target) do
                 remapped_target[tk] = tv
@@ -172,65 +309,93 @@ local function remap_template_config(config, uuid_mapping)
                 remapped_target.node_id = uuid_mapping[target.node_id]
             end
 
-            table.insert(remapped.error_targets, remapped_target)
+            remapped.error_targets[index] = remapped_target
         end
     end
 
     return remapped
 end
 
-local function parse_content(content, content_type)
-    if (content_type == cycle._deps.consts.CONTENT_TYPE.JSON or content_type == "application/json")
-        and type(content) == "string" then
-        local parsed, err = json.decode(content)
-        if not err then
-            return parsed
-        end
+local function parse_content(content: any, content_type: any)
+    if content_type == cycle._deps.consts.CONTENT_TYPE.JSON or content_type == "application/json" then
+        return decode_json_content(content)
     end
+
     return content
 end
 
-local function collect_template_outputs(n, uuid_mapping, template_graph)
-    local iteration_node_ids = {}
+query_node_outputs = function(n, node_ids)
+    if type(node_ids) ~= "table" or #node_ids == 0 then
+        return {}, nil
+    end
+
+    local ok, output_data_or_err = pcall(function()
+        return (n:query() :: any)
+            :with_nodes(node_ids)
+            :with_data_types(cycle._deps.consts.DATA_TYPE.NODE_OUTPUT)
+            :fetch_options({ replace_references = true })
+            :all()
+    end)
+
+    if not ok then
+        return nil, "Failed to query output data: " .. tostring(output_data_or_err)
+    end
+
+    return output_data_or_err, nil
+end
+
+local function collect_node_ids(uuid_mapping)
+    local count = 0
+    for _ in pairs(uuid_mapping) do
+        count = count + 1
+    end
+
+    local node_ids = create_array(count)
+    local index = 0
     for _, actual_node_id in pairs(uuid_mapping) do
-        table.insert(iteration_node_ids, actual_node_id)
+        index = index + 1
+        node_ids[index] = actual_node_id
     end
 
-    local reader, reader_err = cycle._deps.data_reader.with_dataflow(n.dataflow_id) :: any
-    if reader_err then
-        return nil, "Failed to create data reader: " .. (reader_err :: string)
+    return node_ids
+end
+
+local function collect_parsed_outputs(output_data)
+    local results = create_array(#output_data)
+    for index, output in ipairs(output_data) do
+        results[index] = {
+            key = output.key,
+            content = parse_content(output.content :: string, output.content_type :: string),
+            node_id = output.node_id,
+            discriminator = output.discriminator
+        }
     end
 
-    local output_data, query_err = reader
-        :with_nodes(iteration_node_ids)
-        :with_data_types(cycle._deps.consts.DATA_TYPE.NODE_OUTPUT)
-        :fetch_options({ replace_references = true })
-        :all()
+    return results
+end
 
+parse_output_rows = function(output_data)
+    local results = collect_parsed_outputs(output_data)
+    if #results == 1 then
+        return results[1].content
+    end
+
+    return results
+end
+
+local function collect_template_outputs(n, uuid_mapping)
+    local iteration_node_ids = collect_node_ids(uuid_mapping)
+
+    local output_data, query_err = query_node_outputs(n, iteration_node_ids)
     if query_err then
-        return nil, "Failed to query output data: " .. (query_err :: string)
+        return nil, query_err
     end
 
-    if #output_data == 0 then
+    if not output_data or #output_data == 0 then
         return nil, "No output data found for template execution"
     end
 
-    local results = {}
-    for _, output in ipairs(output_data) do
-        local parsed_content = parse_content(output.content :: string, output.content_type :: string)
-        table.insert(results, {
-            key = output.key,
-            content = parsed_content,
-            node_id = output.node_id,
-            discriminator = output.discriminator
-        })
-    end
-
-    if #results == 1 then
-        return results[1].content, nil
-    else
-        return results, nil
-    end
+    return parse_output_rows(output_data), nil
 end
 
 local function execute_template_iteration(n, template_graph, current_state, last_result, iteration_number, original_input)
@@ -296,17 +461,14 @@ local function execute_template_iteration(n, template_graph, current_state, last
         })
     end
 
-    local all_nodes = {}
-    for _, node_id in pairs(uuid_mapping) do
-        table.insert(all_nodes, node_id)
-    end
+    local all_nodes = collect_node_ids(uuid_mapping)
 
     local yield_result, yield_err = n:yield({ run_nodes = all_nodes })
     if yield_err then
         return nil, "Template execution failed: " .. (yield_err :: string)
     end
 
-    local outputs, collect_err = collect_template_outputs(n, uuid_mapping, template_graph)
+    local outputs, collect_err = collect_template_outputs(n, uuid_mapping)
     if collect_err then
         return nil, "Template execution failed: " .. (collect_err :: string)
     end
@@ -344,50 +506,22 @@ local function process_control_commands(n, control_commands, iteration_number)
             return nil, "Control command execution failed: " .. (yield_err :: string)
         end
 
-        local output_data, collect_err = (n:query() :: any)
-            :with_nodes(created_node_ids)
-            :with_data_types(cycle._deps.consts.DATA_TYPE.NODE_OUTPUT)
-            :fetch_options({ replace_references = true })
-            :all()
-
+        local output_data, collect_err = query_node_outputs(n, created_node_ids)
         if collect_err then
             return nil, "Failed to collect child outputs: " .. (collect_err :: string)
         end
 
         if output_data and #output_data > 0 then
-            if #output_data == 1 then
-                local content = output_data[1].content
-
-                if output_data[1].content_type == "application/json" or
-                    output_data[1].content_type == cycle._deps.consts.CONTENT_TYPE.JSON then
-                    if type(content) == "string" then
-                        local parsed, parse_err = json.decode(content)
-                        if not parse_err and parsed then
-                            return parsed, nil
-                        end
-                    end
-                end
-
-                return content, nil
-            else
-                local results = {}
-                for _, output in ipairs(output_data) do
-                    local content = output.content
-
-                    if output.content_type == "application/json" or
-                        output.content_type == cycle._deps.consts.CONTENT_TYPE.JSON then
-                        if type(content) == "string" then
-                            local parsed, parse_err = json.decode(content)
-                            if not parse_err and parsed then
-                                content = parsed
-                            end
-                        end
-                    end
-
-                    table.insert(results, content)
-                end
-                return results, nil
+            local parsed_outputs = collect_parsed_outputs(output_data)
+            if #parsed_outputs == 1 then
+                return parsed_outputs[1].content, nil
             end
+
+            local contents = create_array(#parsed_outputs)
+            for index, output in ipairs(parsed_outputs) do
+                contents[index] = output.content
+            end
+            return contents, nil
         end
     end
 
@@ -533,8 +667,8 @@ local function run(args)
         end
     end
 
-    local current_state, start_iteration = load_persisted_state(n, initial_state)
-    local last_result = nil
+    local current_state, start_iteration, loaded_last_result = load_persisted_state(n, initial_state)
+    local last_result = loaded_last_result
 
     local executor = nil
     local continue_executor = nil
@@ -627,7 +761,6 @@ local function run(args)
         current_state = new_state
 
         update_node_metadata(n, metadata_updates)
-        persist_state(n, current_state, iteration_number)
 
         if control_commands then
             local child_result, cmd_err = process_control_commands(n, control_commands, iteration_number)
@@ -669,6 +802,14 @@ local function run(args)
         else
             last_result = current_result
         end
+
+        -- persist iteration state AFTER children have contributed their results.
+        -- persisting before children runs would let a mid-iteration crash burn the
+        -- iteration count without ever applying the child's output on restart.
+        -- also persist last_result so recovery can replay the user function with
+        -- the prior child's output and not lose its contribution.
+        persist_state(n, current_state, iteration_number, last_result)
+        n:submit()
 
         local continuation_context = {
             input = original_input,
@@ -735,4 +876,5 @@ local function run(args)
 end
 
 cycle.run = run
+cycle._load_persisted_state = load_persisted_state
 return cycle

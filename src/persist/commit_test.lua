@@ -6,6 +6,7 @@ local sql = require("sql")
 
 local commit = require("commit")
 local ops = require("ops")
+local consts = require("dataflow_consts")
 
 local function define_tests()
     describe("Commit Module", function()
@@ -181,6 +182,38 @@ local function define_tests()
 
             db:release()
             return dataflow_id
+        end
+
+        local function count_rows(tx, table_name, filters)
+            local query = sql.builder.select("COUNT(*) AS row_count")
+                :from(table_name)
+
+            for _, filter in ipairs(filters or {}) do
+                query = query:where(filter[1], filter[2])
+            end
+
+            local executor = query:run_with(tx)
+            local rows, err = executor:query()
+            if err then
+                error("Failed to count rows in " .. table_name .. ": " .. err)
+            end
+
+            return rows[1].row_count
+        end
+
+        local function get_commit_op_id(tx, commit_id)
+            local query = sql.builder.select("op_id")
+                :from("dataflow_commits")
+                :where("commit_id = ?", commit_id)
+                :limit(1)
+
+            local executor = query:run_with(tx)
+            local rows, err = executor:query()
+            if err then
+                error("Failed to load commit row: " .. err)
+            end
+
+            return rows[1] and rows[1].op_id or nil
         end
 
         describe("publish_updates", function()
@@ -458,6 +491,98 @@ local function define_tests()
                 test.eq(result.commit_ids[1], commit_id)
 
                 test.eq(#result.results, 2)
+            end)
+
+            it("should skip replaying an already applied commit", function()
+                local resources = setup_test_resources()
+                local tx = get_test_transaction()
+                local commit_id = uuid.v7()
+                local op_id = uuid.v7()
+                local node_type = "replay_guard_node"
+                local data_type = "replay_guard_data"
+                local data_key = "replay-guard-key"
+                local commit_payload = {
+                    op_id = op_id,
+                    commands = {
+                        {
+                            type = ops.COMMAND_TYPES.CREATE_NODE,
+                            payload = {
+                                node_type = node_type
+                            }
+                        },
+                        {
+                            type = ops.COMMAND_TYPES.CREATE_DATA,
+                            payload = {
+                                data_type = data_type,
+                                key = data_key,
+                                content = "durable replay test"
+                            }
+                        }
+                    }
+                }
+
+                local payload_json = json.encode(commit_payload)
+                local now_ts = time.now():format(time.RFC3339NANO)
+
+                local insert_query = sql.builder.insert("dataflow_commits")
+                    :set_map({
+                        commit_id = commit_id,
+                        dataflow_id = resources.dataflow_id,
+                        op_id = sql.as.null(),
+                        payload = payload_json,
+                        metadata = "{}",
+                        created_at = now_ts
+                    })
+
+                local insert_exec = insert_query:run_with(tx)
+                local _, insert_err = insert_exec:exec()
+                test.is_nil(insert_err)
+
+                local apply_commands = {
+                    {
+                        type = consts.COMMAND.APPLY_COMMIT,
+                        payload = {
+                            commit_id = commit_id
+                        }
+                    }
+                }
+
+                local result1, err1 = commit.tx_execute(tx, resources.dataflow_id, op_id, apply_commands, { publish = false })
+
+                test.is_nil(err1)
+                test.not_nil(result1)
+                test.is_true(result1.changes_made)
+                test.eq(count_rows(tx, "dataflow_nodes", {
+                    { "dataflow_id = ?", resources.dataflow_id },
+                    { "type = ?", node_type }
+                }), 1)
+                test.eq(count_rows(tx, "dataflow_data", {
+                    { "dataflow_id = ?", resources.dataflow_id },
+                    { "type = ?", data_type },
+                    { "key = ?", data_key }
+                }), 1)
+                test.eq(get_commit_op_id(tx, commit_id), op_id)
+
+                local result2, err2 = commit.tx_execute(tx, resources.dataflow_id, op_id, apply_commands, { publish = false })
+
+                test.is_nil(err2)
+                test.not_nil(result2)
+                test.is_false(result2.changes_made)
+                test.eq(#result2.results, 0)
+                test.not_nil(result2.skipped_commit_ids)
+                test.eq(#(result2.skipped_commit_ids :: any), 1)
+                test.eq((result2.skipped_commit_ids :: any)[1], commit_id)
+
+                test.eq(count_rows(tx, "dataflow_nodes", {
+                    { "dataflow_id = ?", resources.dataflow_id },
+                    { "type = ?", node_type }
+                }), 1)
+                test.eq(count_rows(tx, "dataflow_data", {
+                    { "dataflow_id = ?", resources.dataflow_id },
+                    { "type = ?", data_type },
+                    { "key = ?", data_key }
+                }), 1)
+                test.eq(get_commit_op_id(tx, commit_id), op_id)
             end)
         end)
 

@@ -6,7 +6,7 @@ local client = require("client")
 local consts = require("consts")
 local data_reader = require("data_reader")
 
-local WAIT = "3s"
+local WAIT = "2s"
 
 local function define_tests()
     describe("Signal Recovery Tests", function()

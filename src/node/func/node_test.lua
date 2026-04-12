@@ -250,7 +250,7 @@ local function define_tests()
                 test.is_nil(create_err)
 
                 local result, exec_err = c:execute(dataflow_id)
-                test.is_nil(exec_err)
+                test.not_nil(exec_err)
                 test.is_false(result.success)
                 test.contains(result.error, "Function ID not specified")
 
@@ -294,7 +294,7 @@ local function define_tests()
                 test.is_nil(create_err)
 
                 local result, exec_err = c:execute(dataflow_id)
-                test.is_nil(exec_err)
+                test.not_nil(exec_err)
                 test.is_false(result.success)
                 test.contains(result.error, "No input data provided")
 
@@ -362,7 +362,7 @@ local function define_tests()
                 test.is_nil(create_err)
 
                 local result, exec_err = c:execute(dataflow_id)
-                test.is_nil(exec_err)
+                test.not_nil(exec_err)
                 test.is_false(result.success)
                 test.contains(result.error, "failed")
 

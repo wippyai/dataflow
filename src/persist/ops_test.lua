@@ -6,6 +6,21 @@ local sql = require("sql")
 
 local ops = require("ops")
 
+-- rebind ? placeholders to $1,$2 for postgres
+local function rebind(query, db_type)
+    if db_type ~= "postgres" then return query end
+    local i = 0
+    return (query:gsub("%?", function()
+        i = i + 1
+        return "$" .. i
+    end))
+end
+
+-- tx:query wrapper that auto-rebinds placeholders per db dialect
+local function txq(tx, query, params)
+    return tx:query(rebind(query, tx:db_type()), params)
+end
+
 local function define_tests()
     describe("Operations Module", function()
         local test_ctx = {
@@ -53,11 +68,12 @@ local function define_tests()
             local dataflow_id = uuid.v7()
             local now_ts = time.now():format(time.RFC3339)
 
-            local _success, err_insert = tx:execute([[
+            local db_type = tx:db_type()
+            local _success, err_insert = tx:execute(rebind([[
                 INSERT INTO dataflows (
                     dataflow_id, actor_id,  type, status, metadata, created_at, updated_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?)
-            ]], {
+            ]], db_type), {
                 dataflow_id,
                 test_actor_id,
                 "test_dataflow",
@@ -73,11 +89,11 @@ local function define_tests()
 
             local node_id = uuid.v7()
 
-            _success, err_insert = tx:execute([[
+            _success, err_insert = tx:execute(rebind([[
                 INSERT INTO dataflow_nodes (
                     node_id, dataflow_id, type, status, config, metadata, created_at, updated_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ]], {
+            ]], db_type), {
                 node_id,
                 dataflow_id,
                 "test_node",
@@ -99,6 +115,14 @@ local function define_tests()
             }
 
             return test_ctx.resources
+        end
+
+        local function assert_unique_violation(err_message)
+            local lowered = string.lower(tostring(err_message or ""))
+            local has_unique = string.find(lowered, "unique", 1, true) ~= nil
+            local has_duplicate = string.find(lowered, "duplicate", 1, true) ~= nil
+            test.is_true(has_unique or has_duplicate,
+                "expected unique constraint violation, got: " .. tostring(err_message))
         end
 
         describe("Basic Operation Execution", function()
@@ -131,7 +155,7 @@ local function define_tests()
                 test.eq(result.results[1].data_id, data_id)
 
                 local query = "SELECT * FROM dataflow_data WHERE data_id = ?"
-                local rows, err_query = tx:query(query, { data_id })
+                local rows, err_query = txq(tx, query, { data_id })
 
                 test.is_nil(err_query)
                 test.eq(#rows, 1)
@@ -182,7 +206,7 @@ local function define_tests()
                 test.eq(result.results[2].data_id, data_id_2)
 
                 local query = "SELECT * FROM dataflow_data WHERE data_id IN (?, ?) ORDER BY key ASC"
-                local rows, err_query = tx:query(query, { data_id_1, data_id_2 })
+                local rows, err_query = txq(tx, query, { data_id_1, data_id_2 })
 
                 test.is_nil(err_query)
                 test.eq(#rows, 2)
@@ -266,10 +290,137 @@ local function define_tests()
 
                 -- Verify first command was executed but will be rolled back
                 local query = "SELECT * FROM dataflow_data WHERE data_id = ?"
-                local rows, err_query = tx:query(query, { data_id_1 })
+                local rows, err_query = txq(tx, query, { data_id_1 })
 
                 test.is_nil(err_query)
                 test.eq(#rows, 1) -- Record exists in transaction but will rollback
+            end)
+        end)
+
+        describe("Durable Uniqueness Guards", function()
+            it("should reject duplicate workflow output rows at the database level", function()
+                local resources = setup_test_resources()
+                local tx = get_test_transaction()
+                local now_ts = time.now():format(time.RFC3339NANO)
+                local db_type = tx:db_type()
+
+                local insert_sql = rebind([[
+                    INSERT INTO dataflow_data (
+                        data_id, dataflow_id, node_id, type, discriminator, key, content, content_type, metadata, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ]], db_type)
+
+                local _, first_err = tx:execute(insert_sql, {
+                    uuid.v7(),
+                    resources.dataflow_id,
+                    resources.node_id,
+                    "dataflow.output",
+                    nil,
+                    "result",
+                    "first-output",
+                    "text/plain",
+                    "{}",
+                    now_ts
+                })
+                test.is_nil(first_err)
+
+                local _, second_err = tx:execute(insert_sql, {
+                    uuid.v7(),
+                    resources.dataflow_id,
+                    resources.node_id,
+                    "dataflow.output",
+                    nil,
+                    "result",
+                    "duplicate-output",
+                    "text/plain",
+                    "{}",
+                    now_ts
+                })
+
+                test.not_nil(second_err)
+                assert_unique_violation(second_err)
+            end)
+
+            it("should reject duplicate successful node results at the database level", function()
+                local resources = setup_test_resources()
+                local tx = get_test_transaction()
+                local now_ts = time.now():format(time.RFC3339NANO)
+                local db_type = tx:db_type()
+
+                local insert_sql = rebind([[
+                    INSERT INTO dataflow_data (
+                        data_id, dataflow_id, node_id, type, discriminator, key, content, content_type, metadata, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ]], db_type)
+
+                local _, first_err = tx:execute(insert_sql, {
+                    uuid.v7(),
+                    resources.dataflow_id,
+                    resources.node_id,
+                    "node.result",
+                    "result.success",
+                    nil,
+                    "Completed",
+                    "text/plain",
+                    "{}",
+                    now_ts
+                })
+                test.is_nil(first_err)
+
+                local _, second_err = tx:execute(insert_sql, {
+                    uuid.v7(),
+                    resources.dataflow_id,
+                    resources.node_id,
+                    "node.result",
+                    "result.success",
+                    nil,
+                    "Completed again",
+                    "text/plain",
+                    "{}",
+                    now_ts
+                })
+
+                test.not_nil(second_err)
+                assert_unique_violation(second_err)
+            end)
+
+            it("should treat duplicate workflow output creates as idempotent", function()
+                local resources = setup_test_resources()
+                local tx = get_test_transaction()
+
+                local first_command = {
+                    type = ops.COMMAND_TYPES.CREATE_DATA,
+                    payload = {
+                        data_id = uuid.v7(),
+                        node_id = resources.node_id,
+                        data_type = "dataflow.output",
+                        key = "result",
+                        content = "first-output",
+                        content_type = "text/plain"
+                    }
+                }
+
+                local first_result, first_err = ops.execute(tx, resources.dataflow_id, nil, first_command)
+                test.is_nil(first_err)
+                test.is_true(first_result.changes_made)
+
+                local duplicate_command = {
+                    type = ops.COMMAND_TYPES.CREATE_DATA,
+                    payload = {
+                        data_id = uuid.v7(),
+                        node_id = resources.node_id,
+                        data_type = "dataflow.output",
+                        key = "result",
+                        content = "second-output",
+                        content_type = "text/plain"
+                    }
+                }
+
+                local duplicate_result, duplicate_err = ops.execute(tx, resources.dataflow_id, nil, duplicate_command)
+                test.is_nil(duplicate_err)
+                test.is_false(duplicate_result.changes_made)
+                test.eq(duplicate_result.results[1].data_id, first_result.results[1].data_id)
+                test.is_true(duplicate_result.results[1].deduplicated)
             end)
         end)
 
@@ -298,7 +449,7 @@ local function define_tests()
                 test.eq(result.results[1].dataflow_id, dataflow_id)
 
                 local query = "SELECT * FROM dataflows WHERE dataflow_id = ?"
-                local rows, err_query = tx:query(query, { dataflow_id })
+                local rows, err_query = txq(tx, query, { dataflow_id })
 
                 test.is_nil(err_query)
                 test.eq(#rows, 1)
@@ -362,7 +513,7 @@ local function define_tests()
                 test.eq(result.results[1].dataflow_id, dataflow_id)
 
                 local query = "SELECT * FROM dataflows WHERE dataflow_id = ?"
-                local rows, err_query = tx:query(query, { dataflow_id })
+                local rows, err_query = txq(tx, query, { dataflow_id })
 
                 test.is_nil(err_query)
                 test.eq(#rows, 1)
@@ -432,7 +583,7 @@ local function define_tests()
                 test.is_nil(err)
 
                 local query = "SELECT metadata FROM dataflows WHERE dataflow_id = ?"
-                local rows, err_query = tx:query(query, { dataflow_id })
+                local rows, err_query = txq(tx, query, { dataflow_id })
 
                 test.is_nil(err_query)
                 test.eq(#rows, 1)
@@ -462,7 +613,7 @@ local function define_tests()
                 test.is_true(create_result.changes_made)
 
                 local check_query = "SELECT created_at FROM dataflows WHERE dataflow_id = ?"
-                local check_rows, check_err = tx:query(check_query, { dataflow_id })
+                local check_rows, check_err = txq(tx, check_query, { dataflow_id })
                 test.is_nil(check_err)
                 local created_at = check_rows[1].created_at
 
@@ -483,7 +634,7 @@ local function define_tests()
                 test.eq(result.results[1].dataflow_id, dataflow_id)
 
                 local query = "SELECT * FROM dataflows WHERE dataflow_id = ?"
-                local rows, err_query = tx:query(query, { dataflow_id })
+                local rows, err_query = txq(tx, query, { dataflow_id })
 
                 test.is_nil(err_query)
                 test.eq(#rows, 1)
@@ -565,7 +716,7 @@ local function define_tests()
                 test.is_nil(create_err)
 
                 local check_query = "SELECT status FROM dataflows WHERE dataflow_id = ?"
-                local check_rows, check_err = tx:query(check_query, { dataflow_id })
+                local check_rows, check_err = txq(tx, check_query, { dataflow_id })
                 test.is_nil(check_err)
                 test.eq(check_rows[1].status, "pending")
 
@@ -585,7 +736,7 @@ local function define_tests()
                 test.eq(result.results[1].dataflow_id, dataflow_id)
 
                 local query = "SELECT status FROM dataflows WHERE dataflow_id = ?"
-                local rows, err_query = tx:query(query, { dataflow_id })
+                local rows, err_query = txq(tx, query, { dataflow_id })
 
                 test.is_nil(err_query)
                 test.eq(#rows, 1)
@@ -610,7 +761,7 @@ local function define_tests()
                 test.is_nil(create_err)
 
                 local check_query = "SELECT COUNT(*) AS wf_count FROM dataflows WHERE dataflow_id = ?"
-                local check_rows, check_err = tx:query(check_query, { dataflow_id })
+                local check_rows, check_err = txq(tx, check_query, { dataflow_id })
                 test.is_nil(check_err)
                 test.eq(check_rows[1].wf_count, 1)
 
@@ -629,7 +780,7 @@ local function define_tests()
                 test.is_true(result.results[1].deleted)
 
                 local count_query = "SELECT COUNT(*) AS wf_count FROM dataflows WHERE dataflow_id = ?"
-                local count_rows, count_err = tx:query(count_query, { dataflow_id })
+                local count_rows, count_err = txq(tx, count_query, { dataflow_id })
                 test.is_nil(count_err)
                 test.eq(count_rows[1].wf_count, 0)
             end)
@@ -699,11 +850,11 @@ local function define_tests()
 
                 local count_query = "SELECT COUNT(*) AS wf_count FROM dataflows WHERE dataflow_id = ?"
 
-                local deleted_rows, deleted_err = tx:query(count_query, { delete_dataflow_id })
+                local deleted_rows, deleted_err = txq(tx, count_query, { delete_dataflow_id })
                 test.is_nil(deleted_err)
                 test.eq(deleted_rows[1].wf_count, 0)
 
-                local context_rows, context_count_err = tx:query(count_query, { context_dataflow_id })
+                local context_rows, context_count_err = txq(tx, count_query, { context_dataflow_id })
                 test.is_nil(context_count_err)
                 test.eq(context_rows[1].wf_count, 1)
             end)
@@ -733,7 +884,7 @@ local function define_tests()
                 test.eq(result.results[1].node_id, node_id)
 
                 local query = "SELECT * FROM dataflow_nodes WHERE node_id = ?"
-                local rows, err_query = tx:query(query, { node_id })
+                local rows, err_query = txq(tx, query, { node_id })
 
                 test.is_nil(err_query)
                 test.eq(#rows, 1)
@@ -778,7 +929,7 @@ local function define_tests()
                 test.eq(result.results[1].node_id, node_id)
 
                 local query = "SELECT * FROM dataflow_nodes WHERE node_id = ?"
-                local rows, err_query = tx:query(query, { node_id })
+                local rows, err_query = txq(tx, query, { node_id })
 
                 test.is_nil(err_query)
                 test.eq(#rows, 1)
@@ -824,7 +975,7 @@ local function define_tests()
                 test.eq(result.results[1].node_id, node_id)
 
                 local query = "SELECT config FROM dataflow_nodes WHERE node_id = ?"
-                local rows, err_query = tx:query(query, { node_id })
+                local rows, err_query = txq(tx, query, { node_id })
 
                 test.is_nil(err_query)
                 test.eq(#rows, 1)
@@ -856,7 +1007,7 @@ local function define_tests()
                 test.contains(err, "Node type is required")
 
                 local query = "SELECT COUNT(*) AS node_count FROM dataflow_nodes WHERE node_id = ?"
-                local rows, err_query = tx:query(query, { node_id })
+                local rows, err_query = txq(tx, query, { node_id })
 
                 test.is_nil(err_query)
                 test.eq(rows[1].node_count, 0)
@@ -867,7 +1018,7 @@ local function define_tests()
                 local tx = get_test_transaction()
 
                 local initial_query = "SELECT config FROM dataflow_nodes WHERE node_id = ?"
-                local initial_rows, err_initial = tx:query(initial_query, { resources.node_id })
+                local initial_rows, err_initial = txq(tx, initial_query, { resources.node_id })
 
                 test.is_nil(err_initial)
                 test.eq(#initial_rows, 1)
@@ -898,7 +1049,7 @@ local function define_tests()
                 test.is_true(result.results[1].changes_made)
 
                 local query = "SELECT config FROM dataflow_nodes WHERE node_id = ?"
-                local rows, err_query = tx:query(query, { resources.node_id })
+                local rows, err_query = txq(tx, query, { resources.node_id })
 
                 test.is_nil(err_query)
                 test.eq(#rows, 1)
@@ -918,7 +1069,7 @@ local function define_tests()
                 local tx = get_test_transaction()
 
                 local initial_query = "SELECT metadata FROM dataflow_nodes WHERE node_id = ?"
-                local initial_rows, err_initial = tx:query(initial_query, { resources.node_id })
+                local initial_rows, err_initial = txq(tx, initial_query, { resources.node_id })
 
                 test.is_nil(err_initial)
                 test.eq(#initial_rows, 1)
@@ -949,7 +1100,7 @@ local function define_tests()
                 test.is_true(result.results[1].changes_made)
 
                 local query = "SELECT metadata FROM dataflow_nodes WHERE node_id = ?"
-                local rows, err_query = tx:query(query, { resources.node_id })
+                local rows, err_query = txq(tx, query, { resources.node_id })
 
                 test.is_nil(err_query)
                 test.eq(#rows, 1)
@@ -969,7 +1120,7 @@ local function define_tests()
                 local tx = get_test_transaction()
 
                 local initial_query = "SELECT status FROM dataflow_nodes WHERE node_id = ?"
-                local initial_rows, err_initial = tx:query(initial_query, { resources.node_id })
+                local initial_rows, err_initial = txq(tx, initial_query, { resources.node_id })
 
                 test.is_nil(err_initial)
                 test.eq(#initial_rows, 1)
@@ -993,7 +1144,7 @@ local function define_tests()
                 test.is_true(result.results[1].changes_made)
 
                 local query = "SELECT status FROM dataflow_nodes WHERE node_id = ?"
-                local rows, err_query = tx:query(query, { resources.node_id })
+                local rows, err_query = txq(tx, query, { resources.node_id })
 
                 test.is_nil(err_query)
                 test.eq(#rows, 1)
@@ -1005,7 +1156,7 @@ local function define_tests()
                 local tx = get_test_transaction()
 
                 local initial_query = "SELECT type FROM dataflow_nodes WHERE node_id = ?"
-                local initial_rows, err_initial = tx:query(initial_query, { resources.node_id })
+                local initial_rows, err_initial = txq(tx, initial_query, { resources.node_id })
 
                 test.is_nil(err_initial)
                 test.eq(#initial_rows, 1)
@@ -1029,7 +1180,7 @@ local function define_tests()
                 test.is_true(result.results[1].changes_made)
 
                 local query = "SELECT type FROM dataflow_nodes WHERE node_id = ?"
-                local rows, err_query = tx:query(query, { resources.node_id })
+                local rows, err_query = txq(tx, query, { resources.node_id })
 
                 test.is_nil(err_query)
                 test.eq(#rows, 1)
@@ -1061,7 +1212,7 @@ local function define_tests()
                 test.is_true(result.results[1].changes_made)
 
                 local query = "SELECT * FROM dataflow_nodes WHERE node_id = ?"
-                local rows, err_query = tx:query(query, { resources.node_id })
+                local rows, err_query = txq(tx, query, { resources.node_id })
 
                 test.is_nil(err_query)
                 test.eq(#rows, 1)
@@ -1102,7 +1253,7 @@ local function define_tests()
                 test.is_true(result.results[1].changes_made)
 
                 local query = "SELECT config FROM dataflow_nodes WHERE node_id = ?"
-                local rows, err_query = tx:query(query, { resources.node_id })
+                local rows, err_query = txq(tx, query, { resources.node_id })
 
                 test.is_nil(err_query)
                 test.eq(#rows, 1)
@@ -1143,7 +1294,7 @@ local function define_tests()
                 local tx = get_test_transaction()
 
                 local initial_query = "SELECT 1 AS exists_flag FROM dataflow_nodes WHERE node_id = ?"
-                local initial_rows, err_initial = tx:query(initial_query, { resources.node_id })
+                local initial_rows, err_initial = txq(tx, initial_query, { resources.node_id })
 
                 test.is_nil(err_initial)
                 test.eq(#initial_rows, 1)
@@ -1166,7 +1317,7 @@ local function define_tests()
                 test.is_true(result.results[1].changes_made)
 
                 local query = "SELECT COUNT(*) AS node_count FROM dataflow_nodes WHERE node_id = ?"
-                local rows, err_query = tx:query(query, { resources.node_id })
+                local rows, err_query = txq(tx, query, { resources.node_id })
 
                 test.is_nil(err_query)
                 test.eq(rows[1].node_count, 0)
@@ -1199,7 +1350,7 @@ local function define_tests()
                 test.eq(result.results[1].data_id, data_id)
 
                 local query = "SELECT * FROM dataflow_data WHERE data_id = ?"
-                local rows, err_query = tx:query(query, { data_id })
+                local rows, err_query = txq(tx, query, { data_id })
 
                 test.is_nil(err_query)
                 test.eq(#rows, 1)
@@ -1255,7 +1406,7 @@ local function define_tests()
                 test.eq(result.results[1].data_id, data_id)
 
                 local query = "SELECT * FROM dataflow_data WHERE data_id = ?"
-                local rows, err_query = tx:query(query, { data_id })
+                local rows, err_query = txq(tx, query, { data_id })
 
                 test.is_nil(err_query)
                 test.eq(#rows, 1)
@@ -1318,7 +1469,7 @@ local function define_tests()
                 test.is_true(result.results[1].changes_made)
 
                 local query = "SELECT content FROM dataflow_data WHERE data_id = ?"
-                local rows, err_query = tx:query(query, { data_id })
+                local rows, err_query = txq(tx, query, { data_id })
 
                 test.is_nil(err_query)
                 test.eq(#rows, 1)
@@ -1367,7 +1518,7 @@ local function define_tests()
                 test.is_true(result.results[1].changes_made)
 
                 local query = "SELECT metadata FROM dataflow_data WHERE data_id = ?"
-                local rows, err_query = tx:query(query, { data_id })
+                local rows, err_query = txq(tx, query, { data_id })
 
                 test.is_nil(err_query)
                 test.eq(#rows, 1)
@@ -1400,7 +1551,7 @@ local function define_tests()
                 test.is_nil(err_create)
 
                 local exists_query = "SELECT COUNT(*) AS data_count FROM dataflow_data WHERE data_id = ?"
-                local exists_rows, err_exists = tx:query(exists_query, { data_id })
+                local exists_rows, err_exists = txq(tx, exists_query, { data_id })
                 test.is_nil(err_exists)
                 test.eq(exists_rows[1].data_count, 1)
 
@@ -1421,7 +1572,7 @@ local function define_tests()
                 test.is_true(result.results[1].changes_made)
 
                 local count_query = "SELECT COUNT(*) AS data_count FROM dataflow_data WHERE data_id = ?"
-                local count_rows, count_err = tx:query(count_query, { data_id })
+                local count_rows, count_err = txq(tx, count_query, { data_id })
                 test.is_nil(count_err)
                 test.eq(count_rows[1].data_count, 0)
             end)
@@ -1472,7 +1623,7 @@ local function define_tests()
                 test.is_true(result.results[1].metadata_merged)
 
                 local query = "SELECT metadata FROM dataflows WHERE dataflow_id = ?"
-                local rows, err_query = tx:query(query, { dataflow_id })
+                local rows, err_query = txq(tx, query, { dataflow_id })
 
                 test.is_nil(err_query)
                 test.eq(#rows, 1)
@@ -1532,7 +1683,7 @@ local function define_tests()
                 test.is_true(result.results[1].metadata_merged)
 
                 local query = "SELECT metadata FROM dataflows WHERE dataflow_id = ?"
-                local rows, err_query = tx:query(query, { dataflow_id })
+                local rows, err_query = txq(tx, query, { dataflow_id })
 
                 test.is_nil(err_query)
                 local metadata = json.decode(rows[1].metadata :: string)
@@ -1585,7 +1736,7 @@ local function define_tests()
                 test.is_false(result.results[1].metadata_merged)
 
                 local query = "SELECT metadata FROM dataflows WHERE dataflow_id = ?"
-                local rows, err_query = tx:query(query, { dataflow_id })
+                local rows, err_query = txq(tx, query, { dataflow_id })
 
                 test.is_nil(err_query)
                 local metadata = json.decode(rows[1].metadata :: string)
@@ -1636,7 +1787,7 @@ local function define_tests()
                 test.is_true(result.changes_made)
 
                 local query = "SELECT metadata FROM dataflows WHERE dataflow_id = ?"
-                local rows, err_query = tx:query(query, { dataflow_id })
+                local rows, err_query = txq(tx, query, { dataflow_id })
 
                 test.is_nil(err_query)
                 local metadata = json.decode(rows[1].metadata :: string)
@@ -1681,7 +1832,7 @@ local function define_tests()
                 test.is_true(result.changes_made)
 
                 local query = "SELECT metadata FROM dataflows WHERE dataflow_id = ?"
-                local rows, err_query = tx:query(query, { dataflow_id })
+                local rows, err_query = txq(tx, query, { dataflow_id })
 
                 test.is_nil(err_query)
                 local metadata = json.decode(rows[1].metadata :: string)
@@ -1724,7 +1875,7 @@ local function define_tests()
                 test.is_true(result.changes_made)
 
                 local query = "SELECT metadata FROM dataflows WHERE dataflow_id = ?"
-                local rows, err_query = tx:query(query, { dataflow_id })
+                local rows, err_query = txq(tx, query, { dataflow_id })
 
                 test.is_nil(err_query)
                 local metadata = json.decode(rows[1].metadata :: string)
@@ -1813,7 +1964,7 @@ local function define_tests()
                 test.is_true(result.changes_made)
 
                 local query = "SELECT metadata FROM dataflows WHERE dataflow_id = ?"
-                local rows, err_query = tx:query(query, { dataflow_id })
+                local rows, err_query = txq(tx, query, { dataflow_id })
 
                 test.is_nil(err_query)
                 local metadata = json.decode(rows[1].metadata :: string)
@@ -1862,7 +2013,7 @@ local function define_tests()
                 test.is_true(result.changes_made)
 
                 local query = "SELECT metadata FROM dataflows WHERE dataflow_id = ?"
-                local rows, err_query = tx:query(query, { dataflow_id })
+                local rows, err_query = txq(tx, query, { dataflow_id })
 
                 test.is_nil(err_query)
 
@@ -1907,7 +2058,7 @@ local function define_tests()
                 test.is_true(result.results[1].metadata_merged) -- Default behavior
 
                 local query = "SELECT metadata, status FROM dataflows WHERE dataflow_id = ?"
-                local rows, err_query = tx:query(query, { dataflow_id })
+                local rows, err_query = txq(tx, query, { dataflow_id })
 
                 test.is_nil(err_query)
                 test.eq(rows[1].status, "completed")
