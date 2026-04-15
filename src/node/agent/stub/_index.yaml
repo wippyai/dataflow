@@ -1,171 +1,326 @@
-version: "1.0"
+version: '1.0'
 namespace: userspace.dataflow.node.agent.stub
-
 entries:
-  - name: truncation_generate
-    kind: function.lua
-    meta:
-      type: llm_function
-      comment: Stub LLM generate that returns truncated response on first call
-    source: file://truncation_generate.lua
-    imports:
-      output: wippy.llm:output
-    method: handler
+- name: recovery_store
+  kind: store.memory
+  meta:
+    comment: Shared state for agent recovery test metrics and idempotent tool effects
+    test_only: true
+  max_size: 256
+  cleanup_interval: 5m
+- name: recovery_helpers
+  kind: library.lua
+  meta:
+    comment: Shared helpers for deterministic agent recovery test doubles
+    test_only: true
+  source: file://recovery_helpers.lua
+  modules:
+  - json
+  - store
+  method: helpers
+- name: recovery_generate
+  kind: function.lua
+  meta:
+    type: llm_function
+    comment: Deterministic LLM generator for agent recovery tests
+    test_only: true
+  source: file://recovery_generate.lua
+  imports:
+    helpers: userspace.dataflow.node.agent.stub:recovery_helpers
+  method: handler
+- name: recovery_tool
+  kind: function.lua
+  meta:
+    type: tool
+    name: recovery_tool
+    title: Recovery Tool
+    test_only: true
+    comment: Idempotent test tool for agent crash recovery scenarios
+    input_schema:
+      type: object
+      properties:
+        scenario_id:
+          type: string
+        step:
+          type: number
+        delay_ms:
+          type: number
+      required:
+      - scenario_id
+  source: file://recovery_tool.lua
+  modules:
+  - ctx
+  - time
+  imports:
+    helpers: userspace.dataflow.node.agent.stub:recovery_helpers
+  method: handler
+- name: recovery_metrics_reset
+  kind: function.lua
+  meta:
+    test_only: true
+    comment: Reset deterministic agent recovery test metrics for a scenario
+  source: file://recovery_metrics_reset.lua
+  imports:
+    helpers: userspace.dataflow.node.agent.stub:recovery_helpers
+  method: handler
+- name: recovery_metrics_get
+  kind: function.lua
+  meta:
+    test_only: true
+    comment: Read deterministic agent recovery test metrics for a scenario
+  source: file://recovery_metrics_get.lua
+  imports:
+    helpers: userspace.dataflow.node.agent.stub:recovery_helpers
+  method: handler
+- name: compaction_summarizer
+  kind: function.lua
+  meta:
+    test_only: true
+    comment: Deterministic summarizer stub for agent compaction tests
+  source: file://compaction_summarizer.lua
+  imports:
+    helpers: userspace.dataflow.node.agent.stub:recovery_helpers
+  method: handler
+- name: empty_memory_summarizer
+  kind: function.lua
+  meta:
+    test_only: true
+    comment: Compaction summarizer stub that returns empty memory (tests soft-failure
+      path)
+  source: file://empty_memory_summarizer.lua
+  method: handler
+- name: oversize_summarizer
+  kind: function.lua
+  meta:
+    test_only: true
+    comment: Compaction summarizer stub returning a 100k-char memory (tests size cap)
+  source: file://oversize_summarizer.lua
+  method: handler
+- name: recovery_driver
+  kind: contract.binding
+  meta:
+    name: Recovery Test Driver
+    comment: Deterministic LLM driver for agent recovery tests
+    test_only: true
+  contracts:
+  - contract: wippy.llm:generator
+    methods:
+      generate: userspace.dataflow.node.agent.stub:recovery_generate
+- name: recovery_provider
+  kind: registry.entry
+  meta:
+    name: recovery-test
+    type: llm.provider
+    title: Recovery Test Provider
+    comment: Mock provider for deterministic agent recovery testing
+    test_only: true
+  driver:
+    id: userspace.dataflow.node.agent.stub:recovery_driver
+- name: recovery_model
+  kind: registry.entry
+  meta:
+    name: recovery-test-model
+    type: llm.model
+    title: Recovery Test Model
+    comment: Mock model for deterministic agent recovery testing
+    test_only: true
+  providers:
+  - id: userspace.dataflow.node.agent.stub:recovery_provider
+    provider_model: recovery-test-model
+- name: recovery_test_agent
+  kind: registry.entry
+  meta:
+    type: agent.gen1
+    name: recovery-test-agent
+    title: Recovery Test Agent
+    comment: Deterministic agent for crash recovery testing
+    test_only: true
+  model: recovery-test-model
+  temperature: 0
+  max_tokens: 100
+  prompt: 'You are a deterministic recovery test agent. Follow the scenario encoded
+    in the user input.
 
-  - name: truncation_driver
-    kind: contract.binding
-    meta:
-      name: Truncation Test Driver
-      comment: Test driver that simulates truncated LLM responses
-    contracts:
-      - contract: wippy.llm:generator
-        methods:
-          generate: userspace.dataflow.node.agent.stub:truncation_generate
+    '
+  tools: []
+- name: truncation_generate
+  kind: function.lua
+  meta:
+    type: llm_function
+    comment: Stub LLM generate that returns truncated response on first call
+    test_only: true
+  source: file://truncation_generate.lua
+  imports:
+    output: wippy.llm:output
+  method: handler
+- name: truncation_driver
+  kind: contract.binding
+  meta:
+    name: Truncation Test Driver
+    comment: Test driver that simulates truncated LLM responses
+    test_only: true
+  contracts:
+  - contract: wippy.llm:generator
+    methods:
+      generate: userspace.dataflow.node.agent.stub:truncation_generate
+- name: truncation_provider
+  kind: registry.entry
+  meta:
+    name: truncation-test
+    type: llm.provider
+    title: Truncation Test Provider
+    comment: Mock provider for truncation testing
+    test_only: true
+  driver:
+    id: userspace.dataflow.node.agent.stub:truncation_driver
+- name: truncation_model
+  kind: registry.entry
+  meta:
+    name: truncation-test-model
+    type: llm.model
+    title: Truncation Test Model
+    comment: Mock model for truncation testing
+    test_only: true
+  providers:
+  - id: userspace.dataflow.node.agent.stub:truncation_provider
+    provider_model: truncation-test-model
+- name: truncation_test_agent
+  kind: registry.entry
+  meta:
+    type: agent.gen1
+    name: truncation-test-agent
+    title: Truncation Test Agent
+    comment: Agent for testing truncation handling in dataflow
+    test_only: true
+  model: truncation-test-model
+  temperature: 0
+  max_tokens: 100
+  prompt: 'You are a test agent. Complete the task.
 
-  - name: truncation_provider
-    kind: registry.entry
-    meta:
-      name: truncation-test
-      type: llm.provider
-      title: Truncation Test Provider
-      comment: Mock provider for truncation testing
-    driver:
-      id: userspace.dataflow.node.agent.stub:truncation_driver
-
-  - name: truncation_model
-    kind: registry.entry
-    meta:
-      name: truncation-test-model
-      type: llm.model
-      title: Truncation Test Model
-      comment: Mock model for truncation testing
-    providers:
-      - id: userspace.dataflow.node.agent.stub:truncation_provider
-        provider_model: truncation-test-model
-
-  - name: truncation_test_agent
-    kind: registry.entry
-    meta:
-      type: agent.gen1
-      name: truncation-test-agent
-      title: Truncation Test Agent
-      comment: Agent for testing truncation handling in dataflow
-    model: truncation-test-model
-    temperature: 0
-    max_tokens: 100
-    prompt: |
-      You are a test agent. Complete the task.
-    tools: []
-
-  # Real LLM truncation test infrastructure (test_only)
-  - name: noop_tool
-    kind: function.lua
-    meta:
-      type: tool
-      name: noop_tool
-      title: No-op Tool
-      test_only: true
-      comment: Tool that returns success, used to force tool-call truncation with large schema
-      input_schema:
-        type: object
-        properties:
-          analysis_report:
-            type: object
-            description: Comprehensive analysis report with detailed findings and recommendations
-            properties:
-              executive_summary:
-                type: string
-                description: High-level executive summary of the analysis covering key findings
-              detailed_findings:
-                type: array
-                description: List of detailed findings from the analysis
-                items:
-                  type: object
-                  properties:
-                    category:
+    '
+  tools: []
+- name: noop_tool
+  kind: function.lua
+  meta:
+    type: tool
+    name: noop_tool
+    title: No-op Tool
+    test_only: true
+    comment: Tool that returns success, used to force tool-call truncation with large
+      schema
+    input_schema:
+      type: object
+      properties:
+        analysis_report:
+          type: object
+          description: Comprehensive analysis report with detailed findings and recommendations
+          properties:
+            executive_summary:
+              type: string
+              description: High-level executive summary of the analysis covering key
+                findings
+            detailed_findings:
+              type: array
+              description: List of detailed findings from the analysis
+              items:
+                type: object
+                properties:
+                  category:
+                    type: string
+                    description: Finding category classification
+                  severity:
+                    type: string
+                    enum:
+                    - critical
+                    - high
+                    - medium
+                    - low
+                    - informational
+                  description:
+                    type: string
+                    description: Detailed description of the finding
+                  recommendation:
+                    type: string
+                    description: Recommended action to address this finding
+                  affected_areas:
+                    type: array
+                    items:
                       type: string
-                      description: Finding category classification
-                    severity:
-                      type: string
-                      enum: [critical, high, medium, low, informational]
-                    description:
-                      type: string
-                      description: Detailed description of the finding
-                    recommendation:
-                      type: string
-                      description: Recommended action to address this finding
-                    affected_areas:
-                      type: array
-                      items:
+                    description: List of areas affected by this finding
+                  evidence:
+                    type: string
+                    description: Supporting evidence or data for this finding
+            risk_assessment:
+              type: object
+              properties:
+                overall_risk_level:
+                  type: string
+                  enum:
+                  - critical
+                  - high
+                  - moderate
+                  - low
+                  - minimal
+                risk_factors:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      factor:
                         type: string
-                      description: List of areas affected by this finding
-                    evidence:
-                      type: string
-                      description: Supporting evidence or data for this finding
-              risk_assessment:
-                type: object
-                properties:
-                  overall_risk_level:
+                      impact:
+                        type: string
+                      likelihood:
+                        type: string
+                      mitigation:
+                        type: string
+            metadata:
+              type: object
+              properties:
+                analyst:
+                  type: string
+                methodology:
+                  type: string
+                data_sources:
+                  type: array
+                  items:
                     type: string
-                    enum: [critical, high, moderate, low, minimal]
-                  risk_factors:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        factor:
-                          type: string
-                        impact:
-                          type: string
-                        likelihood:
-                          type: string
-                        mitigation:
-                          type: string
-              metadata:
-                type: object
-                properties:
-                  analyst:
-                    type: string
-                  methodology:
-                    type: string
-                  data_sources:
-                    type: array
-                    items:
-                      type: string
-                  confidence_level:
-                    type: string
-        required:
-          - analysis_report
-    source: file://noop_tool.lua
-    method: handler
+                confidence_level:
+                  type: string
+      required:
+      - analysis_report
+  source: file://noop_tool.lua
+  method: handler
+- name: real_truncation_model
+  kind: registry.entry
+  meta:
+    name: real-truncation-test-model
+    type: llm.model
+    title: Real Truncation Test Model
+    test_only: true
+    comment: Claude Haiku with very low max_tokens to force truncation
+  max_tokens: 200000
+  output_tokens: 200
+  providers:
+  - id: wippy.llm.claude:provider
+    provider_model: claude-haiku-4-5-20251001
+- name: real_truncation_test_agent
+  kind: registry.entry
+  meta:
+    type: agent.gen1
+    name: real-truncation-test-agent
+    title: Real Truncation Test Agent
+    test_only: true
+    comment: Agent with real LLM and large tool schema to force truncation
+  model: real-truncation-test-model
+  temperature: 0
+  max_tokens: 200
+  prompt: 'You are an analysis agent. You MUST call the noop_tool with a full analysis_report
+    for every request.
 
-  - name: real_truncation_model
-    kind: registry.entry
-    meta:
-      name: real-truncation-test-model
-      type: llm.model
-      title: Real Truncation Test Model
-      test_only: true
-      comment: Claude Haiku with very low max_tokens to force truncation
-    max_tokens: 200000
-    output_tokens: 200
-    providers:
-      - id: wippy.llm.claude:provider
-        provider_model: claude-haiku-4-5-20251001
+    Always provide detailed findings with at least 3 items. Never respond without
+    calling the tool.
 
-  - name: real_truncation_test_agent
-    kind: registry.entry
-    meta:
-      type: agent.gen1
-      name: real-truncation-test-agent
-      title: Real Truncation Test Agent
-      test_only: true
-      comment: Agent with real LLM and large tool schema to force truncation
-    model: real-truncation-test-model
-    temperature: 0
-    max_tokens: 200
-    prompt: |
-      You are an analysis agent. You MUST call the noop_tool with a full analysis_report for every request.
-      Always provide detailed findings with at least 3 items. Never respond without calling the tool.
-    tools:
-      - id: userspace.dataflow.node.agent.stub:noop_tool
+    '
+  tools:
+  - id: userspace.dataflow.node.agent.stub:noop_tool

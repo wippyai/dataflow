@@ -54,4 +54,32 @@ entries:
       data_reader: userspace.dataflow.persist:data_reader
       test: wippy.test:test
     method: run_tests
+
+  - name: state_recovery_test
+    kind: function.lua
+    meta:
+      name: State Recovery Tests
+      type: test
+      comment: Crash recovery tests for durable multi-input state aggregation
+      group: Workflow / State Node
+      tags:
+        - dataflow
+        - node
+        - state
+        - recovery
+        - chaos
+      description: |
+        Verifies that partial input availability survives orchestrator restarts and
+        that the state node aggregates exactly one durable update per upstream branch.
+    source: file://state_recovery_test.lua
+    modules:
+      - json
+      - time
+      - uuid
+    imports:
+      client: userspace.dataflow:client
+      consts: userspace.dataflow:consts
+      data_reader: userspace.dataflow.persist:data_reader
+      test: wippy.test:test
+    method: run_tests
     

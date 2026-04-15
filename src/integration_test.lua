@@ -355,10 +355,9 @@ local function define_tests()
 
                 local result, exec_err = (c :: any):execute(dataflow_id :: string)
                 test.not_nil(exec_err)
-                test.is_nil(result)
-
                 -- Function => node failure => failed workflow
-                test.contains(exec_err, "Intentional semantic failure")
+                test.is_false(result.success)
+                test.contains(result.error, "Intentional semantic failure")
                 print("Function failure test passed")
             end)
 
@@ -428,10 +427,9 @@ local function define_tests()
 
                 local result, exec_err = (c :: any):execute(dataflow_id :: string)
                 test.not_nil(exec_err)
-                test.is_nil(result)
-
                 -- Should fail at workflow level because func node fails
-                test.contains(exec_err, "failed")
+                test.is_false(result.success)
+                test.contains(result.error, "failed")
 
                 -- Check that node was marked as failed
                 local node_data = (data_reader.with_dataflow(dataflow_id :: string) :: any)
@@ -514,11 +512,10 @@ local function define_tests()
 
                 local result, exec_err = (c :: any):execute(dataflow_id :: string)
                 test.not_nil(exec_err)
-                test.is_nil(result)
-
                 -- Should fail at workflow level
-                test.contains(exec_err, "failed")
-                test.contains(exec_err, "Function ID not specified")
+                test.is_false(result.success)
+                test.contains(result.error, "failed")
+                test.contains(result.error, "Function ID not specified")
 
                 print("Missing func_id test passed")
             end)
@@ -589,11 +586,10 @@ local function define_tests()
 
                 local result, exec_err = (c :: any):execute(dataflow_id :: string)
                 test.not_nil(exec_err)
-                test.is_nil(result)
-
                 -- Should fail at workflow level
-                test.contains(exec_err, "failed")
-                test.contains(exec_err, "Function ID not specified")
+                test.is_false(result.success)
+                test.contains(result.error, "failed")
+                test.contains(result.error, "Function ID not specified")
 
                 print("Empty func_id test passed")
             end)
@@ -640,10 +636,9 @@ local function define_tests()
 
                 local result, exec_err = (c :: any):execute(dataflow_id :: string)
                 test.not_nil(exec_err)
-                test.is_nil(result)
-
                 -- Should fail at workflow level
-                test.contains(exec_err, "No input data provided")
+                test.is_false(result.success)
+                test.contains(result.error, "No input data provided")
 
                 print("No input data test passed")
             end)
@@ -710,10 +705,9 @@ local function define_tests()
 
                 local result, exec_err = (c :: any):execute(dataflow_id :: string)
                 test.not_nil(exec_err)
-                test.is_nil(result)
-
-                -- Workflow fails without data targets producing output
-                test.contains(exec_err, "Workflow completed without producing outpu")
+                -- Workflow fails without data targets producing output.
+                test.is_false(result.success)
+                test.contains(result.error, "Workflow completed without producing outpu")
             end)
 
             it("should handle multiple data_targets", function()

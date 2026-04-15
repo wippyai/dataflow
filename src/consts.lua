@@ -43,6 +43,9 @@ consts.COMMAND_TYPES = {
     CREATE_DATA = "CREATE_DATA",
     UPDATE_DATA = "UPDATE_DATA",
     DELETE_DATA = "DELETE_DATA",
+
+    -- Signal Operations
+    SATISFY_SIGNAL = "SATISFY_SIGNAL",
 }
 
 -- Meta key constants (from ops.lua)
@@ -71,12 +74,14 @@ consts.DATA_TYPE = {
     NODE_YIELD = "node.yield",
     NODE_YIELD_RESULT = "node.yield.result",
     NODE_RESULT = "node.result",
+    NODE_SIGNAL = "node.signal",
     NODE_CONFIG = "node.config",
     WORKFLOW_OUTPUT = "dataflow.output",
     WORKFLOW_INPUT = "dataflow.input",
     WORKFLOW_LOG = "dataflow.log",
     CONTEXT_DATA = "context.data",
     ARTIFACT = "artifact.data",
+    PARALLEL_PROGRESS = "parallel.progress",
     ITERATION_RESULT = "iteration.result",
     ITERATION_ERROR = "iteration.error"
 }

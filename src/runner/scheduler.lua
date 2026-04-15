@@ -74,7 +74,27 @@ end
 
 local function find_yield_driven_work(state)
     for parent_id, yield_info in pairs(state.active_yields) do
-        if yield_children_complete(yield_info) then
+        -- detached yields belong to a dead process (parent was reset on recovery).
+        -- satisfying them would send the reply into a void AND trick find_yield_driven_work
+        -- into thinking this iteration's work is progressing, blocking re-execution.
+        -- leave them in place so track_yield() can inherit accumulated signal_data
+        -- when the node re-yields, but never satisfy here.
+        if yield_info.detached then
+            goto continue
+        end
+
+        -- signal yields wait for external data, not child completion
+        if yield_info.wait_for_signal then
+            if yield_info.signal_data ~= nil then
+                return create_decision(DECISION_TYPE.SATISFY_YIELD, {
+                    parent_id = parent_id,
+                    yield_id = yield_info.yield_id,
+                    reply_to = yield_info.reply_to,
+                    results = yield_info.signal_data
+                })
+            end
+            -- signal not received yet, skip this yield
+        elseif yield_children_complete(yield_info) then
             return create_decision(DECISION_TYPE.SATISFY_YIELD, {
                 parent_id = parent_id,
                 yield_id = yield_info.yield_id,
@@ -82,6 +102,8 @@ local function find_yield_driven_work(state)
                 results = yield_info.results or {}
             })
         end
+
+        ::continue::
     end
 
     local ready_yield_children = {}

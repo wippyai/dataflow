@@ -19,6 +19,83 @@ ops.COMMAND_TYPES = constants.COMMAND_TYPES
 ops.META_KEYS = constants.META_KEYS
 ops.STATUS = constants.STATUS
 
+local function is_unique_violation(err)
+    local message = string.lower(tostring(err or ""))
+    return string.find(message, "unique", 1, true) ~= nil or
+        string.find(message, "duplicate key", 1, true) ~= nil
+end
+
+local function is_workflow_output_unique_slot(payload)
+    return payload and payload.data_type == consts.DATA_TYPE.WORKFLOW_OUTPUT
+end
+
+local function is_success_result_unique_slot(payload)
+    return payload and payload.data_type == consts.DATA_TYPE.NODE_RESULT and
+        payload.discriminator == "result.success" and payload.node_id ~= nil
+end
+
+local function find_existing_unique_data_row(tx, dataflow_id, payload)
+    if not is_workflow_output_unique_slot(payload) and not is_success_result_unique_slot(payload) then
+        return nil, nil
+    end
+
+    local query = sql.builder.select("data_id")
+        :from("dataflow_data")
+        :where("dataflow_id = ?", dataflow_id)
+        :where("type = ?", payload.data_type)
+
+    if is_workflow_output_unique_slot(payload) then
+        query = query
+            :where(sql.builder.expr("COALESCE(key, '') = COALESCE(?, '')", payload.key))
+            :where(sql.builder.expr("COALESCE(discriminator, '') = COALESCE(?, '')", payload.discriminator))
+    else
+        query = query
+            :where("node_id = ?", payload.node_id)
+            :where("discriminator = ?", payload.discriminator)
+    end
+
+    query = query:order_by("created_at DESC"):limit(1)
+
+    local rows, err = query:run_with(tx):query()
+    if err then
+        return nil, "Failed to query existing unique data row: " .. err
+    end
+
+    if not rows or #rows == 0 then
+        return nil, nil
+    end
+
+    return rows[1], nil
+end
+
+local function savepoint_name()
+    return "sp_" .. string.gsub(uuid.v7(), "-", "")
+end
+
+local function create_savepoint(tx, name)
+    local _, err = tx:execute("SAVEPOINT " .. name)
+    if err then
+        return nil, "Failed to create savepoint: " .. err
+    end
+    return true, nil
+end
+
+local function rollback_savepoint(tx, name)
+    local _, err = tx:execute("ROLLBACK TO SAVEPOINT " .. name)
+    if err then
+        return nil, "Failed to rollback savepoint: " .. err
+    end
+    return true, nil
+end
+
+local function release_savepoint(tx, name)
+    local _, err = tx:execute("RELEASE SAVEPOINT " .. name)
+    if err then
+        return nil, "Failed to release savepoint: " .. err
+    end
+    return true, nil
+end
+
 -- ============================================================================
 -- PRIVATE HANDLERS - IMPLEMENTATION DETAILS
 -- ============================================================================
@@ -334,10 +411,54 @@ handlers[constants.COMMAND_TYPES.CREATE_DATA] = function(tx, dataflow_id, op_id,
         })
 
     local executor = insert_query:run_with(tx)
+    local uses_unique_slot = is_workflow_output_unique_slot(payload) or is_success_result_unique_slot(payload)
+    local insert_savepoint = uses_unique_slot and savepoint_name() or nil
+
+    if insert_savepoint then
+        local _, savepoint_err = create_savepoint(tx, insert_savepoint)
+        if savepoint_err then
+            return nil, savepoint_err
+        end
+    end
+
     local result, err = executor:exec()
 
     if err then
+        if insert_savepoint then
+            local _, rollback_err = rollback_savepoint(tx, insert_savepoint)
+            if rollback_err then
+                return nil, rollback_err
+            end
+            local _, release_err = release_savepoint(tx, insert_savepoint)
+            if release_err then
+                return nil, release_err
+            end
+        end
+
+        if is_unique_violation(err) then
+            local existing_row, existing_err = find_existing_unique_data_row(tx, dataflow_id, payload)
+            if existing_err then
+                return nil, existing_err
+            end
+
+            if existing_row and existing_row.data_id then
+                return {
+                    data_id = existing_row.data_id,
+                    changes_made = false,
+                    op_id = op_id,
+                    deduplicated = true
+                }
+            end
+        end
+
         return nil, "Failed to create data record: " .. err
+    end
+
+    if insert_savepoint then
+        local _, release_err = release_savepoint(tx, insert_savepoint)
+        if release_err then
+            return nil, release_err
+        end
     end
 
     return {

@@ -220,6 +220,34 @@ local function define_tests()
         describe("Input Methods", function()
             local test_node: any
 
+            local function make_input_query_fail_deps()
+                return {
+                    commit = mock_deps.commit,
+                    process = mock_deps.process,
+                    data_reader = {
+                        with_dataflow = function(_dataflow_id: string)
+                            return {
+                                with_nodes = function(_node_id: string)
+                                    return {
+                                        with_data_types = function(_data_type: string)
+                                            return {
+                                                fetch_options = function(_options: any)
+                                                    return {
+                                                        all = function()
+                                                            error("mock inputs query failed")
+                                                        end
+                                                    }
+                                                end
+                                            }
+                                        end
+                                    }
+                                end
+                            }
+                        end
+                    }
+                }
+            end
+
             before_each(function()
                 local _err: string?
                 test_node, _err = node.new({
@@ -258,10 +286,40 @@ local function define_tests()
 
             it("should fail when input key is missing", function()
                 test.not_nil(test_node)
-                local result, err = test_node:input(nil)
+                local input, err = test_node:input(nil)
 
-                test.is_nil(result)
+                test.is_nil(input)
                 test.contains(err, "Input key is required")
+            end)
+
+            it("BC_REGRESSION_C2_node_inputs_returns_error_pair", function()
+                local failing_node, err = node.new({
+                    node_id = "test-node-123",
+                    dataflow_id = "test-dataflow-456"
+                }, make_input_query_fail_deps())
+                test.is_nil(err)
+                test.not_nil(failing_node)
+
+                local inputs, inputs_err = failing_node:inputs()
+
+                test.is_nil(inputs)
+                test.not_nil(inputs_err)
+                test.contains(inputs_err, "mock inputs query failed")
+            end)
+
+            it("BC_REGRESSION_C2_node_input_returns_error_pair", function()
+                local failing_node, err = node.new({
+                    node_id = "test-node-123",
+                    dataflow_id = "test-dataflow-456"
+                }, make_input_query_fail_deps())
+                test.is_nil(err)
+                test.not_nil(failing_node)
+
+                local input, input_err = failing_node:input("primary")
+
+                test.is_nil(input)
+                test.not_nil(input_err)
+                test.contains(input_err, "mock inputs query failed")
             end)
         end)
 
@@ -579,9 +637,9 @@ local function define_tests()
                 test.is_nil(err)
                 test.not_nil(test_node)
 
-                local result, error_msg = test_node:inputs()
+                local inputs, error_msg = test_node:inputs()
 
-                test.is_nil(result)
+                test.is_nil(inputs)
                 test.contains(error_msg, "Input transformation failed")
             end)
 
@@ -600,9 +658,9 @@ local function define_tests()
                 test.is_nil(err)
                 test.not_nil(test_node)
 
-                local result, error_msg = test_node:inputs()
+                local inputs, error_msg = test_node:inputs()
 
-                test.is_nil(result)
+                test.is_nil(inputs)
                 test.contains(error_msg, "Input transformation failed")
             end)
 
@@ -623,9 +681,9 @@ local function define_tests()
                 test.is_nil(err)
                 test.not_nil(test_node)
 
-                local result, error_msg = test_node:inputs()
+                local inputs, error_msg = test_node:inputs()
 
-                test.is_nil(result)
+                test.is_nil(inputs)
                 test.contains(error_msg, "Transform failed for invalid_field")
             end)
 
@@ -644,9 +702,9 @@ local function define_tests()
                 test.is_nil(err)
                 test.not_nil(test_node)
 
-                local result, error_msg = test_node:inputs()
+                local inputs, error_msg = test_node:inputs()
 
-                test.is_nil(result)
+                test.is_nil(inputs)
                 test.contains(error_msg, "Input transformation failed")
             end)
 
@@ -665,9 +723,9 @@ local function define_tests()
                 test.is_nil(err)
                 test.not_nil(test_node)
 
-                local result, error_msg = test_node:inputs()
+                local inputs, error_msg = test_node:inputs()
 
-                test.is_nil(result)
+                test.is_nil(inputs)
                 test.contains(error_msg, "input_transform must be string or table")
             end)
         end)
@@ -1328,6 +1386,7 @@ local function define_tests()
                 local result, err = failing_node:yield()
 
                 test.is_nil(result)
+                test.not_nil(err)
                 test.contains(err, "Failed to send yield signal")
             end)
 
@@ -1354,6 +1413,7 @@ local function define_tests()
                 local result, err = failing_node:yield({ run_nodes = { "child-1" } })
 
                 test.is_nil(result)
+                test.not_nil(err)
                 test.contains(err, "Yield channel closed")
             end)
         end)
@@ -1965,6 +2025,32 @@ local function define_tests()
         end)
 
         describe("Expr Error Handling in Output Routing", function()
+            it("BC_REGRESSION_C2_node_complete_returns_error_pair", function()
+                local test_node_bad, _err = node.new({
+                    node_id = "test-node-123",
+                    dataflow_id = "test-dataflow-456",
+                    node = {
+                        config = {
+                            data_targets = {
+                                {
+                                    data_type = "bad.output",
+                                    key = "bad_transform",
+                                    transform = "invalid + syntax +"
+                                }
+                            }
+                        }
+                    }
+                }, mock_deps)
+                test.not_nil(test_node_bad)
+
+                local result, err = test_node_bad:complete({ message = "test" })
+
+                test.not_nil(result)
+                test.eq(result.success, false)
+                test.not_nil(err)
+                test.contains(err, "Output transform failed")
+            end)
+
             it("should fail when data target transform has invalid expression", function()
                 local test_node_bad, _err = node.new({
                     node_id = "test-node-123",
@@ -1983,10 +2069,11 @@ local function define_tests()
                 }, mock_deps)
                 test.not_nil(test_node_bad)
 
-                local result = test_node_bad:complete({ message = "test" })
+                local result, error_msg = test_node_bad:complete({ message = "test" })
 
-                test.is_false(result.success)
-                test.contains(result.message, "Output transform failed")
+                test.not_nil(result)
+                test.eq(result.success, false)
+                test.contains(error_msg, "Output transform failed")
             end)
 
             it("should fail when data target condition has invalid expression", function()
@@ -2007,10 +2094,11 @@ local function define_tests()
                 }, mock_deps)
                 test.not_nil(test_node_bad_condition)
 
-                local result = test_node_bad_condition:complete({ message = "test" })
+                local result, error_msg = test_node_bad_condition:complete({ message = "test" })
 
-                test.is_false(result.success)
-                test.contains(result.message, "Output condition evaluation failed")
+                test.not_nil(result)
+                test.eq(result.success, false)
+                test.contains(error_msg, "Output condition evaluation failed")
             end)
 
             it("should gracefully skip error targets with bad conditions", function()
@@ -2103,10 +2191,11 @@ local function define_tests()
                 }, mock_deps)
                 test.not_nil(test_node_type_error)
 
-                local result = test_node_type_error:complete({ number = 42 })
+                local result, error_msg = test_node_type_error:complete({ number = 42 })
 
-                test.is_false(result.success)
-                test.contains(result.message, "Output transform failed")
+                test.not_nil(result)
+                test.eq(result.success, false)
+                test.contains(error_msg, "Output transform failed")
             end)
 
             it("should handle nested object transforms", function()

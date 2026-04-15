@@ -114,4 +114,34 @@ entries:
       parallel: userspace.dataflow.node.parallel:parallel
       test: wippy.test:test
     method: run_tests
+
+  # userspace.dataflow.node.parallel:parallel_recovery_test
+  - name: parallel_recovery_test
+    kind: function.lua
+    meta:
+      name: Parallel Recovery Tests
+      type: test
+      comment: Recovery tests for durable parallel batching across orchestrator restarts
+      group: Workflow / Parallel
+      tags:
+        - dataflow
+        - node
+        - parallel
+        - recovery
+        - chaos
+        - tests
+      description: |
+        End-to-end recovery tests for the parallel node. Verifies that completed
+        batches are not replayed after orchestrator restarts and that durable
+        progress state prevents duplicate iteration aggregation.
+    source: file://parallel_recovery_test.lua
+    modules:
+      - uuid
+      - time
+    imports:
+      client: userspace.dataflow:client
+      consts: userspace.dataflow:consts
+      data_reader: userspace.dataflow.persist:data_reader
+      test: wippy.test:test
+    method: run_tests
     

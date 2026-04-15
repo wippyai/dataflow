@@ -26,10 +26,12 @@ entries:
     modules:
       - funcs
       - json
+      - time
       - uuid
     imports:
       consts: userspace.dataflow:consts
       data_reader: userspace.dataflow.persist:data_reader
+      node_reader: userspace.dataflow.persist:node_reader
       node: userspace.dataflow:node
       template_graph: userspace.dataflow.template:graph
     method: run
@@ -64,4 +66,3 @@ entries:
       data_reader: userspace.dataflow.persist:data_reader
       test: wippy.test:test
     method: run_tests
-    

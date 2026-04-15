@@ -410,9 +410,10 @@ local function define_tests()
 
                 local result, err = test_client:execute("existing-workflow-123")
 
-                test.is_nil(result)
-                test.not_nil(err)
-                test.contains(err, "Workflow deadlocked")
+                test.not_nil(result, "result returned on failure")
+                test.eq(result.success, false, "marked as failed")
+                test.eq(result.error, "Workflow deadlocked", "error message in result")
+                test.not_nil(err, "structured error also returned")
             end)
         end)
 
@@ -830,24 +831,97 @@ local function define_tests()
                 test.eq(spawn_call.args.dataflow_id, dataflow_id)
             end)
 
-            it("should handle workflow failure with proper error structure", function()
+            it("should preserve error field on success result for partial-success workflows", function()
                 mock_deps.funcs.new = function()
                     return {
                         call = function()
                             return {
-                                success = false,
-                                dataflow_id = "failed-workflow",
+                                success = true,
+                                dataflow_id = "partial-workflow",
                                 error = "Node execution failed"
                             }, nil
                         end
                     }
                 end
 
-                local result, err = test_client:execute("failed-workflow")
+                local result, err = test_client:execute("partial-workflow")
 
-                test.is_nil(result)
-                test.not_nil(err)
-                test.contains(err, "Node execution failed")
+                -- success=true takes precedence; error field is informational
+                test.not_nil(result, "result returned on partial success")
+                test.eq(result.success, true, "success flag honored")
+                test.eq(result.error, "Node execution failed", "error preserved in result")
+                test.is_nil(err, "no structured error when success=true")
+            end)
+
+            it("BC_REGRESSION_C1_client_execute_returns_result_with_failure_marker", function()
+                local real_client, client_err = client.new()
+                test.is_nil(client_err)
+                test.not_nil(real_client)
+
+                local node_id = uuid.v7()
+                local input_data_id = uuid.v7()
+                local node_input_id = uuid.v7()
+
+                local dataflow_id, create_err = (real_client :: any):create_workflow({
+                    {
+                        type = consts.COMMAND_TYPES.CREATE_NODE,
+                        payload = {
+                            node_id = node_id,
+                            node_type = "userspace.dataflow.node.func:node",
+                            status = consts.STATUS.PENDING,
+                            config = {
+                                func_id = "userspace.dataflow.node:nonexistent_func",
+                                data_targets = {
+                                    {
+                                        data_type = consts.DATA_TYPE.WORKFLOW_OUTPUT,
+                                        key = "result",
+                                        content_type = consts.CONTENT_TYPE.JSON
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    {
+                        type = consts.COMMAND_TYPES.CREATE_DATA,
+                        payload = {
+                            data_id = input_data_id,
+                            data_type = consts.DATA_TYPE.WORKFLOW_INPUT,
+                            content = {
+                                message = "bc regression"
+                            },
+                            content_type = consts.CONTENT_TYPE.JSON
+                        }
+                    },
+                    {
+                        type = consts.COMMAND_TYPES.CREATE_DATA,
+                        payload = {
+                            data_id = node_input_id,
+                            data_type = consts.DATA_TYPE.NODE_INPUT,
+                            node_id = node_id,
+                            key = input_data_id,
+                            discriminator = "default",
+                            content = "",
+                            content_type = consts.CONTENT_TYPE.REFERENCE
+                        }
+                    }
+                }, {
+                    metadata = {
+                        title = "BC C1 execute failure contract"
+                    }
+                })
+                test.is_nil(create_err)
+                test.not_nil(dataflow_id)
+
+                local result, err = (real_client :: any):execute(dataflow_id :: string)
+
+                -- execute returns both values on failure: result table AND
+                -- a structured error, so callers can use either `if err then`
+                -- or `if not result.success then`.
+                test.not_nil(result, "result table always returned")
+                test.not_nil(err, "error always surfaced on failure")
+                test.eq(result.success, false, "result.success is false")
+                test.eq(type(result.error), "string", "result.error is a non-empty string")
+                test.is_true(#result.error > 0)
             end)
         end)
     end)

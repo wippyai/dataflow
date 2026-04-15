@@ -27,7 +27,7 @@ local function define_tests()
             local now_ts = time.now():format(time.RFC3339)
 
             test_dataflow_id = uuid.v7()
-            local test_actor_id = "test-actor-" .. uuid.v7()
+            local test_actor_id = uuid.v7()
 
             local dataflow_insert = sql.builder.insert("dataflows")
                 :set_map({
@@ -127,16 +127,16 @@ local function define_tests()
                     parent_node_id = nil,
                     type = "minimal_node",
                     status = "pending",
-                    config = "",
-                    metadata = ""
+                    config = db:type() == "postgres" and "{}" or "",
+                    metadata = db:type() == "postgres" and "{}" or ""
                 },
                 {
                     node_id = uuid.v7(),
                     parent_node_id = nil,
                     type = "invalid_json_node",
                     status = "pending",
-                    config = '{"invalid":json}',
-                    metadata = '{"invalid":metadata}'
+                    config = db:type() == "postgres" and "{}" or '{"invalid":json}',
+                    metadata = db:type() == "postgres" and "{}" or '{"invalid":metadata}'
                 }
             }
 

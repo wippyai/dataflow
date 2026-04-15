@@ -128,6 +128,8 @@ function commit.tx_execute(tx, dataflow_id, op_id, commands, options)
     -- Preprocess commands to handle COMMIT_COMMAND
     local processed_commands = {}
     local commit_ids = {} -- Track which commits we've processed
+    local skipped_commit_ids = {}
+    local seen_apply_commit_ids = {}
 
     -- First pass: Preprocess commands, expanding commits
     for i, command in ipairs(commands) do
@@ -139,10 +141,14 @@ function commit.tx_execute(tx, dataflow_id, op_id, commands, options)
                 return nil, "Commit ID is required for COMMIT_COMMAND at index " .. i
             end
 
-            -- Add to tracking list
-            table.insert(commit_ids, commit_id)
+            -- A replay can hand us the same commit again. Skip anything already
+            -- applied, and also collapse duplicate commit_ids in the same batch.
+            if seen_apply_commit_ids[commit_id] then
+                table.insert(skipped_commit_ids, commit_id)
+                goto continue_command
+            end
+            seen_apply_commit_ids[commit_id] = true
 
-            -- Get the commit from database
             local commit_query = sql.builder.select("*")
                 :from("dataflow_commits")
                 :where("commit_id = ?", commit_id)
@@ -161,6 +167,14 @@ function commit.tx_execute(tx, dataflow_id, op_id, commands, options)
             end
 
             local commit_data = commits[1]
+
+            if commit_data.op_id ~= nil and tostring(commit_data.op_id) ~= "" then
+                table.insert(skipped_commit_ids, commit_id)
+                goto continue_command
+            end
+
+            -- Add to tracking list
+            table.insert(commit_ids, commit_id)
 
             -- Parse payload JSON
             local commit_payload
@@ -189,6 +203,8 @@ function commit.tx_execute(tx, dataflow_id, op_id, commands, options)
             -- Regular command, add as-is
             table.insert(processed_commands, command)
         end
+
+        ::continue_command::
     end
 
     -- Add commands to update last_commit_id for any commits we processed
@@ -209,9 +225,22 @@ function commit.tx_execute(tx, dataflow_id, op_id, commands, options)
         return nil, err
     end
 
+    -- Mark applied commits as processed
+    for _, commit_id in ipairs(commit_ids) do
+        local update_q = sql.builder.update("dataflow_commits")
+            :set("op_id", op_id or commit_id)
+            :where("commit_id = ?", commit_id)
+        local update_exec = update_q:run_with(tx)
+        update_exec:exec()
+    end
+
     -- Add commit_ids to result for reference
     if #commit_ids > 0 then
         result.commit_ids = commit_ids
+    end
+
+    if #skipped_commit_ids > 0 then
+        result.skipped_commit_ids = skipped_commit_ids
     end
 
     -- Handle publishing if enabled (default is true)
@@ -461,25 +490,12 @@ function commit.get_pending_commits(dataflow_id)
         return nil, "Failed to query dataflow: " .. err_query
     end
 
-    local after_commit_id = nil
-    if results and #results > 0 then
-        after_commit_id = results[1].last_commit_id
-    end
-
-    -- Query for pending commits
-    local commits_query
-    if after_commit_id then
-        commits_query = sql.builder.select("commit_id")
-            :from("dataflow_commits")
-            :where("dataflow_id = ?", dataflow_id)
-            :where("commit_id > ?", after_commit_id)
-            :order_by("commit_id ASC")
-    else
-        commits_query = sql.builder.select("commit_id")
-            :from("dataflow_commits")
-            :where("dataflow_id = ?", dataflow_id)
-            :order_by("commit_id ASC")
-    end
+    -- Query for pending (unprocessed) commits - op_id is NULL for submitted but not yet applied commits
+    local commits_query = sql.builder.select("commit_id")
+        :from("dataflow_commits")
+        :where("dataflow_id = ?", dataflow_id)
+        :where("op_id IS NULL")
+        :order_by("commit_id ASC")
 
     executor = commits_query:run_with(db)
     results, err_query = executor:query()

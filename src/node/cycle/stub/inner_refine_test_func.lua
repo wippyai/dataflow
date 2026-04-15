@@ -49,6 +49,7 @@ local function run(input_data)
 
     local actual_improvement = base_improvement * convergence_factor
     local new_quality = math.min(target_quality + 0.02, current_quality + actual_improvement)
+    new_quality = math.floor((new_quality * 1000000) + 0.5) / 1000000
 
     -- Add some processing metadata
     local processing_stats = {

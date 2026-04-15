@@ -1,0 +1,321 @@
+version: "1.0"
+namespace: userspace.dataflow.node.signal
+
+entries:
+  - name: node
+    kind: process.lua
+    meta:
+      name: Signal Wait Node
+      comment: Pauses workflow execution until an external signal is received
+      tags:
+        - dataflow
+        - node
+        - signal
+        - wait
+        - hil
+        - durable
+      description: "A dataflow node that yields and waits for an external signal.\nThe yield state is persisted to database, surviving process crashes.\nExternal code sends a signal via client:signal(dataflow_id, signal_id, data)\nto resume the workflow.\n"
+      default_host: app:processes
+    source: file://node.lua
+    modules:
+      - json
+      - uuid
+    imports:
+      consts: userspace.dataflow:consts
+      node: userspace.dataflow:node
+    method: run
+
+  - name: signal_test
+    kind: function.lua
+    meta:
+      type: test
+      suite: signal
+      comment: Signal node tests
+    source: file://signal_test.lua
+    modules:
+      - sql
+      - json
+      - uuid
+      - time
+      - security
+      - funcs
+    imports:
+      test: wippy.test:test
+      consts: userspace.dataflow:consts
+      signal_node: userspace.dataflow.node.signal:node
+      client: userspace.dataflow:client
+      scheduler: userspace.dataflow.runner:scheduler
+      workflow_state: userspace.dataflow.runner:workflow_state
+      dataflow_repo: userspace.dataflow.persist:dataflow_repo
+      commit: userspace.dataflow.persist:commit
+      data_reader: userspace.dataflow.persist:data_reader
+    method: run_tests
+
+  - name: recovery_test
+    kind: function.lua
+    meta:
+      type: test
+      suite: signal_recovery
+      timeout: "60s"
+      comment: Signal node recovery and durability tests
+    source: file://recovery_test.lua
+    modules:
+      - sql
+      - json
+      - uuid
+      - time
+      - process
+      - security
+      - funcs
+    imports:
+      test: wippy.test:test
+      consts: userspace.dataflow:consts
+      client: userspace.dataflow:client
+      data_reader: userspace.dataflow.persist:data_reader
+    method: run_tests
+
+  - name: compound_signal_test
+    kind: function.lua
+    meta:
+      type: test
+      suite: signal_compound
+      comment: Compound pipeline tests combining signal with func and state nodes
+    source: file://compound_signal_test.lua
+    modules:
+      - sql
+      - json
+      - uuid
+      - time
+      - process
+      - security
+      - funcs
+    imports:
+      test: wippy.test:test
+      consts: userspace.dataflow:consts
+      client: userspace.dataflow:client
+      data_reader: userspace.dataflow.persist:data_reader
+    method: run_tests
+
+  - name: signal_edge_test
+    kind: function.lua
+    meta:
+      type: test
+      suite: signal_edge
+      comment: Signal node edge cases, data types, validation, timing
+    source: file://signal_edge_test.lua
+    modules:
+      - sql
+      - json
+      - uuid
+      - time
+      - process
+      - security
+      - funcs
+    imports:
+      test: wippy.test:test
+      consts: userspace.dataflow:consts
+      client: userspace.dataflow:client
+      data_reader: userspace.dataflow.persist:data_reader
+    method: run_tests
+
+  - name: signal_bugs_test
+    kind: function.lua
+    meta:
+      type: test
+      suite: signal_bugs
+      comment: Bug-proving tests - falsy data, orphaned yields, race conditions, terminate behavior
+    source: file://signal_bugs_test.lua
+    modules:
+      - sql
+      - json
+      - uuid
+      - time
+      - process
+      - security
+      - funcs
+    imports:
+      test: wippy.test:test
+      consts: userspace.dataflow:consts
+      client: userspace.dataflow:client
+      scheduler: userspace.dataflow.runner:scheduler
+      workflow_state: userspace.dataflow.runner:workflow_state
+      data_reader: userspace.dataflow.persist:data_reader
+    method: run_tests
+
+  - name: signal_stress_test
+    kind: function.lua
+    meta:
+      type: test
+      suite: signal_stress
+      timeout: "60s"
+      comment: Stress tests - rapid bursts, deep pipelines, wide fan-out, interleaved kill/signal, shared names
+    source: file://signal_stress_test.lua
+    modules:
+      - sql
+      - json
+      - uuid
+      - time
+      - process
+      - security
+      - funcs
+    imports:
+      test: wippy.test:test
+      consts: userspace.dataflow:consts
+      client: userspace.dataflow:client
+      data_reader: userspace.dataflow.persist:data_reader
+    method: run_tests
+
+  - name: chaos_test
+    kind: function.lua
+    meta:
+      type: test
+      suite: chaos
+      timeout: "60s"
+      comment: Chaos tests - random kills at arbitrary moments, verify eventual completion and data integrity
+    source: file://chaos_test.lua
+    modules:
+      - sql
+      - json
+      - uuid
+      - time
+      - process
+      - security
+      - funcs
+    imports:
+      test: wippy.test:test
+      consts: userspace.dataflow:consts
+      client: userspace.dataflow:client
+      data_reader: userspace.dataflow.persist:data_reader
+    method: run_tests
+
+  - name: cycle_recovery_regression_test
+    kind: function.lua
+    meta:
+      type: test
+      suite: cycle_recovery_regression
+      timeout: "60s"
+      comment: Deterministic cycle recovery regression for persisted child results across restart
+    source: file://cycle_recovery_regression_test.lua
+    modules:
+      - sql
+      - json
+      - uuid
+      - time
+      - process
+      - security
+      - funcs
+    imports:
+      test: wippy.test:test
+      consts: userspace.dataflow:consts
+      client: userspace.dataflow:client
+      data_reader: userspace.dataflow.persist:data_reader
+    method: run_tests
+
+  - name: data_integrity_test
+    kind: function.lua
+    meta:
+      type: test
+      suite: data_integrity
+      comment: Data integrity verification - output correctness, no duplicates, concurrent operations
+    source: file://data_integrity_test.lua
+    modules:
+      - sql
+      - json
+      - uuid
+      - time
+      - process
+      - security
+      - funcs
+    imports:
+      test: wippy.test:test
+      consts: userspace.dataflow:consts
+      client: userspace.dataflow:client
+      data_reader: userspace.dataflow.persist:data_reader
+    method: run_tests
+
+  - name: all_nodes_recovery_test
+    kind: function.lua
+    meta:
+      type: test
+      suite: all_nodes_recovery
+      timeout: "60s"
+      comment: Recovery tests for cycle, parallel, and compound pipelines with kill/restart
+    source: file://all_nodes_recovery_test.lua
+    modules:
+      - sql
+      - json
+      - uuid
+      - time
+      - process
+      - security
+      - funcs
+    imports:
+      test: wippy.test:test
+      consts: userspace.dataflow:consts
+      client: userspace.dataflow:client
+      data_reader: userspace.dataflow.persist:data_reader
+    method: run_tests
+
+  - name: nested_recovery_test
+    kind: function.lua
+    meta:
+      type: test
+      suite: nested_recovery
+      timeout: "60s"
+      comment: Recovery tests for nested parallel/cycle/signal compositions
+    source: file://nested_recovery_test.lua
+    modules:
+      - json
+      - time
+      - uuid
+    imports:
+      test: wippy.test:test
+      consts: userspace.dataflow:consts
+      client: userspace.dataflow:client
+      data_reader: userspace.dataflow.persist:data_reader
+      node_reader: userspace.dataflow.persist:node_reader
+    method: run_tests
+
+  - name: node_recovery_test
+    kind: function.lua
+    meta:
+      type: test
+      suite: node_recovery
+      comment: Recovery tests for all node types - func, state, mixed pipelines with kill/restart
+    source: file://node_recovery_test.lua
+    modules:
+      - sql
+      - json
+      - uuid
+      - time
+      - process
+      - security
+      - funcs
+    imports:
+      test: wippy.test:test
+      consts: userspace.dataflow:consts
+      client: userspace.dataflow:client
+      data_reader: userspace.dataflow.persist:data_reader
+    method: run_tests
+
+  - name: signal_durability_test
+    kind: function.lua
+    meta:
+      type: test
+      suite: signal_durability
+      comment: Advanced durability tests - triple kill, rapid cycles, multi-workflow recovery, node isolation recovery
+    source: file://signal_durability_test.lua
+    modules:
+      - sql
+      - json
+      - uuid
+      - time
+      - process
+      - security
+      - funcs
+    imports:
+      test: wippy.test:test
+      consts: userspace.dataflow:consts
+      client: userspace.dataflow:client
+      data_reader: userspace.dataflow.persist:data_reader
+    method: run_tests

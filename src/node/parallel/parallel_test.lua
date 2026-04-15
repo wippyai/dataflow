@@ -393,6 +393,79 @@ local function define_tests()
                 test.eq(result[2].item, "c")
                 test.eq(result[2].error, "error_c")
             end)
+
+            it("BC_REGRESSION_C3_legacy_output_shape_preserved", function()
+                local mock_node = {
+                    config = function(_self: any)
+                        return {
+                            source_array_key = "items",
+                            output_shape = {
+                                filter = "successes",
+                                unwrap = true
+                            }
+                        }
+                    end,
+                    inputs = function(_self: any)
+                        return {
+                            default = {
+                                content = { items = { "a" } }
+                            }
+                        }
+                    end,
+                    yield = function(_self: any, _options: any)
+                        return {}, nil
+                    end,
+                    complete = function(_self: any, result: any, message: string?)
+                        return {
+                            success = true,
+                            result = result,
+                            message = message
+                        }
+                    end
+                }
+
+                local mock_template_graph = {
+                    is_empty = function(_self: any)
+                        return false
+                    end
+                }
+
+                local mock_iterator = {
+                    create_batch = function(_n: any, _template_graph: any, _items: any, _batch_start: number, _batch_end: number, _iteration_input_key: string)
+                        return {
+                            {
+                                iteration = 1,
+                                iteration_index = 1,
+                                input_item = "a",
+                                root_nodes = { "node1" }
+                            }
+                        }, nil
+                    end,
+                    collect_results = function(_n: any, _iteration: any)
+                        return "result_a", nil
+                    end
+                }
+
+                parallel._deps.node = {
+                    new = function(_args: any)
+                        return mock_node, nil
+                    end
+                }
+
+                parallel._deps.template_graph = {
+                    build_for_node = function(_node: any)
+                        return mock_template_graph, nil
+                    end
+                }
+
+                parallel._deps.iterator = mock_iterator
+
+                local result = parallel.run({})
+                test.is_true(result.success)
+                test.eq(#result.result, 1)
+                test.eq(result.result[1], "result_a")
+                test.is_nil(result.result.successes)
+            end)
         end)
 
         describe("Unit Tests - Template Discovery", function()
@@ -550,6 +623,10 @@ local function define_tests()
                 }
 
                 parallel._deps.iterator = mock_iterator
+                parallel._deps.time = {
+                    sleep = function(_delay: any)
+                    end
+                }
 
                 local result = parallel.run({})
                 test.is_true(result.success)
@@ -613,6 +690,161 @@ local function define_tests()
                 local result = parallel.run({})
                 test.is_false(result.success)
                 test.eq(result.error.code, parallel.ERRORS.ITERATION_FAILED)
+            end)
+
+            it("should recover completed iterations from durable result rows before rerunning an active batch", function()
+                local created_iteration_indices = {}
+                local query_calls = 0
+
+                local mock_node = {
+                    node_id = "parallel-node",
+                    config = function(_self: any)
+                        return {
+                            source_array_key = "items",
+                            batch_size = 2
+                        }
+                    end,
+                    inputs = function(_self: any)
+                        return {
+                            default = {
+                                content = { items = { "a", "b" } }
+                            }
+                        }
+                    end,
+                    query = function(_self: any)
+                        query_calls = query_calls + 1
+                        return {
+                            with_nodes = function(query_self: any, _node_id: any)
+                                return query_self
+                            end,
+                            with_data_types = function(query_self: any, _data_types: any)
+                                return query_self
+                            end,
+                            all = function()
+                                local rows = {
+                                    {
+                                        data_id = "cursor-row",
+                                        node_id = "parallel-node",
+                                        type = consts.DATA_TYPE.PARALLEL_PROGRESS,
+                                        key = "cursor",
+                                        content_type = consts.CONTENT_TYPE.JSON,
+                                        content = {
+                                            next_batch_start = 1,
+                                            active_batch = {
+                                                batch_start = 1,
+                                                batch_end = 2,
+                                                attempt_id = "attempt-1",
+                                                submitted_iterations = { 1, 2 }
+                                            }
+                                        },
+                                        metadata = {},
+                                        created_at = "2026-01-01T00:00:00.000000001Z"
+                                    }
+                                }
+
+                                if query_calls > 1 then
+                                    rows[2] = {
+                                        data_id = "result-row-1",
+                                        node_id = "parallel-node",
+                                        type = consts.DATA_TYPE.ITERATION_RESULT,
+                                        discriminator = "iteration.000001.attempt-1",
+                                        content_type = consts.CONTENT_TYPE.TEXT,
+                                        content = "persisted-result-1",
+                                        metadata = {
+                                            iteration = 1,
+                                            attempt_id = "attempt-1"
+                                        },
+                                        created_at = "2026-01-01T00:00:00.000000002Z"
+                                    }
+                                    rows[3] = {
+                                        data_id = "result-row-2",
+                                        node_id = "parallel-node",
+                                        type = consts.DATA_TYPE.ITERATION_RESULT,
+                                        discriminator = "iteration.000002.attempt-1",
+                                        content_type = consts.CONTENT_TYPE.TEXT,
+                                        content = "persisted-result-2",
+                                        metadata = {
+                                            iteration = 2,
+                                            attempt_id = "attempt-1"
+                                        },
+                                        created_at = "2026-01-01T00:00:00.000000003Z"
+                                    }
+                                end
+
+                                return rows
+                            end
+                        }
+                    end,
+                    data = function(_self: any, _data_type: any, _content: any, _options: any)
+                        return true, nil
+                    end,
+                    submit = function(_self: any)
+                        return true, nil
+                    end,
+                    yield = function(_self: any, _options: any)
+                        return {}, nil
+                    end,
+                    complete = function(_self: any, result: any, message: string?)
+                        return {
+                            success = true,
+                            result = result,
+                            message = message
+                        }
+                    end,
+                    fail = function(_self: any, error_details: any, message: string?)
+                        return {
+                            success = false,
+                            error = error_details,
+                            message = message
+                        }
+                    end
+                }
+
+                local mock_template_graph = {
+                    is_empty = function(_self: any)
+                        return false
+                    end
+                }
+
+                local mock_iterator = {
+                    create_batch = function(_n: any, _template_graph: any, items: any, _batch_start: number,
+                                            _batch_end: number, _iteration_input_key: string, _passthrough_inputs: any,
+                                            options: any)
+                        created_iteration_indices = options.iteration_indices
+                        return {
+                            {
+                                iteration = 2,
+                                input_item = items[2],
+                                attempt_id = "attempt-2",
+                                root_nodes = {}
+                            }
+                        }, nil
+                    end,
+                    collect_results = function(_n: any, _iteration: any)
+                        return nil, "No output data found for iteration"
+                    end
+                }
+
+                parallel._deps.node = {
+                    new = function(_args: any)
+                        return mock_node, nil
+                    end
+                }
+
+                parallel._deps.template_graph = {
+                    build_for_node = function(_node: any)
+                        return mock_template_graph, nil
+                    end
+                }
+
+                parallel._deps.iterator = mock_iterator
+
+                local result = parallel.run({})
+                test.is_true(result.success)
+                test.eq(#created_iteration_indices, 0)
+                test.eq(result.result.success_count, 2)
+                test.eq(result.result.successes[1].result, "persisted-result-1")
+                test.eq(result.result.successes[2].result, "persisted-result-2")
             end)
         end)
 
@@ -1368,9 +1600,9 @@ local function define_tests()
                 local result: any, err = parallel.execute_reduction_pipeline_step(step, data)
                 test.is_nil(err)
                 test.eq(#result, 3)
-                test.eq(result[1], "transformed_a")
-                test.eq(result[2], "transformed_b")
-                test.eq(result[3], "transformed_c")
+                test.eq((result :: any)[1], "transformed_a")
+                test.eq((result :: any)[2], "transformed_b")
+                test.eq((result :: any)[3], "transformed_c")
                 test.eq(call_count, 3)
             end)
 
@@ -1397,10 +1629,10 @@ local function define_tests()
 
                 local result: any, err = parallel.execute_reduction_pipeline_step(step, data)
                 test.is_nil(err)
-                test.not_nil(result["A"])
-                test.not_nil(result["B"])
-                test.eq(#result["A"], 2)
-                test.eq(#result["B"], 1)
+                test.not_nil((result :: any)["A"])
+                test.not_nil((result :: any)["B"])
+                test.eq(#(result :: any)["A"], 2)
+                test.eq(#(result :: any)["B"], 1)
             end)
         end)
 
@@ -1496,7 +1728,7 @@ local function define_tests()
                 local result: any, err = parallel.execute_reduction_pipeline_step(step, { "value1", "value2" })
 
                 test.is_nil(err)
-                test.not_nil(result.aggregated)
+                test.not_nil((result :: any).aggregated)
                 test.not_nil(context_received)
                 test.eq(context_received.aggregation_method, "sum")
                 test.is_true(context_received.include_metadata)
@@ -2496,9 +2728,10 @@ local function define_tests()
                     test.is_nil(create_err)
 
                     local result, exec_err = c:execute(dataflow_id)
-                    test.is_nil(result)
                     test.not_nil(exec_err)
-                    test.contains(exec_err, "Iteration failed")
+
+                    test.is_false(result.success)
+                    test.contains(result.error, "Iteration failed")
 
                     print("Fail_fast strategy correctly failed the workflow")
                     print("=== FAIL_FAST INTEGRATION TEST COMPLETE ===")

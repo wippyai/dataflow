@@ -41,12 +41,75 @@ local function normalize_string_array(values)
     return result
 end
 
+local function sort_data_rows_desc(rows)
+    table.sort(rows, function(a, b)
+        -- Recovery only uses this on dataflow_data rows. Those rows are ordered by
+        -- UUID v7 data_ids (ops.CREATE_DATA defaults to uuid.v7(), and built-in
+        -- producers explicitly do the same), so data_id is the durable "latest"
+        -- ordering even when created_at ties at backend timestamp precision.
+        return tostring(a.data_id or "") > tostring(b.data_id or "")
+    end)
+
+    return rows
+end
+
+local function decode_json_content(content)
+    if type(content) == "string" then
+        local success, parsed = pcall(json.decode, content)
+        if success then
+            return parsed
+        end
+        return nil
+    end
+
+    return content
+end
+
 local function get_db()
     local db, err = sql.get(consts.APP_DB)
     if err then
         return nil, "Failed to connect to database: " .. err
     end
     return db
+end
+
+local function collect_routing_targets(node_config)
+    local targets = {}
+    if not node_config then
+        return targets
+    end
+
+    for _, field in ipairs({ "data_targets", "error_targets" }) do
+        local configured_targets = node_config[field]
+        if type(configured_targets) == "table" then
+            for _, target in ipairs(configured_targets) do
+                if type(target) == "table" and type(target.data_type) == "string" then
+                    table.insert(targets, target)
+                end
+            end
+        end
+    end
+
+    return targets
+end
+
+local function input_target_slot(target)
+    return target.discriminator or target.key or "default"
+end
+
+local function make_restart_metadata(previous_status, extra)
+    local metadata = {
+        orchestrator_restarted_at = time.now():format(time.RFC3339NANO),
+        previous_status_on_restart = previous_status
+    }
+
+    if type(extra) == "table" then
+        for k, v in pairs(extra) do
+            metadata[k] = v
+        end
+    end
+
+    return metadata
 end
 
 function workflow_state.new(dataflow_id, options)
@@ -77,6 +140,280 @@ function workflow_state.new(dataflow_id, options)
     }
 
     return setmetatable(instance, workflow_state_mt), nil
+end
+
+function methods:_query_target_rows(producer_node_id, target)
+    local target_node_id = target.node_id or producer_node_id
+    local query = data_reader.with_dataflow(self.dataflow_id)
+        :with_nodes(target_node_id)
+        :with_data_types(target.data_type)
+
+    if target.key ~= nil then
+        query = query:with_data_keys(target.key)
+    end
+
+    if target.discriminator ~= nil then
+        query = query:with_data_discriminators(target.discriminator)
+    end
+
+    return query:all()
+end
+
+function methods:_find_routed_data_matches(producer_node_id, targets)
+    local matched_rows = {}
+    local seen_ids = {}
+
+    for _, target in ipairs(targets or {}) do
+        local rows = self:_query_target_rows(producer_node_id, target)
+        for _, row in ipairs(rows or {}) do
+            if row.data_id and not seen_ids[row.data_id] then
+                seen_ids[row.data_id] = true
+                table.insert(matched_rows, row)
+            end
+        end
+    end
+
+    return matched_rows
+end
+
+function methods:_load_node_result_row(node_id)
+    local result_rows = data_reader.with_dataflow(self.dataflow_id)
+        :with_nodes(node_id)
+        :with_data_types(consts.DATA_TYPE.NODE_RESULT)
+        :all()
+
+    if not result_rows or #result_rows == 0 then
+        return nil
+    end
+
+    sort_data_rows_desc(result_rows)
+    return result_rows[1]
+end
+
+function methods:_detect_running_node_recovery(node_id)
+    local node_data = self.nodes[node_id]
+    if not node_data then
+        return nil
+    end
+
+    local result_row = self:_load_node_result_row(node_id)
+    if result_row then
+        local discriminator = tostring(result_row.discriminator or "")
+        if discriminator == "result.error" then
+            return {
+                status = consts.STATUS.COMPLETED_FAILURE,
+                result_row = result_row
+            }
+        end
+
+        return {
+            status = consts.STATUS.COMPLETED_SUCCESS,
+            result_row = result_row
+        }
+    end
+
+    local config = node_data.config or {}
+    local error_rows = self:_find_routed_data_matches(node_id, config.error_targets)
+    if #error_rows > 0 then
+        return {
+            status = consts.STATUS.COMPLETED_FAILURE,
+            synthetic_result = {
+                discriminator = "result.error",
+                content = {
+                    recovered = true,
+                    message = "Recovered failed node from durable error output"
+                }
+            }
+        }
+    end
+
+    local success_rows = self:_find_routed_data_matches(node_id, config.data_targets)
+    if #success_rows > 0 then
+        return {
+            status = consts.STATUS.COMPLETED_SUCCESS,
+            synthetic_result = {
+                discriminator = "result.success",
+                content = {
+                    recovered = true,
+                    message = "Recovered completed node from durable output"
+                }
+            }
+        }
+    end
+
+    return nil
+end
+
+function methods:_queue_node_reset(commands, node_id, previous_status, extra_metadata)
+    if not self._reset_node_ids[node_id] then
+        self._reset_node_ids[node_id] = true
+    end
+
+    table.insert(commands, {
+        type = consts.COMMAND_TYPES.UPDATE_NODE,
+        payload = {
+            node_id = node_id,
+            status = consts.STATUS.PENDING,
+            metadata = make_restart_metadata(previous_status, extra_metadata)
+        }
+    })
+
+    if self.nodes[node_id] then
+        self.nodes[node_id].status = consts.STATUS.PENDING
+    end
+end
+
+function methods:_queue_recovered_completion(commands, node_id, recovery_info)
+    table.insert(commands, {
+        type = consts.COMMAND_TYPES.UPDATE_NODE,
+        payload = {
+            node_id = node_id,
+            status = recovery_info.status,
+            metadata = {
+                recovered_from_restart = true,
+                recovery_reason = "durable_completion_detected"
+            }
+        }
+    })
+
+    if recovery_info.synthetic_result then
+        table.insert(commands, {
+            type = consts.COMMAND_TYPES.CREATE_DATA,
+            payload = {
+                data_id = uuid.v7(),
+                data_type = consts.DATA_TYPE.NODE_RESULT,
+                content = recovery_info.synthetic_result.content,
+                node_id = node_id,
+                discriminator = recovery_info.synthetic_result.discriminator
+            }
+        })
+    end
+
+    if self.nodes[node_id] then
+        self.nodes[node_id].status = recovery_info.status
+    end
+end
+
+function methods:_queue_recovery_duplicate_cleanup(commands, node_id)
+    local node_data = self.nodes[node_id]
+    if not node_data then
+        return
+    end
+
+    local deleted_data_ids = {}
+
+    local function queue_duplicate_deletes(rows)
+        if not rows or #rows <= 1 then
+            return
+        end
+
+        sort_data_rows_desc(rows)
+        for i = 2, #rows do
+            local row = rows[i]
+            if row and row.data_id and not deleted_data_ids[row.data_id] then
+                deleted_data_ids[row.data_id] = true
+                table.insert(commands, {
+                    type = consts.COMMAND_TYPES.DELETE_DATA,
+                    payload = {
+                        data_id = row.data_id
+                    }
+                })
+            end
+        end
+    end
+
+    for _, target in ipairs(collect_routing_targets(node_data.config)) do
+        queue_duplicate_deletes(self:_query_target_rows(node_id, target))
+    end
+
+    queue_duplicate_deletes(
+        data_reader.with_dataflow(self.dataflow_id)
+            :with_nodes(node_id)
+            :with_data_types(consts.DATA_TYPE.NODE_RESULT)
+            :all()
+    )
+end
+
+function methods:_propagate_reset_to_dependents(commands)
+    local queue = {}
+    local queued = {}
+    local deleted_data_ids = {}
+
+    for node_id, _ in pairs(self._reset_node_ids or {}) do
+        table.insert(queue, node_id)
+        queued[node_id] = true
+    end
+
+    local queue_index = 1
+    while queue_index <= #queue do
+        local producer_node_id = queue[queue_index]
+        queue_index = queue_index + 1
+
+        local producer_node = self.nodes[producer_node_id]
+        if not producer_node then
+            goto continue
+        end
+
+        for _, target in ipairs(collect_routing_targets(producer_node.config)) do
+            local rows = self:_query_target_rows(producer_node_id, target)
+            for _, row in ipairs(rows or {}) do
+                if row.data_id and not deleted_data_ids[row.data_id] then
+                    deleted_data_ids[row.data_id] = true
+                    table.insert(commands, {
+                        type = consts.COMMAND_TYPES.DELETE_DATA,
+                        payload = {
+                            data_id = row.data_id
+                        }
+                    })
+                end
+            end
+
+            if target.data_type == consts.DATA_TYPE.NODE_INPUT and type(target.node_id) == "string" then
+                local consumer_node = self.nodes[target.node_id]
+                local slot = input_target_slot(target)
+
+                if self.input_tracker.available[target.node_id] then
+                    self.input_tracker.available[target.node_id][slot] = nil
+                end
+
+                if consumer_node and consumer_node.status ~= consts.STATUS.TEMPLATE and
+                   consumer_node.status ~= consts.STATUS.PENDING then
+                    local previous_status = consumer_node.status
+                    self:_queue_node_reset(commands, target.node_id, previous_status, {
+                        reset_reason = "upstream_recovery",
+                        reset_source_node_id = producer_node_id
+                    })
+
+                    if not queued[target.node_id] then
+                        queued[target.node_id] = true
+                        table.insert(queue, target.node_id)
+                    end
+                end
+            end
+        end
+
+        ::continue::
+    end
+end
+
+function methods:_prune_duplicate_routed_data()
+    local cleanup_commands = {}
+
+    for node_id, _ in pairs(self.nodes) do
+        self:_queue_recovery_duplicate_cleanup(cleanup_commands, node_id)
+    end
+
+    if #cleanup_commands == 0 then
+        return nil
+    end
+
+    local result, err = commit.execute(self.dataflow_id, uuid.v7(), cleanup_commands, { publish = false })
+    if err then
+        return "Failed to prune duplicate routed data: " .. err
+    end
+
+    self:_load_existing_data()
+    return nil
 end
 
 function methods:_set_input_requirements_from_config(node_id, config)
@@ -137,6 +474,13 @@ function methods:load_state()
         return nil, reset_err
     end
 
+    self:_invalidate_inputs_from_reset_producers()
+
+    local dedupe_err = self:_prune_duplicate_routed_data()
+    if dedupe_err then
+        return nil, dedupe_err
+    end
+
     self:_reconstruct_active_yields()
 
     self.loaded = true
@@ -144,6 +488,9 @@ function methods:load_state()
 end
 
 function methods:_load_existing_data()
+    self.has_workflow_output = false
+    self.has_workflow_error = false
+
     local workflow_outputs = data_reader.with_dataflow(self.dataflow_id)
         :with_data_types(consts.DATA_TYPE.WORKFLOW_OUTPUT)
         :all()
@@ -161,32 +508,37 @@ end
 
 function methods:_reset_running_nodes()
     local reset_commands = {}
+    self._reset_node_ids = {}
 
     for node_id, node_data in pairs(self.nodes) do
         if node_data.status == consts.STATUS.RUNNING then
-            table.insert(reset_commands, {
-                type = consts.COMMAND_TYPES.UPDATE_NODE,
-                payload = {
-                    node_id = node_id,
-                    status = consts.STATUS.PENDING,
-                    metadata = {
-                        orchestrator_restarted_at = time.now():format(time.RFC3339NANO),
-                        previous_status_on_restart = consts.STATUS.RUNNING
-                    }
-                }
-            })
-            node_data.status = consts.STATUS.PENDING
+            local recovery_info = self:_detect_running_node_recovery(node_id)
+            if recovery_info then
+                self:_queue_recovered_completion(reset_commands, node_id, recovery_info)
+                self:_queue_recovery_duplicate_cleanup(reset_commands, node_id)
+            else
+                self:_queue_node_reset(reset_commands, node_id, consts.STATUS.RUNNING)
+            end
         end
     end
+
+    self:_propagate_reset_to_dependents(reset_commands)
 
     if #reset_commands > 0 then
         local result, err = commit.execute(self.dataflow_id, uuid.v7(), reset_commands, { publish = false })
         if err then
             return "Failed to reset RUNNING nodes: " .. err
         end
+
+        self:_load_existing_data()
     end
 
     return nil
+end
+
+function methods:_invalidate_inputs_from_reset_producers()
+    -- _reset_running_nodes() already clears stale routed data and input slots
+    -- for reset producers and all downstream dependents before reconstruction.
 end
 
 function methods:_reconstruct_active_yields()
@@ -194,64 +546,107 @@ function methods:_reconstruct_active_yields()
         :with_data_types(consts.DATA_TYPE.NODE_YIELD)
         :all()
 
+    local yield_result_records = data_reader.with_dataflow(self.dataflow_id)
+        :with_data_types(consts.DATA_TYPE.NODE_YIELD_RESULT)
+        :fetch_options({
+            content = false,
+            metadata = false,
+            resolve_references = false
+        })
+        :all()
+
+    local satisfied_yield_ids = {}
+    for _, yield_result in ipairs(yield_result_records) do
+        local yield_id = yield_result.key or yield_result.discriminator
+        if type(yield_id) == "string" and yield_id ~= "" then
+            satisfied_yield_ids[yield_id] = true
+        end
+    end
+
+    sort_data_rows_desc(yield_records)
+    local reconstructed_parents = {}
+
     for _, yield_record in ipairs(yield_records) do
         local parent_node_id = yield_record.node_id
+        if type(parent_node_id) ~= "string" or parent_node_id == "" then
+            goto continue
+        end
+
+        if reconstructed_parents[parent_node_id] then
+            goto continue
+        end
+
         local parent_node = self.nodes[parent_node_id]
 
-        if parent_node and parent_node.status == consts.STATUS.PENDING then
-            local yield_content
-            if type(yield_record.content) == "string" then
-                local success, parsed = pcall(json.decode, yield_record.content)
-                if success then
-                    yield_content = parsed
-                else
-                    goto continue
-                end
-            else
-                yield_content = yield_record.content
-            end
+        if not parent_node or parent_node.status ~= consts.STATUS.PENDING then
+            reconstructed_parents[parent_node_id] = true
+            goto continue
+        end
 
-            if not yield_content then
-                goto continue
-            end
+        local yield_content = decode_json_content(yield_record.content)
+        if not yield_content then
+            goto continue
+        end
 
-            local yield_id = yield_content.yield_id
-            local reply_to = yield_content.reply_to
-            local yield_context = yield_content.yield_context or {}
-            local run_nodes = yield_context.run_nodes or {}
-            local child_path = yield_content.child_path or {}
+        local yield_id = yield_content.yield_id
+        if type(yield_id) ~= "string" or yield_id == "" then
+            goto continue
+        end
 
-            local pending_children = {}
-            local results = {}
+        if satisfied_yield_ids[yield_id] then
+            goto continue
+        end
 
-            for _, child_id in ipairs(run_nodes) do
-                local child_node = self.nodes[child_id]
-                if child_node and child_node.status ~= consts.STATUS.TEMPLATE then
-                    pending_children[child_id] = child_node.status
+        local reply_to = yield_content.reply_to
+        local yield_context = yield_content.yield_context or {}
+        local run_nodes = yield_context.run_nodes or {}
+        local child_path = yield_content.child_path or {}
+        local pending_children = {}
+        local results = {}
 
-                    if child_node.status == consts.STATUS.COMPLETED_SUCCESS or
-                       child_node.status == consts.STATUS.COMPLETED_FAILURE then
-                        local result_data = data_reader.with_dataflow(self.dataflow_id)
-                            :with_nodes(child_id)
-                            :with_data_types(consts.DATA_TYPE.NODE_RESULT)
-                            :one()
-                        if result_data then
-                            results[child_id] = result_data.data_id
-                        end
+        for _, child_id in ipairs(run_nodes) do
+            local child_node = self.nodes[child_id]
+            if child_node and child_node.status ~= consts.STATUS.TEMPLATE then
+                pending_children[child_id] = child_node.status
+
+                if child_node.status == consts.STATUS.COMPLETED_SUCCESS or
+                   child_node.status == consts.STATUS.COMPLETED_FAILURE then
+                    local result_data = data_reader.with_dataflow(self.dataflow_id)
+                        :with_nodes(child_id)
+                        :with_data_types(consts.DATA_TYPE.NODE_RESULT)
+                        :one()
+                    if result_data then
+                        results[child_id] = result_data.data_id
                     end
                 end
             end
-
-            local yield_info = {
-                yield_id = yield_id,
-                reply_to = reply_to,
-                pending_children = pending_children,
-                results = results,
-                child_path = child_path
-            }
-
-            self.active_yields[parent_node_id] = yield_info
         end
+
+        local was_reset = self._reset_node_ids and self._reset_node_ids[parent_node_id]
+
+        local yield_info = {
+            yield_id = yield_id,
+            reply_to = reply_to,
+            pending_children = pending_children,
+            results = results,
+            child_path = child_path,
+            wait_for_signal = yield_context.wait_for_signal,
+            signal_id = yield_context.signal_id,
+        }
+
+        -- for reset nodes, the original yielding process is dead. the reply_to
+        -- mailbox no longer exists; satisfying this yield would deliver data
+        -- into a void AND trick the scheduler into thinking work is progressing.
+        -- mark the yield as detached so the scheduler skips satisfaction and
+        -- lets the parent re-run from scratch with a fresh reply_to. signal
+        -- yields additionally keep signal_data in memory so a concurrently
+        -- arriving signal is captured before the node re-attaches.
+        if was_reset then
+            yield_info.detached = true
+        end
+
+        self.active_yields[parent_node_id] = yield_info
+        reconstructed_parents[parent_node_id] = true
 
         ::continue::
     end
@@ -373,6 +768,17 @@ function methods:_update_state_from_results(results)
                 end
                 local key = payload.discriminator or payload.key or "default"
                 self.input_tracker.available[payload.node_id][key] = true
+            elseif payload.data_type == consts.DATA_TYPE.NODE_SIGNAL then
+                -- deliver signal data to the matching waiting yield
+                local signal_id = payload.key or payload.discriminator
+                if signal_id then
+                    for node_id, yield_info in pairs(self.active_yields) do
+                        if yield_info.wait_for_signal and yield_info.signal_id == signal_id then
+                            yield_info.signal_data = payload.content
+                            break
+                        end
+                    end
+                end
             end
         end
 
@@ -579,6 +985,12 @@ function methods:handle_process_exit(pid, success, result)
         result_data_id = result_data_id
     }
 
+    -- clean up orphaned signal yield if this node was yielding with wait_for_signal
+    local own_yield = self.active_yields[exited_node_id]
+    if own_yield and own_yield.wait_for_signal then
+        self.active_yields[exited_node_id] = nil
+    end
+
     local node_data = self.nodes[exited_node_id]
     if node_data and node_data.parent_node_id then
         local parent_id = node_data.parent_node_id
@@ -612,6 +1024,32 @@ function methods:handle_process_exit(pid, success, result)
 end
 
 function methods:track_yield(node_id, yield_info)
+    if yield_info.wait_for_signal and yield_info.signal_id and not yield_info.signal_data then
+        -- 1. inherit from detached yield (restart recovery: signal arrived while node restarting)
+        local existing = self.active_yields[node_id]
+        if existing and existing.detached and existing.signal_data ~= nil then
+            yield_info.signal_data = existing.signal_data
+        else
+            -- 2. check DB (pre-queued: signal arrived before node ever yielded)
+            local signal_records = data_reader.with_dataflow(self.dataflow_id)
+                :with_data_types(consts.DATA_TYPE.NODE_SIGNAL)
+                :all()
+            for _, sig in ipairs(signal_records) do
+                local sig_key = sig.key or sig.discriminator
+                if sig_key == yield_info.signal_id then
+                    -- DB content is raw bytes (string); parse JSON so scheduler
+                    -- and handle_satisfy_yield see a table instead of coercing to {}
+                    local content = sig.content
+                    if type(content) == "string" then
+                        local ok, parsed = pcall(json.decode, content)
+                        if ok then content = parsed end
+                    end
+                    yield_info.signal_data = content
+                end
+            end
+        end
+    end
+
     self.active_yields[node_id] = yield_info
     return self
 end

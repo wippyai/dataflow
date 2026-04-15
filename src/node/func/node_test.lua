@@ -254,8 +254,8 @@ local function define_tests()
 
                 local result, exec_err = c:execute(dataflow_id)
                 test.not_nil(exec_err)
-                test.is_nil(result)
-                test.contains(exec_err, "Function ID not specified")
+                test.is_false(result.success)
+                test.contains(result.error, "Function ID not specified")
 
                 print("Function node correctly failed with missing func_id")
             end)
@@ -298,8 +298,8 @@ local function define_tests()
 
                 local result, exec_err = c:execute(dataflow_id)
                 test.not_nil(exec_err)
-                test.is_nil(result)
-                test.contains(exec_err, "No input data provided")
+                test.is_false(result.success)
+                test.contains(result.error, "No input data provided")
 
                 print("Function node correctly failed with no input data")
             end)
@@ -367,8 +367,8 @@ local function define_tests()
 
                 local result, exec_err = c:execute(dataflow_id)
                 test.not_nil(exec_err)
-                test.is_nil(result)
-                test.contains(exec_err, "failed")
+                test.is_false(result.success)
+                test.contains(result.error, "failed")
 
                 print("Function node correctly failed with nonexistent function")
             end)
