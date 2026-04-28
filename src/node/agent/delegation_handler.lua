@@ -71,6 +71,9 @@ local function get_yield_results(parent_node_sdk)
     end
 
     local latest_yield_result = yield_result_data[#yield_result_data]
+    if not latest_yield_result then
+        return nil, "No latest yield result found"
+    end
 
     local yield_content = latest_yield_result.content
     if type(yield_content) == "string" then

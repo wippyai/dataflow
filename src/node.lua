@@ -336,7 +336,7 @@ function methods:data(data_type, content, options)
     local data_id = options.data_id or uuid.v7()
     table.insert(self._created_data_ids, data_id)
 
-    local command = {
+    local command: any = {
         type = consts.COMMAND_TYPES.CREATE_DATA,
         payload = {
             data_id = data_id,
@@ -354,14 +354,14 @@ function methods:data(data_type, content, options)
     return self, nil
 end
 
-function methods:update_metadata(updates)
+function methods.update_metadata(self: any, updates: any)
     if not updates or type(updates) ~= "table" then
         return self, nil
     end
 
     self._metadata = merge_metadata(self._metadata, updates)
 
-    local command = {
+    local command: any = {
         type = consts.COMMAND_TYPES.UPDATE_NODE,
         payload = {
             node_id = self.node_id,
@@ -373,14 +373,14 @@ function methods:update_metadata(updates)
     return self, nil
 end
 
-function methods:update_config(updates)
+function methods.update_config(self: any, updates: any)
     if not updates or type(updates) ~= "table" then
         return self, nil
     end
 
     self._config = merge_metadata(self._config, updates)
 
-    local command = {
+    local command: any = {
         type = consts.COMMAND_TYPES.UPDATE_NODE,
         payload = {
             node_id = self.node_id,

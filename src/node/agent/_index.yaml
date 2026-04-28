@@ -209,6 +209,24 @@ entries:
       test: wippy.test:test
     method: run_tests
 
+  - name: node_context_test
+    kind: function.lua
+    meta:
+      name: Agent Node Context Test
+      type: test
+      comment: Unit test for agent-node context inheritance into agent_context.new.
+      group: Workflow / Agent Node
+      tags:
+        - dataflow
+        - agent
+        - context
+        - test
+    source: file://node_context_test.lua
+    imports:
+      agent_node: userspace.dataflow.node.agent:node
+      test: wippy.test:test
+    method: run_tests
+
   - name: agent_compaction_test
     kind: function.lua
     meta:

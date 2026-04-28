@@ -139,14 +139,17 @@ local function run(context)
         }
     }
 
+    local quality_score = tonumber(state.quality_score) or 0
+    local target_quality = tonumber(state.target_quality) or 1
+
     return {
         state = state,
         continue = true,
         result = {
             message = "Refinement step " .. iteration .. " initiated",
-            current_quality = state.quality_score,
-            target_quality = state.target_quality,
-            progress = state.quality_score / state.target_quality
+            current_quality = quality_score,
+            target_quality = target_quality,
+            progress = quality_score / target_quality
         },
         _control = {
             commands = commands

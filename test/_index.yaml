@@ -12,6 +12,9 @@ entries:
     modules:
       - sql
       - time
+    imports:
+      encryption_key_bootloader: wippy.bootloader.bootloaders:encryption_key
+      migration_bootloader: wippy.migration:migration_bootloader
     method: run
 
   - name: db

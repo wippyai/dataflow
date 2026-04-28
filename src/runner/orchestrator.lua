@@ -19,6 +19,10 @@ local function execute_single_node(state, node_info)
     local node_type = node_info.node_type
     local path = node_info.path or {}
 
+    if type(node_type) ~= "string" or node_type == "" then
+        return "Invalid node type for node: " .. tostring(node_id)
+    end
+
     if state.active_processes[node_id] then
         return nil -- Already running, skip
     end

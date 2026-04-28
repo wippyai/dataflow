@@ -24,7 +24,8 @@ local function run(data)
     end
 
     -- Update iteration count in state
-    local new_iteration_count = state.iteration_count + 1
+    local iteration_count = tonumber(state.iteration_count) or 0
+    local new_iteration_count = iteration_count + 1
 
     -- Return successful result for non-failing iterations
     return {

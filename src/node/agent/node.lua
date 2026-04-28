@@ -20,7 +20,7 @@ type ToolCall = {
     registry_id: string?,
 }
 
-local function merge_contexts(base_context, input_context)
+local function merge_contexts(base_context: any, input_context: any): any
     local merged = {}
     if base_context then
         for k, v in pairs(base_context) do
@@ -33,6 +33,12 @@ local function merge_contexts(base_context, input_context)
         end
     end
     return merged
+end
+
+local function build_agent_context_config(base_context: any, session_context: any, input_context: any): any
+    local agent_ctx_config = merge_contexts(base_context, input_context)
+    agent_ctx_config.context = merge_contexts(session_context, input_context)
+    return agent_ctx_config
 end
 
 local function format_token_count(count)
@@ -1324,8 +1330,11 @@ local function run(args)
         base_context.model = model_override
     end
 
-    local merged_context = merge_contexts(base_context, input_context)
-    local agent_ctx = agent_context.new(merged_context)
+    -- agent_context.new reads `config.context` as its compile-time base_context.
+    -- Traits' build_funcs use ctx.get(), so dataflow/node ids, arena context, and
+    -- per-input context must live under `.context`; operational knobs stay flat.
+    local agent_ctx_config = build_agent_context_config(base_context, session_context, input_context)
+    local agent_ctx = agent_context.new(agent_ctx_config)
 
     local exit_tool_name = setup_exit_tool(agent_ctx, config.arena)
 
@@ -1594,4 +1603,9 @@ local function run(args)
     return n:complete(output_content, message)
 end
 
-return { run = run }
+return {
+    run = run,
+    _test = {
+        build_agent_context_config = build_agent_context_config,
+    }
+}
