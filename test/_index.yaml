@@ -24,9 +24,11 @@ entries:
     file: ":memory:"
 
   - name: env_storage
-    kind: env.storage.os
+    kind: env.storage.file
     meta:
       type: envstorage
+    file_path: ./.wippy/test.env
+    auto_create: true
 
   - name: processes
     kind: process.host
@@ -103,3 +105,5 @@ entries:
     parameters:
       - name: api_router
         value: app:api.public
+      - name: env_storage
+        value: app:env_storage
