@@ -224,6 +224,7 @@ entries:
     source: file://node_context_test.lua
     imports:
       agent_node: userspace.dataflow.node.agent:node
+      agent_consts: userspace.dataflow.node.agent:consts
       test: wippy.test:test
     method: run_tests
 

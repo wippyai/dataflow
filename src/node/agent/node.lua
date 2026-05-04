@@ -20,24 +20,55 @@ type ToolCall = {
     registry_id: string?,
 }
 
-local function merge_contexts(base_context: any, input_context: any): any
-    local merged = {}
+local function merge_contexts(base_context: any, input_context: any): {[string]: any}
+    local merged: {[string]: any} = {}
     if base_context then
         for k, v in pairs(base_context) do
-            merged[k] = v
+            if type(k) == "string" then
+                merged[k] = v
+            end
         end
     end
     if input_context then
         for k, v in pairs(input_context) do
-            merged[k] = v
+            if type(k) == "string" then
+                merged[k] = v
+            end
         end
     end
     return merged
 end
 
-local function build_agent_context_config(base_context: any, session_context: any, input_context: any): any
-    local agent_ctx_config = merge_contexts(base_context, input_context)
-    agent_ctx_config.context = merge_contexts(session_context, input_context)
+type DelegateToolsConfig = {
+    enabled: boolean,
+    description_suffix: string,
+    default_schema: {
+        type: string,
+        properties: {[string]: any}?,
+        required: any?,
+    },
+}
+
+type AgentContextConfig = {
+    enable_cache: boolean?,
+    context: {[string]: any}?,
+    delegate_tools: DelegateToolsConfig?,
+    memory_contract: any?,
+    context_merger: any?,
+}
+
+local function build_agent_context_config(
+    base_context: {[string]: any},
+    session_context: {[string]: any},
+    input_context: {[string]: any}?
+): AgentContextConfig
+    local agent_ctx_config: AgentContextConfig = {
+        enable_cache = base_context.enable_cache,
+        delegate_tools = base_context.delegate_tools,
+        memory_contract = base_context.memory_contract,
+        context_merger = base_context.context_merger,
+        context = merge_contexts(session_context, input_context),
+    }
     return agent_ctx_config
 end
 
@@ -1326,15 +1357,27 @@ local function run(args)
         }
     }
 
-    if model_override then
-        base_context.model = model_override
-    end
-
     -- agent_context.new reads `config.context` as its compile-time base_context.
     -- Traits' build_funcs use ctx.get(), so dataflow/node ids, arena context, and
     -- per-input context must live under `.context`; operational knobs stay flat.
     local agent_ctx_config = build_agent_context_config(base_context, session_context, input_context)
-    local agent_ctx = agent_context.new(agent_ctx_config)
+    local agent_ctx = agent_context.new({
+        enable_cache = agent_ctx_config.enable_cache,
+        context = agent_ctx_config.context,
+    })
+    if agent_ctx_config.delegate_tools then
+        agent_ctx:configure_delegate_tools({
+            enabled = agent_ctx_config.delegate_tools.enabled,
+            description_suffix = agent_ctx_config.delegate_tools.description_suffix,
+            default_schema = agent_ctx_config.delegate_tools.default_schema,
+        })
+    end
+    if agent_ctx_config.memory_contract then
+        agent_ctx:set_memory_contract(agent_ctx_config.memory_contract)
+    end
+    if agent_ctx_config.context_merger then
+        agent_ctx:set_context_merger(agent_ctx_config.context_merger)
+    end
 
     local exit_tool_name = setup_exit_tool(agent_ctx, config.arena)
 

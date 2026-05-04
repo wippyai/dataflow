@@ -1,4 +1,5 @@
 local agent_node = require("agent_node")
+local agent_consts = require("agent_consts")
 local test = require("test")
 
 local function define_tests()
@@ -8,8 +9,11 @@ local function define_tests()
             local cfg = build(
                 {
                     enable_cache = false,
-                    delegate_tools = { enabled = true },
-                    model = "model-from-base",
+                    delegate_tools = {
+                        enabled = agent_consts.DELEGATE_DEFAULTS.GENERATE_TOOL_SCHEMAS,
+                        description_suffix = agent_consts.DELEGATE_DEFAULTS.DESCRIPTION_SUFFIX,
+                        default_schema = agent_consts.DELEGATE_DEFAULTS.SCHEMA,
+                    },
                 },
                 {
                     dataflow_id = "df-1",
@@ -26,7 +30,6 @@ local function define_tests()
             )
 
             test.eq(cfg.enable_cache, false)
-            test.eq(cfg.model, "model-from-base")
             test.eq(cfg.delegate_tools.enabled, true)
 
             test.eq(cfg.context.dataflow_id, "df-1")
