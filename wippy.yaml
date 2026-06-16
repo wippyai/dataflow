@@ -17,3 +17,7 @@ exclude:
   - "userspace.dataflow.node.agent.stub:**"
   - "userspace.dataflow.node.cycle.stub:**"
   - "userspace.dataflow.node.parallel.stub:**"
+  # Test-fixture node functions (method:run, used only by tests; not type:test).
+  - "userspace.dataflow.node.func:control_test_func"
+  - "userspace.dataflow.node.func:signal_child_func"
+  - "userspace.dataflow.node.func:test_func"
