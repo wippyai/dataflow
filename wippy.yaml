@@ -10,3 +10,10 @@ keywords:
 exclude_meta:
   type:
     - test
+  scope:
+    - dev
+exclude:
+  - "app:**"
+  - "userspace.dataflow.node.agent.stub:**"
+  - "userspace.dataflow.node.cycle.stub:**"
+  - "userspace.dataflow.node.parallel.stub:**"

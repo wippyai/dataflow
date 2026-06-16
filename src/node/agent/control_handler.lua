@@ -1,10 +1,22 @@
 local json = require("json")
 local uuid = require("uuid")
 local agent_consts = require("agent_consts")
-local data_reader = require("data_reader")
 local consts = require("consts")
 
 local control_handler = {}
+
+-- Returns a shallow copy of a named field from the node's current metadata so
+-- control mutations merge with existing state rather than overwriting it.
+local function copy_metadata_field(node_sdk, field)
+    local meta = node_sdk:metadata() or {}
+    local out = {}
+    if type(meta[field]) == "table" then
+        for k, v in pairs(meta[field]) do
+            out[k] = v
+        end
+    end
+    return out
+end
 
 -- Process session context changes
 function control_handler.process_session_context(control, node_sdk)
@@ -13,7 +25,7 @@ function control_handler.process_session_context(control, node_sdk)
     end
 
     local changes = {}
-    local current_metadata = {} -- Should get from node_sdk metadata
+    local current_metadata = copy_metadata_field(node_sdk, "session_context")
 
     if control.context.session.set then
         for k, v in pairs(control.context.session.set) do
@@ -44,13 +56,17 @@ function control_handler.process_public_metadata(control, node_sdk)
     end
 
     local changes = {}
-    local current_public_meta = {} -- Should get from node_sdk metadata
+    local current_public_meta = copy_metadata_field(node_sdk, "public_meta")
 
     if control.context.public_meta.clear then
+        local to_remove = {}
         for id, item in pairs(current_public_meta) do
-            if item.type == control.context.public_meta.clear then
-                current_public_meta[id] = nil
+            if type(item) == "table" and item.type == control.context.public_meta.clear then
+                table.insert(to_remove, id)
             end
+        end
+        for _, id in ipairs(to_remove) do
+            current_public_meta[id] = nil
         end
         changes.clear = control.context.public_meta.clear
     end
@@ -98,6 +114,8 @@ function control_handler.process_memory_operations(control, node_sdk, iteration)
             if memory_item.type and memory_item.text then
                 node_sdk:data(agent_consts.DATA_TYPE.AGENT_MEMORY, memory_item.text, {
                     key = memory_item.type .. "_" .. iteration,
+                    discriminator = memory_item.type,
+                    node_id = node_sdk.node_id,
                     metadata = {
                         memory_type = memory_item.type,
                         created_by_control = true,
@@ -114,14 +132,26 @@ function control_handler.process_memory_operations(control, node_sdk, iteration)
     end
 
     if control.memory.clear then
-        table.insert(memory_changes, {
-            action = "clear",
-            type = control.memory.clear
-        })
+        local clear_types = type(control.memory.clear) == "table"
+            and control.memory.clear
+            or { control.memory.clear }
+
+        for _, memory_type in ipairs(clear_types) do
+            local rows = node_sdk:find_data(agent_consts.DATA_TYPE.AGENT_MEMORY, memory_type) or {}
+            for _, row in ipairs(rows) do
+                node_sdk:delete_data(row.data_id)
+            end
+            table.insert(memory_changes, {
+                action = "clear",
+                type = memory_type,
+                deleted = #rows
+            })
+        end
     end
 
     if control.memory.delete then
         for _, memory_id in ipairs(control.memory.delete) do
+            node_sdk:delete_data(memory_id)
             table.insert(memory_changes, {
                 action = "delete",
                 memory_id = memory_id
@@ -243,6 +273,8 @@ function control_handler.process_control_directive(tool_result, node_sdk, iterat
     local control_response = {
         agent_change = nil,
         model_change = nil,
+        traits_change = nil,
+        tools_change = nil,
         yield = nil,
         delegate = nil,
         changes_applied = {},
@@ -280,7 +312,7 @@ function control_handler.process_control_directive(tool_result, node_sdk, iterat
         control_response.changes_applied.created_nodes = command_result.created_nodes
     end
 
-    -- Handle configuration changes (agent/model)
+    -- Handle configuration changes (agent/model/traits/tools)
     if control.config then
         if control.config.agent then
             control_response.agent_change = control.config.agent
@@ -288,6 +320,14 @@ function control_handler.process_control_directive(tool_result, node_sdk, iterat
 
         if control.config.model then
             control_response.model_change = control.config.model
+        end
+
+        if control.config.traits ~= nil then
+            control_response.traits_change = control.config.traits
+        end
+
+        if control.config.tools ~= nil then
+            control_response.tools_change = control.config.tools
         end
     end
 
@@ -322,33 +362,58 @@ function control_handler.apply_control_responses(control_responses, agent_contex
     local changes_summary = {
         agent_changed = false,
         model_changed = false,
+        traits_changed = false,
+        tools_changed = false,
         yielded = false,
         errors = {}
     }
 
     for _, response in ipairs(control_responses) do
-        -- Handle agent changes
+        -- Handle agent changes. Persisted to node config so a re-run/recovery loads
+        -- the new agent (config.agent is read at node startup). switch_to_agent also
+        -- resets any active trait/tool overlays, so it must run before they are set.
         if response.agent_change then
             local success, err = agent_context:switch_to_agent(response.agent_change)
             if success then
                 changes_summary.agent_changed = true
                 changes_summary.new_agent = response.agent_change
+                -- switch_to_agent reset the in-memory overlays (they are agent-specific);
+                -- clear the persisted ones too so recovery does not re-apply a prior agent's
+                -- overlay to the new agent. A traits/tools change in the same directive runs
+                -- after this and overwrites the cleared value.
+                node_sdk:update_config({ agent = response.agent_change, active_traits = false, active_tools = false })
             else
                 table.insert(changes_summary.errors,
                     string.format("Failed to change agent: %s", err or "unknown error"))
             end
         end
 
-        -- Handle model changes
+        -- Handle model changes (needs a current agent id, so before set_active_*).
         if response.model_change then
             local success, err = agent_context:switch_to_model(response.model_change)
             if success then
                 changes_summary.model_changed = true
                 changes_summary.new_model = response.model_change
+                node_sdk:update_config({ model = response.model_change })
             else
                 table.insert(changes_summary.errors,
                     string.format("Failed to change model: %s", err or "unknown error"))
             end
+        end
+
+        -- Declarative active trait/tool overlays. Applied to the agent context and
+        -- persisted to node config (active_traits/active_tools) so they are reapplied
+        -- on a re-run. set_active_* invalidates the loaded agent; node.lua reloads it.
+        if response.traits_change ~= nil then
+            agent_context:set_active_traits(response.traits_change)
+            changes_summary.traits_changed = true
+            node_sdk:update_config({ active_traits = response.traits_change })
+        end
+
+        if response.tools_change ~= nil then
+            agent_context:set_active_tools(response.tools_change)
+            changes_summary.tools_changed = true
+            node_sdk:update_config({ active_tools = response.tools_change })
         end
 
         -- Handle yield requests

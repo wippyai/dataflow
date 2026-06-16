@@ -19,4 +19,8 @@
 
 # env file
 .env
+
+# vendored modules
+/.wippy/
+/src/.wippy/
 test/.wippy/

@@ -44,8 +44,52 @@ entries:
       - uuid
     imports:
       agent_consts: userspace.dataflow.node.agent:consts
+
+  # userspace.dataflow.node.agent:control_handler_test
+  - name: control_handler_test
+    kind: function.lua
+    meta:
+      name: Agent Control Handler Tests
+      type: test
+      comment: Unit tests for _control session/public_meta context merge and memory add/clear/delete via the node SDK.
+      group: Workflow / Agent Node
+    source: file://control_handler_test.lua
+    modules:
+      - json
+      - uuid
+    imports:
+      control_handler: userspace.dataflow.node.agent:control_handler
+      node: userspace.dataflow:node
+      consts: userspace.dataflow:consts
+      agent_consts: userspace.dataflow.node.agent:consts
+      test: wippy.test:test
+    method: run_tests
+
+  # userspace.dataflow.node.agent:control_handler_integration_test
+  - name: control_handler_integration_test
+    kind: function.lua
+    meta:
+      name: Agent Control Handler Integration Tests
+      type: test
+      comment: Real-DB integration tests for _control memory lifecycle (add/clear/delete) and session context merge persisted to node metadata.
+      group: Workflow / Agent Node
+    source: file://control_handler_integration_test.lua
+    modules:
+      - json
+      - uuid
+    imports:
+      control_handler: userspace.dataflow.node.agent:control_handler
+      client: userspace.dataflow:client
+      node: userspace.dataflow:node
       data_reader: userspace.dataflow.persist:data_reader
-    
+      node_reader: userspace.dataflow.persist:node_reader
+      commit: userspace.dataflow.persist:commit
+      agent_context: wippy.agent:context
+      consts: userspace.dataflow:consts
+      agent_consts: userspace.dataflow.node.agent:consts
+      test: wippy.test:test
+    method: run_tests
+
   # userspace.dataflow.node.agent:delegation_handler
   - name: delegation_handler
     kind: library.lua
@@ -71,7 +115,29 @@ entries:
       agent_consts: userspace.dataflow.node.agent:consts
       agent_registry: wippy.agent.discovery:registry
       data_reader: userspace.dataflow.persist:data_reader
+      node_reader: userspace.dataflow.persist:node_reader
     method: delegation_handler
+
+  # userspace.dataflow.node.agent:delegation_handler_test
+  - name: delegation_handler_test
+    kind: function.lua
+    meta:
+      name: Delegation Recovery Idempotency Tests
+      type: test
+      comment: Real-DB tests that a recovery re-issue of an in-flight delegation reuses the existing child agent instead of duplicating it.
+      group: Workflow / Agent Node
+    source: file://delegation_handler_test.lua
+    modules:
+      - uuid
+    imports:
+      delegation_handler: userspace.dataflow.node.agent:delegation_handler
+      client: userspace.dataflow:client
+      node: userspace.dataflow:node
+      node_reader: userspace.dataflow.persist:node_reader
+      commit: userspace.dataflow.persist:commit
+      consts: userspace.dataflow:consts
+      test: wippy.test:test
+    method: run_tests
     
   # userspace.dataflow.node.agent:node
   - name: node

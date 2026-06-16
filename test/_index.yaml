@@ -20,8 +20,8 @@ entries:
   - name: db
     kind: db.sql.sqlite
     meta:
-      comment: In-memory database for dataflow tests
-    file: ":memory:"
+      comment: File-backed SQLite for tests, recreated each run via make test. An in-memory DB drops its schema under the parallel connections the recovery and signal suites open.
+    file: ./.wippy/test.db
 
   - name: env_storage
     kind: env.storage.file

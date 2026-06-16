@@ -104,6 +104,67 @@ local function safe_inputs(n)
     return inputs_or_err, nil
 end
 
+-- Yields for the given child nodes and completes from their outputs. Checkpoints the
+-- child ids before yielding so a crash mid-yield resumes these same children on recovery
+-- instead of re-running the user function (which would create duplicate children).
+local function finish_with_children(n, created_node_ids, fallback_result)
+    n:update_metadata({ func_pending = { child_node_ids = created_node_ids } })
+
+    local _yield_result, yield_err = n:yield({ run_nodes = created_node_ids })
+    if yield_err then
+        return n:fail({
+            code = ERROR_FUNCTION_EXECUTION_FAILED,
+            message = "Control command execution failed: " .. yield_err
+        }, "Control command execution failed")
+    end
+
+    local reader = n:query()
+        :with_nodes(created_node_ids)
+        :with_data_types(func._deps.consts.DATA_TYPE.NODE_OUTPUT)
+        :fetch_options({ replace_references = true })
+
+    local output_data = nil
+    for _ = 1, 10 do
+        output_data = reader:all()
+        if output_data and #output_data > 0 then
+            break
+        end
+        time.sleep("10ms")
+    end
+
+    if output_data and #output_data > 0 then
+        for _, output in ipairs(output_data) do
+            if output.discriminator == "error" then
+                local error_content = output.content
+                return n:fail({
+                    code = "CHILD_WORKFLOW_FAILED",
+                    message = type(error_content) == "string" and error_content or "Child workflow failed"
+                }, "Child workflow failed")
+            end
+        end
+
+        local final_output
+
+        if #output_data == 1 then
+            final_output = {
+                _dataflow_ref = output_data[1].data_id
+            }
+        else
+            local ref_array = {}
+            for _, output in ipairs(output_data) do
+                table.insert(ref_array, {
+                    _dataflow_ref = output.data_id
+                })
+            end
+            final_output = ref_array
+        end
+
+        return n:complete(final_output, "Function executed successfully")
+    end
+
+    return n:complete(fallback_result, "Function executed successfully")
+end
+
 local function run(args)
     local n, err = func._deps.node.new(args) :: any
     if err then
@@ -111,6 +172,13 @@ local function run(args)
     end
 
     local config = n:config()
+
+    -- Recovery: a prior attempt already created child nodes and yielded; resume those
+    -- children instead of re-running the function (avoids duplicate child creation).
+    local pending = (n:metadata() or {}).func_pending
+    if type(pending) == "table" and type(pending.child_node_ids) == "table" and #pending.child_node_ids > 0 then
+        return finish_with_children(n, pending.child_node_ids, {})
+    end
     local func_id = config.func_id
     if not func_id or func_id == "" then
         return n:fail({
@@ -207,65 +275,15 @@ local function run(args)
             end
         end
 
-        if #created_node_ids > 0 then
-            local yield_result, yield_err = n:yield({ run_nodes = created_node_ids })
-            if yield_err then
-                return n:fail({
-                    code = ERROR_FUNCTION_EXECUTION_FAILED,
-                    message = "Control command execution failed: " .. yield_err
-                }, "Control command execution failed")
-            end
-
-            local reader = n:query()
-                :with_nodes(created_node_ids)
-                :with_data_types(func._deps.consts.DATA_TYPE.NODE_OUTPUT)
-                :fetch_options({ replace_references = true })
-
-            local output_data = nil
-            for _ = 1, 10 do
-                output_data = reader:all()
-                if output_data and #output_data > 0 then
-                    break
-                end
-                time.sleep("10ms")
-            end
-
-            if output_data and #output_data > 0 then
-                for _, output in ipairs(output_data) do
-                    if output.discriminator == "error" then
-                        local error_content = output.content
-                        return n:fail({
-                            code = "CHILD_WORKFLOW_FAILED",
-                            message = type(error_content) == "string" and error_content or "Child workflow failed"
-                        }, "Child workflow failed")
-                    end
-                end
-
-                local final_output
-
-                if #output_data == 1 then
-                    final_output = {
-                        _dataflow_ref = output_data[1].data_id
-                    }
-                else
-                    local ref_array = {}
-                    for _, output in ipairs(output_data) do
-                        table.insert(ref_array, {
-                            _dataflow_ref = output.data_id
-                        })
-                    end
-                    final_output = ref_array
-                end
-
-                return n:complete(final_output, "Function executed successfully")
-            end
-        end
-
         local cleaned_result = {}
         for k, v in pairs(function_result) do
             if k ~= "_control" then
                 cleaned_result[k] = v
             end
+        end
+
+        if #created_node_ids > 0 then
+            return finish_with_children(n, created_node_ids, cleaned_result)
         end
 
         return n:complete(cleaned_result, "Function executed successfully")

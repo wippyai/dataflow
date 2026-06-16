@@ -24,7 +24,38 @@ entries:
       - uuid
       - ctx
     method: run
-    
+
+  # userspace.dataflow.node.func:signal_child_func
+  - name: signal_child_func
+    kind: function.lua
+    meta:
+      name: Signal Child Test Function
+      comment: Test function that creates a signal child node via a control directive (for func-node recovery tests).
+    source: file://signal_child_func.lua
+    modules:
+      - uuid
+    method: run
+
+  # userspace.dataflow.node.func:func_recovery_test
+  - name: func_recovery_test
+    kind: function.lua
+    meta:
+      name: Func Node Control Recovery Tests
+      type: test
+      comment: Verifies a func node's _control child is not duplicated when the orchestrator is killed mid-yield and recovered.
+      group: Workflow / Function Node
+    source: file://func_recovery_test.lua
+    modules:
+      - uuid
+      - time
+      - process
+    imports:
+      client: userspace.dataflow:client
+      consts: userspace.dataflow:consts
+      node_reader: userspace.dataflow.persist:node_reader
+      test: wippy.test:test
+    method: run_tests
+
   # userspace.dataflow.node.func:func_test
   - name: func_test
     kind: function.lua

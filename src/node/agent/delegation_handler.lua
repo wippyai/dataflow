@@ -2,6 +2,7 @@ local uuid = require("uuid")
 local json = require("json")
 local agent_consts = require("agent_consts")
 local data_reader = require("data_reader")
+local node_reader = require("node_reader")
 
 local delegation_handler = {}
 
@@ -128,8 +129,31 @@ local function extract_error_message(result_content, discriminator)
     return "Delegation failed"
 end
 
+-- Finds an already-created child node for a delegation tool_call_id under this parent.
+-- Used so a recovery re-issue resumes the existing in-flight child agent instead of
+-- minting a duplicate that re-runs the delegated work.
+local function find_existing_child(parent_node_sdk, tool_call_id)
+    if not tool_call_id or tool_call_id == "" then
+        return nil
+    end
+
+    local rows = (node_reader.with_dataflow(parent_node_sdk.dataflow_id) :: any)
+        :with_parent_nodes(parent_node_sdk.node_id)
+        :all()
+
+    for _, row in ipairs(rows or {}) do
+        local meta = row.metadata or {}
+        if meta.tool_call_id == tool_call_id then
+            return row.node_id
+        end
+    end
+
+    return nil
+end
+
 function delegation_handler.create_child_node(parent_node_sdk, delegation, delegation_index, session_context)
-    local child_id = uuid.v7()
+    local existing_child_id = find_existing_child(parent_node_sdk, delegation.tool_call_id)
+    local child_id = existing_child_id or uuid.v7()
     local result_key = "delegation_result_" .. delegation_index
 
     local agent_info = get_agent_info(delegation.agent_id)
@@ -163,23 +187,27 @@ function delegation_handler.create_child_node(parent_node_sdk, delegation, deleg
         tool_call_id = delegation.tool_call_id
     }
 
-    parent_node_sdk:command({
-        type = "CREATE_NODE",
-        payload = {
-            node_id = child_id,
-            node_type = "userspace.dataflow.node.agent:node",
-            parent_node_id = parent_node_sdk.node_id,
-            status = "pending",
-            config = child_config,
-            metadata = metadata
-        }
-    })
-
-    if delegation.input_data then
-        parent_node_sdk:data("node.input", delegation.input_data, {
-            node_id = child_id,
-            key = ""
+    -- Only create the child (and seed its input) when it does not already exist; on a
+    -- recovery re-issue the existing in-flight child is reused so its work is not redone.
+    if not existing_child_id then
+        parent_node_sdk:command({
+            type = "CREATE_NODE",
+            payload = {
+                node_id = child_id,
+                node_type = "userspace.dataflow.node.agent:node",
+                parent_node_id = parent_node_sdk.node_id,
+                status = "pending",
+                config = child_config,
+                metadata = metadata
+            }
         })
+
+        if delegation.input_data then
+            parent_node_sdk:data("node.input", delegation.input_data, {
+                node_id = child_id,
+                key = ""
+            })
+        end
     end
 
     return {

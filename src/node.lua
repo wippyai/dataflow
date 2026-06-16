@@ -155,6 +155,10 @@ function methods:config()
     return self._config
 end
 
+function methods:metadata()
+    return self._metadata
+end
+
 function methods:_transform_inputs_with_expr(raw_inputs, transform_config)
     local env = create_transform_env(raw_inputs)
 
@@ -732,6 +736,32 @@ function methods:command(cmd)
 
     table.insert(self._queued_commands, cmd)
     return self, nil
+end
+
+function methods:delete_data(data_id)
+    if not data_id or data_id == "" then
+        return nil, "Data ID is required"
+    end
+
+    local command: any = {
+        type = consts.COMMAND_TYPES.DELETE_DATA,
+        payload = { data_id = data_id }
+    }
+
+    table.insert(self._queued_commands, command)
+    return self, nil
+end
+
+function methods:find_data(data_type, discriminator)
+    local reader = (self._deps.data_reader.with_dataflow(self.dataflow_id) :: any)
+        :with_nodes(self.node_id)
+        :with_data_types(data_type)
+
+    if discriminator then
+        reader = reader:with_data_discriminators(discriminator)
+    end
+
+    return reader:all()
 end
 
 function methods:created_data_ids()

@@ -324,7 +324,7 @@ local function parse_content(content: any, content_type: any)
     return content
 end
 
-query_node_outputs = function(n, node_ids)
+query_node_outputs = function(n, node_ids: {any})
     if type(node_ids) ~= "table" or #node_ids == 0 then
         return {}, nil
     end
@@ -476,7 +476,67 @@ local function execute_template_iteration(n, template_graph, current_state, last
     return outputs, nil
 end
 
-local function process_control_commands(n, control_commands, iteration_number)
+-- Collects the (durable) outputs of the given child nodes into a single result
+-- (one content, or an array of contents). Used both on the normal path and when
+-- resuming an interrupted iteration on recovery.
+local function collect_children_result(n, node_ids: {any})
+    local output_data, collect_err = query_node_outputs(n, node_ids)
+    if collect_err then
+        return nil, "Failed to collect child outputs: " .. (collect_err :: string)
+    end
+
+    if output_data and #output_data > 0 then
+        local parsed_outputs = collect_parsed_outputs(output_data)
+        if #parsed_outputs == 1 then
+            return parsed_outputs[1].content, nil
+        end
+
+        local contents = create_array(#parsed_outputs)
+        for index, output in ipairs(parsed_outputs) do
+            contents[index] = output.content
+        end
+        return contents, nil
+    end
+
+    return nil, nil
+end
+
+-- Applies a child result over the iteration's working values. A child may return an
+-- envelope ({state,result,continue}) or a bare value; mirrors the inline logic used
+-- on both the normal and recovery-resume paths.
+local function apply_child_result(child_result, current_state, current_result, should_continue, has_explicit_continue)
+    if child_result == nil then
+        return current_result, current_state, should_continue, has_explicit_continue
+    end
+
+    if type(child_result) == "table" then
+        local child_result_table = child_result :: any
+        local has_envelope = child_result_table.state ~= nil or
+            child_result_table.result ~= nil or
+            child_result_table.continue ~= nil
+
+        if has_envelope then
+            current_state = child_result_table.state or current_state
+            if child_result_table.result ~= nil then
+                current_result = child_result_table.result
+            else
+                current_result = child_result_table
+            end
+            if child_result_table.continue ~= nil then
+                should_continue = child_result_table.continue and true or false
+                has_explicit_continue = true
+            end
+        else
+            current_result = child_result_table
+        end
+    else
+        current_result = child_result
+    end
+
+    return current_result, current_state, should_continue, has_explicit_continue
+end
+
+local function process_control_commands(n, control_commands, iteration_number, checkpoint)
     if not control_commands or type(control_commands) ~= "table" or #control_commands == 0 then
         return nil, nil
     end
@@ -501,31 +561,53 @@ local function process_control_commands(n, control_commands, iteration_number)
     end
 
     if #created_node_ids > 0 then
+        -- Checkpoint the in-flight iteration BEFORE yielding (committed by the yield's
+        -- submit). On recovery this lets the cycle resume the SAME iteration -- collecting
+        -- these existing children -- instead of re-running the user function and creating
+        -- duplicate child nodes. Stored in node metadata (single in-place field).
+        n:update_metadata({
+            cycle_pending = {
+                iteration = iteration_number,
+                child_node_ids = created_node_ids,
+                state = (checkpoint or {}).state,
+                should_continue = (checkpoint or {}).should_continue,
+                has_explicit_continue = (checkpoint or {}).has_explicit_continue
+            }
+        })
+
         local yield_result, yield_err = n:yield({ run_nodes = created_node_ids })
         if yield_err then
             return nil, "Control command execution failed: " .. (yield_err :: string)
         end
 
-        local output_data, collect_err = query_node_outputs(n, created_node_ids)
-        if collect_err then
-            return nil, "Failed to collect child outputs: " .. (collect_err :: string)
-        end
-
-        if output_data and #output_data > 0 then
-            local parsed_outputs = collect_parsed_outputs(output_data)
-            if #parsed_outputs == 1 then
-                return parsed_outputs[1].content, nil
-            end
-
-            local contents = create_array(#parsed_outputs)
-            for index, output in ipairs(parsed_outputs) do
-                contents[index] = output.content
-            end
-            return contents, nil
-        end
+        return collect_children_result(n, created_node_ids)
     end
 
     return nil, nil
+end
+
+-- Resumes an iteration whose children were created before a crash: collects their
+-- outputs if already complete, otherwise waits on the existing children (no re-run,
+-- no duplicate node creation).
+local function resume_children(n, child_node_ids: {any}?)
+    if type(child_node_ids) ~= "table" or #child_node_ids == 0 then
+        return nil, nil
+    end
+
+    local existing, existing_err = collect_children_result(n, child_node_ids)
+    if existing_err then
+        return nil, existing_err
+    end
+    if existing ~= nil then
+        return existing, nil
+    end
+
+    local _yield_result, yield_err = n:yield({ run_nodes = child_node_ids })
+    if yield_err then
+        return nil, "Failed to resume children: " .. (yield_err :: string)
+    end
+
+    return collect_children_result(n, child_node_ids)
 end
 
 local function update_node_metadata(n, metadata_updates)
@@ -683,124 +765,143 @@ local function run(args)
         continue_executor = cycle._deps.funcs.new() :: any
     end
 
+    -- On recovery, an iteration that yielded for children but never persisted its
+    -- completed state is resumed (collecting those children) rather than re-run.
+    type CyclePending = {
+        iteration: number,
+        child_node_ids: {any},
+        state: any,
+        should_continue: boolean?,
+        has_explicit_continue: boolean?,
+    }
+    local resume_pending: CyclePending? = nil
+    local persisted_pending = (n:metadata() or {}).cycle_pending :: CyclePending?
+    if type(persisted_pending) == "table" and persisted_pending.iteration == start_iteration then
+        resume_pending = persisted_pending
+    end
+
     for iteration_number = start_iteration, max_iterations do
-        local iteration_result, iter_err, iter_err_detail
-
-        if use_template then
-            iteration_result, iter_err = execute_template_iteration(
-                n, template_graph :: any, current_state, last_result,
-                iteration_number, original_input
-            )
-            iter_err_detail = iter_err
-        else
-            local execution_context = build_cycle_context(
-                base_context,
-                n.dataflow_id,
-                n.node_id,
-                n.path,
-                iteration_number
-            )
-
-            executor = executor:with_context(execution_context)
-
-            local function_context = {
-                input = (iteration_number == 1) and original_input or nil,
-                state = current_state,
-                last_result = last_result,
-                iteration = iteration_number
-            }
-
-            iteration_result, iter_err, iter_err_detail = execute_function_iteration(
-                executor, func_id, function_context, events_channel
-            )
-
-            if iteration_result then
-                persist_function_result(n, iteration_result, iteration_number)
-            end
-        end
-
-        if iter_err then
-            local error_code = iter_err
-            local error_message = iter_err_detail or iter_err
-
-            return n:fail({
-                code = error_code,
-                message = error_message
-            }, "Execution failed in iteration " .. iteration_number .. ": " .. error_message)
-        end
-
         local should_continue = false
         local has_explicit_continue = false
-        local new_state = current_state
         local current_result = nil
         local control_commands = nil
-        local metadata_updates = nil
 
-        if type(iteration_result) == "table" then
-            local iter_table = iteration_result :: any
-            new_state = iter_table.state or current_state
-            current_result = iter_table.result
+        if resume_pending and iteration_number == resume_pending.iteration then
+            -- Resume the interrupted iteration: collect its existing children's outputs
+            -- without re-running the user function (so no duplicate child nodes are made).
+            current_state = resume_pending.state or current_state
+            should_continue = resume_pending.should_continue and true or false
+            has_explicit_continue = resume_pending.has_explicit_continue and true or false
+            control_commands = resume_pending.child_node_ids
 
-            if iter_table.continue ~= nil then
-                should_continue = iter_table.continue
-                has_explicit_continue = true
-            else
-                should_continue = (new_state ~= current_state)
-            end
-
-            if iter_table._control and iter_table._control.commands then
-                control_commands = iter_table._control.commands
-            end
-
-            metadata_updates = iter_table._metadata
-        else
-            current_result = iteration_result
-            should_continue = false
-        end
-
-        current_state = new_state
-
-        update_node_metadata(n, metadata_updates)
-
-        if control_commands then
-            local child_result, cmd_err = process_control_commands(n, control_commands, iteration_number)
+            local child_result, cmd_err = resume_children(n, resume_pending.child_node_ids)
             if cmd_err then
                 return n:fail({
                     code = cycle.ERROR.FUNCTION_EXECUTION_FAILED,
                     message = cmd_err
-                }, "Failed to execute control commands in iteration " .. iteration_number)
+                }, "Failed to resume control commands in iteration " .. iteration_number)
             end
 
-            if child_result ~= nil then
-                if type(child_result) == "table" then
-                    local child_result_table = child_result :: any
-                    local has_envelope = child_result_table.state ~= nil or
-                        child_result_table.result ~= nil or
-                        child_result_table.continue ~= nil
+            current_result, current_state, should_continue, has_explicit_continue =
+                apply_child_result(child_result, current_state, current_result, should_continue,
+                    has_explicit_continue)
+            last_result = current_result
+            resume_pending = nil
+        else
+            local iteration_result, iter_err, iter_err_detail
 
-                    if has_envelope then
-                        new_state = child_result_table.state or new_state
-                        if child_result_table.result ~= nil then
-                            current_result = child_result_table.result
-                        else
-                            current_result = child_result_table
-                        end
-                        if child_result_table.continue ~= nil then
-                            should_continue = child_result_table.continue and true or false
-                            has_explicit_continue = true
-                        end
-                        current_state = new_state
-                    else
-                        current_result = child_result_table
-                    end
-                else
-                    current_result = child_result
+            if use_template then
+                iteration_result, iter_err = execute_template_iteration(
+                    n, template_graph :: any, current_state, last_result,
+                    iteration_number, original_input
+                )
+                iter_err_detail = iter_err
+            else
+                local execution_context = build_cycle_context(
+                    base_context,
+                    n.dataflow_id,
+                    n.node_id,
+                    n.path,
+                    iteration_number
+                )
+
+                executor = executor:with_context(execution_context)
+
+                local function_context = {
+                    input = (iteration_number == 1) and original_input or nil,
+                    state = current_state,
+                    last_result = last_result,
+                    iteration = iteration_number
+                }
+
+                iteration_result, iter_err, iter_err_detail = execute_function_iteration(
+                    executor, func_id, function_context, events_channel
+                )
+
+                if iteration_result then
+                    persist_function_result(n, iteration_result, iteration_number)
                 end
             end
 
-            last_result = current_result
-        else
-            last_result = current_result
+            if iter_err then
+                local error_code = iter_err
+                local error_message = iter_err_detail or iter_err
+
+                return n:fail({
+                    code = error_code,
+                    message = error_message
+                }, "Execution failed in iteration " .. iteration_number .. ": " .. error_message)
+            end
+
+            local new_state = current_state
+            local metadata_updates = nil
+
+            if type(iteration_result) == "table" then
+                local iter_table = iteration_result :: any
+                new_state = iter_table.state or current_state
+                current_result = iter_table.result
+
+                if iter_table.continue ~= nil then
+                    should_continue = iter_table.continue
+                    has_explicit_continue = true
+                else
+                    should_continue = (new_state ~= current_state)
+                end
+
+                if iter_table._control and iter_table._control.commands then
+                    control_commands = iter_table._control.commands
+                end
+
+                metadata_updates = iter_table._metadata
+            else
+                current_result = iteration_result
+                should_continue = false
+            end
+
+            current_state = new_state
+
+            update_node_metadata(n, metadata_updates)
+
+            if control_commands then
+                local child_result, cmd_err = process_control_commands(n, control_commands, iteration_number, {
+                    state = current_state,
+                    should_continue = should_continue,
+                    has_explicit_continue = has_explicit_continue
+                })
+                if cmd_err then
+                    return n:fail({
+                        code = cycle.ERROR.FUNCTION_EXECUTION_FAILED,
+                        message = cmd_err
+                    }, "Failed to execute control commands in iteration " .. iteration_number)
+                end
+
+                current_result, current_state, should_continue, has_explicit_continue =
+                    apply_child_result(child_result, current_state, current_result, should_continue,
+                        has_explicit_continue)
+                last_result = current_result
+            else
+                last_result = current_result
+            end
         end
 
         -- persist iteration state AFTER children have contributed their results.

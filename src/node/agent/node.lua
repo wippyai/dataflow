@@ -1390,6 +1390,18 @@ local function run(args)
         }, "Agent ID not specified in config or inputs")
     end
 
+    -- Reapply persisted active trait/tool overlays so they survive a re-run/recovery.
+    -- A prior _control directive stored these in node config (active_traits/active_tools);
+    -- agent/model recover through agent_to_load/model_override above.
+    -- Only a list overlay is applied; `false` is the cleared marker written on an agent
+    -- switch (config can't drop a key), meaning "use the new agent's own traits/tools".
+    if type(config.active_traits) == "table" then
+        agent_ctx:set_active_traits(config.active_traits)
+    end
+    if type(config.active_tools) == "table" then
+        agent_ctx:set_active_tools(config.active_tools)
+    end
+
     local load_options = model_override and { model = model_override } or nil
     local agent_instance, agent_err = agent_ctx:load_agent(agent_to_load, load_options)
     if not agent_instance then
@@ -1604,6 +1616,26 @@ local function run(args)
         if finalized_complete then
             task_complete = true
             final_result = finalized_result
+        end
+
+        -- Reconcile any agent/model/trait/tool change a control directive applied this
+        -- iteration so the next step uses the updated agent. apply_control_responses
+        -- mutated agent_ctx (and persisted to node config); re-fetch the loaded agent,
+        -- reloading from the now-updated config when an overlay change cleared it.
+        if not task_complete then
+            local refreshed = agent_ctx:get_current_agent()
+            if not refreshed then
+                local cfg = n:config()
+                local reload_model = cfg.model or model_name
+                refreshed = agent_ctx:load_agent(cfg.agent or agent_id,
+                    reload_model and { model = reload_model } or nil)
+            end
+            if refreshed then
+                agent_instance = refreshed
+                local refreshed_config = agent_ctx:get_config()
+                agent_id = refreshed_config.current_agent_id or agent_id
+                model_name = refreshed_config.current_model or model_name
+            end
         end
 
         ::continue_loop::
