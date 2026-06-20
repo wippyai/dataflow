@@ -217,6 +217,60 @@ local function define_tests()
         end
 
         describe("publish_updates", function()
+            it("should publish to the current actor id", function()
+                commit._get_current_user_id = function()
+                    return "ambient-user-456"
+                end
+
+                local dataflow_id = "test-dataflow-id"
+                local result = {
+                    changes_made = true,
+                    results = {
+                        {
+                            changes_made = true,
+                            input = {
+                                type = ops.COMMAND_TYPES.UPDATE_WORKFLOW,
+                                payload = {
+                                    status = "completed"
+                                }
+                            }
+                        }
+                    }
+                }
+
+                commit.publish_updates(dataflow_id, "test-op-id", result)
+
+                test.eq(#mock_calls.process_messages, 1)
+                local msg = (mock_calls.process_messages :: any)[1]
+                test.eq(msg.target_process, "user.ambient-user-456")
+                test.eq(msg.topic, "dataflow:" .. dataflow_id)
+            end)
+
+            it("should not publish without an ambient actor", function()
+                commit._get_current_user_id = function()
+                    return ""
+                end
+
+                local result = {
+                    changes_made = true,
+                    results = {
+                        {
+                            changes_made = true,
+                            input = {
+                                type = ops.COMMAND_TYPES.UPDATE_WORKFLOW,
+                                payload = {
+                                    status = "completed"
+                                }
+                            }
+                        }
+                    }
+                }
+
+                commit.publish_updates("test-dataflow-id", "test-op-id", result)
+
+                test.eq(#mock_calls.process_messages, 0)
+            end)
+
             it("should do nothing when result has no changes", function()
                 local result = {
                     changes_made = false,

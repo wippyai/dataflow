@@ -9,10 +9,16 @@
 TEST_DIR := test
 TEST_DB  := .wippy/test.db
 
-.PHONY: test lint install clean
+.PHONY: test test-static lint install clean
 
-test: clean
+test: clean test-static
 	cd $(TEST_DIR) && wippy run test
+
+test-static:
+	@if rg -n "keeper\\.views\\.dataflow|dataflow-link|Open full view" src/session/views/state.jet; then \
+		echo "dataflow state view must not link to keeper-owned UI"; \
+		exit 1; \
+	fi
 
 lint:
 	cd $(TEST_DIR) && wippy lint

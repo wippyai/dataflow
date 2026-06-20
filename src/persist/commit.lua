@@ -45,6 +45,10 @@ function commit.publish_updates(dataflow_id, op_id, result)
     end
 
     local user_id = commit._get_current_user_id()
+    if not user_id or user_id == "" then
+        return
+    end
+
     local user_process = "user." .. user_id
     local now_ts = commit._get_current_timestamp()
 

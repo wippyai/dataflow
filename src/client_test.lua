@@ -16,6 +16,7 @@ local function define_tests()
                 commit_execute = {},
                 funcs_call = {},
                 process_spawn = {},
+                process_with_actor = {},
                 process_cancel = {},
                 process_terminate = {},
                 process_lookup = {},
@@ -126,6 +127,17 @@ local function define_tests()
                     end
                 },
                 process = {
+                    with_context = function(_ctx: any)
+                        local spawner = {}
+                        function spawner:with_actor(actor: any)
+                            table.insert(captured_calls.process_with_actor, actor)
+                            return self
+                        end
+                        function spawner:spawn(process_type: string, host: string, args: any)
+                            return mock_deps.process.spawn(process_type, host, args)
+                        end
+                        return spawner
+                    end,
                     spawn = function(process_type: string, host: string, args: any)
                         table.insert(captured_calls.process_spawn, {
                             process_type = process_type,
@@ -587,6 +599,9 @@ local function define_tests()
                 test.eq(spawn_call.host, consts.HOST_ID)
                 test.eq(spawn_call.args.dataflow_id, "existing-workflow-456")
                 test.is_nil(spawn_call.args.init_func_id)
+                test.eq(#captured_calls.process_with_actor, 1)
+                test.is_true(captured_calls.process_with_actor[1] == mock_security_actor)
+                test.eq(captured_calls.process_with_actor[1]:id(), "test-actor-123")
             end)
 
             it("should start workflow with init function", function()

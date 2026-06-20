@@ -48,7 +48,7 @@ local function define_tests()
         local mock_process = nil :: MockProcess
         local mock_commit = nil :: MockCommit
         local current_actor: any = nil
-        local captured_actors: { any } = nil
+        local captured_actors: { any } = {}
 
         before_each(function()
             captured_actors = {}
@@ -482,6 +482,9 @@ local function define_tests()
                 test.eq(spawn_calls[1].host, consts.HOST_ID)
                 test.eq(spawn_calls[1].args.dataflow_id, "test-workflow")
                 test.eq(spawn_calls[1].args.node_id, "node-1")
+                test.eq(#captured_actors, 1)
+                test.is_true(captured_actors[1] == current_actor)
+                test.eq(captured_actors[1]:id(), "test-actor-123")
             end)
 
             it("should handle spawn failures", function()

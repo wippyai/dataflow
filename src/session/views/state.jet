@@ -374,22 +374,6 @@
                 background-color: transparent;
             }
         }
-        .dataflow-link {
-            position: absolute;
-            top: 8px;
-            right: 8px;
-            color: rgb(156 163 175);
-            opacity: 0.3;
-            cursor: pointer;
-            transition: opacity 0.2s;
-            z-index: 20;
-        }
-        .dataflow-link:hover {
-            opacity: 0.7;
-        }
-        .dark .dataflow-link {
-            color: rgb(209 213 219);
-        }
         .node-hidden {
             display: none;
         }
@@ -422,9 +406,6 @@
     </svg>
     <main class="w-full">
         <div class="bg-surface-50 dark:bg-surface-800 shadow-sm relative">
-            <i class="dataflow-link ti ti-external-link text-lg"
-               @click="wippyApi?.iframe?.navigate('/c/keeper.views.dataflow:view/' + dataflowId)"
-               title="Open full view"></i>
             <div x-show="initialLoading" class="loading-overlay">
                 <div class="flex flex-col items-center">
                     <div class="w-8 h-8 text-blue-500">
@@ -464,6 +445,8 @@
             dataflowId: '{{ data.dataflow_id }}',
             wippyApi: null,
             eventsSubscribed: false,
+            workflowEventHandler: null,
+            workflowEventUnsubscribe: null,
             nodeMap: {},
             expandedMetrics: {},
             collapsedSections: {},
@@ -488,8 +471,8 @@
                         this.initialLoading = false;
                         return;
                     }
-                    await this.fetchWorkflowData();
                     this.subscribeToWorkflowEvents();
+                    await this.fetchWorkflowData();
                 } catch (error) {
                     console.error('Failed to initialize:', error);
                     this.error = "Failed to initialize application";
@@ -983,7 +966,8 @@
             subscribeToWorkflowEvents() {
                 if (this.eventsSubscribed) return;
                 console.log(`Subscribing to dataflow events for ${this.dataflowId}`);
-                this.wippyApi.on(`dataflow:${this.dataflowId}`, this.handleWorkflowEvent.bind(this));
+                this.workflowEventHandler = this.workflowEventHandler || this.handleWorkflowEvent.bind(this);
+                this.workflowEventUnsubscribe = this.wippyApi.on(`dataflow:${this.dataflowId}`, this.workflowEventHandler);
                 this.eventsSubscribed = true;
 
                 document.addEventListener('toggle-metrics', (e) => {
@@ -1007,7 +991,10 @@
             unsubscribeFromWorkflowEvents() {
                 if (!this.eventsSubscribed) return;
                 console.log(`Unsubscribing from dataflow events for ${this.dataflowId}`);
-                this.wippyApi.off(`dataflow:${this.dataflowId}`, this.handleWorkflowEvent.bind(this));
+                if (this.workflowEventUnsubscribe) {
+                    this.workflowEventUnsubscribe();
+                    this.workflowEventUnsubscribe = null;
+                }
                 this.eventsSubscribed = false;
             },
 
