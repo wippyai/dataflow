@@ -119,6 +119,7 @@ function workflow_state.new(dataflow_id, options)
 
     local instance = {
         dataflow_id = dataflow_id,
+        actor_id = nil :: string?,
         options = options or {},
 
         nodes = {},
@@ -445,6 +446,7 @@ function methods:load_state()
         return nil, "Dataflow not found: " .. self.dataflow_id
     end
 
+    self.actor_id = dataflow.actor_id
     self.dataflow_metadata = dataflow.metadata or {}
 
     local nodes, err_nodes = dataflow_repo.get_nodes_for_dataflow(self.dataflow_id)
@@ -1124,6 +1126,12 @@ end
 
 function methods:get_dataflow_metadata()
     return self.dataflow_metadata
+end
+
+function methods:get_actor_id(): string?
+    local actor_id = self.actor_id
+    if type(actor_id) == "string" and actor_id ~= "" then return actor_id end
+    return nil
 end
 
 function methods:is_node_active(node_id)

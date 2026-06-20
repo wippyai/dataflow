@@ -48,7 +48,15 @@ local function define_tests()
                 new_actor = security.new_actor,
             }
             return client_mod.new({
-                dataflow_repo = {},
+                dataflow_repo = {
+                    get = function(dataflow_id)
+                        return {
+                            dataflow_id = dataflow_id,
+                            actor_id = "test-user",
+                            status = "running",
+                        }, nil
+                    end,
+                },
                 commit = mock_commit,
                 data_reader = {},
                 process = process,

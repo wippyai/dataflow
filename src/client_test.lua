@@ -20,6 +20,8 @@ local function define_tests()
                 process_terminate = {},
                 process_lookup = {},
                 dataflow_repo_get = {},
+                dataflow_repo_get_direct = {},
+                funcs_with_actor = {},
                 data_reader_calls = {}
             }
 
@@ -29,6 +31,17 @@ local function define_tests()
 
             mock_deps = {
                 dataflow_repo = {
+                    get = function(dataflow_id: string)
+                        table.insert(captured_calls.dataflow_repo_get_direct, {
+                            dataflow_id = dataflow_id
+                        })
+                        return {
+                            dataflow_id = dataflow_id,
+                            status = "running",
+                            actor_id = "test-actor-123",
+                            type = "test_workflow"
+                        }, nil
+                    end,
                     get_by_user = function(dataflow_id: string, actor_id: string)
                         table.insert(captured_calls.dataflow_repo_get, {
                             dataflow_id = dataflow_id,
@@ -138,24 +151,34 @@ local function define_tests()
                 },
                 funcs = {
                     new = function()
-                        return {
-                            call = function(_self: any, func_name: string, args: any)
-                                table.insert(captured_calls.funcs_call, {
-                                    func_name = func_name,
-                                    args = args
-                                })
-                                return {
-                                    success = true,
-                                    dataflow_id = args.dataflow_id or "generated-id-123",
-                                    output = { message = "execution completed" }
-                                }, nil
-                            end
-                        }
+                        local executor = {}
+                        function executor:with_actor(actor: any)
+                            table.insert(captured_calls.funcs_with_actor, actor)
+                            return self
+                        end
+                        function executor:call(func_name: string, args: any)
+                            table.insert(captured_calls.funcs_call, {
+                                func_name = func_name,
+                                args = args
+                            })
+                            return {
+                                success = true,
+                                dataflow_id = args.dataflow_id or "generated-id-123",
+                                output = { message = "execution completed" }
+                            }, nil
+                        end
+                        return executor
                     end
                 },
                 security = {
                     actor = function()
                         return mock_security_actor
+                    end,
+                    new_actor = function(actor_id: string, meta: any)
+                        return {
+                            id = function() return actor_id end,
+                            meta = meta
+                        }
                     end
                 }
             }
@@ -179,34 +202,25 @@ local function define_tests()
                 test.eq(instance._actor_id, "test-actor-123")
             end)
 
-            it("should fail when no security actor available", function()
+            it("should synthesize a system actor when no security actor is available", function()
                 local no_actor_deps: { [string]: any } = {}
                 for k, v in pairs(mock_deps) do
                     no_actor_deps[k] = v
                 end
                 no_actor_deps.security = {
-                    actor = function() return nil end
+                    actor = function() return nil end,
+                    new_actor = function(actor_id: string)
+                        return {
+                            id = function() return actor_id end
+                        }
+                    end
                 }
 
                 local instance, err = client.new(no_actor_deps)
 
-                test.is_nil(instance)
-                test.contains(err, "No current security actor available")
-            end)
-
-            it("should fail when security actor has no id function", function()
-                local bad_actor_deps: { [string]: any } = {}
-                for k, v in pairs(mock_deps) do
-                    bad_actor_deps[k] = v
-                end
-                bad_actor_deps.security = {
-                    actor = function() return {} end
-                }
-
-                local instance, err = client.new(bad_actor_deps)
-
-                test.is_nil(instance)
-                test.contains(err, "Security actor does not have id() method")
+                test.is_nil(err)
+                test.not_nil(instance)
+                test.eq(instance._actor_id, "system.dataflow")
             end)
 
             it("should fail when security actor id() returns empty string", function()
@@ -227,6 +241,53 @@ local function define_tests()
                 test.is_nil(instance)
                 test.contains(err, "Actor ID cannot be empty")
             end)
+        end)
+
+        describe("Workflow Actor Propagation", function()
+            it("should reuse current actor when workflow actor id matches", function()
+                mock_deps.security.new_actor = function(actor_id: string)
+                    error("should not create actor " .. actor_id)
+                end
+
+                local instance, err = client.new(mock_deps)
+                test.is_nil(err)
+
+                local actor = instance:_actor_for_workflow("workflow-123")
+
+                test.not_nil(actor)
+                test.eq(actor:id(), "test-actor-123")
+                test.eq(#captured_calls.dataflow_repo_get_direct, 1)
+            end)
+
+            it("should create a workflow actor only when stored actor differs", function()
+                mock_deps.dataflow_repo.get = function(dataflow_id: string)
+                    return {
+                        dataflow_id = dataflow_id,
+                        actor_id = "other-actor",
+                        status = "running"
+                    }, nil
+                end
+
+                local created_actor_id: string? = nil
+                mock_deps.security.new_actor = function(actor_id: string, meta: any)
+                    created_actor_id = actor_id
+                    return {
+                        id = function() return actor_id end,
+                        meta = meta
+                    }
+                end
+
+                local instance, err = client.new(mock_deps)
+                test.is_nil(err)
+
+                local actor = instance:_actor_for_workflow("workflow-456")
+
+                test.not_nil(actor)
+                test.eq(actor:id(), "other-actor")
+                test.eq(created_actor_id, "other-actor")
+                test.eq(actor.meta.dataflow_id, "workflow-456")
+            end)
+
         end)
 
         describe("Create Workflow Method", function()
@@ -382,11 +443,14 @@ local function define_tests()
 
             it("should handle funcs execution failure", function()
                 mock_deps.funcs.new = function()
-                    return {
-                        call = function()
+                    local executor = {}
+                    function executor:with_actor(actor: any)
+                        return self
+                    end
+                    function executor:call()
                             return nil, "Orchestrator failed"
-                        end
-                    }
+                    end
+                    return executor
                 end
 
                 local result, err = test_client:execute("existing-workflow-123")
@@ -397,15 +461,18 @@ local function define_tests()
 
             it("should handle orchestrator returning workflow failure", function()
                 mock_deps.funcs.new = function()
-                    return {
-                        call = function()
+                    local executor = {}
+                    function executor:with_actor(actor: any)
+                        return self
+                    end
+                    function executor:call()
                             return {
                                 success = false,
                                 dataflow_id = "existing-workflow-123",
                                 error = "Workflow deadlocked"
                             }, nil
-                        end
-                    }
+                    end
+                    return executor
                 end
 
                 local result, err = test_client:execute("existing-workflow-123")
@@ -763,6 +830,84 @@ local function define_tests()
             end)
         end)
 
+        describe("Wait Method", function()
+            local test_client: any
+
+            before_each(function()
+                test_client, _ = client.new(mock_deps)
+                test.not_nil(test_client._deps)
+            end)
+
+            it("should wait until workflow completes successfully", function()
+                local statuses = {
+                    consts.STATUS.RUNNING,
+                    consts.STATUS.RUNNING,
+                    consts.STATUS.COMPLETED_SUCCESS
+                }
+                local index = 0
+
+                mock_deps.dataflow_repo.get_by_user = function(dataflow_id: string, actor_id: string)
+                    index = index + 1
+                    table.insert(captured_calls.dataflow_repo_get, {
+                        dataflow_id = dataflow_id,
+                        actor_id = actor_id
+                    })
+                    return {
+                        dataflow_id = dataflow_id,
+                        status = statuses[index] or consts.STATUS.COMPLETED_SUCCESS,
+                        actor_id = actor_id
+                    }, nil
+                end
+
+                local result, err = test_client:wait("workflow-789", {
+                    timeout_ms = 50,
+                    interval_ms = 1
+                })
+
+                test.is_nil(err)
+                test.is_true(result.success)
+                test.eq(result.status, consts.STATUS.COMPLETED_SUCCESS)
+                test.eq(result.dataflow_id, "workflow-789")
+                test.eq(#captured_calls.dataflow_repo_get, 3)
+            end)
+
+            it("should return terminal failure status without treating it as timeout", function()
+                mock_deps.dataflow_repo.get_by_user = function(dataflow_id: string, actor_id: string)
+                    return {
+                        dataflow_id = dataflow_id,
+                        status = consts.STATUS.COMPLETED_FAILURE,
+                        actor_id = actor_id
+                    }, nil
+                end
+
+                local result, err = test_client:wait("workflow-789", {
+                    timeout_ms = 50,
+                    interval_ms = 1
+                })
+
+                test.is_nil(err)
+                test.is_false(result.success)
+                test.eq(result.status, consts.STATUS.COMPLETED_FAILURE)
+            end)
+
+            it("should timeout when workflow stays non-terminal", function()
+                local result, err = test_client:wait("workflow-789", {
+                    timeout_ms = 3,
+                    interval_ms = 1
+                })
+
+                test.is_nil(result)
+                test.contains(err, "Workflow did not complete before timeout")
+            end)
+
+            it("should fail with missing dataflow_id", function()
+                local result, err = test_client:wait("")
+
+                test.is_nil(result)
+                test.contains(err, "Workflow ID is required")
+            end)
+        end)
+
         describe("Integration Scenarios", function()
             local test_client: any
 
@@ -833,15 +978,18 @@ local function define_tests()
 
             it("should preserve error field on success result for partial-success workflows", function()
                 mock_deps.funcs.new = function()
-                    return {
-                        call = function()
+                    local executor = {}
+                    function executor:with_actor(actor: any)
+                        return self
+                    end
+                    function executor:call()
                             return {
                                 success = true,
                                 dataflow_id = "partial-workflow",
                                 error = "Node execution failed"
                             }, nil
-                        end
-                    }
+                    end
+                    return executor
                 end
 
                 local result, err = test_client:execute("partial-workflow")

@@ -189,6 +189,16 @@ entries:
       - entry: userspace.dataflow.session.views:env_mapping
         path: ".mappings.web_host_origin"
 
+  - name: user_security_scope
+    kind: ns.requirement
+    meta:
+      description: "Application security scope/group that may execute user-owned dataflow runtimes"
+    targets:
+      - entry: userspace.dataflow.security:runtime_process_spawn
+        path: ".groups +="
+      - entry: userspace.dataflow.security:runtime_process_registry
+        path: ".groups +="
+
   # Dependencies
   - name: dep.wippy.test
     kind: ns.dependency

@@ -23,6 +23,7 @@ entries:
     modules:
       - uuid
       - funcs
+      - security
     imports:
       commit: userspace.dataflow.persist:commit
       consts: userspace.dataflow:consts

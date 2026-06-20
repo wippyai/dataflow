@@ -1,9 +1,33 @@
-local json = require("json")
 local uuid = require("uuid")
 local client = require("client")
 local consts = require("consts")
 local agent_registry = require("agent_registry")
 local ctx = require("ctx")
+
+local DELEGATION_TIMEOUT_MS = 300000
+local DELEGATION_POLL_MS = 500
+
+local function is_empty_table(value)
+    if type(value) ~= "table" then
+        return false
+    end
+    return next(value) == nil
+end
+
+local function failure_message(output)
+    if type(output) == "string" and output ~= "" then
+        return output
+    end
+    if type(output) == "table" then
+        if type(output.error) == "string" and output.error ~= "" then
+            return output.error
+        end
+        if type(output.message) == "string" and output.message ~= "" then
+            return output.message
+        end
+    end
+    return "Delegated workflow failed"
+end
 
 local function handle(args)
     -- Validate required arguments
@@ -117,17 +141,38 @@ local function handle(args)
         return nil, "Failed to create delegation workflow: " .. create_err
     end
 
-    -- Execute workflow
-    local result, exec_err = (c :: any):execute(dataflow_id, {
+    -- Start the child workflow durably, then wait for its terminal status.
+    local _, start_err = (c :: any):start(dataflow_id, {
         init_func_id = "userspace.dataflow.session:artifact"
     })
 
-    if exec_err then
-        return nil, "Failed to execute delegation workflow: " .. exec_err
+    if start_err then
+        return nil, "Failed to start delegation workflow: " .. start_err
     end
 
-    -- Return delegation result directly
-    return result
+    local wait_result, wait_err = (c :: any):wait(dataflow_id, {
+        timeout_ms = DELEGATION_TIMEOUT_MS,
+        interval_ms = DELEGATION_POLL_MS
+    })
+
+    if wait_err then
+        return nil, "Failed while waiting for delegation workflow: " .. wait_err
+    end
+
+    local output, output_err = (c :: any):output(dataflow_id)
+    if output_err then
+        return nil, "Failed to fetch delegation workflow output: " .. output_err
+    end
+
+    if wait_result and not wait_result.success then
+        return nil, failure_message(output)
+    end
+
+    if output == nil or is_empty_table(output) then
+        return nil, "Delegated workflow completed without output"
+    end
+
+    return output
 end
 
 return { handle = handle }

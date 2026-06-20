@@ -6,6 +6,7 @@ type MockWorkflowState = {
     load_state: (self: MockWorkflowState) -> (MockWorkflowState?, string?),
     get_nodes: () -> { [string]: any },
     get_dataflow_metadata: () -> { [string]: any },
+    get_actor_id: () -> string?,
     get_scheduler_snapshot: () -> { [string]: any },
     get_failed_node_errors: () -> string?,
     track_process: (self: MockWorkflowState, node_id: string, pid: string) -> MockWorkflowState,
@@ -27,6 +28,7 @@ type MockScheduler = {
 type MockProcess = {
     registry: { register: (name: string) -> nil, unregister: (name: string) -> nil },
     set_options: (options: any) -> nil,
+    with_context: (ctx: any) -> any,
     spawn_linked_monitored: (node_type: string, host: string, args: any) -> (string?, string?),
     send: (dest: string, topic: string, payload: any) -> nil,
     terminate: (pid: string) -> nil,
@@ -45,8 +47,17 @@ local function define_tests()
         local mock_scheduler = nil :: MockScheduler
         local mock_process = nil :: MockProcess
         local mock_commit = nil :: MockCommit
+        local current_actor: any = nil
+        local captured_actors: { any } = nil
 
         before_each(function()
+            captured_actors = {}
+            current_actor = {
+                id = function()
+                    return "test-actor-123"
+                end,
+            }
+
             mock_workflow_state = {
                 load_state = function(self: MockWorkflowState): (MockWorkflowState?, string?)
                     return self, nil
@@ -62,6 +73,9 @@ local function define_tests()
                 end,
                 get_dataflow_metadata = function(): { [string]: any }
                     return { test = "metadata" }
+                end,
+                get_actor_id = function(): string?
+                    return "test-actor-123"
                 end,
                 get_scheduler_snapshot = function(): { [string]: any }
                     return {
@@ -135,6 +149,17 @@ local function define_tests()
                     unregister = function(_name: string) end,
                 },
                 set_options = function(_options: any) end,
+                with_context = function(_ctx: any): any
+                    local spawner = {}
+                    function spawner:with_actor(actor: any): any
+                        table.insert(captured_actors, actor)
+                        return self
+                    end
+                    function spawner:spawn_linked_monitored(node_type: string, host: string, args: any): (string?, string?)
+                        return mock_process.spawn_linked_monitored(node_type, host, args)
+                    end
+                    return spawner
+                end,
                 spawn_linked_monitored = function(_node_type: string, _host: string, _args: any): (string?, string?)
                     return "mock-pid-123", nil
                 end,
@@ -185,9 +210,25 @@ local function define_tests()
             orchestrator.commit = mock_commit
             orchestrator.funcs = {
                 new = function(): any
+                    local executor = {}
+                    function executor:with_actor(actor: any): any
+                        table.insert(captured_actors, actor)
+                        return self
+                    end
+                    function executor:call(_func_id: string, _args: any): (any?, string?)
+                        return { success = true }, nil
+                    end
+                    return executor
+                end,
+            }
+            orchestrator.security = {
+                actor = function()
+                    return current_actor
+                end,
+                new_actor = function(actor_id: string)
                     return {
-                        call = function(_self: any, _func_id: string, _args: any): (any?, string?)
-                            return { success = true }, nil
+                        id = function()
+                            return actor_id
                         end,
                     }
                 end,
@@ -343,13 +384,17 @@ local function define_tests()
 
                 orchestrator.funcs = {
                     new = function(): any
-                        return {
-                            call = function(_self: any, _func_id: string, args: any): (any?, string?)
-                                init_called = true
-                                init_args = args
-                                return { success = true }, nil
-                            end,
-                        }
+                        local executor = {}
+                        function executor:with_actor(actor: any): any
+                            table.insert(captured_actors, actor)
+                            return self
+                        end
+                        function executor:call(_func_id: string, args: any): (any?, string?)
+                            init_called = true
+                            init_args = args
+                            return { success = true }, nil
+                        end
+                        return executor
                     end,
                 }
 
@@ -365,14 +410,34 @@ local function define_tests()
                 test.has_key(init_args.metadata, "test")
             end)
 
+            it("should reuse current actor when restored workflow actor id matches", function()
+                orchestrator.security.new_actor = function(actor_id: string)
+                    error("should not create actor " .. actor_id)
+                end
+
+                local result = orchestrator.run({
+                    dataflow_id = "test-workflow",
+                    init_func_id = "app:test_init",
+                })
+
+                test.is_true(result.success)
+                test.eq(#captured_actors, 1)
+                test.is_true(captured_actors[1] == current_actor)
+                test.eq(captured_actors[1]:id(), "test-actor-123")
+            end)
+
             it("should continue if init function fails", function()
                 orchestrator.funcs = {
                     new = function(): any
-                        return {
-                            call = function(_self: any, _func_id: string, _args: any): (any?, string?)
-                                return nil, "Init function failed"
-                            end,
-                        }
+                        local executor = {}
+                        function executor:with_actor(actor: any): any
+                            table.insert(captured_actors, actor)
+                            return self
+                        end
+                        function executor:call(_func_id: string, _args: any): (any?, string?)
+                            return nil, "Init function failed"
+                        end
+                        return executor
                     end,
                 }
 

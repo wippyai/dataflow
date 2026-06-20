@@ -22,6 +22,17 @@ local client = {}
 local methods = {}
 local mt = { __index = methods }
 
+local TERMINAL_STATUS = {
+    [consts.STATUS.COMPLETED_SUCCESS] = true,
+    [consts.STATUS.COMPLETED_FAILURE] = true,
+    [consts.STATUS.CANCELLED] = true,
+    [consts.STATUS.TERMINATED] = true
+}
+
+local function status_is_success(status)
+    return status == consts.STATUS.COMPLETED_SUCCESS
+end
+
 -- Constructor
 function client.new(deps)
     deps = deps or get_default_deps()
@@ -30,7 +41,7 @@ function client.new(deps)
     local actor = deps.security.actor()
 
     -- In non-authenticated contexts (tests/system workflows), synthesize a stable actor.
-    if not actor and type(deps.security.new_actor) == "function" then
+    if not actor then
         actor = deps.security.new_actor(SYSTEM_ACTOR_ID, {
             kind = "system",
             source = "userspace.dataflow:client"
@@ -42,11 +53,6 @@ function client.new(deps)
         return nil, "No current security actor available"
     end
 
-    -- Validate security actor has id method
-    if type(actor.id) ~= "function" then
-        return nil, "Security actor does not have id() method"
-    end
-
     -- Get actor ID
     local actor_id = actor:id()
 
@@ -56,11 +62,41 @@ function client.new(deps)
     end
 
     local instance = {
+        _actor = actor,
         _actor_id = actor_id,
         _deps = deps
     }
 
     return setmetatable(instance, mt) :: any, nil
+end
+
+function methods:_actor_for_workflow(dataflow_id)
+    local actor_id = self._actor_id
+    if dataflow_id then
+        local workflow = self._deps.dataflow_repo.get(dataflow_id)
+        if type(workflow) == "table" and type(workflow.actor_id) == "string" and workflow.actor_id ~= "" then
+            actor_id = workflow.actor_id
+        end
+    end
+    if actor_id == self._actor_id then
+        return self._actor
+    end
+    if type(actor_id) == "string" and actor_id ~= "" then
+        return self._deps.security.new_actor(actor_id, {
+            kind = "dataflow.workflow",
+            dataflow_id = dataflow_id,
+            source = "userspace.dataflow:client"
+        })
+    end
+    return self._actor
+end
+
+function methods:_spawn_orchestrator(dataflow_id, args)
+    local actor = self:_actor_for_workflow(dataflow_id)
+    if self._deps.process.with_context and actor then
+        return self._deps.process.with_context({}):with_actor(actor):spawn(consts.ORCHESTRATOR, consts.HOST_ID, args)
+    end
+    return self._deps.process.spawn(consts.ORCHESTRATOR, consts.HOST_ID, args)
 end
 
 -- Create workflow with optional commands and options
@@ -121,6 +157,10 @@ function methods:execute(dataflow_id, options)
 
     -- Execute via funcs
     local executor = self._deps.funcs.new()
+    local actor = self:_actor_for_workflow(dataflow_id)
+    if actor then
+        executor = executor:with_actor(actor)
+    end
     local orch_result, err = executor:call(consts.ORCHESTRATOR, orchestrator_args)
 
     if err then
@@ -246,7 +286,7 @@ function methods:start(dataflow_id, options)
     end
 
     -- Spawn orchestrator process
-    local pid = self._deps.process.spawn(consts.ORCHESTRATOR, consts.HOST_ID, orchestrator_args)
+    local pid = self:_spawn_orchestrator(dataflow_id, orchestrator_args)
     if not pid then
         return nil, "Failed to spawn workflow process"
     end
@@ -390,6 +430,37 @@ function methods:get_status(dataflow_id)
     return workflow.status, nil
 end
 
+function methods:wait(dataflow_id, options)
+    options = options or {}
+
+    if not dataflow_id or dataflow_id == "" then
+        return nil, "Workflow ID is required"
+    end
+
+    local timeout_ms = options.timeout_ms or 120000
+    local interval_ms = options.interval_ms or 250
+    local max_attempts = math.max(1, math.ceil(timeout_ms / interval_ms))
+
+    for _ = 1, max_attempts do
+        local status, status_err = self:get_status(dataflow_id)
+        if status_err then
+            return nil, status_err
+        end
+
+        if TERMINAL_STATUS[status] then
+            return {
+                dataflow_id = dataflow_id,
+                status = status,
+                success = status_is_success(status)
+            }, nil
+        end
+
+        time.sleep(tostring(interval_ms) .. "ms")
+    end
+
+    return nil, "Workflow did not complete before timeout: " .. dataflow_id
+end
+
 -- Send a signal to a waiting signal node in a workflow.
 -- If the orchestrator is dead, respawns it to process the signal from the outbox.
 function methods:signal(dataflow_id, signal_id, data)
@@ -426,7 +497,7 @@ function methods:signal(dataflow_id, signal_id, data)
         -- It will load state from DB + pending commits (including our signal).
         -- If another caller also respawns, the duplicate orchestrator detects
         -- the name conflict on registry.register and exits gracefully.
-        self._deps.process.spawn(consts.ORCHESTRATOR, consts.HOST_ID, {
+        self:_spawn_orchestrator(dataflow_id, {
             dataflow_id = dataflow_id
         })
     end

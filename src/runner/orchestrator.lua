@@ -1,14 +1,31 @@
 local uuid = require("uuid")
 local json = require("json")
 local consts = require("consts")
+local security = require("security")
 
 local orchestrator = {
     workflow_state = require("workflow_state"),
     scheduler = require("scheduler"),
     process = process,
     funcs = require("funcs"),
-    commit = require("commit")
+    commit = require("commit"),
+    security = security
 }
+
+local function workflow_actor(actor_id: string?, dataflow_id: string)
+    if type(actor_id) ~= "string" or actor_id == "" then
+        return nil
+    end
+    local current_actor = orchestrator.security.actor()
+    if current_actor and current_actor:id() == actor_id then
+        return current_actor
+    end
+    return orchestrator.security.new_actor(actor_id, {
+        kind = "dataflow.workflow",
+        dataflow_id = dataflow_id,
+        source = "userspace.dataflow.runner:orchestrator"
+    })
+end
 
 ---Execute a single node
 ---@param state table Orchestrator state
@@ -32,7 +49,12 @@ local function execute_single_node(state, node_info)
         return "Node not found: " .. node_id
     end
 
-    local pid, err_spawn = orchestrator.process.spawn_linked_monitored(node_type, consts.HOST_ID, {
+    local spawner = orchestrator.process.with_context({})
+    if state.actor then
+        spawner = spawner:with_actor(state.actor)
+    end
+
+    local pid, err_spawn = spawner:spawn_linked_monitored(node_type, consts.HOST_ID, {
         dataflow_id = state.dataflow_id,
         node_id = node_id,
         node = node_data,
@@ -577,12 +599,13 @@ end
 ---@param args table Arguments containing dataflow_id and optional init_func_id
 ---@return table result Orchestration result with success/error
 local function run(args)
-    local dataflow_id = args and args.dataflow_id
+    local dataflow_id_raw = args and args.dataflow_id
     local init_func_id = args and args.init_func_id
 
-    if not dataflow_id or dataflow_id == "" then
+    if type(dataflow_id_raw) ~= "string" or dataflow_id_raw == "" then
         return { success = false, error = "Missing required dataflow_id" }
     end
+    local dataflow_id = dataflow_id_raw
 
     local ws, ws_err = orchestrator.workflow_state.new(dataflow_id)
     if ws_err then
@@ -647,6 +670,13 @@ local function run(args)
         }
     end
 
+    local raw_actor_id = workflow_state:get_actor_id()
+    local actor_id: string? = nil
+    if type(raw_actor_id) == "string" and raw_actor_id ~= "" then
+        actor_id = raw_actor_id
+    end
+    state.actor = workflow_actor(actor_id, dataflow_id)
+
     -- Check for empty workflow after applying pending commits
     local nodes = workflow_state:get_nodes()
     local node_count = 0
@@ -665,6 +695,9 @@ local function run(args)
     -- Call init function if provided
     if type(init_func_id) == "string" and init_func_id ~= "" then
         local executor = orchestrator.funcs.new()
+        if state.actor then
+            executor = executor:with_actor(state.actor)
+        end
         local _, _ = executor:call(init_func_id, {
             dataflow_id = dataflow_id,
             metadata = workflow_state:get_dataflow_metadata()
