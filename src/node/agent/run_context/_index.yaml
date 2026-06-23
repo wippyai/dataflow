@@ -2,8 +2,8 @@ version: "1.0"
 namespace: userspace.dataflow.node.agent.run_context
 
 entries:
-  # userspace.dataflow.node.agent.run_context:lib
-  - name: lib
+  # userspace.dataflow.node.agent.run_context:run_context_lib
+  - name: run_context_lib
     kind: library.lua
     meta:
       name: Agent Node Run Context Library
@@ -53,7 +53,7 @@ entries:
         - context
     source: file://get_context.lua
     imports:
-      run_context: userspace.dataflow.node.agent.run_context:lib
+      run_context: userspace.dataflow.node.agent.run_context:run_context_lib
     method: handle
 
   # userspace.dataflow.node.agent.run_context:get_history
@@ -68,7 +68,7 @@ entries:
         - history
     source: file://get_history.lua
     imports:
-      run_context: userspace.dataflow.node.agent.run_context:lib
+      run_context: userspace.dataflow.node.agent.run_context:run_context_lib
     method: handle
 
   # userspace.dataflow.node.agent.run_context:get_prompt
@@ -83,7 +83,7 @@ entries:
         - prompt
     source: file://get_prompt.lua
     imports:
-      run_context: userspace.dataflow.node.agent.run_context:lib
+      run_context: userspace.dataflow.node.agent.run_context:run_context_lib
     method: handle
 
   # userspace.dataflow.node.agent.run_context:run_context_test
