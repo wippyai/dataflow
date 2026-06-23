@@ -29,5 +29,7 @@ modules:
       version: 0.5.1
       hash: ecb42a47c40415a2a3706071de488e21bc056a49d60ce7c3fa4e176fcefd16c1
 replacements:
+    - from: wippy/agent
+      to: ../../framework/src/agent/src
     - from: wippy/dataflow
       to: ../src

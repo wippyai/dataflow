@@ -170,6 +170,7 @@ entries:
       node_sdk: userspace.dataflow:node
       prompt_builder: userspace.dataflow.node.agent:prompt_builder
       tool_caller: wippy.agent.tools:caller
+      lifecycle_runtime: wippy.agent:lifecycle_runtime
     method: run
     
   # userspace.dataflow.node.agent:prompt_builder

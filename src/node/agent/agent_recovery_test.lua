@@ -113,6 +113,7 @@ local function define_tests()
                             agent = "userspace.dataflow.node.agent.stub:recovery_test_agent",
                             show_tool_calls = false,
                             recovery_test_hooks = opts.recovery_test_hooks,
+                            active_traits = opts.active_traits,
                             arena = {
                                 prompt = "Execute the deterministic recovery scenario.",
                                 max_iterations = opts.max_iterations or 6,
@@ -185,6 +186,36 @@ local function define_tests()
 
             return nil
         end
+
+        it("runs agent lifecycle trait handlers and injects activation prompt context", function()
+            local scenario_id = "agent-lifecycle-" .. uuid.v7()
+            local workflow = create_workflow({
+                scenario_id = scenario_id,
+                mode = "text_final",
+                max_iterations = 2,
+                active_traits = {
+                    {
+                        id = "userspace.dataflow.node.agent.stub:lifecycle_test_trait",
+                        context = {
+                            scenario_id = scenario_id
+                        }
+                    }
+                }
+            })
+
+            c:start(workflow.dataflow_id)
+
+            test.is_true(wait_complete(workflow.dataflow_id, 20000), "workflow completed")
+            test.eq(c:get_status(workflow.dataflow_id), consts.STATUS.COMPLETED_SUCCESS, "workflow succeeded")
+
+            local metrics = get_metrics(scenario_id)
+            test.eq(metrics.lifecycle_activate, 1, "agent activated once")
+            test.eq(metrics.lifecycle_before_step, 1, "before_step ran once")
+            test.eq(metrics.lifecycle_after_step, 1, "after_step ran once")
+            test.eq(metrics.lifecycle_deactivate, 1, "agent deactivated once")
+            test.eq(metrics.lifecycle_prompt_seen, 1, "activation message reached the LLM prompt")
+            test.eq(metrics.lifecycle_last_iteration, 1, "lifecycle received dataflow host iteration")
+        end)
 
         it("reuses a persisted tool turn after restart without an extra LLM call", function()
             local workflow = create_workflow({

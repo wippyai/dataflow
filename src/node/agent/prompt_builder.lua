@@ -169,6 +169,7 @@ function prompt_builder.new(dataflow_id, node_id, node_path)
     self._arena_config = nil
     self._initial_input = nil
     self._pending_history = {}
+    self._history_override = nil
 
     return self, nil
 end
@@ -188,6 +189,11 @@ function prompt_builder:with_pending_history(pending_history)
     return self
 end
 
+function prompt_builder:with_history(history)
+    self._history_override = history or {}
+    return self
+end
+
 function prompt_builder:_parse_json_content(content, content_type)
     if content_type == "application/json" and type(content) == "string" then
         local parsed, err = json.decode(content)
@@ -200,6 +206,19 @@ function prompt_builder:_parse_json_content(content, content_type)
 end
 
 function prompt_builder:_load_conversation_history()
+    if self._history_override then
+        local history = {}
+        local function append_rows(rows)
+            for _, row in ipairs(rows or {}) do
+                history[#history + 1] = row
+            end
+        end
+        append_rows(self._history_override)
+        append_rows(self._pending_history)
+        sort_history_rows(history)
+        return history, nil
+    end
+
     local reader = data_reader.with_dataflow(self.dataflow_id)
         :fetch_options({ replace_references = true })
         :with_nodes(self.node_id)

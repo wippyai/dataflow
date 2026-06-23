@@ -4,6 +4,7 @@ local uuid = require("uuid")
 local node_sdk = require("node_sdk")
 local agent_context = require("agent_context")
 local tool_caller = require("tool_caller")
+local lifecycle_runtime = require("lifecycle_runtime")
 local prompt_builder = require("prompt_builder")
 local control_handler = require("control_handler")
 local delegation_handler = require("delegation_handler")
@@ -19,6 +20,48 @@ type ToolCall = {
     arguments: table?,
     registry_id: string?,
 }
+
+type ToolWrapperOutcome = {
+    state: string,
+    reason: string,
+}
+
+type ToolWrapperHostRef = {
+    kind: string,
+    dataflow_id: string?,
+    node_id: string?,
+    iteration: number?,
+}
+
+type ToolWrapperAgentRef = {
+    id: string?,
+    model: string?,
+}
+
+type ToolWrapperExecutionContext = {
+    host: ToolWrapperHostRef,
+    agent: ToolWrapperAgentRef,
+    run_context: table?,
+    outcome: ToolWrapperOutcome?,
+}
+
+type LifecyclePayload = {
+    phase: string,
+    host: table,
+    agent: ToolWrapperAgentRef?,
+    reason: string?,
+    outcome: ToolWrapperOutcome?,
+    refs: table?,
+    run_context: table?,
+    options: table?,
+}
+
+local function string_or_nil(value: any): string?
+    if type(value) == "string" and value ~= "" then
+        return value
+    end
+    return nil
+end
 
 local function merge_contexts(base_context: any, input_context: any): {[string]: any}
     local merged: {[string]: any} = {}
@@ -37,6 +80,56 @@ local function merge_contexts(base_context: any, input_context: any): {[string]:
         end
     end
     return merged
+end
+
+local function deep_copy(value: any): any
+    if type(value) ~= "table" then
+        return value
+    end
+
+    local copied = {}
+    for key, item in pairs(value) do
+        copied[key] = deep_copy(item)
+    end
+    return copied
+end
+
+local function is_map(value: any): boolean
+    return type(value) == "table" and value[1] == nil
+end
+
+local function merge_maps(base: any, override: any): table
+    local merged = {}
+
+    if type(base) == "table" then
+        for key, value in pairs(base) do
+            merged[key] = deep_copy(value)
+        end
+    end
+
+    if type(override) == "table" then
+        for key, value in pairs(override) do
+            if is_map(merged[key]) and is_map(value) then
+                merged[key] = merge_maps(merged[key], value)
+            else
+                merged[key] = deep_copy(value)
+            end
+        end
+    end
+
+    return merged
+end
+
+local function resolve_agent_compact_config(config: any, agent_instance: any): table?
+    local agent_options = agent_instance and agent_instance.agent_options
+    local agent_compact = type(agent_options) == "table" and agent_options.compact or nil
+    local config_compact = config and config.compact
+
+    if type(agent_compact) ~= "table" and type(config_compact) ~= "table" then
+        return nil
+    end
+
+    return merge_maps(agent_compact, config_compact)
 end
 
 type DelegateToolsConfig = {
@@ -88,6 +181,156 @@ local function new_total_tokens(saved_tokens)
         cache_read_tokens = type(saved_tokens) == "table" and (saved_tokens.cache_read_tokens or 0) or 0,
         cache_write_tokens = type(saved_tokens) == "table" and (saved_tokens.cache_write_tokens or 0) or 0,
         thinking_tokens = type(saved_tokens) == "table" and (saved_tokens.thinking_tokens or 0) or 0
+    }
+end
+
+local RUN_CONTEXT_CONTRACT = "wippy.agent:run_context"
+local DEFAULT_RUN_CONTEXT_BINDING = "userspace.dataflow.node.agent.run_context:binding"
+
+local OUTCOME = {
+    CONTINUES = "continues",
+    COMPLETED = "completed",
+    FAILED = "failed",
+}
+
+local REASON = {
+    AGENT_LOADED = "agent_loaded",
+    AGENT_STEP = "agent_step",
+    AGENT_SWITCH = "agent_switch",
+    NO_TOOLS_REQUIRED = "no_tools_required",
+    TOOL_RESULTS_RECORDED = "tool_results_recorded",
+    CONTEXT_LIMIT_REACHED = "context_limit_reached",
+    MAX_ITERATIONS_REACHED = "max_iterations_reached",
+    HOST_FAILED = "host_failed",
+    DATAFLOW_FINISHED = "dataflow_finished",
+}
+
+local function context_with_agent_run(base_context: any, n: any, agent_id: any, model_name: any, iteration: any, binding: any): table
+    local next_context = {}
+    if type(base_context) == "table" then
+        for k, v in pairs(base_context) do
+            next_context[k] = v
+        end
+    end
+
+    local host = {
+        kind = "dataflow",
+        dataflow_id = n.dataflow_id,
+        node_id = n.node_id,
+        iteration = tonumber(iteration) or 0
+    }
+    local agent_info = {
+        id = agent_id,
+        model = model_name
+    }
+
+    next_context.agent_run = {
+        host = host,
+        agent = agent_info,
+        run_context = {
+            contract = RUN_CONTEXT_CONTRACT,
+            binding = binding or DEFAULT_RUN_CONTEXT_BINDING,
+            host = host,
+            agent = agent_info
+        }
+    }
+
+    return next_context
+end
+
+local function lifecycle_host_ref(n: any, iteration: any): table
+    return {
+        kind = "dataflow",
+        dataflow_id = n.dataflow_id,
+        node_id = n.node_id,
+        iteration = tonumber(iteration) or 0
+    }
+end
+
+local function lifecycle_agent_ref(agent_id: any, model_name: any): ToolWrapperAgentRef
+    return {
+        id = string_or_nil(agent_id),
+        model = string_or_nil(model_name)
+    }
+end
+
+local function lifecycle_run_context_ref(host: table, agent_ref: ToolWrapperAgentRef, binding: any): table
+    local binding_id = string_or_nil(binding) or DEFAULT_RUN_CONTEXT_BINDING
+    return {
+        contract = RUN_CONTEXT_CONTRACT,
+        binding = binding_id,
+        host = host,
+        agent = agent_ref
+    }
+end
+
+local function apply_agent_lifecycle(agent_instance: any, phase: string, n: any, agent_id: any, model_name: any,
+                                     iteration: any, run_context_binding: any, opts: table?): (table?, string?)
+    if not agent_instance or type(agent_instance.bindings) ~= "table" then
+        return { applied = 0, skipped = 0 }, nil
+    end
+
+    local host = lifecycle_host_ref(n, iteration)
+    local agent_ref = lifecycle_agent_ref(agent_id, model_name)
+    local payload = {
+        phase = phase,
+        host = host,
+        agent = agent_ref,
+        reason = opts and opts.reason,
+        outcome = opts and opts.outcome,
+        refs = opts and opts.refs,
+        run_context = lifecycle_run_context_ref(host, agent_ref, run_context_binding),
+    } :: LifecyclePayload
+
+    return lifecycle_runtime.apply(agent_instance.bindings, payload :: any)
+end
+
+local function append_lifecycle_messages(builder: any, result: table?)
+    if not builder or type(result) ~= "table" or type(result.messages) ~= "table" then
+        return
+    end
+
+    for _, message in ipairs(result.messages) do
+        if type(message) == "table" then
+            local content = message.content or message.text or message.data
+            if type(content) == "string" and content ~= "" then
+                local role = message.role or message.type or "developer"
+                if role == "system" and type(builder.add_system) == "function" then
+                    builder:add_system(content)
+                elseif role == "user" and type(builder.add_user) == "function" then
+                    builder:add_user(content)
+                elseif role == "assistant" and type(builder.add_assistant) == "function" then
+                    builder:add_assistant(content, message.metadata)
+                elseif type(builder.add_developer) == "function" then
+                    builder:add_developer(content, message.metadata)
+                end
+            end
+        end
+    end
+end
+
+local function lifecycle_outcome_from_agent_result(agent_result: any): table
+    if agent_result and agent_result.truncated then
+        return {
+            state = OUTCOME.CONTINUES,
+            reason = REASON.CONTEXT_LIMIT_REACHED
+        }
+    end
+
+    local has_tools = agent_result and (
+        (type(agent_result.tool_calls) == "table" and #agent_result.tool_calls > 0) or
+        (type(agent_result.delegate_calls) == "table" and #agent_result.delegate_calls > 0)
+    )
+    if has_tools then
+        return {
+            state = OUTCOME.CONTINUES,
+            reason = REASON.TOOL_RESULTS_RECORDED
+        }
+    end
+
+    return {
+        state = OUTCOME.COMPLETED,
+        reason = REASON.NO_TOOLS_REQUIRED
     }
 end
 
@@ -499,6 +742,9 @@ end
 local function maybe_compact_history(n, config, session_context)
     local compact_cfg = config and config.compact
     if type(compact_cfg) ~= "table" then
+        return nil, nil
+    end
+    if compact_cfg.enabled == false then
         return nil, nil
     end
 
@@ -953,18 +1199,81 @@ local function update_tool_viz_nodes(n, tool_results, tool_call_to_node_id)
     end
 end
 
-local function execute_tools(agent_result: { tool_calls: { ToolCall }? }, caller, session_context)
+local function split_exit_tool_calls(tool_calls: {ToolCall}?, exit_tool_name: string?): ({ToolCall}, {ToolCall})
+    local executable_tool_calls = {} :: { ToolCall }
+    local exit_tool_calls = {} :: { ToolCall }
+
+    for _, tool_call in ipairs(tool_calls or {}) do
+        if exit_tool_name and tool_call.name == exit_tool_name then
+            table.insert(exit_tool_calls, tool_call)
+        else
+            table.insert(executable_tool_calls, tool_call)
+        end
+    end
+
+    return executable_tool_calls, exit_tool_calls
+end
+
+local function prepare_tools(agent_result: { tool_calls: { ToolCall }? }, caller): (any, {ToolCall}, string?)
     if not agent_result.tool_calls or #agent_result.tool_calls == 0 then
-        return {}
+        return {}, {}, nil
     end
 
     local validated_tools, validate_err = caller:validate(agent_result.tool_calls)
     if validate_err then
-        return {}
+        return {}, {}, validate_err
     end
 
+    local effective_tool_calls: {ToolCall} = agent_result.tool_calls or {}
+    if type(caller.get_last_tool_calls) == "function" then
+        effective_tool_calls = (caller:get_last_tool_calls() or {}) :: {ToolCall}
+    end
+
+    return validated_tools, effective_tool_calls, nil
+end
+
+local function execute_tools(caller, session_context, validated_tools)
     local tool_results = caller:execute(session_context or {}, validated_tools)
     return tool_results or {}
+end
+
+local function configure_tool_wrappers(caller, agent_instance, n, agent_id, model_name, iteration, outcome: ToolWrapperOutcome?,
+                                      run_context_binding: string?)
+    local host = {
+        kind = "dataflow",
+        dataflow_id = string_or_nil(n.dataflow_id),
+        node_id = string_or_nil(n.node_id),
+        iteration = tonumber(iteration) or 0
+    } :: ToolWrapperHostRef
+    local agent_ref = {
+        id = string_or_nil(agent_id),
+        model = string_or_nil(model_name)
+    } :: ToolWrapperAgentRef
+    local binding_id = string_or_nil(run_context_binding) or DEFAULT_RUN_CONTEXT_BINDING
+
+    local wrapper_context: ToolWrapperExecutionContext = {
+        host = {
+            kind = host.kind,
+            dataflow_id = host.dataflow_id,
+            node_id = host.node_id,
+            iteration = host.iteration
+        },
+        agent = agent_ref,
+        run_context = {
+            contract = RUN_CONTEXT_CONTRACT,
+            binding = binding_id,
+            host = host,
+            agent = agent_ref
+        },
+        outcome = outcome
+    }
+
+    if type(caller.set_tool_wrappers) == "function" then
+        caller:set_tool_wrappers(agent_instance and agent_instance.tool_wrappers or {})
+    end
+    if type(caller.set_wrapper_context) == "function" then
+        caller:set_wrapper_context(wrapper_context)
+    end
 end
 
 local function process_tool_results(n, tool_results, iteration, exit_tool_name, agent_result: any, arena_config,
@@ -1187,8 +1496,8 @@ local function finalize_iteration(n, agent_ctx, session_context, iteration, max_
     return task_complete, final_result, nil
 end
 
-local function recover_persisted_action(n, agent_ctx, caller, session_context, config, iteration, max_iterations,
-                                        min_iterations, tool_calling, exit_tool_name, show_tool_calls)
+local function recover_persisted_action(n, agent_ctx, agent_instance, caller, session_context, config, iteration, max_iterations,
+                                        min_iterations, tool_calling, exit_tool_name, show_tool_calls, agent_id, model_name)
     local latest_action_row = load_latest_agent_action(n)
     if not latest_action_row then
         return false, nil, nil, nil
@@ -1217,24 +1526,33 @@ local function recover_persisted_action(n, agent_ctx, caller, session_context, c
         return false, nil, action_iteration, nil
     end
 
-    local executable_tool_calls = {} :: { ToolCall }
-    for _, tool_call in ipairs(unresolved_tool_calls) do
-        if not exit_tool_name or tool_call.name ~= exit_tool_name then
-            table.insert(executable_tool_calls, tool_call)
-        end
+    local executable_tool_calls, exit_tool_calls = split_exit_tool_calls(unresolved_tool_calls :: {ToolCall}, exit_tool_name)
+
+    configure_tool_wrappers(caller, agent_instance, n, agent_id, model_name, action_iteration, nil, string_or_nil(config.run_context_binding))
+    local validated_tools, effective_tool_calls, validate_err = prepare_tools({ tool_calls = executable_tool_calls }, caller)
+    if validate_err then
+        return false, nil, action_iteration, "Tool validation failed: " .. tostring(validate_err)
     end
 
-    local tool_call_to_node_id = create_tool_viz_nodes(n, executable_tool_calls, action_iteration, show_tool_calls,
+    local tool_call_to_node_id = create_tool_viz_nodes(n, effective_tool_calls, action_iteration, show_tool_calls,
         exit_tool_name)
-    local tool_results = execute_tools({ tool_calls = executable_tool_calls }, caller, session_context)
+    local tool_results = execute_tools(caller, session_context, validated_tools)
 
     if show_tool_calls then
         update_tool_viz_nodes(n, tool_results, tool_call_to_node_id)
     end
 
+    local recovered_tool_calls = {} :: { ToolCall }
+    for _, tool_call in ipairs(exit_tool_calls) do
+        table.insert(recovered_tool_calls, tool_call)
+    end
+    for _, tool_call in ipairs(effective_tool_calls) do
+        table.insert(recovered_tool_calls, tool_call)
+    end
+
     local recovered_agent_result = {
         result = action_payload.content.result,
-        tool_calls = unresolved_tool_calls,
+        tool_calls = recovered_tool_calls,
         delegate_calls = unresolved_delegate_calls
     }
 
@@ -1445,6 +1763,98 @@ local function run(args)
     local total_tokens = new_total_tokens(saved_state.total_tokens)
     local tool_calls_count = saved_state.tool_calls or 0
     local pending_compaction_history = {}
+    local lifecycle_state = {
+        active_agent_id = nil,
+        active_model = nil,
+        active_agent = nil,
+    }
+
+    local function deactivate_active_agent(reason: string?, outcome: table?, active_iteration: number?)
+        if not lifecycle_state.active_agent_id then
+            return nil
+        end
+
+        local active_agent = lifecycle_state.active_agent or agent_instance
+        local _, lifecycle_err = apply_agent_lifecycle(
+            active_agent,
+            lifecycle_runtime.PHASE.DEACTIVATE,
+            n,
+            lifecycle_state.active_agent_id,
+            lifecycle_state.active_model,
+            active_iteration or iteration,
+            config.run_context_binding,
+            {
+                reason = reason or REASON.DATAFLOW_FINISHED,
+                outcome = outcome or {
+                    state = OUTCOME.COMPLETED,
+                    reason = reason or REASON.DATAFLOW_FINISHED
+                }
+            }
+        )
+
+        if not lifecycle_err then
+            lifecycle_state.active_agent_id = nil
+            lifecycle_state.active_model = nil
+            lifecycle_state.active_agent = nil
+        end
+
+        return lifecycle_err
+    end
+
+    local function activate_current_agent(active_iteration: number, refs: table?): (table?, string?)
+        local same_agent = lifecycle_state.active_agent_id == agent_id and lifecycle_state.active_model == model_name
+        if same_agent then
+            lifecycle_state.active_agent = agent_instance
+            return { applied = 0, skipped = 0 }, nil
+        end
+
+        if lifecycle_state.active_agent_id then
+            local deactivate_err = deactivate_active_agent(REASON.AGENT_SWITCH, {
+                state = OUTCOME.CONTINUES,
+                reason = REASON.AGENT_SWITCH
+            }, active_iteration)
+            if deactivate_err then
+                return nil, deactivate_err
+            end
+        end
+
+        local result, lifecycle_err = apply_agent_lifecycle(
+            agent_instance,
+            lifecycle_runtime.PHASE.ACTIVATE,
+            n,
+            agent_id,
+            model_name,
+            active_iteration,
+            config.run_context_binding,
+            {
+                reason = REASON.AGENT_LOADED,
+                refs = refs,
+                outcome = {
+                    state = OUTCOME.CONTINUES,
+                    reason = REASON.AGENT_LOADED
+                }
+            }
+        )
+        if lifecycle_err then
+            return result, lifecycle_err
+        end
+
+        lifecycle_state.active_agent_id = agent_id
+        lifecycle_state.active_model = model_name
+        lifecycle_state.active_agent = agent_instance
+        return result, nil
+    end
+
+    local function fail_with_lifecycle(payload: table, message: string, reason: string?, active_iteration: number?)
+        local lifecycle_err = deactivate_active_agent(reason or REASON.HOST_FAILED, {
+            state = OUTCOME.FAILED,
+            reason = reason or REASON.HOST_FAILED
+        }, active_iteration)
+        if lifecycle_err and type(payload) == "table" then
+            payload.lifecycle_error = lifecycle_err
+        end
+        return n:fail(payload, message)
+    end
 
     local initial_status = build_status_message(iteration, max_iterations, total_tokens, tool_calls_count, false, false)
     update_node_progress(n, iteration, max_iterations, total_tokens, tool_calls_count, initial_status, agent_id,
@@ -1453,21 +1863,24 @@ local function run(args)
     local recovered_complete, recovered_result, recovered_iteration, recovery_err = recover_persisted_action(
         n,
         agent_ctx,
+        agent_instance,
         caller,
-        session_context,
+        context_with_agent_run(session_context, n, agent_id, model_name, iteration, config.run_context_binding),
         config,
         iteration,
         max_iterations,
         min_iterations,
         tool_calling,
         exit_tool_name,
-        show_tool_calls
+        show_tool_calls,
+        agent_id,
+        model_name
     )
     if recovery_err then
-        return n:fail({
+        return fail_with_lifecycle({
             code = agent_consts.ERROR.AGENT_EXEC_FAILED,
             message = recovery_err
-        }, recovery_err)
+        }, recovery_err, REASON.HOST_FAILED, iteration)
     end
     if recovered_iteration and recovered_iteration > iteration then
         iteration = recovered_iteration
@@ -1479,15 +1892,20 @@ local function run(args)
 
     while iteration < max_iterations and not task_complete do
         iteration = iteration + 1
+        local run_session_context = context_with_agent_run(session_context, n, agent_id, model_name, iteration,
+            config.run_context_binding)
 
-        local pending_compaction_marker, compact_err = maybe_compact_history(n, config, session_context)
+        local effective_compact = resolve_agent_compact_config(config, agent_instance)
+        local pending_compaction_marker, compact_err = maybe_compact_history(n, {
+            compact = effective_compact
+        }, run_session_context)
         if compact_err then
-            local strict_mode = config.compact and config.compact.strict == true
+            local strict_mode = effective_compact and effective_compact.strict == true
             if strict_mode then
-                return n:fail({
+                return fail_with_lifecycle({
                     code = agent_consts.ERROR.COMPACTION_FAILED,
                     message = compact_err
-                }, compact_err)
+                }, compact_err, REASON.HOST_FAILED, iteration)
             end
             -- warning mode: log audit observation and continue the turn
             record_compaction_skip(n, iteration, compact_err)
@@ -1501,19 +1919,80 @@ local function run(args)
 
         local prompt, prompt_err = builder:build_prompt(config.arena.prompt)
         if prompt_err then
-            return n:fail({
+            return fail_with_lifecycle({
                 code = agent_consts.ERROR.PROMPT_BUILD_FAILED,
                 message = prompt_err
-            }, prompt_err)
+            }, prompt_err, REASON.HOST_FAILED, iteration)
         end
 
-        local step_options = { tool_call = tool_calling, context = session_context }
+        local activate_result, activate_err = activate_current_agent(iteration, {
+            iteration = iteration
+        })
+        if activate_err then
+            return fail_with_lifecycle({
+                code = agent_consts.ERROR.AGENT_EXEC_FAILED,
+                message = activate_err
+            }, activate_err, REASON.HOST_FAILED, iteration)
+        end
+        append_lifecycle_messages(prompt, activate_result)
+
+        local before_result, before_err = apply_agent_lifecycle(
+            agent_instance,
+            lifecycle_runtime.PHASE.BEFORE_STEP,
+            n,
+            agent_id,
+            model_name,
+            iteration,
+            config.run_context_binding,
+            {
+                reason = REASON.AGENT_STEP,
+                refs = {
+                    iteration = iteration
+                },
+                outcome = {
+                    state = OUTCOME.CONTINUES,
+                    reason = REASON.AGENT_STEP
+                }
+            }
+        )
+        if before_err then
+            return fail_with_lifecycle({
+                code = agent_consts.ERROR.AGENT_EXEC_FAILED,
+                message = before_err
+            }, before_err, REASON.HOST_FAILED, iteration)
+        end
+        append_lifecycle_messages(prompt, before_result)
+
+        local step_options = { tool_call = tool_calling, context = run_session_context }
         local agent_result, step_err = agent_instance:step(prompt, step_options)
         if step_err then
-            return n:fail({
+            return fail_with_lifecycle({
                 code = agent_consts.ERROR.AGENT_EXEC_FAILED,
                 message = step_err
-            }, step_err)
+            }, step_err, REASON.HOST_FAILED, iteration)
+        end
+
+        local _, after_err = apply_agent_lifecycle(
+            agent_instance,
+            lifecycle_runtime.PHASE.AFTER_STEP,
+            n,
+            agent_id,
+            model_name,
+            iteration,
+            config.run_context_binding,
+            {
+                reason = REASON.AGENT_STEP,
+                refs = {
+                    iteration = iteration
+                },
+                outcome = lifecycle_outcome_from_agent_result(agent_result)
+            }
+        )
+        if after_err then
+            return fail_with_lifecycle({
+                code = agent_consts.ERROR.AGENT_EXEC_FAILED,
+                message = after_err
+            }, after_err, REASON.HOST_FAILED, iteration)
         end
 
         if agent_result.truncated then
@@ -1536,10 +2015,10 @@ local function run(args)
 
             local _yield_result, yield_err = n:yield()
             if yield_err then
-                return n:fail({
+                return fail_with_lifecycle({
                     code = agent_consts.ERROR.AGENT_EXEC_FAILED,
                     message = "Failed to persist truncated agent turn: " .. tostring(yield_err)
-                }, "Failed to persist truncated agent turn: " .. tostring(yield_err))
+                }, "Failed to persist truncated agent turn: " .. tostring(yield_err), REASON.HOST_FAILED, iteration)
             end
             pending_compaction_history = {}
             builder:with_pending_history(pending_compaction_history)
@@ -1571,27 +2050,45 @@ local function run(args)
 
         local submit_ok, submit_err = n:submit()
         if not submit_ok then
-            return n:fail({
+            return fail_with_lifecycle({
                 code = agent_consts.ERROR.AGENT_EXEC_FAILED,
                 message = "Failed to persist agent turn: " .. tostring(submit_err)
-            }, "Failed to persist agent turn: " .. tostring(submit_err))
+            }, "Failed to persist agent turn: " .. tostring(submit_err), REASON.HOST_FAILED, iteration)
         end
         pending_compaction_history = {}
         builder:with_pending_history(pending_compaction_history)
 
-        local tool_call_to_node_id = create_tool_viz_nodes(n, regular_tool_calls, iteration, show_tool_calls,
-            exit_tool_name)
+        local executable_tool_calls, exit_tool_calls = split_exit_tool_calls(regular_tool_calls, exit_tool_name)
 
-        local tool_results = execute_tools({ tool_calls = regular_tool_calls }, caller, session_context)
+        configure_tool_wrappers(caller, agent_instance, n, agent_id, model_name, iteration, nil, string_or_nil(config.run_context_binding))
+        local validated_tools, effective_tool_calls, validate_err = prepare_tools({ tool_calls = executable_tool_calls }, caller)
+        if validate_err then
+            return fail_with_lifecycle({
+                code = agent_consts.ERROR.AGENT_EXEC_FAILED,
+                message = "Tool validation failed: " .. tostring(validate_err)
+            }, "Tool validation failed: " .. tostring(validate_err), REASON.HOST_FAILED, iteration)
+        end
+
+        local tool_call_to_node_id = create_tool_viz_nodes(n, effective_tool_calls, iteration, show_tool_calls,
+            exit_tool_name)
+        local tool_results = execute_tools(caller, run_session_context, validated_tools)
 
         if show_tool_calls then
             update_tool_viz_nodes(n, tool_results, tool_call_to_node_id)
         end
 
+        local finalized_tool_calls = {} :: { ToolCall }
+        for _, tool_call in ipairs(exit_tool_calls) do
+            table.insert(finalized_tool_calls, tool_call)
+        end
+        for _, tool_call in ipairs(effective_tool_calls) do
+            table.insert(finalized_tool_calls, tool_call)
+        end
+
         local finalized_complete, finalized_result, finalize_err = finalize_iteration(
             n,
             agent_ctx,
-            session_context,
+            run_session_context,
             iteration,
             max_iterations,
             min_iterations,
@@ -1599,7 +2096,7 @@ local function run(args)
             exit_tool_name,
             {
                 result = agent_result.result,
-                tool_calls = regular_tool_calls,
+                tool_calls = finalized_tool_calls,
                 delegate_calls = delegate_calls
             },
             delegate_calls,
@@ -1607,10 +2104,10 @@ local function run(args)
             config.arena
         )
         if finalize_err then
-            return n:fail({
+            return fail_with_lifecycle({
                 code = agent_consts.ERROR.STEP_FUNCTION_FAILED,
                 message = finalize_err :: string
-            }, finalize_err :: string)
+            }, finalize_err :: string, REASON.HOST_FAILED, iteration)
         end
 
         if finalized_complete then
@@ -1646,10 +2143,10 @@ local function run(args)
         update_node_progress(n, iteration, max_iterations, total_tokens, tool_calls_count, final_status, agent_id,
             model_name)
 
-        return n:fail({
+        return fail_with_lifecycle({
             code = agent_consts.ERROR.AGENT_EXEC_FAILED,
             message = "Maximum iterations reached without completion"
-        }, "Maximum iterations reached")
+        }, "Maximum iterations reached", REASON.MAX_ITERATIONS_REACHED, iteration)
     end
 
     local final_status = build_status_message(iteration, max_iterations, total_tokens, tool_calls_count, true,
@@ -1675,6 +2172,17 @@ local function run(args)
     end
 
     output_content = final_result or { success = false, error = "No result produced" }
+    local lifecycle_err = deactivate_active_agent(REASON.DATAFLOW_FINISHED, {
+        state = success and OUTCOME.COMPLETED or OUTCOME.FAILED,
+        reason = success and REASON.NO_TOOLS_REQUIRED or REASON.HOST_FAILED
+    }, iteration)
+    if lifecycle_err then
+        return n:fail({
+            code = agent_consts.ERROR.AGENT_EXEC_FAILED,
+            message = lifecycle_err
+        }, lifecycle_err)
+    end
+
     return n:complete(output_content, message)
 end
 
