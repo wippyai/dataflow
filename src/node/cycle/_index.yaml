@@ -28,6 +28,7 @@ entries:
       - json
       - time
       - uuid
+      - expr
     imports:
       consts: userspace.dataflow:consts
       data_reader: userspace.dataflow.persist:data_reader

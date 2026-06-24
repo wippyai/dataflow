@@ -27,6 +27,7 @@ entries:
       - time
       - security
       - funcs
+      - json
     imports:
       commit: userspace.dataflow.persist:commit
       dataflow_consts: userspace.dataflow:consts
@@ -97,6 +98,7 @@ entries:
     modules:
       - uuid
       - json
+      - time
     imports:
       client: userspace.dataflow:client
       consts: userspace.dataflow:consts

@@ -44,6 +44,7 @@ entries:
       - uuid
     imports:
       agent_consts: userspace.dataflow.node.agent:consts
+      consts: userspace.dataflow:consts
 
   # userspace.dataflow.node.agent:control_handler_test
   - name: control_handler_test
@@ -160,6 +161,9 @@ entries:
     modules:
       - json
       - uuid
+      - time
+      - registry
+      - funcs
     imports:
       tools: wippy.agent.discovery:tools
       agent_consts: userspace.dataflow.node.agent:consts
@@ -267,6 +271,7 @@ entries:
     modules:
       - time
       - uuid
+      - funcs
     imports:
       agent_consts: userspace.dataflow.node.agent:consts
       client: userspace.dataflow:client
@@ -312,6 +317,8 @@ entries:
     modules:
       - time
       - uuid
+      - funcs
+      - prompt
     imports:
       agent_consts: userspace.dataflow.node.agent:consts
       client: userspace.dataflow:client

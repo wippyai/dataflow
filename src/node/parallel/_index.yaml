@@ -22,6 +22,8 @@ entries:
     source: file://iterator.lua
     modules:
       - uuid
+      - json
+      - time
     imports:
       consts: userspace.dataflow:consts
       data_reader: userspace.dataflow.persist:data_reader
@@ -76,6 +78,8 @@ entries:
     modules:
       - funcs
       - json
+      - time
+      - uuid
     imports:
       consts: userspace.dataflow:consts
       iterator: userspace.dataflow.node.parallel:iterator
