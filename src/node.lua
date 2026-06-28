@@ -109,6 +109,19 @@ local function resolve_dataflow_references(self, value)
     return value
 end
 
+local function close_yield_channel(self)
+    local yield_channel = self._yield_channel
+    if not yield_channel then
+        return
+    end
+    self._yield_channel = nil
+
+    local proc = self._deps and self._deps.process
+    if proc and proc.unlisten then
+        proc.unlisten(yield_channel)
+    end
+end
+
 function node.new(args, deps)
     if not args then
         return nil, "Node args required"
@@ -469,6 +482,10 @@ function methods.yield(self: table, options)
         return nil, "Failed to send yield signal"
     end
 
+    if not self._yield_channel then
+        return nil, "Yield channel unavailable"
+    end
+
     local received, ok = self._yield_channel:receive()
     if not ok then
         return nil, "Yield channel closed"
@@ -636,6 +653,7 @@ function methods:complete(output_content, message, extra_metadata)
     if extra_metadata then
         local _, meta_err = self:update_metadata(extra_metadata)
         if meta_err then
+            close_yield_channel(self)
             return {
                 success = false,
                 message = "Node [" .. self.node_id .. "] failed to update metadata: " .. (meta_err :: string),
@@ -648,6 +666,7 @@ function methods:complete(output_content, message, extra_metadata)
     if message then
         local _, msg_err = self:update_metadata({ status_message = message })
         if msg_err then
+            close_yield_channel(self)
             return {
                 success = false,
                 message = "Node [" .. self.node_id .. "] failed to set status message: " .. (msg_err :: string),
@@ -661,6 +680,7 @@ function methods:complete(output_content, message, extra_metadata)
     if output_content ~= nil then
         local routed_ids, route_err = self:_route_outputs(output_content)
         if route_err then
+            close_yield_channel(self)
             return {
                 success = false,
                 message = "Node [" .. self.node_id .. "] failed to route outputs: " .. tostring(route_err),
@@ -673,6 +693,7 @@ function methods:complete(output_content, message, extra_metadata)
 
     local success, err = self:_submit_final()
     if not success then
+        close_yield_channel(self)
         return {
             success = false,
             message = "Node [" .. self.node_id .. "] failed to submit final commands: " .. (err or "unknown"),
@@ -681,6 +702,7 @@ function methods:complete(output_content, message, extra_metadata)
         }, err
     end
 
+    close_yield_channel(self)
     return {
         success = true,
         message = message or "Node execution completed successfully",
@@ -713,6 +735,7 @@ function methods:fail(error_details, message, extra_metadata)
 
     local success, err = self:_submit_final()
     if not success then
+        close_yield_channel(self)
         return {
             success = false,
             message = "Node [" .. self.node_id .. "] failed to submit final commands: " .. (err or "unknown"),
@@ -721,6 +744,7 @@ function methods:fail(error_details, message, extra_metadata)
         }, err
     end
 
+    close_yield_channel(self)
     return {
         success = false,
         message = status_msg,

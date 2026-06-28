@@ -16,6 +16,7 @@ local function define_tests()
                 commit_submit = {},
                 process_send = {},
                 process_listen = {},
+                process_unlisten = {},
                 data_reader_calls = {}
             }
 
@@ -81,8 +82,7 @@ local function define_tests()
                         return true
                     end,
                     listen = function(topic: string)
-                        table.insert(captured_calls.process_listen, { topic = topic })
-                        return {
+                        local channel = {
                             receive = function()
                                 return {
                                     response_data = {
@@ -93,6 +93,12 @@ local function define_tests()
                                 }, true
                             end
                         }
+                        table.insert(captured_calls.process_listen, { topic = topic, channel = channel })
+                        return channel
+                    end,
+                    unlisten = function(channel: any)
+                        table.insert(captured_calls.process_unlisten, { channel = channel })
+                        return true
                     end
                 }
             }
@@ -1276,6 +1282,20 @@ local function define_tests()
                 test.eq(data_commands, 2)
             end)
 
+            it("should release the yield reply channel once on complete", function()
+                test.not_nil(test_node)
+                local result = test_node:complete({ message = "success" })
+
+                test.is_true(result.success)
+                test.eq(#captured_calls.process_listen, 1)
+                test.eq(#captured_calls.process_unlisten, 1)
+                test.eq(captured_calls.process_unlisten[1].channel, captured_calls.process_listen[1].channel)
+                test.is_nil(test_node._yield_channel)
+
+                test_node:complete()
+                test.eq(#captured_calls.process_unlisten, 1)
+            end)
+
             it("should route errors via error_targets from config on fail", function()
                 test.not_nil(test_node)
                 local result = test_node:fail("Something went wrong")
@@ -1291,6 +1311,20 @@ local function define_tests()
                     end
                 end
                 test.eq(data_commands, 2)
+            end)
+
+            it("should release the yield reply channel once on fail", function()
+                test.not_nil(test_node)
+                local result = test_node:fail("Something went wrong")
+
+                test.is_false(result.success)
+                test.eq(#captured_calls.process_listen, 1)
+                test.eq(#captured_calls.process_unlisten, 1)
+                test.eq(captured_calls.process_unlisten[1].channel, captured_calls.process_listen[1].channel)
+                test.is_nil(test_node._yield_channel)
+
+                test_node:fail("Again")
+                test.eq(#captured_calls.process_unlisten, 1)
             end)
 
             it("should handle complete without output content", function()
