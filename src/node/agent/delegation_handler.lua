@@ -1,35 +1,16 @@
 local uuid = require("uuid")
 local json = require("json")
+local agent_ref = require("agent_ref")
 local agent_consts = require("agent_consts")
 local data_reader = require("data_reader")
 local node_reader = require("node_reader")
 
 local delegation_handler = {}
 
-delegation_handler._agent_registry = nil
-
-local function get_agent_registry()
-    return delegation_handler._agent_registry or require("agent_registry")
-end
+delegation_handler._agent_ref = nil
 
 local function get_agent_info(agent_id)
-    local registry = get_agent_registry()
-    local agent_spec, err = registry.get_by_id(agent_id)
-    if not agent_spec then
-        agent_spec, err = registry.get_by_name(agent_id)
-    end
-
-    if agent_spec then
-        return {
-            title = agent_spec.title or agent_spec.name,
-            name = agent_spec.name
-        }
-    end
-
-    return {
-        title = agent_id,
-        name = agent_id
-    }
+    return (delegation_handler._agent_ref or agent_ref).resolve(agent_id)
 end
 
 local function merge_session_with_delegate_context(session_context, delegate_context)

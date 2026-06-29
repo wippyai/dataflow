@@ -1,10 +1,10 @@
 local json = require("json")
 local uuid = require("uuid")
 local ctx = require("ctx")
+local agent_ref = require("agent_ref")
 local compiler = require("df_compiler")
 local client = require("df_client")
 local consts = require("df_consts")
-local registry = require("registry")
 
 local DEFAULTS = {
     AGENT_MAX_ITERATIONS = 32,
@@ -20,16 +20,8 @@ local DEFAULTS = {
 local flow = {}
 
 local function get_registry_title(id)
-    if not id or id == "" then
-        return nil
-    end
-
-    local entry, err = registry.get(id :: string)
-    if entry and entry.meta and (entry.meta.title or entry.meta.name) then
-        return entry.meta.title or entry.meta.name
-    end
-
-    return nil
+    local resolved = agent_ref.lookup(id)
+    return resolved and resolved.title or nil
 end
 
 local FlowBuilder = {}

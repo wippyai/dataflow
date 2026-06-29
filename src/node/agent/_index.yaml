@@ -113,8 +113,8 @@ entries:
       - json
       - uuid
     imports:
+      agent_ref: userspace.dataflow:agent_ref
       agent_consts: userspace.dataflow.node.agent:consts
-      agent_registry: wippy.agent.discovery:registry
       data_reader: userspace.dataflow.persist:data_reader
       node_reader: userspace.dataflow.persist:node_reader
     method: delegation_handler
@@ -160,11 +160,12 @@ entries:
     source: file://node.lua
     modules:
       - json
-      - uuid
       - time
-      - registry
+      - uuid
+      - env
       - funcs
     imports:
+      agent_ref: userspace.dataflow:agent_ref
       tools: wippy.agent.discovery:tools
       agent_consts: userspace.dataflow.node.agent:consts
       agent_context: wippy.agent:context
@@ -175,7 +176,35 @@ entries:
       prompt_builder: userspace.dataflow.node.agent:prompt_builder
       tool_caller: wippy.agent.tools:caller
       lifecycle_runtime: wippy.agent:lifecycle_runtime
+      checkpoint_runtime: wippy.agent:checkpoint_runtime
     method: run
+
+  # userspace.dataflow.node.agent:checkpoint
+  - name: checkpoint
+    kind: function.lua
+    meta:
+      type: checkpoint
+      comment: Default dataflow agent checkpoint summarizer for token-threshold cuts.
+    source: file://checkpoint.lua
+    modules:
+      - json
+    imports:
+      prompt: wippy.llm:prompt
+      llm: wippy.llm:llm
+    method: handler
+
+  # userspace.dataflow.node.agent:checkpoint_test
+  - name: checkpoint_test
+    kind: function.lua
+    meta:
+      type: test
+      suite: agent_checkpoint
+      comment: Unit tests for the default dataflow checkpoint payload formatting.
+    source: file://checkpoint_test.lua
+    imports:
+      checkpoint: userspace.dataflow.node.agent:checkpoint
+      test: wippy.test:test
+    method: run_tests
     
   # userspace.dataflow.node.agent:prompt_builder
   - name: prompt_builder
@@ -318,12 +347,12 @@ entries:
       - time
       - uuid
       - funcs
-      - prompt
     imports:
       agent_consts: userspace.dataflow.node.agent:consts
       client: userspace.dataflow:client
       consts: userspace.dataflow:consts
       data_reader: userspace.dataflow.persist:data_reader
+      prompt: wippy.llm:prompt
       prompt_builder: userspace.dataflow.node.agent:prompt_builder
       test: wippy.test:test
     method: run_tests

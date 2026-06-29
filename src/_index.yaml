@@ -23,11 +23,11 @@ entries:
       description: "Unified client that combines execution and management functionality.\nProvides simple interface for starting, executing, canceling, and \nmonitoring workflows with proper actor-based authentication.\n"
     source: file://client.lua
     modules:
+      - json
       - uuid
       - time
       - security
       - funcs
-      - json
     imports:
       commit: userspace.dataflow.persist:commit
       dataflow_consts: userspace.dataflow:consts
@@ -57,6 +57,7 @@ entries:
       - uuid
       - time
       - funcs
+      - json
     imports:
       client: userspace.dataflow:client
       consts: userspace.dataflow:consts
@@ -75,6 +76,29 @@ entries:
         - configuration
       description: "Defines constants for dataflow operations including command types, data types, \ncontent types, status values, and message topics.\n"
     source: file://consts.lua
+
+  - name: agent_ref
+    kind: library.lua
+    meta:
+      name: Agent Reference Resolver
+      comment: Resolves agent references to display metadata through wippy.agent:resolver with registry fallback.
+    source: file://agent_ref.lua
+    modules:
+      - contract
+      - registry
+      - security
+
+  - name: agent_ref_test
+    kind: function.lua
+    meta:
+      type: test
+      suite: dataflow
+      comment: Tests agent reference display resolution and fallbacks.
+    source: file://agent_ref_test.lua
+    imports:
+      test: wippy.test:test
+      agent_ref: userspace.dataflow:agent_ref
+    method: run_tests
 
   # userspace.dataflow:integration_test
   - name: integration_test
@@ -190,6 +214,15 @@ entries:
     targets:
       - entry: userspace.dataflow.session.views:env_mapping
         path: ".mappings.web_host_origin"
+
+  - name: checkpoint_function_id
+    kind: ns.requirement
+    meta:
+      description: "Default function ID for dataflow agent checkpoints; trait checkpoint bindings take precedence."
+    default: "userspace.dataflow.node.agent:checkpoint"
+    targets:
+      - entry: userspace.dataflow.env:checkpoint_function_id
+        path: ".default"
 
   - name: user_security_scope
     kind: ns.requirement

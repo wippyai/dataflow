@@ -1,7 +1,7 @@
 local uuid = require("uuid")
 local client = require("client")
 local consts = require("consts")
-local agent_registry = require("agent_registry")
+local agent_ref = require("agent_ref")
 local ctx = require("ctx")
 
 local DELEGATION_TIMEOUT_MS = 300000
@@ -51,21 +51,7 @@ local function handle(args)
         session_context = {}
     end
 
-    -- Get agent title from registry lookup
-    local agent_spec, lookup_err = agent_registry.get_by_id(target_agent)
-    if not agent_spec then
-        -- Try by name if ID lookup failed
-        agent_spec, lookup_err = agent_registry.get_by_name(target_agent)
-    end
-
-    local agent_title = "Delegated Agent"
-    if agent_spec and agent_spec.title then
-        agent_title = agent_spec.title
-    elseif agent_spec and agent_spec.name then
-        agent_title = agent_spec.name
-    else
-        agent_title = target_agent
-    end
+    local agent_title = agent_ref.resolve(target_agent).title
 
     -- Create dataflow client
     local c, client_err = client.new()

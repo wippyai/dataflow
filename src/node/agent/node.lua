@@ -1,17 +1,19 @@
 local json = require("json")
 local time = require("time")
 local uuid = require("uuid")
+local env = require("env")
+local agent_ref = require("agent_ref")
 local node_sdk = require("node_sdk")
 local agent_context = require("agent_context")
 local tool_caller = require("tool_caller")
 local lifecycle_runtime = require("lifecycle_runtime")
+local checkpoint_runtime = require("checkpoint_runtime")
 local prompt_builder = require("prompt_builder")
 local control_handler = require("control_handler")
 local delegation_handler = require("delegation_handler")
 local agent_consts = require("agent_consts")
 local consts = require("consts")
 local tools = require("tools")
-local registry = require("registry")
 local funcs = require("funcs")
 
 type ToolCall = {
@@ -120,16 +122,24 @@ local function merge_maps(base: any, override: any): table
     return merged
 end
 
-local function resolve_agent_compact_config(config: any, agent_instance: any): table?
+local function resolve_agent_checkpoint_config(config: any, agent_instance: any): table?
     local agent_options = agent_instance and agent_instance.agent_options
+    local agent_checkpoint = type(agent_options) == "table" and agent_options.checkpoint or nil
+    local config_checkpoint = config and config.checkpoint
     local agent_compact = type(agent_options) == "table" and agent_options.compact or nil
     local config_compact = config and config.compact
 
-    if type(agent_compact) ~= "table" and type(config_compact) ~= "table" then
+    if type(agent_checkpoint) ~= "table"
+        and type(config_checkpoint) ~= "table"
+        and type(agent_compact) ~= "table"
+        and type(config_compact) ~= "table" then
         return nil
     end
 
-    return merge_maps(agent_compact, config_compact)
+    local merged = merge_maps(agent_compact, config_compact)
+    merged = merge_maps(merged, agent_checkpoint)
+    merged = merge_maps(merged, config_checkpoint)
+    return merged
 end
 
 type DelegateToolsConfig = {
@@ -186,6 +196,7 @@ end
 
 local RUN_CONTEXT_CONTRACT = "wippy.agent:run_context"
 local DEFAULT_RUN_CONTEXT_BINDING = "userspace.dataflow.node.agent.run_context:binding"
+local DEFAULT_CHECKPOINT_FUNCTION_ENV = "userspace.dataflow.env:checkpoint_function_id"
 
 local OUTCOME = {
     CONTINUES = "continues",
@@ -739,7 +750,21 @@ local function record_compaction_skip(n, iteration, reason)
     })
 end
 
-local function maybe_compact_history(n, config, session_context)
+local function has_checkpoint_bindings(agent_instance: any): boolean
+    local bindings = agent_instance and agent_instance.bindings
+    local checkpoint_bindings = type(bindings) == "table" and bindings.checkpoint or nil
+    return type(checkpoint_bindings) == "table" and #checkpoint_bindings > 0
+end
+
+local function default_checkpoint_function_id(): string?
+    local function_id, _ = env.get(DEFAULT_CHECKPOINT_FUNCTION_ENV)
+    if type(function_id) == "string" and function_id ~= "" then
+        return function_id
+    end
+    return nil
+end
+
+local function maybe_compact_history(n, config, session_context, agent_instance, agent_id, model_name, iteration)
     local compact_cfg = config and config.compact
     if type(compact_cfg) ~= "table" then
         return nil, nil
@@ -750,7 +775,11 @@ local function maybe_compact_history(n, config, session_context)
 
     local threshold = tonumber(compact_cfg.token_threshold)
     local func_id = compact_cfg.function_id
-    if not threshold or threshold <= 0 or type(func_id) ~= "string" or func_id == "" then
+    if type(func_id) ~= "string" or func_id == "" then
+        func_id = default_checkpoint_function_id()
+    end
+    local has_binding = has_checkpoint_bindings(agent_instance)
+    if not threshold or threshold <= 0 or (not has_binding and (type(func_id) ~= "string" or func_id == "")) then
         return nil, nil
     end
 
@@ -830,22 +859,84 @@ local function maybe_compact_history(n, config, session_context)
     local compaction_iteration = tonumber(action_metadata.iteration) or 0
     local scenario_id = extract_compaction_scenario_id(history_rows)
 
-    local summary_result, call_err = funcs.new()
-        :with_context(session_context or {})
-        :call(func_id, {
+    local summary_result = nil
+    local checkpoint_source = nil
+    local strict_checkpoint_error = false
+
+    if has_binding then
+        local host = {
+            kind = "dataflow",
             dataflow_id = n.dataflow_id,
             node_id = n.node_id,
-            scenario_id = scenario_id,
-            iteration = compaction_iteration,
-            prompt_tokens = prompt_tokens,
-            history_count = #history_payload,
-            retained_result_count = retained_result_count,
-            compacted_before_data_id = cut_before,
+            iteration = tonumber(iteration) or compaction_iteration
+        }
+        local agent = {
+            id = agent_id,
+            model = model_name
+        }
+        local runtime_result, runtime_err = checkpoint_runtime.create(agent_instance.bindings, {
+            host = host,
+            agent = agent,
+            reason = "token_threshold_exceeded",
+            selector = {
+                mode = "since_checkpoint"
+            },
+            run_context = {
+                contract = RUN_CONTEXT_CONTRACT,
+                binding = config.run_context_binding or DEFAULT_RUN_CONTEXT_BINDING,
+                host = host,
+                agent = agent
+            },
+            refs = {
+                dataflow_id = n.dataflow_id,
+                node_id = n.node_id,
+                scenario_id = scenario_id,
+                iteration = compaction_iteration,
+                prompt_tokens = prompt_tokens,
+                history_count = #history_payload,
+                retained_result_count = retained_result_count,
+                compacted_before_data_id = cut_before
+            },
             history = history_payload
         })
+        if runtime_err then
+            return nil, "checkpoint binding failed: " .. tostring(runtime_err), true
+        end
+        if runtime_result and runtime_result.result then
+            summary_result = runtime_result.result
+            checkpoint_source = "binding"
+        elseif runtime_result and runtime_result.errors and #runtime_result.errors > 0 then
+            strict_checkpoint_error = true
+        end
+    end
 
-    if call_err then
-        return nil, "compaction function " .. func_id .. " failed: " .. tostring(call_err)
+    if not summary_result then
+        if type(func_id) ~= "string" or func_id == "" then
+            if strict_checkpoint_error then
+                return nil, "checkpoint binding failed and no fallback function is configured", true
+            end
+            return nil, nil
+        end
+
+        local call_err
+        summary_result, call_err = funcs.new()
+            :with_context(session_context or {})
+            :call(func_id, {
+                dataflow_id = n.dataflow_id,
+                node_id = n.node_id,
+                scenario_id = scenario_id,
+                iteration = compaction_iteration,
+                prompt_tokens = prompt_tokens,
+                history_count = #history_payload,
+                retained_result_count = retained_result_count,
+                compacted_before_data_id = cut_before,
+                history = history_payload
+            })
+
+        if call_err then
+            return nil, "checkpoint function " .. func_id .. " failed: " .. tostring(call_err)
+        end
+        checkpoint_source = "function"
     end
 
     local memory_text = nil
@@ -856,7 +947,7 @@ local function maybe_compact_history(n, config, session_context)
     end
 
     if type(memory_text) ~= "string" or memory_text == "" then
-        return nil, "compaction function " .. func_id .. " returned empty memory"
+        return nil, "checkpoint provider returned empty memory"
     end
 
     -- Hard cap on stored memory to prevent hostile/buggy summarizers from
@@ -877,6 +968,7 @@ local function maybe_compact_history(n, config, session_context)
         compacted_retained_result_count = retained_result_count,
         compacted_source_action_data_id = tostring(latest_action.data_id or ""),
         compaction_function_id = func_id,
+        checkpoint_source = checkpoint_source,
         compaction_memory_truncated = memory_truncated
     }
     local marker_data_id = uuid.v7()
@@ -1646,13 +1738,7 @@ local function run(args)
     if agent_id_override then
         n:update_config({ agent = agent_id_override })
 
-        local entry = registry.get(agent_id_override)
-        if entry and entry.meta and (entry.meta.title or entry.meta.name) then
-            local title = entry.meta.title or entry.meta.name
-            n:update_metadata({ title = title })
-        else
-            n:update_metadata({ title = "Agent: " .. agent_id_override })
-        end
+        n:update_metadata({ title = agent_ref.resolve(agent_id_override).title })
     end
 
     model_override = model_override or config.model or config.arena.model
@@ -1895,12 +1981,13 @@ local function run(args)
         local run_session_context = context_with_agent_run(session_context, n, agent_id, model_name, iteration,
             config.run_context_binding)
 
-        local effective_compact = resolve_agent_compact_config(config, agent_instance)
-        local pending_compaction_marker, compact_err = maybe_compact_history(n, {
-            compact = effective_compact
-        }, run_session_context)
+        local effective_compact = resolve_agent_checkpoint_config(config, agent_instance)
+        local pending_compaction_marker, compact_err, strict_checkpoint_err = maybe_compact_history(n, {
+            compact = effective_compact,
+            run_context_binding = config.run_context_binding
+        }, run_session_context, agent_instance, agent_id, model_name, iteration)
         if compact_err then
-            local strict_mode = effective_compact and effective_compact.strict == true
+            local strict_mode = strict_checkpoint_err == true or (effective_compact and effective_compact.strict == true)
             if strict_mode then
                 return fail_with_lifecycle({
                     code = agent_consts.ERROR.COMPACTION_FAILED,

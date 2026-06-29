@@ -24,11 +24,11 @@ entries:
       default_host: app:processes
     source: file://cycle.lua
     modules:
+      - expr
       - funcs
       - json
       - time
       - uuid
-      - expr
     imports:
       consts: userspace.dataflow:consts
       data_reader: userspace.dataflow.persist:data_reader

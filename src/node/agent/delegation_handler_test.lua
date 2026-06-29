@@ -57,15 +57,17 @@ end
 local function define_tests()
     describe("Delegation Recovery Idempotency", function()
         before_each(function()
-            -- avoid depending on a registered agent; create_child_node degrades to defaults
-            delegation_handler._agent_registry = {
-                get_by_id = function(_) return nil end,
-                get_by_name = function(_) return nil end
+            -- avoid depending on a registered agent; create_child_node degrades through
+            -- the display resolver helper.
+            delegation_handler._agent_ref = {
+                resolve = function(agent_id)
+                    return { id = agent_id, title = "Custom agent", name = "Custom agent" }
+                end
             }
         end)
 
         after_each(function()
-            delegation_handler._agent_registry = nil
+            delegation_handler._agent_ref = nil
         end)
 
         it("reuses an existing in-flight child on a recovery re-issue", function()
@@ -105,6 +107,29 @@ local function define_tests()
             test.is_true(a.child_id ~= b.child_id, "distinct delegations get distinct children")
             test.eq(children_for_tool_call(dataflow_id, parent_node_id, "call-1"), 1)
             test.eq(children_for_tool_call(dataflow_id, parent_node_id, "call-2"), 1)
+        end)
+
+        it("uses resolved agent display title for child node metadata", function()
+            delegation_handler._agent_ref = {
+                resolve = function(agent_id)
+                    return { id = agent_id, title = "Researcher", name = "Researcher" }
+                end
+            }
+
+            local n, dataflow_id, parent_node_id = setup_parent()
+            local session_context = { dataflow_id = dataflow_id, node_id = parent_node_id }
+            delegation_handler.create_child_node(n, {
+                agent_id = "user_agent:019eccf3-81ae-7e91-9bf8-750d4a685492",
+                tool_call_id = "call-title",
+                input_data = {},
+            }, 1, session_context)
+            apply(n, dataflow_id)
+
+            local rows = (node_reader.with_dataflow(dataflow_id) :: any)
+                :with_parent_nodes(parent_node_id)
+                :all()
+            test.eq(#rows, 1)
+            test.eq((rows[1].metadata or {}).title, "Researcher")
         end)
     end)
 end
