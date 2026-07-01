@@ -24,6 +24,7 @@ entries:
       default_host: app:processes
     source: file://cycle.lua
     modules:
+      - expr
       - funcs
       - json
       - time

@@ -48,8 +48,8 @@ entries:
       - uuid
       - json
       - ctx
-      - registry
     imports:
+      agent_ref: userspace.dataflow:agent_ref
       df_client: userspace.dataflow:client
       df_compiler: userspace.dataflow.flow:compiler
       df_consts: userspace.dataflow:consts

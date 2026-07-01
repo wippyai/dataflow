@@ -1,0 +1,113 @@
+version: "1.0"
+namespace: userspace.dataflow.node.agent.run_context
+
+entries:
+  # userspace.dataflow.node.agent.run_context:run_context_lib
+  - name: run_context_lib
+    kind: library.lua
+    meta:
+      name: Agent Node Run Context Library
+      comment: Dataflow-backed implementation library for wippy.agent:run_context.
+      tags:
+        - dataflow
+        - agent
+        - context
+        - history
+        - prompt
+    source: file://lib.lua
+    modules:
+      - json
+    imports:
+      agent_consts: userspace.dataflow.node.agent:consts
+      consts: userspace.dataflow:consts
+      data_reader: userspace.dataflow.persist:data_reader
+      node_reader: userspace.dataflow.persist:node_reader
+      prompt_builder: userspace.dataflow.node.agent:prompt_builder
+
+  # userspace.dataflow.node.agent.run_context:binding
+  - name: binding
+    kind: contract.binding
+    meta:
+      name: Agent Node Run Context
+      comment: Dataflow-backed run-context reader for agent traits and tools.
+      tags:
+        - dataflow
+        - agent
+        - context
+    contracts:
+      - contract: wippy.agent:run_context
+        methods:
+          get_context: userspace.dataflow.node.agent.run_context:get_context
+          get_history: userspace.dataflow.node.agent.run_context:get_history
+          get_prompt: userspace.dataflow.node.agent.run_context:get_prompt
+
+  # userspace.dataflow.node.agent.run_context:get_context
+  - name: get_context
+    kind: function.lua
+    meta:
+      name: Agent Node Run Context - Context
+      comment: Read the current dataflow agent-node context.
+      tags:
+        - dataflow
+        - agent
+        - context
+    source: file://get_context.lua
+    imports:
+      run_context: userspace.dataflow.node.agent.run_context:run_context_lib
+    method: handle
+
+  # userspace.dataflow.node.agent.run_context:get_history
+  - name: get_history
+    kind: function.lua
+    meta:
+      name: Agent Node Run Context - History
+      comment: Read a bounded dataflow agent-node history slice.
+      tags:
+        - dataflow
+        - agent
+        - history
+    source: file://get_history.lua
+    imports:
+      run_context: userspace.dataflow.node.agent.run_context:run_context_lib
+    method: handle
+
+  # userspace.dataflow.node.agent.run_context:get_prompt
+  - name: get_prompt
+    kind: function.lua
+    meta:
+      name: Agent Node Run Context - Prompt
+      comment: Build a prompt from a bounded dataflow agent-node slice.
+      tags:
+        - dataflow
+        - agent
+        - prompt
+    source: file://get_prompt.lua
+    imports:
+      run_context: userspace.dataflow.node.agent.run_context:run_context_lib
+    method: handle
+
+  # userspace.dataflow.node.agent.run_context:run_context_test
+  - name: run_context_test
+    kind: function.lua
+    meta:
+      type: test
+      suite: dataflow
+      comment: End-to-end contract tests for the dataflow agent run-context child binding.
+      tags:
+        - dataflow
+        - agent
+        - run-context
+        - test
+    source: file://run_context_test.lua
+    modules:
+      - contract
+      - json
+      - sql
+      - time
+      - uuid
+    imports:
+      agent_consts: userspace.dataflow.node.agent:consts
+      consts: userspace.dataflow:consts
+      test: wippy.test:test
+      wait_for_boot: app:wait_for_boot
+    method: run_tests

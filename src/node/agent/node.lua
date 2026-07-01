@@ -1,16 +1,19 @@
 local json = require("json")
 local time = require("time")
 local uuid = require("uuid")
+local env = require("env")
+local agent_ref = require("agent_ref")
 local node_sdk = require("node_sdk")
 local agent_context = require("agent_context")
 local tool_caller = require("tool_caller")
+local lifecycle_runtime = require("lifecycle_runtime")
+local checkpoint_runtime = require("checkpoint_runtime")
 local prompt_builder = require("prompt_builder")
 local control_handler = require("control_handler")
 local delegation_handler = require("delegation_handler")
 local agent_consts = require("agent_consts")
 local consts = require("consts")
 local tools = require("tools")
-local registry = require("registry")
 local funcs = require("funcs")
 
 type ToolCall = {
@@ -19,6 +22,48 @@ type ToolCall = {
     arguments: table?,
     registry_id: string?,
 }
+
+type ToolWrapperOutcome = {
+    state: string,
+    reason: string,
+}
+
+type ToolWrapperHostRef = {
+    kind: string,
+    dataflow_id: string?,
+    node_id: string?,
+    iteration: number?,
+}
+
+type ToolWrapperAgentRef = {
+    id: string?,
+    model: string?,
+}
+
+type ToolWrapperExecutionContext = {
+    host: ToolWrapperHostRef,
+    agent: ToolWrapperAgentRef,
+    run_context: table?,
+    outcome: ToolWrapperOutcome?,
+}
+
+type LifecyclePayload = {
+    phase: string,
+    host: table,
+    agent: ToolWrapperAgentRef?,
+    reason: string?,
+    outcome: ToolWrapperOutcome?,
+    refs: table?,
+    run_context: table?,
+    options: table?,
+}
+
+local function string_or_nil(value: any): string?
+    if type(value) == "string" and value ~= "" then
+        return value
+    end
+    return nil
+end
 
 local function merge_contexts(base_context: any, input_context: any): {[string]: any}
     local merged: {[string]: any} = {}
@@ -36,6 +81,59 @@ local function merge_contexts(base_context: any, input_context: any): {[string]:
             end
         end
     end
+    return merged
+end
+
+local function deep_copy(value: any): any
+    if type(value) ~= "table" then
+        return value
+    end
+
+    local copied = {}
+    for key, item in pairs(value) do
+        copied[key] = deep_copy(item)
+    end
+    return copied
+end
+
+local function is_map(value: any): boolean
+    return type(value) == "table" and value[1] == nil
+end
+
+local function merge_maps(base: any, override: any): table
+    local merged = {}
+
+    if type(base) == "table" then
+        for key, value in pairs(base) do
+            merged[key] = deep_copy(value)
+        end
+    end
+
+    if type(override) == "table" then
+        for key, value in pairs(override) do
+            if is_map(merged[key]) and is_map(value) then
+                merged[key] = merge_maps(merged[key], value)
+            else
+                merged[key] = deep_copy(value)
+            end
+        end
+    end
+
+    return merged
+end
+
+local function resolve_agent_checkpoint_config(config: any, agent_instance: any): table?
+    local agent_options = agent_instance and agent_instance.agent_options
+    local agent_checkpoint = type(agent_options) == "table" and agent_options.checkpoint or nil
+    local config_checkpoint = config and config.checkpoint
+
+    if type(agent_checkpoint) ~= "table"
+        and type(config_checkpoint) ~= "table" then
+        return nil
+    end
+
+    local merged = merge_maps(nil, agent_checkpoint)
+    merged = merge_maps(merged, config_checkpoint)
     return merged
 end
 
@@ -91,6 +189,157 @@ local function new_total_tokens(saved_tokens)
     }
 end
 
+local RUN_CONTEXT_CONTRACT = "wippy.agent:run_context"
+local DEFAULT_RUN_CONTEXT_BINDING = "userspace.dataflow.node.agent.run_context:binding"
+local DEFAULT_CHECKPOINT_FUNCTION_ENV = "userspace.dataflow.env:checkpoint_function_id"
+
+local OUTCOME = {
+    CONTINUES = "continues",
+    COMPLETED = "completed",
+    FAILED = "failed",
+}
+
+local REASON = {
+    AGENT_LOADED = "agent_loaded",
+    AGENT_STEP = "agent_step",
+    AGENT_SWITCH = "agent_switch",
+    NO_TOOLS_REQUIRED = "no_tools_required",
+    TOOL_RESULTS_RECORDED = "tool_results_recorded",
+    CONTEXT_LIMIT_REACHED = "context_limit_reached",
+    MAX_ITERATIONS_REACHED = "max_iterations_reached",
+    HOST_FAILED = "host_failed",
+    DATAFLOW_FINISHED = "dataflow_finished",
+}
+
+local function context_with_agent_run(base_context: any, n: any, agent_id: any, model_name: any, iteration: any, binding: any): table
+    local next_context = {}
+    if type(base_context) == "table" then
+        for k, v in pairs(base_context) do
+            next_context[k] = v
+        end
+    end
+
+    local host = {
+        kind = "dataflow",
+        dataflow_id = n.dataflow_id,
+        node_id = n.node_id,
+        iteration = tonumber(iteration) or 0
+    }
+    local agent_info = {
+        id = agent_id,
+        model = model_name
+    }
+
+    next_context.agent_run = {
+        host = host,
+        agent = agent_info,
+        run_context = {
+            contract = RUN_CONTEXT_CONTRACT,
+            binding = binding or DEFAULT_RUN_CONTEXT_BINDING,
+            host = host,
+            agent = agent_info
+        }
+    }
+
+    return next_context
+end
+
+local function lifecycle_host_ref(n: any, iteration: any): table
+    return {
+        kind = "dataflow",
+        dataflow_id = n.dataflow_id,
+        node_id = n.node_id,
+        iteration = tonumber(iteration) or 0
+    }
+end
+
+local function lifecycle_agent_ref(agent_id: any, model_name: any): ToolWrapperAgentRef
+    return {
+        id = string_or_nil(agent_id),
+        model = string_or_nil(model_name)
+    }
+end
+
+local function lifecycle_run_context_ref(host: table, agent_ref: ToolWrapperAgentRef, binding: any): table
+    local binding_id = string_or_nil(binding) or DEFAULT_RUN_CONTEXT_BINDING
+    return {
+        contract = RUN_CONTEXT_CONTRACT,
+        binding = binding_id,
+        host = host,
+        agent = agent_ref
+    }
+end
+
+local function apply_agent_lifecycle(agent_instance: any, phase: string, n: any, agent_id: any, model_name: any,
+                                     iteration: any, run_context_binding: any, opts: table?): (table?, string?)
+    if not agent_instance or type(agent_instance.bindings) ~= "table" then
+        return { applied = 0, skipped = 0 }, nil
+    end
+
+    local host = lifecycle_host_ref(n, iteration)
+    local agent_ref = lifecycle_agent_ref(agent_id, model_name)
+    local payload = {
+        phase = phase,
+        host = host,
+        agent = agent_ref,
+        reason = opts and opts.reason,
+        outcome = opts and opts.outcome,
+        refs = opts and opts.refs,
+        run_context = lifecycle_run_context_ref(host, agent_ref, run_context_binding),
+    } :: LifecyclePayload
+
+    return lifecycle_runtime.apply(agent_instance.bindings, payload :: any)
+end
+
+local function append_lifecycle_messages(builder: any, result: table?)
+    if not builder or type(result) ~= "table" or type(result.messages) ~= "table" then
+        return
+    end
+
+    for _, message in ipairs(result.messages) do
+        if type(message) == "table" then
+            local content = message.content or message.text or message.data
+            if type(content) == "string" and content ~= "" then
+                local role = message.role or message.type or "developer"
+                if role == "system" and type(builder.add_system) == "function" then
+                    builder:add_system(content)
+                elseif role == "user" and type(builder.add_user) == "function" then
+                    builder:add_user(content)
+                elseif role == "assistant" and type(builder.add_assistant) == "function" then
+                    builder:add_assistant(content, message.metadata)
+                elseif type(builder.add_developer) == "function" then
+                    builder:add_developer(content, message.metadata)
+                end
+            end
+        end
+    end
+end
+
+local function lifecycle_outcome_from_agent_result(agent_result: any): table
+    if agent_result and agent_result.truncated then
+        return {
+            state = OUTCOME.CONTINUES,
+            reason = REASON.CONTEXT_LIMIT_REACHED
+        }
+    end
+
+    local has_tools = agent_result and (
+        (type(agent_result.tool_calls) == "table" and #agent_result.tool_calls > 0) or
+        (type(agent_result.delegate_calls) == "table" and #agent_result.delegate_calls > 0)
+    )
+    if has_tools then
+        return {
+            state = OUTCOME.CONTINUES,
+            reason = REASON.TOOL_RESULTS_RECORDED
+        }
+    end
+
+    return {
+        state = OUTCOME.COMPLETED,
+        reason = REASON.NO_TOOLS_REQUIRED
+    }
+end
+
 local function decode_json_content(content: any, content_type: any)
     if type(content) ~= "string" then
         return content
@@ -112,26 +361,26 @@ local function decode_json_content(content: any, content_type: any)
     return decoded
 end
 
-local function compaction_row_id(row)
+local function checkpoint_row_id(row)
     if type(row) ~= "table" then
         return ""
     end
     return tostring(row.data_id or "")
 end
 
-local function sort_compaction_rows(history_rows)
+local function sort_checkpoint_rows(history_rows)
     table.sort(history_rows, function(a, b)
-        return compaction_row_id(a) < compaction_row_id(b)
+        return checkpoint_row_id(a) < checkpoint_row_id(b)
     end)
     return history_rows
 end
 
-local function find_latest_compaction_marker(history_rows)
+local function find_latest_checkpoint_marker(history_rows)
     for i = #history_rows, 1, -1 do
         local item = history_rows[i]
         if item.type == agent_consts.DATA_TYPE.AGENT_MEMORY
            and item.metadata
-           and item.metadata.compaction_marker == true then
+           and item.metadata.checkpoint_marker == true then
             return item
         end
     end
@@ -156,10 +405,10 @@ local function is_structured_result_row(row)
         or row.type == agent_consts.DATA_TYPE.AGENT_DELEGATION
 end
 
-local function last_compaction_data_id(history_rows)
+local function last_checkpoint_data_id(history_rows)
     local latest = ""
     for _, row in ipairs(history_rows or {}) do
-        local rid = compaction_row_id(row)
+        local rid = checkpoint_row_id(row)
         if rid > latest then
             latest = rid
         end
@@ -167,14 +416,14 @@ local function last_compaction_data_id(history_rows)
     return latest
 end
 
-local function compactable_history_rows(history_rows)
-    local compactable = {}
+local function checkpoint_source_rows(history_rows)
+    local source_rows = {}
     for _, row in ipairs(history_rows or {}) do
         if not is_structured_result_row(row) then
-            compactable[#compactable + 1] = row
+            source_rows[#source_rows + 1] = row
         end
     end
-    return compactable
+    return source_rows
 end
 
 local function build_status_message(iteration, max_iterations, total_tokens, tool_calls_count, is_final, task_complete)
@@ -416,7 +665,7 @@ local function store_memory_recall(n, agent_result, iteration)
     })
 end
 
-local function extract_compaction_scenario_id(history_rows)
+local function extract_checkpoint_scenario_id(history_rows)
     for i = #history_rows, 1, -1 do
         local row = history_rows[i]
         local metadata = row.metadata or {}
@@ -459,7 +708,7 @@ local function stringify_history_content(row)
     return tostring(content)
 end
 
--- Conversation compaction runs at the start of the next turn, after the prior
+-- Conversation checkpointing runs at the start of the next turn, after the prior
 -- turn's observations have already been yielded and persisted. The marker is
 -- queued locally, exposed to prompt_builder immediately via an in-memory
 -- overlay, and then flushed atomically with the next turn's submit/yield.
@@ -481,30 +730,51 @@ local function clamp_memory_text(text, max_chars)
     return text:sub(1, cap - #suffix) .. suffix
 end
 
--- Record a compaction-skipped observation row so non-strict mode leaves an
+-- Record a checkpoint-skipped observation row so non-strict mode leaves an
 -- audit trail but doesn't kill the turn.
-local function record_compaction_skip(n, iteration, reason)
-    n:data(agent_consts.DATA_TYPE.AGENT_OBSERVATION, tostring(reason or "compaction skipped"), {
-        key = tostring(iteration or 0) .. "_compaction_skipped",
+local function record_checkpoint_skip(n, iteration, reason)
+    n:data(agent_consts.DATA_TYPE.AGENT_OBSERVATION, tostring(reason or "checkpoint skipped"), {
+        key = tostring(iteration or 0) .. "_checkpoint_skipped",
         content_type = consts.CONTENT_TYPE.TEXT,
         node_id = n.node_id,
         metadata = {
             iteration = iteration,
-            compaction_skipped = true,
-            compaction_error = tostring(reason or "")
+            checkpoint_skipped = true,
+            checkpoint_error = tostring(reason or "")
         }
     })
 end
 
-local function maybe_compact_history(n, config, session_context)
-    local compact_cfg = config and config.compact
-    if type(compact_cfg) ~= "table" then
+local function has_checkpoint_bindings(agent_instance: any): boolean
+    local bindings = agent_instance and agent_instance.bindings
+    local checkpoint_bindings = type(bindings) == "table" and bindings.checkpoint or nil
+    return type(checkpoint_bindings) == "table" and #checkpoint_bindings > 0
+end
+
+local function default_checkpoint_function_id(): string?
+    local function_id, _ = env.get(DEFAULT_CHECKPOINT_FUNCTION_ENV)
+    if type(function_id) == "string" and function_id ~= "" then
+        return function_id
+    end
+    return nil
+end
+
+local function maybe_checkpoint_history(n, config, session_context, agent_instance, agent_id, model_name, iteration)
+    local checkpoint_cfg = config and config.checkpoint
+    if type(checkpoint_cfg) ~= "table" then
+        return nil, nil
+    end
+    if checkpoint_cfg.enabled == false then
         return nil, nil
     end
 
-    local threshold = tonumber(compact_cfg.token_threshold)
-    local func_id = compact_cfg.function_id
-    if not threshold or threshold <= 0 or type(func_id) ~= "string" or func_id == "" then
+    local threshold = tonumber(checkpoint_cfg.token_threshold)
+    local func_id = checkpoint_cfg.function_id
+    if type(func_id) ~= "string" or func_id == "" then
+        func_id = default_checkpoint_function_id()
+    end
+    local has_binding = has_checkpoint_bindings(agent_instance)
+    if not threshold or threshold <= 0 or (not has_binding and (type(func_id) ~= "string" or func_id == "")) then
         return nil, nil
     end
 
@@ -522,7 +792,7 @@ local function maybe_compact_history(n, config, session_context)
         return nil, nil
     end
 
-    sort_compaction_rows(history_rows)
+    sort_checkpoint_rows(history_rows)
 
     local latest_action = nil
     for i = #history_rows, 1, -1 do
@@ -544,19 +814,19 @@ local function maybe_compact_history(n, config, session_context)
         return nil, nil
     end
 
-    local cut_before = last_compaction_data_id(history_rows)
+    local cut_before = last_checkpoint_data_id(history_rows)
     if cut_before == "" then
         return nil, nil
     end
 
-    local latest_marker = find_latest_compaction_marker(history_rows)
+    local latest_marker = find_latest_checkpoint_marker(history_rows)
     if latest_marker
-       and tostring((latest_marker.metadata or {}).compacted_before_data_id or "") == cut_before then
+       and tostring((latest_marker.metadata or {}).checkpoint_before_data_id or "") == cut_before then
         return nil, nil
     end
 
-    local compacted_rows = compactable_history_rows(history_rows)
-    if #compacted_rows == 0 then
+    local source_rows = checkpoint_source_rows(history_rows)
+    if #source_rows == 0 then
         return nil, nil
     end
 
@@ -568,10 +838,10 @@ local function maybe_compact_history(n, config, session_context)
     end
 
     -- Build a serialization-safe projection of history for the summarizer.
-    -- The function only receives rows that will actually be compacted; structured
+    -- The function only receives rows that will actually be checkpointed; structured
     -- call results remain in the prompt to preserve tool/result continuity.
     local history_payload = {}
-    for i, row in ipairs(compacted_rows) do
+    for i, row in ipairs(source_rows) do
         history_payload[i] = {
             data_id = tostring(row.data_id or ""),
             type = tostring(row.type or ""),
@@ -581,25 +851,88 @@ local function maybe_compact_history(n, config, session_context)
         }
     end
 
-    local compaction_iteration = tonumber(action_metadata.iteration) or 0
-    local scenario_id = extract_compaction_scenario_id(history_rows)
+    local checkpoint_iteration = tonumber(action_metadata.iteration) or 0
+    local scenario_id = extract_checkpoint_scenario_id(history_rows)
 
-    local summary_result, call_err = funcs.new()
-        :with_context(session_context or {})
-        :call(func_id, {
+    local summary_result = nil
+    local checkpoint_source = nil
+    local strict_checkpoint_error = false
+
+    if has_binding then
+        local host = {
+            kind = "dataflow",
             dataflow_id = n.dataflow_id,
             node_id = n.node_id,
-            scenario_id = scenario_id,
-            iteration = compaction_iteration,
-            prompt_tokens = prompt_tokens,
-            history_count = #history_payload,
-            retained_result_count = retained_result_count,
-            compacted_before_data_id = cut_before,
+            iteration = tonumber(iteration) or checkpoint_iteration
+        }
+        local agent = {
+            id = agent_id,
+            model = model_name
+        }
+        local runtime_result, runtime_err = checkpoint_runtime.create(agent_instance.bindings, {
+            host = host,
+            agent = agent,
+            reason = "token_threshold_exceeded",
+            selector = {
+                mode = "since_checkpoint"
+            },
+            run_context = {
+                contract = RUN_CONTEXT_CONTRACT,
+                binding = config.run_context_binding or DEFAULT_RUN_CONTEXT_BINDING,
+                host = host,
+                agent = agent
+            },
+            refs = {
+                dataflow_id = n.dataflow_id,
+                node_id = n.node_id,
+                scenario_id = scenario_id,
+                iteration = checkpoint_iteration,
+                prompt_tokens = prompt_tokens,
+                history_count = #history_payload,
+                retained_result_count = retained_result_count,
+                checkpoint_before_data_id = cut_before
+            },
             history = history_payload
         })
+        if runtime_err then
+            return nil, "checkpoint binding failed: " .. tostring(runtime_err), true
+        end
+        if runtime_result and runtime_result.result then
+            summary_result = runtime_result.result
+            checkpoint_source = "binding"
+        elseif runtime_result and runtime_result.errors and #runtime_result.errors > 0 then
+            strict_checkpoint_error = true
+        end
+    end
 
-    if call_err then
-        return nil, "compaction function " .. func_id .. " failed: " .. tostring(call_err)
+    if not summary_result then
+        if type(func_id) ~= "string" or func_id == "" then
+            if strict_checkpoint_error then
+                return nil, "checkpoint binding failed and no fallback function is configured", true
+            end
+            return nil, nil
+        end
+
+        local call_err
+        local executor = funcs.new()
+        summary_result, call_err = executor
+            :with_context(session_context or {})
+            :call(func_id, {
+                dataflow_id = n.dataflow_id,
+                node_id = n.node_id,
+                scenario_id = scenario_id,
+                iteration = checkpoint_iteration,
+                prompt_tokens = prompt_tokens,
+                history_count = #history_payload,
+                retained_result_count = retained_result_count,
+                checkpoint_before_data_id = cut_before,
+                history = history_payload
+            })
+
+        if call_err then
+            return nil, "checkpoint function " .. func_id .. " failed: " .. tostring(call_err)
+        end
+        checkpoint_source = "function"
     end
 
     local memory_text = nil
@@ -610,35 +943,36 @@ local function maybe_compact_history(n, config, session_context)
     end
 
     if type(memory_text) ~= "string" or memory_text == "" then
-        return nil, "compaction function " .. func_id .. " returned empty memory"
+        return nil, "checkpoint provider returned empty memory"
     end
 
     -- Hard cap on stored memory to prevent hostile/buggy summarizers from
     -- bloating every future prompt. Default 8192 chars; configurable.
-    local max_memory_chars = tonumber(compact_cfg.max_memory_chars) or 8192
+    local max_memory_chars = tonumber(checkpoint_cfg.max_memory_chars) or 8192
     local original_memory_len = #memory_text
     memory_text = clamp_memory_text(memory_text, max_memory_chars)
     local memory_truncated = #memory_text < original_memory_len
 
     local marker_metadata = {
-        iteration = compaction_iteration,
-        compaction_marker = true,
-        compacted_at_prompt_tokens = prompt_tokens,
-        compacted_before_data_id = cut_before,
-        compacted_history_count = #history_payload,
-        compacted_first_data_id = tostring((compacted_rows[1] or {}).data_id or ""),
-        compacted_last_data_id = tostring((compacted_rows[#compacted_rows] or {}).data_id or ""),
-        compacted_retained_result_count = retained_result_count,
-        compacted_source_action_data_id = tostring(latest_action.data_id or ""),
-        compaction_function_id = func_id,
-        compaction_memory_truncated = memory_truncated
+        iteration = checkpoint_iteration,
+        checkpoint_marker = true,
+        checkpoint_at_prompt_tokens = prompt_tokens,
+        checkpoint_before_data_id = cut_before,
+        checkpoint_history_count = #history_payload,
+        checkpoint_first_data_id = tostring((source_rows[1] or {}).data_id or ""),
+        checkpoint_last_data_id = tostring((source_rows[#source_rows] or {}).data_id or ""),
+        checkpoint_retained_result_count = retained_result_count,
+        checkpoint_source_action_data_id = tostring(latest_action.data_id or ""),
+        checkpoint_function_id = func_id,
+        checkpoint_source = checkpoint_source,
+        checkpoint_memory_truncated = memory_truncated
     }
     local marker_data_id = uuid.v7()
-    local marker_key_prefix = compaction_iteration > 0 and tostring(compaction_iteration) or cut_before
+    local marker_key_prefix = checkpoint_iteration > 0 and tostring(checkpoint_iteration) or cut_before
 
     n:data(agent_consts.DATA_TYPE.AGENT_MEMORY, memory_text, {
         data_id = marker_data_id,
-        key = marker_key_prefix .. "_compaction",
+        key = marker_key_prefix .. "_checkpoint",
         content_type = consts.CONTENT_TYPE.TEXT,
         node_id = n.node_id,
         metadata = marker_metadata
@@ -953,18 +1287,81 @@ local function update_tool_viz_nodes(n, tool_results, tool_call_to_node_id)
     end
 end
 
-local function execute_tools(agent_result: { tool_calls: { ToolCall }? }, caller, session_context)
+local function split_exit_tool_calls(tool_calls: {ToolCall}?, exit_tool_name: string?): ({ToolCall}, {ToolCall})
+    local executable_tool_calls = {} :: { ToolCall }
+    local exit_tool_calls = {} :: { ToolCall }
+
+    for _, tool_call in ipairs(tool_calls or {}) do
+        if exit_tool_name and tool_call.name == exit_tool_name then
+            table.insert(exit_tool_calls, tool_call)
+        else
+            table.insert(executable_tool_calls, tool_call)
+        end
+    end
+
+    return executable_tool_calls, exit_tool_calls
+end
+
+local function prepare_tools(agent_result: { tool_calls: { ToolCall }? }, caller): (any, {ToolCall}, string?)
     if not agent_result.tool_calls or #agent_result.tool_calls == 0 then
-        return {}
+        return {}, {}, nil
     end
 
     local validated_tools, validate_err = caller:validate(agent_result.tool_calls)
     if validate_err then
-        return {}
+        return {}, {}, validate_err
     end
 
+    local effective_tool_calls: {ToolCall} = agent_result.tool_calls or {}
+    if type(caller.get_last_tool_calls) == "function" then
+        effective_tool_calls = (caller:get_last_tool_calls() or {}) :: {ToolCall}
+    end
+
+    return validated_tools, effective_tool_calls, nil
+end
+
+local function execute_tools(caller, session_context, validated_tools)
     local tool_results = caller:execute(session_context or {}, validated_tools)
     return tool_results or {}
+end
+
+local function configure_tool_wrappers(caller, agent_instance, n, agent_id, model_name, iteration, outcome: ToolWrapperOutcome?,
+                                      run_context_binding: string?)
+    local host = {
+        kind = "dataflow",
+        dataflow_id = string_or_nil(n.dataflow_id),
+        node_id = string_or_nil(n.node_id),
+        iteration = tonumber(iteration) or 0
+    } :: ToolWrapperHostRef
+    local agent_ref = {
+        id = string_or_nil(agent_id),
+        model = string_or_nil(model_name)
+    } :: ToolWrapperAgentRef
+    local binding_id = string_or_nil(run_context_binding) or DEFAULT_RUN_CONTEXT_BINDING
+
+    local wrapper_context: ToolWrapperExecutionContext = {
+        host = {
+            kind = host.kind,
+            dataflow_id = host.dataflow_id,
+            node_id = host.node_id,
+            iteration = host.iteration
+        },
+        agent = agent_ref,
+        run_context = {
+            contract = RUN_CONTEXT_CONTRACT,
+            binding = binding_id,
+            host = host,
+            agent = agent_ref
+        },
+        outcome = outcome
+    }
+
+    if type(caller.set_tool_wrappers) == "function" then
+        caller:set_tool_wrappers(agent_instance and agent_instance.tool_wrappers or {})
+    end
+    if type(caller.set_wrapper_context) == "function" then
+        caller:set_wrapper_context(wrapper_context)
+    end
 end
 
 local function process_tool_results(n, tool_results, iteration, exit_tool_name, agent_result: any, arena_config,
@@ -981,7 +1378,8 @@ local function process_tool_results(n, tool_results, iteration, exit_tool_name, 
                 local exit_arguments = original_tool_call.arguments
 
                 if arena_config.exit_func_id then
-                    local validated_result, validation_err = funcs.new()
+                    local executor = funcs.new()
+                    local validated_result, validation_err = executor
                         :with_context(session_context)
                         :call(arena_config.exit_func_id :: string, exit_arguments)
 
@@ -1187,8 +1585,8 @@ local function finalize_iteration(n, agent_ctx, session_context, iteration, max_
     return task_complete, final_result, nil
 end
 
-local function recover_persisted_action(n, agent_ctx, caller, session_context, config, iteration, max_iterations,
-                                        min_iterations, tool_calling, exit_tool_name, show_tool_calls)
+local function recover_persisted_action(n, agent_ctx, agent_instance, caller, session_context, config, iteration, max_iterations,
+                                        min_iterations, tool_calling, exit_tool_name, show_tool_calls, agent_id, model_name)
     local latest_action_row = load_latest_agent_action(n)
     if not latest_action_row then
         return false, nil, nil, nil
@@ -1217,24 +1615,33 @@ local function recover_persisted_action(n, agent_ctx, caller, session_context, c
         return false, nil, action_iteration, nil
     end
 
-    local executable_tool_calls = {} :: { ToolCall }
-    for _, tool_call in ipairs(unresolved_tool_calls) do
-        if not exit_tool_name or tool_call.name ~= exit_tool_name then
-            table.insert(executable_tool_calls, tool_call)
-        end
+    local executable_tool_calls, exit_tool_calls = split_exit_tool_calls(unresolved_tool_calls :: {ToolCall}, exit_tool_name)
+
+    configure_tool_wrappers(caller, agent_instance, n, agent_id, model_name, action_iteration, nil, string_or_nil(config.run_context_binding))
+    local validated_tools, effective_tool_calls, validate_err = prepare_tools({ tool_calls = executable_tool_calls }, caller)
+    if validate_err then
+        return false, nil, action_iteration, "Tool validation failed: " .. tostring(validate_err)
     end
 
-    local tool_call_to_node_id = create_tool_viz_nodes(n, executable_tool_calls, action_iteration, show_tool_calls,
+    local tool_call_to_node_id = create_tool_viz_nodes(n, effective_tool_calls, action_iteration, show_tool_calls,
         exit_tool_name)
-    local tool_results = execute_tools({ tool_calls = executable_tool_calls }, caller, session_context)
+    local tool_results = execute_tools(caller, session_context, validated_tools)
 
     if show_tool_calls then
         update_tool_viz_nodes(n, tool_results, tool_call_to_node_id)
     end
 
+    local recovered_tool_calls = {} :: { ToolCall }
+    for _, tool_call in ipairs(exit_tool_calls) do
+        table.insert(recovered_tool_calls, tool_call)
+    end
+    for _, tool_call in ipairs(effective_tool_calls) do
+        table.insert(recovered_tool_calls, tool_call)
+    end
+
     local recovered_agent_result = {
         result = action_payload.content.result,
-        tool_calls = unresolved_tool_calls,
+        tool_calls = recovered_tool_calls,
         delegate_calls = unresolved_delegate_calls
     }
 
@@ -1328,13 +1735,7 @@ local function run(args)
     if agent_id_override then
         n:update_config({ agent = agent_id_override })
 
-        local entry = registry.get(agent_id_override)
-        if entry and entry.meta and (entry.meta.title or entry.meta.name) then
-            local title = entry.meta.title or entry.meta.name
-            n:update_metadata({ title = title })
-        else
-            n:update_metadata({ title = "Agent: " .. agent_id_override })
-        end
+        n:update_metadata({ title = agent_ref.resolve(agent_id_override).title })
     end
 
     model_override = model_override or config.model or config.arena.model
@@ -1444,7 +1845,99 @@ local function run(args)
 
     local total_tokens = new_total_tokens(saved_state.total_tokens)
     local tool_calls_count = saved_state.tool_calls or 0
-    local pending_compaction_history = {}
+    local pending_checkpoint_history = {}
+    local lifecycle_state = {
+        active_agent_id = nil,
+        active_model = nil,
+        active_agent = nil,
+    }
+
+    local function deactivate_active_agent(reason: string?, outcome: table?, active_iteration: number?)
+        if not lifecycle_state.active_agent_id then
+            return nil
+        end
+
+        local active_agent = lifecycle_state.active_agent or agent_instance
+        local _, lifecycle_err = apply_agent_lifecycle(
+            active_agent,
+            lifecycle_runtime.PHASE.DEACTIVATE,
+            n,
+            lifecycle_state.active_agent_id,
+            lifecycle_state.active_model,
+            active_iteration or iteration,
+            config.run_context_binding,
+            {
+                reason = reason or REASON.DATAFLOW_FINISHED,
+                outcome = outcome or {
+                    state = OUTCOME.COMPLETED,
+                    reason = reason or REASON.DATAFLOW_FINISHED
+                }
+            }
+        )
+
+        if not lifecycle_err then
+            lifecycle_state.active_agent_id = nil
+            lifecycle_state.active_model = nil
+            lifecycle_state.active_agent = nil
+        end
+
+        return lifecycle_err
+    end
+
+    local function activate_current_agent(active_iteration: number, refs: table?): (table?, string?)
+        local same_agent = lifecycle_state.active_agent_id == agent_id and lifecycle_state.active_model == model_name
+        if same_agent then
+            lifecycle_state.active_agent = agent_instance
+            return { applied = 0, skipped = 0 }, nil
+        end
+
+        if lifecycle_state.active_agent_id then
+            local deactivate_err = deactivate_active_agent(REASON.AGENT_SWITCH, {
+                state = OUTCOME.CONTINUES,
+                reason = REASON.AGENT_SWITCH
+            }, active_iteration)
+            if deactivate_err then
+                return nil, deactivate_err
+            end
+        end
+
+        local result, lifecycle_err = apply_agent_lifecycle(
+            agent_instance,
+            lifecycle_runtime.PHASE.ACTIVATE,
+            n,
+            agent_id,
+            model_name,
+            active_iteration,
+            config.run_context_binding,
+            {
+                reason = REASON.AGENT_LOADED,
+                refs = refs,
+                outcome = {
+                    state = OUTCOME.CONTINUES,
+                    reason = REASON.AGENT_LOADED
+                }
+            }
+        )
+        if lifecycle_err then
+            return result, lifecycle_err
+        end
+
+        lifecycle_state.active_agent_id = agent_id
+        lifecycle_state.active_model = model_name
+        lifecycle_state.active_agent = agent_instance
+        return result, nil
+    end
+
+    local function fail_with_lifecycle(payload: table, message: string, reason: string?, active_iteration: number?)
+        local lifecycle_err = deactivate_active_agent(reason or REASON.HOST_FAILED, {
+            state = OUTCOME.FAILED,
+            reason = reason or REASON.HOST_FAILED
+        }, active_iteration)
+        if lifecycle_err and type(payload) == "table" then
+            payload.lifecycle_error = lifecycle_err
+        end
+        return n:fail(payload, message)
+    end
 
     local initial_status = build_status_message(iteration, max_iterations, total_tokens, tool_calls_count, false, false)
     update_node_progress(n, iteration, max_iterations, total_tokens, tool_calls_count, initial_status, agent_id,
@@ -1453,21 +1946,24 @@ local function run(args)
     local recovered_complete, recovered_result, recovered_iteration, recovery_err = recover_persisted_action(
         n,
         agent_ctx,
+        agent_instance,
         caller,
-        session_context,
+        context_with_agent_run(session_context, n, agent_id, model_name, iteration, config.run_context_binding),
         config,
         iteration,
         max_iterations,
         min_iterations,
         tool_calling,
         exit_tool_name,
-        show_tool_calls
+        show_tool_calls,
+        agent_id,
+        model_name
     )
     if recovery_err then
-        return n:fail({
+        return fail_with_lifecycle({
             code = agent_consts.ERROR.AGENT_EXEC_FAILED,
             message = recovery_err
-        }, recovery_err)
+        }, recovery_err, REASON.HOST_FAILED, iteration)
     end
     if recovered_iteration and recovered_iteration > iteration then
         iteration = recovered_iteration
@@ -1479,41 +1975,108 @@ local function run(args)
 
     while iteration < max_iterations and not task_complete do
         iteration = iteration + 1
+        local run_session_context = context_with_agent_run(session_context, n, agent_id, model_name, iteration,
+            config.run_context_binding)
 
-        local pending_compaction_marker, compact_err = maybe_compact_history(n, config, session_context)
-        if compact_err then
-            local strict_mode = config.compact and config.compact.strict == true
+        local effective_checkpoint = resolve_agent_checkpoint_config(config, agent_instance)
+        local pending_checkpoint_marker, checkpoint_err, strict_checkpoint_err = maybe_checkpoint_history(n, {
+            checkpoint = effective_checkpoint,
+            run_context_binding = config.run_context_binding
+        }, run_session_context, agent_instance, agent_id, model_name, iteration)
+        if checkpoint_err then
+            local strict_mode = strict_checkpoint_err == true or (effective_checkpoint and effective_checkpoint.strict == true)
             if strict_mode then
-                return n:fail({
-                    code = agent_consts.ERROR.COMPACTION_FAILED,
-                    message = compact_err
-                }, compact_err)
+                return fail_with_lifecycle({
+                    code = agent_consts.ERROR.CHECKPOINT_FAILED,
+                    message = checkpoint_err
+                }, checkpoint_err, REASON.HOST_FAILED, iteration)
             end
             -- warning mode: log audit observation and continue the turn
-            record_compaction_skip(n, iteration, compact_err)
-            pending_compaction_history = {}
-        elseif pending_compaction_marker then
-            pending_compaction_history = { pending_compaction_marker }
+            record_checkpoint_skip(n, iteration, checkpoint_err)
+            pending_checkpoint_history = {}
+        elseif pending_checkpoint_marker then
+            pending_checkpoint_history = { pending_checkpoint_marker }
         else
-            pending_compaction_history = {}
+            pending_checkpoint_history = {}
         end
-        builder:with_pending_history(pending_compaction_history)
+        builder:with_pending_history(pending_checkpoint_history)
 
         local prompt, prompt_err = builder:build_prompt(config.arena.prompt)
         if prompt_err then
-            return n:fail({
+            return fail_with_lifecycle({
                 code = agent_consts.ERROR.PROMPT_BUILD_FAILED,
                 message = prompt_err
-            }, prompt_err)
+            }, prompt_err, REASON.HOST_FAILED, iteration)
         end
 
-        local step_options = { tool_call = tool_calling, context = session_context }
+        local activate_result, activate_err = activate_current_agent(iteration, {
+            iteration = iteration
+        })
+        if activate_err then
+            return fail_with_lifecycle({
+                code = agent_consts.ERROR.AGENT_EXEC_FAILED,
+                message = activate_err
+            }, activate_err, REASON.HOST_FAILED, iteration)
+        end
+        append_lifecycle_messages(prompt, activate_result)
+
+        local before_result, before_err = apply_agent_lifecycle(
+            agent_instance,
+            lifecycle_runtime.PHASE.BEFORE_STEP,
+            n,
+            agent_id,
+            model_name,
+            iteration,
+            config.run_context_binding,
+            {
+                reason = REASON.AGENT_STEP,
+                refs = {
+                    iteration = iteration
+                },
+                outcome = {
+                    state = OUTCOME.CONTINUES,
+                    reason = REASON.AGENT_STEP
+                }
+            }
+        )
+        if before_err then
+            return fail_with_lifecycle({
+                code = agent_consts.ERROR.AGENT_EXEC_FAILED,
+                message = before_err
+            }, before_err, REASON.HOST_FAILED, iteration)
+        end
+        append_lifecycle_messages(prompt, before_result)
+
+        local step_options = { tool_call = tool_calling, context = run_session_context }
         local agent_result, step_err = agent_instance:step(prompt, step_options)
         if step_err then
-            return n:fail({
+            return fail_with_lifecycle({
                 code = agent_consts.ERROR.AGENT_EXEC_FAILED,
                 message = step_err
-            }, step_err)
+            }, step_err, REASON.HOST_FAILED, iteration)
+        end
+
+        local _, after_err = apply_agent_lifecycle(
+            agent_instance,
+            lifecycle_runtime.PHASE.AFTER_STEP,
+            n,
+            agent_id,
+            model_name,
+            iteration,
+            config.run_context_binding,
+            {
+                reason = REASON.AGENT_STEP,
+                refs = {
+                    iteration = iteration
+                },
+                outcome = lifecycle_outcome_from_agent_result(agent_result)
+            }
+        )
+        if after_err then
+            return fail_with_lifecycle({
+                code = agent_consts.ERROR.AGENT_EXEC_FAILED,
+                message = after_err
+            }, after_err, REASON.HOST_FAILED, iteration)
         end
 
         if agent_result.truncated then
@@ -1536,13 +2099,13 @@ local function run(args)
 
             local _yield_result, yield_err = n:yield()
             if yield_err then
-                return n:fail({
+                return fail_with_lifecycle({
                     code = agent_consts.ERROR.AGENT_EXEC_FAILED,
                     message = "Failed to persist truncated agent turn: " .. tostring(yield_err)
-                }, "Failed to persist truncated agent turn: " .. tostring(yield_err))
+                }, "Failed to persist truncated agent turn: " .. tostring(yield_err), REASON.HOST_FAILED, iteration)
             end
-            pending_compaction_history = {}
-            builder:with_pending_history(pending_compaction_history)
+            pending_checkpoint_history = {}
+            builder:with_pending_history(pending_checkpoint_history)
             goto continue_loop
         end
 
@@ -1571,27 +2134,45 @@ local function run(args)
 
         local submit_ok, submit_err = n:submit()
         if not submit_ok then
-            return n:fail({
+            return fail_with_lifecycle({
                 code = agent_consts.ERROR.AGENT_EXEC_FAILED,
                 message = "Failed to persist agent turn: " .. tostring(submit_err)
-            }, "Failed to persist agent turn: " .. tostring(submit_err))
+            }, "Failed to persist agent turn: " .. tostring(submit_err), REASON.HOST_FAILED, iteration)
         end
-        pending_compaction_history = {}
-        builder:with_pending_history(pending_compaction_history)
+        pending_checkpoint_history = {}
+        builder:with_pending_history(pending_checkpoint_history)
 
-        local tool_call_to_node_id = create_tool_viz_nodes(n, regular_tool_calls, iteration, show_tool_calls,
+        local executable_tool_calls, exit_tool_calls = split_exit_tool_calls(regular_tool_calls, exit_tool_name)
+
+        configure_tool_wrappers(caller, agent_instance, n, agent_id, model_name, iteration, nil, string_or_nil(config.run_context_binding))
+        local validated_tools, effective_tool_calls, validate_err = prepare_tools({ tool_calls = executable_tool_calls }, caller)
+        if validate_err then
+            return fail_with_lifecycle({
+                code = agent_consts.ERROR.AGENT_EXEC_FAILED,
+                message = "Tool validation failed: " .. tostring(validate_err)
+            }, "Tool validation failed: " .. tostring(validate_err), REASON.HOST_FAILED, iteration)
+        end
+
+        local tool_call_to_node_id = create_tool_viz_nodes(n, effective_tool_calls, iteration, show_tool_calls,
             exit_tool_name)
-
-        local tool_results = execute_tools({ tool_calls = regular_tool_calls }, caller, session_context)
+        local tool_results = execute_tools(caller, run_session_context, validated_tools)
 
         if show_tool_calls then
             update_tool_viz_nodes(n, tool_results, tool_call_to_node_id)
         end
 
+        local finalized_tool_calls = {} :: { ToolCall }
+        for _, tool_call in ipairs(exit_tool_calls) do
+            table.insert(finalized_tool_calls, tool_call)
+        end
+        for _, tool_call in ipairs(effective_tool_calls) do
+            table.insert(finalized_tool_calls, tool_call)
+        end
+
         local finalized_complete, finalized_result, finalize_err = finalize_iteration(
             n,
             agent_ctx,
-            session_context,
+            run_session_context,
             iteration,
             max_iterations,
             min_iterations,
@@ -1599,7 +2180,7 @@ local function run(args)
             exit_tool_name,
             {
                 result = agent_result.result,
-                tool_calls = regular_tool_calls,
+                tool_calls = finalized_tool_calls,
                 delegate_calls = delegate_calls
             },
             delegate_calls,
@@ -1607,10 +2188,10 @@ local function run(args)
             config.arena
         )
         if finalize_err then
-            return n:fail({
+            return fail_with_lifecycle({
                 code = agent_consts.ERROR.STEP_FUNCTION_FAILED,
                 message = finalize_err :: string
-            }, finalize_err :: string)
+            }, finalize_err :: string, REASON.HOST_FAILED, iteration)
         end
 
         if finalized_complete then
@@ -1646,10 +2227,10 @@ local function run(args)
         update_node_progress(n, iteration, max_iterations, total_tokens, tool_calls_count, final_status, agent_id,
             model_name)
 
-        return n:fail({
+        return fail_with_lifecycle({
             code = agent_consts.ERROR.AGENT_EXEC_FAILED,
             message = "Maximum iterations reached without completion"
-        }, "Maximum iterations reached")
+        }, "Maximum iterations reached", REASON.MAX_ITERATIONS_REACHED, iteration)
     end
 
     local final_status = build_status_message(iteration, max_iterations, total_tokens, tool_calls_count, true,
@@ -1675,6 +2256,17 @@ local function run(args)
     end
 
     output_content = final_result or { success = false, error = "No result produced" }
+    local lifecycle_err = deactivate_active_agent(REASON.DATAFLOW_FINISHED, {
+        state = success and OUTCOME.COMPLETED or OUTCOME.FAILED,
+        reason = success and REASON.NO_TOOLS_REQUIRED or REASON.HOST_FAILED
+    }, iteration)
+    if lifecycle_err then
+        return n:fail({
+            code = agent_consts.ERROR.AGENT_EXEC_FAILED,
+            message = lifecycle_err
+        }, lifecycle_err)
+    end
+
     return n:complete(output_content, message)
 end
 

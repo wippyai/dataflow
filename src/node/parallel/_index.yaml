@@ -21,6 +21,8 @@ entries:
         the complex state management required for parallel iteration execution.
     source: file://iterator.lua
     modules:
+      - json
+      - time
       - uuid
     imports:
       consts: userspace.dataflow:consts
@@ -76,6 +78,8 @@ entries:
     modules:
       - funcs
       - json
+      - time
+      - uuid
     imports:
       consts: userspace.dataflow:consts
       iterator: userspace.dataflow.node.parallel:iterator

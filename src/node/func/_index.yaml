@@ -104,6 +104,7 @@ entries:
     modules:
       - funcs
       - json
+      - time
     imports:
       consts: userspace.dataflow:consts
       node: userspace.dataflow:node

@@ -1,6 +1,6 @@
 local helpers = require("helpers")
 
--- Deterministic compaction summarizer for agent compaction tests.
+-- Deterministic checkpoint summarizer for agent checkpoint tests.
 -- Records a metric so tests can assert call count per scenario and
 -- returns a summary string mentioning the number of history rows seen.
 local function handler(args)
@@ -30,14 +30,14 @@ local function handler(args)
     end
 
     if scenario_id then
-        helpers.bump_metric(scenario_id, "compaction_calls", 1)
-        helpers.set_metric(scenario_id, "last_compaction_history_count", history_count)
-        helpers.set_metric(scenario_id, "last_compaction_prompt_tokens", prompt_tokens)
+        helpers.bump_metric(scenario_id, "checkpoint_calls", 1)
+        helpers.set_metric(scenario_id, "last_checkpoint_history_count", history_count)
+        helpers.set_metric(scenario_id, "last_checkpoint_prompt_tokens", prompt_tokens)
     end
 
     return {
         memory = string.format(
-            "compacted %d history rows at %d prompt tokens",
+            "checkpointed %d history rows at %d prompt tokens",
             history_count,
             prompt_tokens
         )

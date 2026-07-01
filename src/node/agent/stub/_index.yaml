@@ -6,7 +6,7 @@ entries:
   meta:
     comment: Shared state for agent recovery test metrics and idempotent tool effects
     test_only: true
-  max_size: 256
+  max_size: 4096
   cleanup_interval: 5m
 - name: recovery_helpers
   kind: library.lua
@@ -72,12 +72,23 @@ entries:
   imports:
     helpers: userspace.dataflow.node.agent.stub:recovery_helpers
   method: handler
-- name: compaction_summarizer
+- name: lifecycle_recorder
   kind: function.lua
   meta:
     test_only: true
-    comment: Deterministic summarizer stub for agent compaction tests
-  source: file://compaction_summarizer.lua
+    comment: Records agent lifecycle phases and returns startup prompt context for lifecycle tests
+  source: file://lifecycle_recorder.lua
+  modules:
+  - ctx
+  imports:
+    helpers: userspace.dataflow.node.agent.stub:recovery_helpers
+  method: handler
+- name: checkpoint_summarizer
+  kind: function.lua
+  meta:
+    test_only: true
+    comment: Deterministic summarizer stub for agent checkpoint tests
+  source: file://checkpoint_summarizer.lua
   imports:
     helpers: userspace.dataflow.node.agent.stub:recovery_helpers
   method: handler
@@ -85,7 +96,7 @@ entries:
   kind: function.lua
   meta:
     test_only: true
-    comment: Compaction summarizer stub that returns empty memory (tests soft-failure
+    comment: Checkpoint summarizer stub that returns empty memory (tests soft-failure
       path)
   source: file://empty_memory_summarizer.lua
   method: handler
@@ -93,7 +104,7 @@ entries:
   kind: function.lua
   meta:
     test_only: true
-    comment: Compaction summarizer stub returning a 100k-char memory (tests size cap)
+    comment: Checkpoint summarizer stub returning a 100k-char memory (tests size cap)
   source: file://oversize_summarizer.lua
   method: handler
 - name: recovery_driver
@@ -106,6 +117,36 @@ entries:
   - contract: wippy.llm:generator
     methods:
       generate: userspace.dataflow.node.agent.stub:recovery_generate
+- name: lifecycle_recorder_binding
+  kind: contract.binding
+  meta:
+    name: Lifecycle Recorder Binding
+    comment: Records lifecycle phases for dataflow agent tests
+    test_only: true
+  contracts:
+  - contract: wippy.agent:lifecycle
+    methods:
+      apply: userspace.dataflow.node.agent.stub:lifecycle_recorder
+- name: lifecycle_test_trait
+  kind: registry.entry
+  meta:
+    type: agent.trait
+    name: Lifecycle Test Trait
+    title: Lifecycle Test Trait
+    comment: Adds a lifecycle handler for dataflow agent tests
+    test_only: true
+  data:
+    bindings:
+      lifecycle:
+      - id: lifecycle_recorder
+        contract: wippy.agent:lifecycle
+        binding: userspace.dataflow.node.agent.stub:lifecycle_recorder_binding
+        phases:
+        - activate
+        - before_step
+        - after_step
+        - deactivate
+        priority: 10
 - name: recovery_provider
   kind: registry.entry
   meta:

@@ -93,9 +93,15 @@ function helpers.reset_metrics(scenario_id)
     helpers.set_metric(scenario_id, "llm_calls", 0)
     helpers.set_metric(scenario_id, "tool_attempts", 0)
     helpers.set_metric(scenario_id, "tool_effects", 0)
-    helpers.set_metric(scenario_id, "compaction_calls", 0)
-    helpers.set_metric(scenario_id, "last_compaction_history_count", 0)
-    helpers.set_metric(scenario_id, "last_compaction_prompt_tokens", 0)
+    helpers.set_metric(scenario_id, "checkpoint_calls", 0)
+    helpers.set_metric(scenario_id, "last_checkpoint_history_count", 0)
+    helpers.set_metric(scenario_id, "last_checkpoint_prompt_tokens", 0)
+    helpers.set_metric(scenario_id, "lifecycle_activate", 0)
+    helpers.set_metric(scenario_id, "lifecycle_before_step", 0)
+    helpers.set_metric(scenario_id, "lifecycle_after_step", 0)
+    helpers.set_metric(scenario_id, "lifecycle_deactivate", 0)
+    helpers.set_metric(scenario_id, "lifecycle_prompt_seen", 0)
+    helpers.set_metric(scenario_id, "lifecycle_last_iteration", 0)
     helpers.set_metric(scenario_id, "effect_applied:" .. helpers.call_id(scenario_id, 1), 0)
     helpers.set_metric(scenario_id, "effect_applied:" .. helpers.call_id(scenario_id, 2), 0)
 end
@@ -105,11 +111,17 @@ function helpers.get_metrics(scenario_id)
         llm_calls = tonumber(helpers.get_metric(scenario_id, "llm_calls", 0)) or 0,
         tool_attempts = tonumber(helpers.get_metric(scenario_id, "tool_attempts", 0)) or 0,
         tool_effects = tonumber(helpers.get_metric(scenario_id, "tool_effects", 0)) or 0,
-        compaction_calls = tonumber(helpers.get_metric(scenario_id, "compaction_calls", 0)) or 0,
-        last_compaction_history_count = tonumber(
-            helpers.get_metric(scenario_id, "last_compaction_history_count", 0)) or 0,
-        last_compaction_prompt_tokens = tonumber(
-            helpers.get_metric(scenario_id, "last_compaction_prompt_tokens", 0)) or 0,
+        checkpoint_calls = tonumber(helpers.get_metric(scenario_id, "checkpoint_calls", 0)) or 0,
+        last_checkpoint_history_count = tonumber(
+            helpers.get_metric(scenario_id, "last_checkpoint_history_count", 0)) or 0,
+        last_checkpoint_prompt_tokens = tonumber(
+            helpers.get_metric(scenario_id, "last_checkpoint_prompt_tokens", 0)) or 0,
+        lifecycle_activate = tonumber(helpers.get_metric(scenario_id, "lifecycle_activate", 0)) or 0,
+        lifecycle_before_step = tonumber(helpers.get_metric(scenario_id, "lifecycle_before_step", 0)) or 0,
+        lifecycle_after_step = tonumber(helpers.get_metric(scenario_id, "lifecycle_after_step", 0)) or 0,
+        lifecycle_deactivate = tonumber(helpers.get_metric(scenario_id, "lifecycle_deactivate", 0)) or 0,
+        lifecycle_prompt_seen = tonumber(helpers.get_metric(scenario_id, "lifecycle_prompt_seen", 0)) or 0,
+        lifecycle_last_iteration = tonumber(helpers.get_metric(scenario_id, "lifecycle_last_iteration", 0)) or 0,
         step1_effect = tonumber(helpers.get_metric(scenario_id,
             "effect_applied:" .. helpers.call_id(scenario_id, 1), 0)) or 0,
         step2_effect = tonumber(helpers.get_metric(scenario_id,

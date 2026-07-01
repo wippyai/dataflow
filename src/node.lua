@@ -3,6 +3,19 @@ local uuid = require("uuid")
 local expr = require("expr")
 local consts = require("consts")
 
+type YieldChannel = Channel<any>
+
+type ProcessDeps = {
+    listen: (topic: string, options: any?) -> (YieldChannel, any?),
+    send: (pid: string, topic: string, payload: any) -> (boolean, any?),
+}
+
+type NodeDeps = {
+    commit: any,
+    data_reader: any,
+    process: ProcessDeps,
+}
+
 local default_deps = {
     commit = require("commit"),
     data_reader = require("data_reader"),
@@ -109,7 +122,7 @@ local function resolve_dataflow_references(self, value)
     return value
 end
 
-function node.new(args, deps)
+function node.new(args, deps: NodeDeps?)
     if not args then
         return nil, "Node args required"
     end
@@ -117,10 +130,10 @@ function node.new(args, deps)
         return nil, "Node args must contain node_id and dataflow_id"
     end
 
-    deps = deps or default_deps
+    local effective_deps = deps or default_deps
 
     local yield_reply_topic = consts.MESSAGE_TOPIC.YIELD_REPLY_PREFIX .. args.node_id
-    local yield_channel = (deps.process :: any).listen(yield_reply_topic)
+    local yield_channel = effective_deps.process.listen(yield_reply_topic)
 
     local instance = {
         node_id = args.node_id,
@@ -141,7 +154,7 @@ function node.new(args, deps)
         _yield_reply_topic = yield_reply_topic,
         _last_yield_id = nil,
 
-        _deps = deps
+        _deps = effective_deps
     }
 
     if not instance.path[1] or instance.path[1] ~= args.node_id then
@@ -459,7 +472,7 @@ function methods.yield(self: table, options)
         }
     }
 
-    local success = (self._deps.process :: any).send(
+    local success = self._deps.process.send(
         "dataflow." .. self.dataflow_id,
         consts.MESSAGE_TOPIC.YIELD_REQUEST,
         yield_signal
@@ -467,6 +480,10 @@ function methods.yield(self: table, options)
 
     if not success then
         return nil, "Failed to send yield signal"
+    end
+
+    if not self._yield_channel then
+        return nil, "Yield channel unavailable"
     end
 
     local received, ok = self._yield_channel:receive()

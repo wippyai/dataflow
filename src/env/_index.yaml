@@ -18,3 +18,13 @@ entries:
       icon: tabler:globe
     storage: userspace.dataflow.env:memory
     default: https://front.wippy.ai
+
+  # userspace.dataflow.env:checkpoint_function_id
+  - name: checkpoint_function_id
+    kind: env.variable
+    meta:
+      comment: Default function ID for agent checkpoint summaries when a node does not configure one
+      icon: tabler:checkpoint
+      private: true
+    variable: DATAFLOW_CHECKPOINT_FUNCTION_ID
+    storage: userspace.dataflow.env:memory

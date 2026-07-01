@@ -51,7 +51,7 @@ local function apply_latest_marker(history)
     for i = #history, 1, -1 do
         local row = history[i]
         if row.type == agent_consts.DATA_TYPE.AGENT_MEMORY
-           and row.metadata and row.metadata.compaction_marker == true then
+           and row.metadata and row.metadata.checkpoint_marker == true then
             latest_marker = row
             break
         end
@@ -61,7 +61,7 @@ local function apply_latest_marker(history)
         return history
     end
 
-    local cut_before = tostring((latest_marker.metadata or {}).compacted_before_data_id or "")
+    local cut_before = tostring((latest_marker.metadata or {}).checkpoint_before_data_id or "")
     local filtered = { latest_marker }
     for _, row in ipairs(history) do
         if row ~= latest_marker then
@@ -76,7 +76,7 @@ local function apply_latest_marker(history)
 end
 
 local function define_tests()
-    describe("Agent Compaction Tests", function()
+    describe("Agent Checkpoint Tests", function()
         local c
 
         before_all(function()
@@ -169,7 +169,7 @@ local function define_tests()
             local node_id = uuid.v7()
             local input_id = uuid.v7()
             local node_input_id = uuid.v7()
-            local scenario_id = opts.scenario_id or ("agent-compact-" .. uuid.v7())
+            local scenario_id = opts.scenario_id or ("agent-checkpoint-" .. uuid.v7())
 
             reset_metrics(scenario_id)
 
@@ -177,7 +177,7 @@ local function define_tests()
                 agent = "userspace.dataflow.node.agent.stub:recovery_test_agent",
                 show_tool_calls = false,
                 arena = {
-                    prompt = "Execute the compaction stress scenario.",
+                    prompt = "Execute the checkpoint stress scenario.",
                     max_iterations = opts.max_iterations or 6,
                     tool_calling = "auto",
                     tools = {
@@ -193,8 +193,8 @@ local function define_tests()
                 }
             }
 
-            if opts.compact then
-                agent_config.compact = opts.compact
+            if opts.checkpoint then
+                agent_config.checkpoint = opts.checkpoint
             end
 
             local commands = {
@@ -206,7 +206,7 @@ local function define_tests()
                         status = consts.STATUS.PENDING,
                         config = agent_config,
                         metadata = {
-                            title = "Agent Compaction Test"
+                            title = "Agent Checkpoint Test"
                         }
                     }
                 },
@@ -217,7 +217,7 @@ local function define_tests()
                         data_type = consts.DATA_TYPE.WORKFLOW_INPUT,
                         content = {
                             scenario_id = scenario_id,
-                            mode = opts.mode or "compaction_stress",
+                            mode = opts.mode or "checkpoint_stress",
                             max_steps = opts.max_steps or 3,
                             tool_delay_ms = opts.tool_delay_ms or 0,
                             prompt_tokens = opts.prompt_tokens or 500
@@ -239,7 +239,7 @@ local function define_tests()
             }
 
             local dataflow_id, err = c:create_workflow(commands, {
-                metadata = { title = "Agent Compaction Test Workflow" }
+                metadata = { title = "Agent Checkpoint Test Workflow" }
             })
             test.is_nil(err, "workflow created")
 
@@ -262,23 +262,23 @@ local function define_tests()
                 :all() or {}
         end
 
-        local function count_compaction_markers(history)
+        local function count_checkpoint_markers(history)
             local count = 0
             for _, row in ipairs(history) do
                 if row.type == agent_consts.DATA_TYPE.AGENT_MEMORY
                    and row.metadata
-                   and row.metadata.compaction_marker == true then
+                   and row.metadata.checkpoint_marker == true then
                     count = count + 1
                 end
             end
             return count
         end
 
-        local function latest_compaction_marker(history)
+        local function latest_checkpoint_marker(history)
             local latest_marker = nil
             for _, row in ipairs(history) do
                 if row.type == agent_consts.DATA_TYPE.AGENT_MEMORY
-                   and row.metadata and row.metadata.compaction_marker == true then
+                   and row.metadata and row.metadata.checkpoint_marker == true then
                     if not latest_marker
                        or tostring(row.data_id or "") > tostring(latest_marker.data_id or "") then
                         latest_marker = row
@@ -306,7 +306,7 @@ local function define_tests()
             return nil
         end
 
-        it("compaction disabled is the default - no markers written", function()
+        it("checkpoint disabled is the default - no markers written", function()
             local workflow = create_workflow({
                 max_iterations = 4,
                 max_steps = 2,
@@ -317,20 +317,20 @@ local function define_tests()
             test.is_true(wait_complete(workflow.dataflow_id), "workflow completed")
 
             local history = load_history(workflow.dataflow_id, workflow.node_id)
-            test.eq(count_compaction_markers(history), 0, "no compaction markers without config")
+            test.eq(count_checkpoint_markers(history), 0, "no checkpoint markers without config")
 
             local metrics = get_metrics(workflow.scenario_id)
-            test.eq(metrics.compaction_calls, 0, "compaction function never called")
+            test.eq(metrics.checkpoint_calls, 0, "checkpoint function never called")
         end)
 
-        it("compaction below threshold does not fire", function()
+        it("checkpoint below threshold does not fire", function()
             local workflow = create_workflow({
                 max_iterations = 4,
                 max_steps = 2,
                 prompt_tokens = 50,
-                compact = {
+                checkpoint = {
                     token_threshold = 1000,
-                    function_id = "userspace.dataflow.node.agent.stub:compaction_summarizer"
+                    function_id = "userspace.dataflow.node.agent.stub:checkpoint_summarizer"
                 }
             })
 
@@ -338,20 +338,20 @@ local function define_tests()
             test.is_true(wait_complete(workflow.dataflow_id), "workflow completed")
 
             local history = load_history(workflow.dataflow_id, workflow.node_id)
-            test.eq(count_compaction_markers(history), 0, "no markers when below threshold")
+            test.eq(count_checkpoint_markers(history), 0, "no markers when below threshold")
 
             local metrics = get_metrics(workflow.scenario_id)
-            test.eq(metrics.compaction_calls, 0, "summarizer never called")
+            test.eq(metrics.checkpoint_calls, 0, "summarizer never called")
         end)
 
-        it("compaction above threshold fires and writes a marker row", function()
+        it("checkpoint above threshold fires and writes a marker row", function()
             local workflow = create_workflow({
                 max_iterations = 5,
                 max_steps = 3,
                 prompt_tokens = 500,
-                compact = {
+                checkpoint = {
                     token_threshold = 100,
-                    function_id = "userspace.dataflow.node.agent.stub:compaction_summarizer"
+                    function_id = "userspace.dataflow.node.agent.stub:checkpoint_summarizer"
                 }
             })
 
@@ -359,22 +359,22 @@ local function define_tests()
             test.is_true(wait_complete(workflow.dataflow_id), "workflow completed")
 
             local history = load_history(workflow.dataflow_id, workflow.node_id)
-            local marker_count = count_compaction_markers(history)
-            test.gt(marker_count, 0, "at least one compaction marker written")
+            local marker_count = count_checkpoint_markers(history)
+            test.gt(marker_count, 0, "at least one checkpoint marker written")
 
             local metrics = get_metrics(workflow.scenario_id)
-            test.gt(metrics.compaction_calls, 0, "summarizer invoked")
-            test.eq(metrics.last_compaction_prompt_tokens, 500, "prompt_tokens recorded")
+            test.gt(metrics.checkpoint_calls, 0, "summarizer invoked")
+            test.eq(metrics.last_checkpoint_prompt_tokens, 500, "prompt_tokens recorded")
         end)
 
-        it("compaction marker sits at correct cut line - history before is dropped", function()
+        it("checkpoint marker sits at correct cut line - history before is dropped", function()
             local workflow = create_workflow({
                 max_iterations = 5,
                 max_steps = 3,
                 prompt_tokens = 500,
-                compact = {
+                checkpoint = {
                     token_threshold = 100,
-                    function_id = "userspace.dataflow.node.agent.stub:compaction_summarizer"
+                    function_id = "userspace.dataflow.node.agent.stub:checkpoint_summarizer"
                 }
             })
 
@@ -383,11 +383,11 @@ local function define_tests()
 
             local history = load_history(workflow.dataflow_id, workflow.node_id)
 
-            local latest_marker = latest_compaction_marker(history)
+            local latest_marker = latest_checkpoint_marker(history)
             test.not_nil(latest_marker, "at least one marker exists")
 
-            local cut_before = tostring((latest_marker.metadata or {}).compacted_before_data_id or "")
-            test.is_true(cut_before ~= "", "compacted_before_data_id recorded on marker")
+            local cut_before = tostring((latest_marker.metadata or {}).checkpoint_before_data_id or "")
+            test.is_true(cut_before ~= "", "checkpoint_before_data_id recorded on marker")
 
             local filtered = filtered_history(history)
             test.is_true(#filtered > 1, "prompt retains marker plus some follow-on context")
@@ -402,16 +402,16 @@ local function define_tests()
                 end
             end
 
-            test.is_true(#filtered < #history, "compaction still drops some rows before the cut line")
+            test.is_true(#filtered < #history, "checkpoint still drops some rows before the cut line")
         end)
 
-        it("strict compaction summarizer error fails the agent with COMPACTION_FAILED", function()
+        it("strict checkpoint summarizer error fails the agent with CHECKPOINT_FAILED", function()
             -- strict=true: an unreachable function_id must hard-fail the agent
             local workflow = create_workflow({
                 max_iterations = 3,
                 max_steps = 2,
                 prompt_tokens = 500,
-                compact = {
+                checkpoint = {
                     token_threshold = 100,
                     function_id = "userspace.dataflow.node.agent.stub:nonexistent_summarizer",
                     strict = true
@@ -419,27 +419,27 @@ local function define_tests()
             })
 
             c:start(workflow.dataflow_id)
-            test.is_true(wait_failed(workflow.dataflow_id), "strict mode fails agent on compaction error")
+            test.is_true(wait_failed(workflow.dataflow_id), "strict mode fails agent on checkpoint error")
         end)
 
-        it("compaction survives orchestrator kill between turns", function()
+        it("checkpoint survives orchestrator kill between turns", function()
             local workflow = create_workflow({
                 max_iterations = 5,
                 max_steps = 3,
                 tool_delay_ms = 1500,
                 prompt_tokens = 500,
-                compact = {
+                checkpoint = {
                     token_threshold = 100,
-                    function_id = "userspace.dataflow.node.agent.stub:compaction_summarizer"
+                    function_id = "userspace.dataflow.node.agent.stub:checkpoint_summarizer"
                 }
             })
 
             c:start(workflow.dataflow_id)
 
-            -- wait until at least one compaction marker has been persisted
+            -- wait until at least one checkpoint marker has been persisted
             local marker_seen = wait_until(function()
                 local history = load_history(workflow.dataflow_id, workflow.node_id)
-                if count_compaction_markers(history) >= 1 then
+                if count_checkpoint_markers(history) >= 1 then
                     return true
                 end
                 return nil
@@ -454,7 +454,7 @@ local function define_tests()
 
             -- after restart the marker must still be in the durable history
             local history = load_history(workflow.dataflow_id, workflow.node_id)
-            test.gt(count_compaction_markers(history), 0, "marker preserved across restart")
+            test.gt(count_checkpoint_markers(history), 0, "marker preserved across restart")
         end)
 
         -- === data-level verification ===
@@ -464,9 +464,9 @@ local function define_tests()
                 max_iterations = 4,
                 max_steps = 2,
                 prompt_tokens = 500,
-                compact = {
+                checkpoint = {
                     token_threshold = 100,
-                    function_id = "userspace.dataflow.node.agent.stub:compaction_summarizer"
+                    function_id = "userspace.dataflow.node.agent.stub:checkpoint_summarizer"
                 }
             })
 
@@ -474,7 +474,7 @@ local function define_tests()
             test.is_true(wait_complete(workflow.dataflow_id), "completed")
 
             local history = load_history(workflow.dataflow_id, workflow.node_id)
-            local marker = latest_compaction_marker(history)
+            local marker = latest_checkpoint_marker(history)
             test.not_nil(marker, "marker exists")
 
             local content = marker.content
@@ -482,32 +482,32 @@ local function define_tests()
                 content = content.text or content.content or ""
             end
             test.is_true(type(content) == "string" and #content > 0, "marker has non-empty content")
-            test.is_true(string.find(content, "compacted", 1, true) ~= nil,
+            test.is_true(string.find(content, "checkpointed", 1, true) ~= nil,
                 "content contains stub summarizer text")
 
             local meta = marker.metadata or {}
-            test.eq(meta.compaction_marker, true, "marker flag set")
-            test.gt(tonumber(meta.compacted_at_prompt_tokens) or 0, 0, "prompt_tokens recorded")
-            test.is_true(type(meta.compacted_before_data_id) == "string"
-                and meta.compacted_before_data_id ~= "", "cut line recorded")
+            test.eq(meta.checkpoint_marker, true, "marker flag set")
+            test.gt(tonumber(meta.checkpoint_at_prompt_tokens) or 0, 0, "prompt_tokens recorded")
+            test.is_true(type(meta.checkpoint_before_data_id) == "string"
+                and meta.checkpoint_before_data_id ~= "", "cut line recorded")
             test.gt(tonumber(meta.iteration) or 0, 0, "iteration recorded")
-            test.gt(tonumber(meta.compacted_history_count) or 0, 0, "summarized history count recorded")
-            test.is_true(type(meta.compacted_first_data_id) == "string"
-                and meta.compacted_first_data_id ~= "", "first summarized row recorded")
-            test.is_true(type(meta.compacted_last_data_id) == "string"
-                and meta.compacted_last_data_id ~= "", "last summarized row recorded")
-            test.eq(meta.compaction_function_id,
-                "userspace.dataflow.node.agent.stub:compaction_summarizer", "function id recorded")
+            test.gt(tonumber(meta.checkpoint_history_count) or 0, 0, "summarized history count recorded")
+            test.is_true(type(meta.checkpoint_first_data_id) == "string"
+                and meta.checkpoint_first_data_id ~= "", "first summarized row recorded")
+            test.is_true(type(meta.checkpoint_last_data_id) == "string"
+                and meta.checkpoint_last_data_id ~= "", "last summarized row recorded")
+            test.eq(meta.checkpoint_function_id,
+                "userspace.dataflow.node.agent.stub:checkpoint_summarizer", "function id recorded")
         end)
 
-        it("cut line excludes pre-compaction rows from prompt_builder output", function()
+        it("cut line excludes pre-checkpoint rows from prompt_builder output", function()
             local workflow = create_workflow({
                 max_iterations = 5,
                 max_steps = 3,
                 prompt_tokens = 500,
-                compact = {
+                checkpoint = {
                     token_threshold = 100,
-                    function_id = "userspace.dataflow.node.agent.stub:compaction_summarizer"
+                    function_id = "userspace.dataflow.node.agent.stub:checkpoint_summarizer"
                 }
             })
 
@@ -515,9 +515,9 @@ local function define_tests()
             test.is_true(wait_complete(workflow.dataflow_id), "completed")
 
             local history = load_history(workflow.dataflow_id, workflow.node_id)
-            local latest_marker = latest_compaction_marker(history)
+            local latest_marker = latest_checkpoint_marker(history)
             test.not_nil(latest_marker, "marker exists")
-            local cut_before = tostring((latest_marker.metadata or {}).compacted_before_data_id or "")
+            local cut_before = tostring((latest_marker.metadata or {}).checkpoint_before_data_id or "")
 
             local filtered = filtered_history(history)
 
@@ -727,14 +727,14 @@ local function define_tests()
             test.eq(delegation_result_options.anthropic_cache, true, "delegation llm metadata forwarded")
         end)
 
-        it("multi-fire compaction: only latest marker is consumed by reader", function()
+        it("multi-fire checkpoint: only latest marker is consumed by reader", function()
             local workflow = create_workflow({
                 max_iterations = 6,
                 max_steps = 4,
                 prompt_tokens = 500,
-                compact = {
+                checkpoint = {
                     token_threshold = 50,
-                    function_id = "userspace.dataflow.node.agent.stub:compaction_summarizer"
+                    function_id = "userspace.dataflow.node.agent.stub:checkpoint_summarizer"
                 }
             })
 
@@ -742,29 +742,29 @@ local function define_tests()
             test.is_true(wait_complete(workflow.dataflow_id), "completed")
 
             local history = load_history(workflow.dataflow_id, workflow.node_id)
-            local marker_count = count_compaction_markers(history)
+            local marker_count = count_checkpoint_markers(history)
             test.gt(marker_count, 1, "multiple markers fired across turns")
 
-            local latest = latest_compaction_marker(history)
+            local latest = latest_checkpoint_marker(history)
             test.not_nil(latest, "latest marker exists")
 
             -- older markers must sort before the latest
             for _, row in ipairs(history) do
                 if row ~= latest
                    and row.type == agent_consts.DATA_TYPE.AGENT_MEMORY
-                   and row.metadata and row.metadata.compaction_marker == true then
+                   and row.metadata and row.metadata.checkpoint_marker == true then
                     test.is_true(tostring(row.data_id or "") < tostring(latest.data_id or ""),
                         "older marker sorts before latest")
                 end
             end
 
             -- the cut line on the latest marker must advance past or equal older markers' cut lines
-            local latest_cut = tostring((latest.metadata or {}).compacted_before_data_id or "")
+            local latest_cut = tostring((latest.metadata or {}).checkpoint_before_data_id or "")
             for _, row in ipairs(history) do
                 if row ~= latest
                    and row.type == agent_consts.DATA_TYPE.AGENT_MEMORY
-                   and row.metadata and row.metadata.compaction_marker == true then
-                    local older_cut = tostring((row.metadata or {}).compacted_before_data_id or "")
+                   and row.metadata and row.metadata.checkpoint_marker == true then
+                    local older_cut = tostring((row.metadata or {}).checkpoint_before_data_id or "")
                     test.is_true(latest_cut >= older_cut,
                         "latest cut line is at or after older cut line")
                 end
@@ -773,14 +773,14 @@ local function define_tests()
 
         -- === adversarial cases ===
 
-        it("threshold equals prompt_tokens - compaction does NOT fire", function()
+        it("threshold equals prompt_tokens - checkpoint does NOT fire", function()
             local workflow = create_workflow({
                 max_iterations = 3,
                 max_steps = 2,
                 prompt_tokens = 100,
-                compact = {
+                checkpoint = {
                     token_threshold = 100,
-                    function_id = "userspace.dataflow.node.agent.stub:compaction_summarizer"
+                    function_id = "userspace.dataflow.node.agent.stub:checkpoint_summarizer"
                 }
             })
 
@@ -788,20 +788,20 @@ local function define_tests()
             test.is_true(wait_complete(workflow.dataflow_id), "completed")
 
             local metrics = get_metrics(workflow.scenario_id)
-            test.eq(metrics.compaction_calls, 0, "compaction uses strict > threshold")
+            test.eq(metrics.checkpoint_calls, 0, "checkpoint uses strict > threshold")
 
             local history = load_history(workflow.dataflow_id, workflow.node_id)
-            test.eq(count_compaction_markers(history), 0, "no markers when tokens == threshold")
+            test.eq(count_checkpoint_markers(history), 0, "no markers when tokens == threshold")
         end)
 
-        it("threshold zero - compaction fires on every turn above zero tokens", function()
+        it("threshold zero - checkpoint fires on every turn above zero tokens", function()
             local workflow = create_workflow({
                 max_iterations = 4,
                 max_steps = 2,
                 prompt_tokens = 50,
-                compact = {
+                checkpoint = {
                     token_threshold = 1,
-                    function_id = "userspace.dataflow.node.agent.stub:compaction_summarizer"
+                    function_id = "userspace.dataflow.node.agent.stub:checkpoint_summarizer"
                 }
             })
 
@@ -809,15 +809,15 @@ local function define_tests()
             test.is_true(wait_complete(workflow.dataflow_id), "completed")
 
             local metrics = get_metrics(workflow.scenario_id)
-            test.gt(metrics.compaction_calls, 0, "compaction fired at least once")
+            test.gt(metrics.checkpoint_calls, 0, "checkpoint fired at least once")
         end)
 
-        it("token_threshold set but function_id missing - no compaction, no error", function()
+        it("token_threshold set but function_id missing - no checkpoint, no error", function()
             local workflow = create_workflow({
                 max_iterations = 3,
                 max_steps = 2,
                 prompt_tokens = 500,
-                compact = {
+                checkpoint = {
                     token_threshold = 100
                 }
             })
@@ -826,16 +826,16 @@ local function define_tests()
             test.is_true(wait_complete(workflow.dataflow_id), "completed")
 
             local history = load_history(workflow.dataflow_id, workflow.node_id)
-            test.eq(count_compaction_markers(history), 0, "partial config is effectively off")
+            test.eq(count_checkpoint_markers(history), 0, "partial config is effectively off")
         end)
 
-        it("function_id set but token_threshold missing - no compaction, no error", function()
+        it("function_id set but token_threshold missing - no checkpoint, no error", function()
             local workflow = create_workflow({
                 max_iterations = 3,
                 max_steps = 2,
                 prompt_tokens = 500,
-                compact = {
-                    function_id = "userspace.dataflow.node.agent.stub:compaction_summarizer"
+                checkpoint = {
+                    function_id = "userspace.dataflow.node.agent.stub:checkpoint_summarizer"
                 }
             })
 
@@ -843,7 +843,7 @@ local function define_tests()
             test.is_true(wait_complete(workflow.dataflow_id), "completed")
 
             local metrics = get_metrics(workflow.scenario_id)
-            test.eq(metrics.compaction_calls, 0, "partial config is effectively off")
+            test.eq(metrics.checkpoint_calls, 0, "partial config is effectively off")
         end)
 
         it("negative token_threshold is treated as disabled", function()
@@ -851,9 +851,9 @@ local function define_tests()
                 max_iterations = 3,
                 max_steps = 2,
                 prompt_tokens = 500,
-                compact = {
+                checkpoint = {
                     token_threshold = -1,
-                    function_id = "userspace.dataflow.node.agent.stub:compaction_summarizer"
+                    function_id = "userspace.dataflow.node.agent.stub:checkpoint_summarizer"
                 }
             })
 
@@ -861,17 +861,17 @@ local function define_tests()
             test.is_true(wait_complete(workflow.dataflow_id), "completed")
 
             local metrics = get_metrics(workflow.scenario_id)
-            test.eq(metrics.compaction_calls, 0, "negative threshold rejected")
+            test.eq(metrics.checkpoint_calls, 0, "negative threshold rejected")
         end)
 
-        it("history count recorded on compaction grows with turns", function()
+        it("history count recorded on checkpoint grows with turns", function()
             local workflow = create_workflow({
                 max_iterations = 6,
                 max_steps = 4,
                 prompt_tokens = 500,
-                compact = {
+                checkpoint = {
                     token_threshold = 50,
-                    function_id = "userspace.dataflow.node.agent.stub:compaction_summarizer"
+                    function_id = "userspace.dataflow.node.agent.stub:checkpoint_summarizer"
                 }
             })
 
@@ -879,8 +879,8 @@ local function define_tests()
             test.is_true(wait_complete(workflow.dataflow_id), "completed")
 
             local metrics = get_metrics(workflow.scenario_id)
-            test.gt(metrics.compaction_calls, 0, "compaction fired")
-            test.gt(metrics.last_compaction_history_count, 0,
+            test.gt(metrics.checkpoint_calls, 0, "checkpoint fired")
+            test.gt(metrics.last_checkpoint_history_count, 0,
                 "summarizer received non-empty history")
         end)
 
@@ -890,9 +890,9 @@ local function define_tests()
                 max_steps = 3,
                 tool_delay_ms = 1200,
                 prompt_tokens = 500,
-                compact = {
+                checkpoint = {
                     token_threshold = 100,
-                    function_id = "userspace.dataflow.node.agent.stub:compaction_summarizer"
+                    function_id = "userspace.dataflow.node.agent.stub:checkpoint_summarizer"
                 }
             })
 
@@ -912,7 +912,7 @@ local function define_tests()
             local markers = {}
             for _, row in ipairs(history) do
                 if row.type == agent_consts.DATA_TYPE.AGENT_MEMORY
-                   and row.metadata and row.metadata.compaction_marker == true then
+                   and row.metadata and row.metadata.checkpoint_marker == true then
                     markers[#markers + 1] = row
                 end
             end
@@ -944,24 +944,24 @@ local function define_tests()
             return count
         end
 
-        it("non-strict: missing summarizer function skips compaction, workflow completes", function()
+        it("non-strict: missing summarizer function skips checkpoint, workflow completes", function()
             local workflow = create_workflow({
                 max_iterations = 4,
                 max_steps = 2,
                 prompt_tokens = 500,
-                compact = {
+                checkpoint = {
                     token_threshold = 100,
                     function_id = "userspace.dataflow.node.agent.stub:nonexistent_summarizer"
                 }
             })
 
             c:start(workflow.dataflow_id)
-            test.is_true(wait_complete(workflow.dataflow_id), "workflow completes despite compaction failure")
+            test.is_true(wait_complete(workflow.dataflow_id), "workflow completes despite checkpoint failure")
 
             local history = load_history(workflow.dataflow_id, workflow.node_id)
-            test.eq(count_compaction_markers(history), 0, "no marker when function missing")
-            test.gt(count_observation_with_key_suffix(history, "_compaction_skipped"), 0,
-                "at least one compaction_skipped observation was written")
+            test.eq(count_checkpoint_markers(history), 0, "no marker when function missing")
+            test.gt(count_observation_with_key_suffix(history, "_checkpoint_skipped"), 0,
+                "at least one checkpoint_skipped observation was written")
         end)
 
         it("strict: missing summarizer function fails the agent", function()
@@ -969,7 +969,7 @@ local function define_tests()
                 max_iterations = 3,
                 max_steps = 2,
                 prompt_tokens = 500,
-                compact = {
+                checkpoint = {
                     token_threshold = 100,
                     function_id = "userspace.dataflow.node.agent.stub:nonexistent_summarizer",
                     strict = true
@@ -977,15 +977,15 @@ local function define_tests()
             })
 
             c:start(workflow.dataflow_id)
-            test.is_true(wait_failed(workflow.dataflow_id), "strict mode fails agent on compaction error")
+            test.is_true(wait_failed(workflow.dataflow_id), "strict mode fails agent on checkpoint error")
         end)
 
-        it("non-strict: empty summary skips compaction with observation", function()
+        it("non-strict: empty summary skips checkpoint with observation", function()
             local workflow = create_workflow({
                 max_iterations = 4,
                 max_steps = 2,
                 prompt_tokens = 500,
-                compact = {
+                checkpoint = {
                     token_threshold = 100,
                     function_id = "userspace.dataflow.node.agent.stub:empty_memory_summarizer"
                 }
@@ -995,9 +995,9 @@ local function define_tests()
             test.is_true(wait_complete(workflow.dataflow_id), "workflow completes on empty memory")
 
             local history = load_history(workflow.dataflow_id, workflow.node_id)
-            test.eq(count_compaction_markers(history), 0, "no marker for empty memory")
-            test.gt(count_observation_with_key_suffix(history, "_compaction_skipped"), 0,
-                "compaction_skipped observation for empty memory")
+            test.eq(count_checkpoint_markers(history), 0, "no marker for empty memory")
+            test.gt(count_observation_with_key_suffix(history, "_checkpoint_skipped"), 0,
+                "checkpoint_skipped observation for empty memory")
         end)
 
         -- === size cap ===
@@ -1007,7 +1007,7 @@ local function define_tests()
                 max_iterations = 4,
                 max_steps = 2,
                 prompt_tokens = 500,
-                compact = {
+                checkpoint = {
                     token_threshold = 100,
                     function_id = "userspace.dataflow.node.agent.stub:oversize_summarizer"
                 }
@@ -1017,7 +1017,7 @@ local function define_tests()
             test.is_true(wait_complete(workflow.dataflow_id), "completed with oversized summary")
 
             local history = load_history(workflow.dataflow_id, workflow.node_id)
-            local marker = latest_compaction_marker(history)
+            local marker = latest_checkpoint_marker(history)
             test.not_nil(marker, "marker exists")
             local content = marker.content
             if type(content) == "table" then
@@ -1025,7 +1025,7 @@ local function define_tests()
             end
             test.is_true(type(content) == "string", "marker content is string")
             test.is_true(#content <= 8192, "default cap enforced: " .. #content .. " <= 8192")
-            test.eq((marker.metadata or {}).compaction_memory_truncated, true,
+            test.eq((marker.metadata or {}).checkpoint_memory_truncated, true,
                 "truncation flag set when clamped")
         end)
 
@@ -1034,7 +1034,7 @@ local function define_tests()
                 max_iterations = 4,
                 max_steps = 2,
                 prompt_tokens = 500,
-                compact = {
+                checkpoint = {
                     token_threshold = 100,
                     function_id = "userspace.dataflow.node.agent.stub:oversize_summarizer",
                     max_memory_chars = 200
@@ -1045,7 +1045,7 @@ local function define_tests()
             test.is_true(wait_complete(workflow.dataflow_id), "completed with explicit cap")
 
             local history = load_history(workflow.dataflow_id, workflow.node_id)
-            local marker = latest_compaction_marker(history)
+            local marker = latest_checkpoint_marker(history)
             test.not_nil(marker, "marker exists")
             local content = marker.content
             if type(content) == "table" then
@@ -1059,9 +1059,9 @@ local function define_tests()
                 max_iterations = 4,
                 max_steps = 2,
                 prompt_tokens = 500,
-                compact = {
+                checkpoint = {
                     token_threshold = 100,
-                    function_id = "userspace.dataflow.node.agent.stub:compaction_summarizer"
+                    function_id = "userspace.dataflow.node.agent.stub:checkpoint_summarizer"
                 }
             })
 
@@ -1069,9 +1069,9 @@ local function define_tests()
             test.is_true(wait_complete(workflow.dataflow_id), "completed with small summary")
 
             local history = load_history(workflow.dataflow_id, workflow.node_id)
-            local marker = latest_compaction_marker(history)
+            local marker = latest_checkpoint_marker(history)
             test.not_nil(marker, "marker exists")
-            local truncated = (marker.metadata or {}).compaction_memory_truncated
+            local truncated = (marker.metadata or {}).checkpoint_memory_truncated
             test.is_true(truncated == nil or truncated == false,
                 "small summary not marked truncated")
         end)

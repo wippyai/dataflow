@@ -44,7 +44,7 @@ entries:
       - ctx
       - security
     imports:
-      agent_registry: wippy.agent.discovery:registry
+      agent_ref: userspace.dataflow:agent_ref
       client: userspace.dataflow:client
       consts: userspace.dataflow:consts
     method: handle

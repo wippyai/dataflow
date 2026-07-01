@@ -20,12 +20,12 @@ local function sort_history_rows(history_rows)
     return history_rows
 end
 
-local function find_latest_compaction_marker(history_rows)
+local function find_latest_checkpoint_marker(history_rows)
     for i = #history_rows, 1, -1 do
         local item = history_rows[i]
         if item.type == agent_consts.DATA_TYPE.AGENT_MEMORY
            and item.metadata
-           and item.metadata.compaction_marker == true then
+           and item.metadata.checkpoint_marker == true then
             return item
         end
     end
@@ -57,12 +57,12 @@ local function apply_latest_marker(history_rows)
 
     sort_history_rows(history_rows)
 
-    local latest_marker = find_latest_compaction_marker(history_rows)
+    local latest_marker = find_latest_checkpoint_marker(history_rows)
     if not latest_marker then
         return history_rows, nil
     end
 
-    local cut_before = tostring((latest_marker.metadata or {}).compacted_before_data_id or "")
+    local cut_before = tostring((latest_marker.metadata or {}).checkpoint_before_data_id or "")
     local filtered = { latest_marker }
     for _, item in ipairs(history_rows) do
         if item ~= latest_marker then
@@ -169,6 +169,7 @@ function prompt_builder.new(dataflow_id, node_id, node_path)
     self._arena_config = nil
     self._initial_input = nil
     self._pending_history = {}
+    self._history_override = nil
 
     return self, nil
 end
@@ -188,6 +189,11 @@ function prompt_builder:with_pending_history(pending_history)
     return self
 end
 
+function prompt_builder:with_history(history)
+    self._history_override = history or {}
+    return self
+end
+
 function prompt_builder:_parse_json_content(content, content_type)
     if content_type == "application/json" and type(content) == "string" then
         local parsed, err = json.decode(content)
@@ -200,6 +206,19 @@ function prompt_builder:_parse_json_content(content, content_type)
 end
 
 function prompt_builder:_load_conversation_history()
+    if self._history_override then
+        local history = {}
+        local function append_rows(rows)
+            for _, row in ipairs(rows or {}) do
+                history[#history + 1] = row
+            end
+        end
+        append_rows(self._history_override)
+        append_rows(self._pending_history)
+        sort_history_rows(history)
+        return history, nil
+    end
+
     local reader = data_reader.with_dataflow(self.dataflow_id)
         :fetch_options({ replace_references = true })
         :with_nodes(self.node_id)
@@ -241,9 +260,9 @@ function prompt_builder:_load_conversation_history()
     -- regardless of created_at resolution ties across backends.
     sort_history_rows(merged_history)
 
-    -- find the latest compaction marker (if any). compaction writes an
-    -- AGENT_MEMORY row with metadata.compaction_marker = true and records
-    -- the history cut-line as metadata.compacted_before_data_id. rows at or
+    -- find the latest checkpoint marker (if any). checkpoint writes an
+    -- AGENT_MEMORY row with metadata.checkpoint_marker = true and records
+    -- the history cut-line as metadata.checkpoint_before_data_id. rows at or
     -- before the cut-line are dropped, except structured function results
     -- which stay visible so the next turn keeps tool-call continuity.
     local filtered = apply_latest_marker(merged_history)

@@ -21,6 +21,7 @@ entries:
       default_host: app:processes
     source: file://orchestrator.lua
     modules:
+      - json
       - uuid
       - funcs
       - security
@@ -158,10 +159,13 @@ entries:
     source: file://workflow_state_test.lua
     modules:
       - sql
+      - json
       - uuid
       - time
     imports:
+      commit: userspace.dataflow.persist:commit
       consts: userspace.dataflow:consts
+      data_reader: userspace.dataflow.persist:data_reader
       test: wippy.test:test
       workflow_state: userspace.dataflow.runner:workflow_state
     method: run_tests

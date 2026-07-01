@@ -44,6 +44,7 @@ entries:
       - uuid
     imports:
       agent_consts: userspace.dataflow.node.agent:consts
+      consts: userspace.dataflow:consts
 
   # userspace.dataflow.node.agent:control_handler_test
   - name: control_handler_test
@@ -112,8 +113,8 @@ entries:
       - json
       - uuid
     imports:
+      agent_ref: userspace.dataflow:agent_ref
       agent_consts: userspace.dataflow.node.agent:consts
-      agent_registry: wippy.agent.discovery:registry
       data_reader: userspace.dataflow.persist:data_reader
       node_reader: userspace.dataflow.persist:node_reader
     method: delegation_handler
@@ -159,8 +160,12 @@ entries:
     source: file://node.lua
     modules:
       - json
+      - time
       - uuid
+      - env
+      - funcs
     imports:
+      agent_ref: userspace.dataflow:agent_ref
       tools: wippy.agent.discovery:tools
       agent_consts: userspace.dataflow.node.agent:consts
       agent_context: wippy.agent:context
@@ -170,7 +175,36 @@ entries:
       node_sdk: userspace.dataflow:node
       prompt_builder: userspace.dataflow.node.agent:prompt_builder
       tool_caller: wippy.agent.tools:caller
+      lifecycle_runtime: wippy.agent:lifecycle_runtime
+      checkpoint_runtime: wippy.agent:checkpoint_runtime
     method: run
+
+  # userspace.dataflow.node.agent:checkpoint
+  - name: checkpoint
+    kind: function.lua
+    meta:
+      type: checkpoint
+      comment: Default dataflow agent checkpoint summarizer for token-threshold cuts.
+    source: file://checkpoint.lua
+    modules:
+      - json
+    imports:
+      prompt: wippy.llm:prompt
+      llm: wippy.llm:llm
+    method: handler
+
+  # userspace.dataflow.node.agent:checkpoint_test
+  - name: checkpoint_test
+    kind: function.lua
+    meta:
+      type: test
+      suite: agent_checkpoint
+      comment: Unit tests for the default dataflow checkpoint payload formatting.
+    source: file://checkpoint_test.lua
+    imports:
+      checkpoint: userspace.dataflow.node.agent:checkpoint
+      test: wippy.test:test
+    method: run_tests
     
   # userspace.dataflow.node.agent:prompt_builder
   - name: prompt_builder
@@ -266,6 +300,7 @@ entries:
     modules:
       - time
       - uuid
+      - funcs
     imports:
       agent_consts: userspace.dataflow.node.agent:consts
       client: userspace.dataflow:client
@@ -294,28 +329,30 @@ entries:
       test: wippy.test:test
     method: run_tests
 
-  - name: agent_compaction_test
+  - name: agent_checkpoint_test
     kind: function.lua
     meta:
-      name: Agent Compaction Tests
+      name: Agent Checkpoint Tests
       type: test
-      comment: Conversation compaction tests for the dataflow agent node (token threshold + summarizer)
+      comment: Conversation checkpoint tests for the dataflow agent node (token threshold + summarizer)
       group: Workflow / Agent Node
       timeout: "120s"
       tags:
         - dataflow
         - agent
-        - compaction
+        - checkpoint
         - test
-    source: file://agent_compaction_test.lua
+    source: file://agent_checkpoint_test.lua
     modules:
       - time
       - uuid
+      - funcs
     imports:
       agent_consts: userspace.dataflow.node.agent:consts
       client: userspace.dataflow:client
       consts: userspace.dataflow:consts
       data_reader: userspace.dataflow.persist:data_reader
+      prompt: wippy.llm:prompt
       prompt_builder: userspace.dataflow.node.agent:prompt_builder
       test: wippy.test:test
     method: run_tests

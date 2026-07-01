@@ -91,6 +91,7 @@ entries:
       - json
       - time
     imports:
+      dataflow_consts: userspace.dataflow:consts
       commit: userspace.dataflow.persist:commit
       ops: userspace.dataflow.persist:ops
       test: wippy.test:test

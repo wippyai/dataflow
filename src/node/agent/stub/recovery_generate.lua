@@ -51,9 +51,16 @@ local function handler(contract_args)
     local result_count = helpers.count_function_results(messages)
 
     helpers.bump_metric(scenario.scenario_id, "llm_calls", 1)
+    for _, message in ipairs(messages or {}) do
+        local text = message.content and message.content[1] and message.content[1].text
+        if type(text) == "string" and string.find(text, "lifecycle-start:" .. tostring(scenario.scenario_id), 1, true) then
+            helpers.bump_metric(scenario.scenario_id, "lifecycle_prompt_seen", 1)
+            break
+        end
+    end
 
-    -- scenario.prompt_tokens override lets compaction tests force the per-turn
-    -- prompt token count above the compaction threshold deterministically
+    -- scenario.prompt_tokens override lets checkpoint tests force the per-turn
+    -- prompt token count above the checkpoint threshold deterministically
     local base_prompt = tonumber(scenario.prompt_tokens) or nil
 
     if scenario.mode == "single_tool_then_final" then
@@ -76,10 +83,10 @@ local function handler(contract_args)
         return final_response(scenario.scenario_id, scenario.mode, result_count, base_prompt or 10, 3)
     end
 
-    -- compaction_stress: drives three tool turns then a final response, with
+    -- checkpoint_stress: drives three tool turns then a final response, with
     -- prompt_tokens forced via scenario.prompt_tokens so tests can deterministically
-    -- exceed config.compact.token_threshold.
-    if scenario.mode == "compaction_stress" then
+    -- exceed config.checkpoint.token_threshold.
+    if scenario.mode == "checkpoint_stress" then
         local max_steps = tonumber(scenario.max_steps) or 3
         if result_count < max_steps then
             return tool_call_response(scenario.scenario_id, result_count + 1,
