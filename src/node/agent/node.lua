@@ -126,18 +126,13 @@ local function resolve_agent_checkpoint_config(config: any, agent_instance: any)
     local agent_options = agent_instance and agent_instance.agent_options
     local agent_checkpoint = type(agent_options) == "table" and agent_options.checkpoint or nil
     local config_checkpoint = config and config.checkpoint
-    local agent_compact = type(agent_options) == "table" and agent_options.compact or nil
-    local config_compact = config and config.compact
 
     if type(agent_checkpoint) ~= "table"
-        and type(config_checkpoint) ~= "table"
-        and type(agent_compact) ~= "table"
-        and type(config_compact) ~= "table" then
+        and type(config_checkpoint) ~= "table" then
         return nil
     end
 
-    local merged = merge_maps(agent_compact, config_compact)
-    merged = merge_maps(merged, agent_checkpoint)
+    local merged = merge_maps(nil, agent_checkpoint)
     merged = merge_maps(merged, config_checkpoint)
     return merged
 end
@@ -366,26 +361,26 @@ local function decode_json_content(content: any, content_type: any)
     return decoded
 end
 
-local function compaction_row_id(row)
+local function checkpoint_row_id(row)
     if type(row) ~= "table" then
         return ""
     end
     return tostring(row.data_id or "")
 end
 
-local function sort_compaction_rows(history_rows)
+local function sort_checkpoint_rows(history_rows)
     table.sort(history_rows, function(a, b)
-        return compaction_row_id(a) < compaction_row_id(b)
+        return checkpoint_row_id(a) < checkpoint_row_id(b)
     end)
     return history_rows
 end
 
-local function find_latest_compaction_marker(history_rows)
+local function find_latest_checkpoint_marker(history_rows)
     for i = #history_rows, 1, -1 do
         local item = history_rows[i]
         if item.type == agent_consts.DATA_TYPE.AGENT_MEMORY
            and item.metadata
-           and item.metadata.compaction_marker == true then
+           and item.metadata.checkpoint_marker == true then
             return item
         end
     end
@@ -410,10 +405,10 @@ local function is_structured_result_row(row)
         or row.type == agent_consts.DATA_TYPE.AGENT_DELEGATION
 end
 
-local function last_compaction_data_id(history_rows)
+local function last_checkpoint_data_id(history_rows)
     local latest = ""
     for _, row in ipairs(history_rows or {}) do
-        local rid = compaction_row_id(row)
+        local rid = checkpoint_row_id(row)
         if rid > latest then
             latest = rid
         end
@@ -421,14 +416,14 @@ local function last_compaction_data_id(history_rows)
     return latest
 end
 
-local function compactable_history_rows(history_rows)
-    local compactable = {}
+local function checkpoint_source_rows(history_rows)
+    local source_rows = {}
     for _, row in ipairs(history_rows or {}) do
         if not is_structured_result_row(row) then
-            compactable[#compactable + 1] = row
+            source_rows[#source_rows + 1] = row
         end
     end
-    return compactable
+    return source_rows
 end
 
 local function build_status_message(iteration, max_iterations, total_tokens, tool_calls_count, is_final, task_complete)
@@ -670,7 +665,7 @@ local function store_memory_recall(n, agent_result, iteration)
     })
 end
 
-local function extract_compaction_scenario_id(history_rows)
+local function extract_checkpoint_scenario_id(history_rows)
     for i = #history_rows, 1, -1 do
         local row = history_rows[i]
         local metadata = row.metadata or {}
@@ -713,7 +708,7 @@ local function stringify_history_content(row)
     return tostring(content)
 end
 
--- Conversation compaction runs at the start of the next turn, after the prior
+-- Conversation checkpointing runs at the start of the next turn, after the prior
 -- turn's observations have already been yielded and persisted. The marker is
 -- queued locally, exposed to prompt_builder immediately via an in-memory
 -- overlay, and then flushed atomically with the next turn's submit/yield.
@@ -735,17 +730,17 @@ local function clamp_memory_text(text, max_chars)
     return text:sub(1, cap - #suffix) .. suffix
 end
 
--- Record a compaction-skipped observation row so non-strict mode leaves an
+-- Record a checkpoint-skipped observation row so non-strict mode leaves an
 -- audit trail but doesn't kill the turn.
-local function record_compaction_skip(n, iteration, reason)
-    n:data(agent_consts.DATA_TYPE.AGENT_OBSERVATION, tostring(reason or "compaction skipped"), {
-        key = tostring(iteration or 0) .. "_compaction_skipped",
+local function record_checkpoint_skip(n, iteration, reason)
+    n:data(agent_consts.DATA_TYPE.AGENT_OBSERVATION, tostring(reason or "checkpoint skipped"), {
+        key = tostring(iteration or 0) .. "_checkpoint_skipped",
         content_type = consts.CONTENT_TYPE.TEXT,
         node_id = n.node_id,
         metadata = {
             iteration = iteration,
-            compaction_skipped = true,
-            compaction_error = tostring(reason or "")
+            checkpoint_skipped = true,
+            checkpoint_error = tostring(reason or "")
         }
     })
 end
@@ -764,17 +759,17 @@ local function default_checkpoint_function_id(): string?
     return nil
 end
 
-local function maybe_compact_history(n, config, session_context, agent_instance, agent_id, model_name, iteration)
-    local compact_cfg = config and config.compact
-    if type(compact_cfg) ~= "table" then
+local function maybe_checkpoint_history(n, config, session_context, agent_instance, agent_id, model_name, iteration)
+    local checkpoint_cfg = config and config.checkpoint
+    if type(checkpoint_cfg) ~= "table" then
         return nil, nil
     end
-    if compact_cfg.enabled == false then
+    if checkpoint_cfg.enabled == false then
         return nil, nil
     end
 
-    local threshold = tonumber(compact_cfg.token_threshold)
-    local func_id = compact_cfg.function_id
+    local threshold = tonumber(checkpoint_cfg.token_threshold)
+    local func_id = checkpoint_cfg.function_id
     if type(func_id) ~= "string" or func_id == "" then
         func_id = default_checkpoint_function_id()
     end
@@ -797,7 +792,7 @@ local function maybe_compact_history(n, config, session_context, agent_instance,
         return nil, nil
     end
 
-    sort_compaction_rows(history_rows)
+    sort_checkpoint_rows(history_rows)
 
     local latest_action = nil
     for i = #history_rows, 1, -1 do
@@ -819,19 +814,19 @@ local function maybe_compact_history(n, config, session_context, agent_instance,
         return nil, nil
     end
 
-    local cut_before = last_compaction_data_id(history_rows)
+    local cut_before = last_checkpoint_data_id(history_rows)
     if cut_before == "" then
         return nil, nil
     end
 
-    local latest_marker = find_latest_compaction_marker(history_rows)
+    local latest_marker = find_latest_checkpoint_marker(history_rows)
     if latest_marker
-       and tostring((latest_marker.metadata or {}).compacted_before_data_id or "") == cut_before then
+       and tostring((latest_marker.metadata or {}).checkpoint_before_data_id or "") == cut_before then
         return nil, nil
     end
 
-    local compacted_rows = compactable_history_rows(history_rows)
-    if #compacted_rows == 0 then
+    local source_rows = checkpoint_source_rows(history_rows)
+    if #source_rows == 0 then
         return nil, nil
     end
 
@@ -843,10 +838,10 @@ local function maybe_compact_history(n, config, session_context, agent_instance,
     end
 
     -- Build a serialization-safe projection of history for the summarizer.
-    -- The function only receives rows that will actually be compacted; structured
+    -- The function only receives rows that will actually be checkpointed; structured
     -- call results remain in the prompt to preserve tool/result continuity.
     local history_payload = {}
-    for i, row in ipairs(compacted_rows) do
+    for i, row in ipairs(source_rows) do
         history_payload[i] = {
             data_id = tostring(row.data_id or ""),
             type = tostring(row.type or ""),
@@ -856,8 +851,8 @@ local function maybe_compact_history(n, config, session_context, agent_instance,
         }
     end
 
-    local compaction_iteration = tonumber(action_metadata.iteration) or 0
-    local scenario_id = extract_compaction_scenario_id(history_rows)
+    local checkpoint_iteration = tonumber(action_metadata.iteration) or 0
+    local scenario_id = extract_checkpoint_scenario_id(history_rows)
 
     local summary_result = nil
     local checkpoint_source = nil
@@ -868,7 +863,7 @@ local function maybe_compact_history(n, config, session_context, agent_instance,
             kind = "dataflow",
             dataflow_id = n.dataflow_id,
             node_id = n.node_id,
-            iteration = tonumber(iteration) or compaction_iteration
+            iteration = tonumber(iteration) or checkpoint_iteration
         }
         local agent = {
             id = agent_id,
@@ -891,11 +886,11 @@ local function maybe_compact_history(n, config, session_context, agent_instance,
                 dataflow_id = n.dataflow_id,
                 node_id = n.node_id,
                 scenario_id = scenario_id,
-                iteration = compaction_iteration,
+                iteration = checkpoint_iteration,
                 prompt_tokens = prompt_tokens,
                 history_count = #history_payload,
                 retained_result_count = retained_result_count,
-                compacted_before_data_id = cut_before
+                checkpoint_before_data_id = cut_before
             },
             history = history_payload
         })
@@ -919,17 +914,18 @@ local function maybe_compact_history(n, config, session_context, agent_instance,
         end
 
         local call_err
-        summary_result, call_err = funcs.new()
+        local executor = funcs.new()
+        summary_result, call_err = executor
             :with_context(session_context or {})
             :call(func_id, {
                 dataflow_id = n.dataflow_id,
                 node_id = n.node_id,
                 scenario_id = scenario_id,
-                iteration = compaction_iteration,
+                iteration = checkpoint_iteration,
                 prompt_tokens = prompt_tokens,
                 history_count = #history_payload,
                 retained_result_count = retained_result_count,
-                compacted_before_data_id = cut_before,
+                checkpoint_before_data_id = cut_before,
                 history = history_payload
             })
 
@@ -952,31 +948,31 @@ local function maybe_compact_history(n, config, session_context, agent_instance,
 
     -- Hard cap on stored memory to prevent hostile/buggy summarizers from
     -- bloating every future prompt. Default 8192 chars; configurable.
-    local max_memory_chars = tonumber(compact_cfg.max_memory_chars) or 8192
+    local max_memory_chars = tonumber(checkpoint_cfg.max_memory_chars) or 8192
     local original_memory_len = #memory_text
     memory_text = clamp_memory_text(memory_text, max_memory_chars)
     local memory_truncated = #memory_text < original_memory_len
 
     local marker_metadata = {
-        iteration = compaction_iteration,
-        compaction_marker = true,
-        compacted_at_prompt_tokens = prompt_tokens,
-        compacted_before_data_id = cut_before,
-        compacted_history_count = #history_payload,
-        compacted_first_data_id = tostring((compacted_rows[1] or {}).data_id or ""),
-        compacted_last_data_id = tostring((compacted_rows[#compacted_rows] or {}).data_id or ""),
-        compacted_retained_result_count = retained_result_count,
-        compacted_source_action_data_id = tostring(latest_action.data_id or ""),
-        compaction_function_id = func_id,
+        iteration = checkpoint_iteration,
+        checkpoint_marker = true,
+        checkpoint_at_prompt_tokens = prompt_tokens,
+        checkpoint_before_data_id = cut_before,
+        checkpoint_history_count = #history_payload,
+        checkpoint_first_data_id = tostring((source_rows[1] or {}).data_id or ""),
+        checkpoint_last_data_id = tostring((source_rows[#source_rows] or {}).data_id or ""),
+        checkpoint_retained_result_count = retained_result_count,
+        checkpoint_source_action_data_id = tostring(latest_action.data_id or ""),
+        checkpoint_function_id = func_id,
         checkpoint_source = checkpoint_source,
-        compaction_memory_truncated = memory_truncated
+        checkpoint_memory_truncated = memory_truncated
     }
     local marker_data_id = uuid.v7()
-    local marker_key_prefix = compaction_iteration > 0 and tostring(compaction_iteration) or cut_before
+    local marker_key_prefix = checkpoint_iteration > 0 and tostring(checkpoint_iteration) or cut_before
 
     n:data(agent_consts.DATA_TYPE.AGENT_MEMORY, memory_text, {
         data_id = marker_data_id,
-        key = marker_key_prefix .. "_compaction",
+        key = marker_key_prefix .. "_checkpoint",
         content_type = consts.CONTENT_TYPE.TEXT,
         node_id = n.node_id,
         metadata = marker_metadata
@@ -1382,7 +1378,8 @@ local function process_tool_results(n, tool_results, iteration, exit_tool_name, 
                 local exit_arguments = original_tool_call.arguments
 
                 if arena_config.exit_func_id then
-                    local validated_result, validation_err = funcs.new()
+                    local executor = funcs.new()
+                    local validated_result, validation_err = executor
                         :with_context(session_context)
                         :call(arena_config.exit_func_id :: string, exit_arguments)
 
@@ -1848,7 +1845,7 @@ local function run(args)
 
     local total_tokens = new_total_tokens(saved_state.total_tokens)
     local tool_calls_count = saved_state.tool_calls or 0
-    local pending_compaction_history = {}
+    local pending_checkpoint_history = {}
     local lifecycle_state = {
         active_agent_id = nil,
         active_model = nil,
@@ -1981,28 +1978,28 @@ local function run(args)
         local run_session_context = context_with_agent_run(session_context, n, agent_id, model_name, iteration,
             config.run_context_binding)
 
-        local effective_compact = resolve_agent_checkpoint_config(config, agent_instance)
-        local pending_compaction_marker, compact_err, strict_checkpoint_err = maybe_compact_history(n, {
-            compact = effective_compact,
+        local effective_checkpoint = resolve_agent_checkpoint_config(config, agent_instance)
+        local pending_checkpoint_marker, checkpoint_err, strict_checkpoint_err = maybe_checkpoint_history(n, {
+            checkpoint = effective_checkpoint,
             run_context_binding = config.run_context_binding
         }, run_session_context, agent_instance, agent_id, model_name, iteration)
-        if compact_err then
-            local strict_mode = strict_checkpoint_err == true or (effective_compact and effective_compact.strict == true)
+        if checkpoint_err then
+            local strict_mode = strict_checkpoint_err == true or (effective_checkpoint and effective_checkpoint.strict == true)
             if strict_mode then
                 return fail_with_lifecycle({
-                    code = agent_consts.ERROR.COMPACTION_FAILED,
-                    message = compact_err
-                }, compact_err, REASON.HOST_FAILED, iteration)
+                    code = agent_consts.ERROR.CHECKPOINT_FAILED,
+                    message = checkpoint_err
+                }, checkpoint_err, REASON.HOST_FAILED, iteration)
             end
             -- warning mode: log audit observation and continue the turn
-            record_compaction_skip(n, iteration, compact_err)
-            pending_compaction_history = {}
-        elseif pending_compaction_marker then
-            pending_compaction_history = { pending_compaction_marker }
+            record_checkpoint_skip(n, iteration, checkpoint_err)
+            pending_checkpoint_history = {}
+        elseif pending_checkpoint_marker then
+            pending_checkpoint_history = { pending_checkpoint_marker }
         else
-            pending_compaction_history = {}
+            pending_checkpoint_history = {}
         end
-        builder:with_pending_history(pending_compaction_history)
+        builder:with_pending_history(pending_checkpoint_history)
 
         local prompt, prompt_err = builder:build_prompt(config.arena.prompt)
         if prompt_err then
@@ -2107,8 +2104,8 @@ local function run(args)
                     message = "Failed to persist truncated agent turn: " .. tostring(yield_err)
                 }, "Failed to persist truncated agent turn: " .. tostring(yield_err), REASON.HOST_FAILED, iteration)
             end
-            pending_compaction_history = {}
-            builder:with_pending_history(pending_compaction_history)
+            pending_checkpoint_history = {}
+            builder:with_pending_history(pending_checkpoint_history)
             goto continue_loop
         end
 
@@ -2142,8 +2139,8 @@ local function run(args)
                 message = "Failed to persist agent turn: " .. tostring(submit_err)
             }, "Failed to persist agent turn: " .. tostring(submit_err), REASON.HOST_FAILED, iteration)
         end
-        pending_compaction_history = {}
-        builder:with_pending_history(pending_compaction_history)
+        pending_checkpoint_history = {}
+        builder:with_pending_history(pending_checkpoint_history)
 
         local executable_tool_calls, exit_tool_calls = split_exit_tool_calls(regular_tool_calls, exit_tool_name)
 

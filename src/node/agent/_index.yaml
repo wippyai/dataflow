@@ -329,20 +329,20 @@ entries:
       test: wippy.test:test
     method: run_tests
 
-  - name: agent_compaction_test
+  - name: agent_checkpoint_test
     kind: function.lua
     meta:
-      name: Agent Compaction Tests
+      name: Agent Checkpoint Tests
       type: test
-      comment: Conversation compaction tests for the dataflow agent node (token threshold + summarizer)
+      comment: Conversation checkpoint tests for the dataflow agent node (token threshold + summarizer)
       group: Workflow / Agent Node
       timeout: "120s"
       tags:
         - dataflow
         - agent
-        - compaction
+        - checkpoint
         - test
-    source: file://agent_compaction_test.lua
+    source: file://agent_checkpoint_test.lua
     modules:
       - time
       - uuid

@@ -52,12 +52,12 @@ local function sort_rows(rows)
     return rows
 end
 
-local function find_latest_compaction_marker(rows)
+local function find_latest_checkpoint_marker(rows)
     for i = #rows, 1, -1 do
         local row = rows[i]
         if row.type == agent_consts.DATA_TYPE.AGENT_MEMORY
            and type(row.metadata) == "table"
-           and row.metadata.compaction_marker == true then
+           and row.metadata.checkpoint_marker == true then
             return row
         end
     end
@@ -87,12 +87,12 @@ local function apply_latest_marker(rows)
     end
 
     sort_rows(rows)
-    local latest_marker = find_latest_compaction_marker(rows)
+    local latest_marker = find_latest_checkpoint_marker(rows)
     if not latest_marker then
         return rows
     end
 
-    local cut_before = tostring((latest_marker.metadata or {}).compacted_before_data_id or "")
+    local cut_before = tostring((latest_marker.metadata or {}).checkpoint_before_data_id or "")
     local filtered = { latest_marker }
     for _, row in ipairs(rows) do
         if row ~= latest_marker then

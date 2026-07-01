@@ -1,4 +1,4 @@
--- Test stub that returns a 100_000-character memory so compaction size cap
+-- Test stub that returns a 100_000-character memory so checkpoint size cap
 -- can be exercised. The content is a repeating filler string.
 local function handler(_args)
     local chunk = "oversize-" -- 9 chars

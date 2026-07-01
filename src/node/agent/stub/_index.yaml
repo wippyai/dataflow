@@ -83,12 +83,12 @@ entries:
   imports:
     helpers: userspace.dataflow.node.agent.stub:recovery_helpers
   method: handler
-- name: compaction_summarizer
+- name: checkpoint_summarizer
   kind: function.lua
   meta:
     test_only: true
-    comment: Deterministic summarizer stub for agent compaction tests
-  source: file://compaction_summarizer.lua
+    comment: Deterministic summarizer stub for agent checkpoint tests
+  source: file://checkpoint_summarizer.lua
   imports:
     helpers: userspace.dataflow.node.agent.stub:recovery_helpers
   method: handler
@@ -96,7 +96,7 @@ entries:
   kind: function.lua
   meta:
     test_only: true
-    comment: Compaction summarizer stub that returns empty memory (tests soft-failure
+    comment: Checkpoint summarizer stub that returns empty memory (tests soft-failure
       path)
   source: file://empty_memory_summarizer.lua
   method: handler
@@ -104,7 +104,7 @@ entries:
   kind: function.lua
   meta:
     test_only: true
-    comment: Compaction summarizer stub returning a 100k-char memory (tests size cap)
+    comment: Checkpoint summarizer stub returning a 100k-char memory (tests size cap)
   source: file://oversize_summarizer.lua
   method: handler
 - name: recovery_driver
