@@ -28,7 +28,8 @@ local function define_tests()
                     status = consts.STATUS.PENDING,
                     config = {
                         signal_id = signal_id,
-                        data_targets = {
+                        timeout = extra_config.timeout,
+                        data_targets = extra_config.data_targets or {
                             { data_type = consts.DATA_TYPE.WORKFLOW_OUTPUT, key = "result", content_type = consts.CONTENT_TYPE.JSON }
                         },
                     },
@@ -55,6 +56,32 @@ local function define_tests()
                 time.sleep("200ms")
             end
             return false
+        end
+
+        local function kill_orchestrator(df_id)
+            local pid = process.registry.lookup("dataflow." .. df_id)
+            if pid then
+                process.terminate(pid)
+                time.sleep("200ms")
+            end
+            return pid
+        end
+
+        local function timeout_branch_targets()
+            return {
+                {
+                    data_type = consts.DATA_TYPE.WORKFLOW_OUTPUT,
+                    key = "timeout",
+                    content_type = consts.CONTENT_TYPE.JSON,
+                    condition = "output.timeout",
+                },
+                {
+                    data_type = consts.DATA_TYPE.WORKFLOW_OUTPUT,
+                    key = "signal",
+                    content_type = consts.CONTENT_TYPE.JSON,
+                    condition = "output.approved == true",
+                },
+            }
         end
 
         -- ==========================================
@@ -408,6 +435,64 @@ local function define_tests()
                 for i = 1, count do
                     test.is_true(wait_complete(df_ids[i]), "wf" .. i .. " completed")
                 end
+            end)
+        end)
+
+        describe("signal timeout", function()
+            it("fires timeout branch when signal does not arrive", function()
+                local sid = "timeout-" .. uuid.v7()
+                local df_id = make_signal_wf(sid, {
+                    timeout = "400ms",
+                    data_targets = timeout_branch_targets(),
+                })
+
+                c:start(df_id)
+                test.is_true(wait_complete(df_id, 4000), "workflow completes via timeout")
+
+                local output, output_err = c:output(df_id)
+                test.is_nil(output_err, "output read succeeds")
+                test.not_nil(output.timeout, "timeout output exists")
+                test.eq(output.timeout.timeout, true, "timeout flag routed")
+                test.eq(output.timeout.code, "SIGNAL_TIMEOUT", "timeout code routed")
+                test.is_nil(output.signal, "signal branch not routed")
+            end)
+
+            it("signal before deadline cancels timeout branch", function()
+                local sid = "signal-before-timeout-" .. uuid.v7()
+                local df_id = make_signal_wf(sid, {
+                    timeout = "2s",
+                    data_targets = timeout_branch_targets(),
+                })
+
+                c:start(df_id)
+                time.sleep("200ms")
+                c:signal(df_id, sid, { approved = true })
+                test.is_true(wait_complete(df_id, 4000), "workflow completes from signal")
+
+                local output, output_err = c:output(df_id)
+                test.is_nil(output_err, "output read succeeds")
+                test.not_nil(output.signal, "signal output exists")
+                test.eq(output.signal.approved, true, "signal data routed")
+                test.is_nil(output.timeout, "timeout branch not routed")
+            end)
+
+            it("timeout deadline survives orchestrator restart", function()
+                local sid = "timeout-restart-" .. uuid.v7()
+                local df_id = make_signal_wf(sid, {
+                    timeout = "800ms",
+                    data_targets = timeout_branch_targets(),
+                })
+
+                c:start(df_id)
+                time.sleep("200ms")
+                test.not_nil(kill_orchestrator(df_id), "orchestrator was running before restart")
+                c:start(df_id)
+
+                test.is_true(wait_complete(df_id, 5000), "workflow completes via persisted timeout after restart")
+                local output, output_err = c:output(df_id)
+                test.is_nil(output_err, "output read succeeds")
+                test.not_nil(output.timeout, "timeout output exists after restart")
+                test.eq(output.timeout.timeout, true, "timeout flag routed after restart")
             end)
         end)
     end)

@@ -20,6 +20,7 @@ entries:
     modules:
       - json
       - uuid
+      - time
     imports:
       consts: userspace.dataflow:consts
       node: userspace.dataflow:node

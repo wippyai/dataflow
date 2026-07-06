@@ -1,6 +1,7 @@
 local json = require("json")
 local uuid = require("uuid")
 local expr = require("expr")
+local time = require("time")
 local consts = require("consts")
 
 type YieldChannel = Channel<any>
@@ -120,6 +121,32 @@ local function resolve_dataflow_references(self, value)
     end
 
     return value
+end
+
+local function parse_signal_timeout(timeout_value: any)
+    if timeout_value == nil then
+        return nil, nil
+    end
+
+    local duration: any = nil
+    local err: any = nil
+
+    if type(timeout_value) == "number" then
+        duration = timeout_value * time.MILLISECOND
+    elseif type(timeout_value) == "string" then
+        duration, err = time.parse_duration(timeout_value)
+        if err then
+            return nil, consts.ERROR.SIGNAL_TIMEOUT_INVALID .. ": " .. tostring(timeout_value)
+        end
+    else
+        return nil, consts.ERROR.SIGNAL_TIMEOUT_INVALID .. ": expected string duration or millisecond number"
+    end
+
+    if not duration or duration:nanoseconds() <= 0 then
+        return nil, consts.ERROR.SIGNAL_TIMEOUT_INVALID .. ": must be greater than zero"
+    end
+
+    return duration, nil
 end
 
 function node.new(args, deps: NodeDeps?)
@@ -430,6 +457,17 @@ function methods.yield(self: table, options)
 
     local yield_id = uuid.v7()
     local op_id = uuid.v7()
+    local timeout_duration, timeout_err = parse_signal_timeout(options.timeout)
+    if timeout_err then
+        return nil, timeout_err
+    end
+
+    local timeout_deadline = nil
+    local timeout_ms = nil
+    if timeout_duration then
+        timeout_deadline = time.now():add(timeout_duration):format(time.RFC3339NANO)
+        timeout_ms = timeout_duration:milliseconds()
+    end
 
     local yield_command: table = {
         type = consts.COMMAND_TYPES.CREATE_DATA,
@@ -444,6 +482,9 @@ function methods.yield(self: table, options)
                     run_nodes = options.run_nodes or table.create(0, 0),
                     wait_for_signal = options.wait_for_signal,
                     signal_id = options.signal_id,
+                    timeout = options.timeout,
+                    timeout_ms = timeout_ms,
+                    timeout_deadline = timeout_deadline,
                 }
             },
             content_type = consts.CONTENT_TYPE.JSON,
@@ -469,6 +510,9 @@ function methods.yield(self: table, options)
             run_nodes = options.run_nodes or table.create(0, 0),
             wait_for_signal = options.wait_for_signal,
             signal_id = options.signal_id,
+            timeout = options.timeout,
+            timeout_ms = timeout_ms,
+            timeout_deadline = timeout_deadline,
         }
     }
 

@@ -1,5 +1,6 @@
 local uuid = require("uuid")
 local json = require("json")
+local time = require("time")
 local consts = require("consts")
 local security = require("security")
 
@@ -448,6 +449,9 @@ local function handle_yield_request(state, msg_payload, from_pid)
                 yield_id = yield_id,
                 reply_to = reply_to,
                 signal_id = yield_context.signal_id or yield_id,
+                timeout = yield_context.timeout,
+                timeout_ms = yield_context.timeout_ms,
+                timeout_deadline = yield_context.timeout_deadline,
                 pending_children = {},
                 results = {},
                 wait_for_signal = true,
@@ -720,10 +724,30 @@ local function run(args)
 
     -- Main processing loop
     while state.running do
-        local result = channel.select({
+        local timer_channel = nil
+        local next_wake_duration = nil
+        if type(orchestrator.scheduler.next_wake_duration) == "function" then
+            next_wake_duration = orchestrator.scheduler.next_wake_duration(
+                state.workflow_state:get_scheduler_snapshot()
+            )
+        end
+
+        if next_wake_duration ~= nil and next_wake_duration <= 0 then
+            call_scheduler_and_handle(state)
+            goto continue
+        elseif next_wake_duration ~= nil then
+            timer_channel = time.after(next_wake_duration)
+        end
+
+        local select_cases = {
             inbox:case_receive(),
             events:case_receive()
-        })
+        }
+        if timer_channel then
+            table.insert(select_cases, timer_channel:case_receive())
+        end
+
+        local result = channel.select(select_cases)
 
         if not result.ok then
             break
@@ -768,7 +792,11 @@ local function run(args)
                     call_scheduler_and_handle(state)
                 end
             end
+        elseif timer_channel and result.channel == timer_channel then
+            call_scheduler_and_handle(state)
         end
+
+        ::continue::
     end
 
     -- Clean up and return result

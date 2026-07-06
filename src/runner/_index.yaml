@@ -25,6 +25,7 @@ entries:
       - uuid
       - funcs
       - security
+      - time
     imports:
       commit: userspace.dataflow.persist:commit
       consts: userspace.dataflow:consts
@@ -78,6 +79,8 @@ entries:
         Takes workflow state snapshots and returns execution decisions without side effects.
         Handles yield-driven, input-ready, and root node execution priorities with deadlock detection.
     source: file://scheduler.lua
+    modules:
+      - time
     imports:
       consts: userspace.dataflow:consts
     

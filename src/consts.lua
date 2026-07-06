@@ -105,7 +105,8 @@ consts.CONTEXT_DISCRIMINATOR = {
 consts.ERROR = {
     NO_INPUT = "No input data found",
     INVALID_INPUT = "Invalid input data: ",
-    REFERENCE_NOT_FOUND = "Referenced input not found: "
+    REFERENCE_NOT_FOUND = "Referenced input not found: ",
+    SIGNAL_TIMEOUT_INVALID = "Invalid signal timeout"
 }
 
 return consts

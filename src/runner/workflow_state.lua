@@ -634,6 +634,9 @@ function methods:_reconstruct_active_yields()
             child_path = child_path,
             wait_for_signal = yield_context.wait_for_signal,
             signal_id = yield_context.signal_id,
+            timeout = yield_context.timeout,
+            timeout_ms = yield_context.timeout_ms,
+            timeout_deadline = yield_context.timeout_deadline,
         }
 
         -- for reset nodes, the original yielding process is dead. the reply_to

@@ -23,6 +23,105 @@ local function define_tests()
                 test.not_nil(signal_mod, "module loaded")
                 test.not_nil(signal_mod.run, "run method exists")
             end)
+
+            test.it("passes timeout to durable signal yield", function()
+                local signal_mod = require("signal_node")
+                local original_node = signal_mod._deps.node
+                local yielded_options: any = nil
+
+                signal_mod._deps.node = {
+                    new = function()
+                        return {
+                            config = function()
+                                return {
+                                    signal_id = "approval",
+                                    timeout = "30s",
+                                }
+                            end,
+                            yield = function(_, options)
+                                yielded_options = options
+                                return {
+                                    timeout = true,
+                                    code = "SIGNAL_TIMEOUT",
+                                }, nil
+                            end,
+                            complete = function(_, results, message)
+                                return {
+                                    results = results,
+                                    message = message,
+                                }
+                            end,
+                        }, nil
+                    end
+                }
+
+                local result: any = signal_mod.run({
+                    node_id = "signal-node",
+                    dataflow_id = "df-1",
+                    node = {
+                        config = {
+                            signal_id = "approval",
+                            timeout = "30s",
+                        }
+                    }
+                })
+
+                signal_mod._deps.node = original_node
+
+                test.not_nil(result, "run returns completion")
+                test.eq(yielded_options.wait_for_signal, true, "signal node waits for signal")
+                test.eq(yielded_options.signal_id, "approval", "signal_id forwarded")
+                test.eq(yielded_options.timeout, "30s", "timeout forwarded")
+                test.eq(result.results.timeout, true, "timeout result is completed")
+            end)
+
+            test.it("runs signal node without timeout", function()
+                local signal_mod = require("signal_node")
+                local original_node = signal_mod._deps.node
+                local yielded_options: any = nil
+                local completed_results: any = nil
+
+                signal_mod._deps.node = {
+                    new = function()
+                        return {
+                            config = function()
+                                return {
+                                    signal_id = "approval",
+                                }
+                            end,
+                            yield = function(_, options)
+                                yielded_options = options
+                                return { approved = true }, nil
+                            end,
+                            complete = function(_, results, message)
+                                completed_results = results
+                                return {
+                                    results = results,
+                                    message = message,
+                                }
+                            end,
+                        }, nil
+                    end
+                }
+
+                local result: any = signal_mod.run({
+                    node_id = "signal-node",
+                    dataflow_id = "df-1",
+                    node = {
+                        config = {
+                            signal_id = "approval",
+                        }
+                    }
+                })
+
+                signal_mod._deps.node = original_node
+
+                test.not_nil(result, "run returns completion")
+                test.eq(yielded_options.wait_for_signal, true, "signal node waits for signal")
+                test.eq(yielded_options.signal_id, "approval", "signal_id forwarded")
+                test.eq(completed_results.approved, true, "signal data completed")
+                test.contains(result.message, "Signal received: approval")
+            end)
         end)
     end)
 
@@ -172,6 +271,8 @@ local function define_tests()
                 yield_id = opts.yield_id or ("yield-" .. uuid.v7()),
                 reply_to = opts.reply_to or "reply.topic",
                 signal_id = signal_id,
+                timeout_ms = opts.timeout_ms,
+                timeout_deadline = opts.timeout_deadline,
                 pending_children = opts.pending_children or {},
                 results = opts.results or {},
                 wait_for_signal = true,
@@ -396,6 +497,59 @@ local function define_tests()
             -- signal_data defaults to nil
             local decision = scheduler.find_next_work(state)
             test.eq(decision.type, scheduler.DECISION_TYPE.NO_WORK, "nil means no signal arrived")
+        end)
+
+        test.it("signal yield with elapsed timeout is satisfied with timeout result", function()
+            local past_deadline = time.now():add(-1 * time.SECOND):format(time.RFC3339NANO)
+            local state = make_state({
+                active_yields = {
+                    ["node-1"] = make_signal_yield("approval", {
+                        timeout_ms = 1000,
+                        timeout_deadline = past_deadline,
+                    }),
+                },
+            })
+
+            local decision = scheduler.find_next_work(state)
+            test.eq(decision.type, scheduler.DECISION_TYPE.SATISFY_YIELD, "elapsed timeout satisfies yield")
+            test.eq(decision.payload.results.timeout, true, "timeout flag set")
+            test.eq(decision.payload.results.code, "SIGNAL_TIMEOUT", "timeout code set")
+            test.eq(decision.payload.results.signal_id, "approval", "signal_id included")
+        end)
+
+        test.it("signal data before timeout wins over pending timeout", function()
+            local future_deadline = time.now():add(30 * time.SECOND):format(time.RFC3339NANO)
+            local state = make_state({
+                active_yields = {
+                    ["node-1"] = make_signal_yield("approval", {
+                        timeout_ms = 30000,
+                        timeout_deadline = future_deadline,
+                        signal_data = { approved = true },
+                    }),
+                },
+            })
+
+            local decision = scheduler.find_next_work(state)
+            test.eq(decision.type, scheduler.DECISION_TYPE.SATISFY_YIELD, "signal satisfies yield")
+            test.eq(decision.payload.results.approved, true, "signal payload preserved")
+            test.is_nil(decision.payload.results.timeout, "timeout result not used")
+        end)
+
+        test.it("next_wake_duration is derived from persisted signal timeout deadline", function()
+            local future_deadline = time.now():add(5 * time.SECOND):format(time.RFC3339NANO)
+            local state = make_state({
+                active_yields = {
+                    ["node-1"] = make_signal_yield("approval", {
+                        timeout_ms = 5000,
+                        timeout_deadline = future_deadline,
+                    }),
+                },
+            })
+
+            local wake_duration = scheduler.next_wake_duration(state)
+            test.not_nil(wake_duration, "wake duration exists")
+            test.is_true(wake_duration > 0, "wake duration is positive")
+            test.is_true(wake_duration <= 5 * time.SECOND, "wake duration is bounded by deadline")
         end)
 
         test.it("signal yield preserves reply_to for satisfaction", function()
