@@ -266,12 +266,18 @@ entries:
   - name: user_security_scope
     kind: ns.requirement
     meta:
-      description: "Application security scope/group that may execute user-owned dataflow runtimes and supervise revival"
+      description: "Application security scope/group that may execute user-owned dataflow runtimes"
     targets:
       - entry: userspace.dataflow.security:runtime_process_spawn
         path: ".groups +="
       - entry: userspace.dataflow.security:runtime_process_registry
         path: ".groups +="
+
+  - name: sweeper_security_scope
+    kind: ns.requirement
+    meta:
+      description: "Application security scope/group for the supervised dataflow revival sweeper"
+    targets:
       - entry: userspace.dataflow.runner:sweeper.service
         path: ".lifecycle.security.groups +="
 
