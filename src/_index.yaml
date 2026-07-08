@@ -78,6 +78,16 @@ entries:
       description: "Defines constants for dataflow operations including command types, data types, \ncontent types, status values, and message topics.\n"
     source: file://consts.lua
 
+  # userspace.dataflow:child_output
+  - name: child_output
+    kind: library.lua
+    meta:
+      name: Child Output Helpers
+      comment: Shared helpers for collecting and resuming child node outputs.
+    source: file://child_output.lua
+    imports:
+      consts: userspace.dataflow:consts
+
   - name: agent_ref
     kind: library.lua
     meta:

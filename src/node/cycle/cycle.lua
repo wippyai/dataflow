@@ -23,7 +23,8 @@ cycle._deps = {
     consts = require("consts"),
     template_graph = require("template_graph"),
     data_reader = require("data_reader"),
-    node_reader = require("node_reader")
+    node_reader = require("node_reader"),
+    child_output = require("child_output")
 }
 
 cycle.DEFAULTS = table.freeze({
@@ -325,23 +326,7 @@ local function parse_content(content: any, content_type: any)
 end
 
 query_node_outputs = function(n, node_ids: {any})
-    if type(node_ids) ~= "table" or #node_ids == 0 then
-        return {}, nil
-    end
-
-    local ok, output_data_or_err = pcall(function()
-        return (n:query() :: any)
-            :with_nodes(node_ids)
-            :with_data_types(cycle._deps.consts.DATA_TYPE.NODE_OUTPUT)
-            :fetch_options({ replace_references = true })
-            :all()
-    end)
-
-    if not ok then
-        return nil, "Failed to query output data: " .. tostring(output_data_or_err)
-    end
-
-    return output_data_or_err, nil
+    return cycle._deps.child_output.query_node_outputs(n, node_ids)
 end
 
 local function collect_node_ids(uuid_mapping)
@@ -586,28 +571,8 @@ local function process_control_commands(n, control_commands, iteration_number, c
     return nil, nil
 end
 
--- Resumes an iteration whose children were created before a crash: collects their
--- outputs if already complete, otherwise waits on the existing children (no re-run,
--- no duplicate node creation).
 local function resume_children(n, child_node_ids: {any}?)
-    if type(child_node_ids) ~= "table" or #child_node_ids == 0 then
-        return nil, nil
-    end
-
-    local existing, existing_err = collect_children_result(n, child_node_ids)
-    if existing_err then
-        return nil, existing_err
-    end
-    if existing ~= nil then
-        return existing, nil
-    end
-
-    local _yield_result, yield_err = n:yield({ run_nodes = child_node_ids })
-    if yield_err then
-        return nil, "Failed to resume children: " .. (yield_err :: string)
-    end
-
-    return collect_children_result(n, child_node_ids)
+    return cycle._deps.child_output.resume_children(n, child_node_ids, collect_children_result)
 end
 
 local function update_node_metadata(n, metadata_updates)

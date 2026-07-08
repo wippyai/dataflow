@@ -123,6 +123,7 @@ entries:
       - json
       - time
     imports:
+      child_output: userspace.dataflow:child_output
       consts: userspace.dataflow:consts
       node: userspace.dataflow:node
     method: run
