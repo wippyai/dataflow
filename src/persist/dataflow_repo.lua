@@ -1,6 +1,7 @@
 local sql = require("sql")
 local json = require("json")
 local time = require("time")
+local consts = require("dataflow_consts")
 
 local DB_RESOURCE = "app:db"
 
@@ -37,7 +38,7 @@ function dataflow_repo.get(dataflow_id)
     local db, err_db = get_db()
     if err_db then return nil, err_db end
     local query = sql.builder.select(
-            "dataflow_id", "parent_dataflow_id", "actor_id",
+            "dataflow_id", "parent_dataflow_id", "actor_id", "actor_context",
             "type", "status", "metadata", "created_at", "updated_at"
         )
         :from("dataflows")
@@ -59,7 +60,7 @@ function dataflow_repo.get_by_user(dataflow_id, actor_id)
     if err_db then return nil, err_db end
 
     local query = sql.builder.select(
-            "dataflow_id", "parent_dataflow_id", "actor_id",
+            "dataflow_id", "parent_dataflow_id", "actor_id", "actor_context",
             "type", "status", "metadata", "created_at", "updated_at"
         )
         :from("dataflows")
@@ -164,7 +165,7 @@ function dataflow_repo.list_by_user(actor_id, filters)
     local db, err_db = get_db()
     if err_db then return nil, err_db end
     local query_builder = sql.builder.select(
-            "dataflow_id", "parent_dataflow_id", "actor_id",
+            "dataflow_id", "parent_dataflow_id", "actor_id", "actor_context",
             "type", "status", "metadata", "created_at", "updated_at"
         )
         :from("dataflows")
@@ -203,6 +204,37 @@ function dataflow_repo.list_by_user(actor_id, filters)
     return result_dataflows
 end
 
+-- List non-terminal dataflows (pending or running) across all actors, oldest first.
+-- Used by the revival sweeper to find runs whose orchestrator may be dead.
+function dataflow_repo.list_non_terminal(limit)
+    local db, err_db = get_db()
+    if err_db then return nil, err_db end
+
+    local query = sql.builder.select(
+            "dataflow_id", "parent_dataflow_id", "actor_id", "actor_context",
+            "type", "status", "metadata", "created_at", "updated_at"
+        )
+        :from("dataflows")
+        :where("status IN (?, ?)", consts.STATUS.PENDING, consts.STATUS.RUNNING)
+        :order_by("created_at ASC")
+
+    if limit and type(limit) == "number" and limit > 0 then
+        query = query:limit(limit)
+    end
+
+    local executor = query:run_with(db)
+    local rows, err_query = executor:query()
+    db:release()
+
+    if err_query then return nil, "Failed to list non-terminal dataflows: " .. err_query end
+
+    local result = {}
+    for _, row in ipairs(rows or {}) do
+        table.insert(result, parse_dataflow_metadata(row))
+    end
+    return result
+end
+
 function dataflow_repo.list_children(parent_dataflow_id, filters)
     filters = filters or {}
     if not parent_dataflow_id or parent_dataflow_id == "" then return nil, "Parent Workflow ID is required" end
@@ -211,7 +243,7 @@ function dataflow_repo.list_children(parent_dataflow_id, filters)
     if err_db then return nil, err_db end
 
     local query_builder = sql.builder.select(
-            "dataflow_id", "parent_dataflow_id", "actor_id",
+            "dataflow_id", "parent_dataflow_id", "actor_id", "actor_context",
             "type", "status", "metadata", "created_at", "updated_at"
         )
         :from("dataflows")

@@ -6,6 +6,7 @@ type MockWorkflowState = {
     load_state: (self: MockWorkflowState) -> (MockWorkflowState?, string?),
     get_nodes: () -> { [string]: any },
     get_dataflow_metadata: () -> { [string]: any },
+    get_dataflow_status: () -> string?,
     get_actor_id: () -> string?,
     get_scheduler_snapshot: () -> { [string]: any },
     get_failed_node_errors: () -> string?,
@@ -49,9 +50,11 @@ local function define_tests()
         local mock_commit = nil :: MockCommit
         local current_actor: any = nil
         local captured_actors: { any } = {}
+        local captured_scopes: { any } = {}
 
         before_each(function()
             captured_actors = {}
+            captured_scopes = {}
             current_actor = {
                 id = function()
                     return "test-actor-123"
@@ -73,6 +76,9 @@ local function define_tests()
                 end,
                 get_dataflow_metadata = function(): { [string]: any }
                     return { test = "metadata" }
+                end,
+                get_dataflow_status = function(): string?
+                    return nil
                 end,
                 get_actor_id = function(): string?
                     return "test-actor-123"
@@ -155,6 +161,10 @@ local function define_tests()
                         table.insert(captured_actors, actor)
                         return self
                     end
+                    function spawner:with_scope(scope: any): any
+                        table.insert(captured_scopes, scope)
+                        return self
+                    end
                     function spawner:spawn_linked_monitored(node_type: string, host: string, args: any): (string?, string?)
                         return mock_process.spawn_linked_monitored(node_type, host, args)
                     end
@@ -215,6 +225,10 @@ local function define_tests()
                         table.insert(captured_actors, actor)
                         return self
                     end
+                    function executor:with_scope(scope: any): any
+                        table.insert(captured_scopes, scope)
+                        return self
+                    end
                     function executor:call(_func_id: string, _args: any): (any?, string?)
                         return { success = true }, nil
                     end
@@ -225,12 +239,8 @@ local function define_tests()
                 actor = function()
                     return current_actor
                 end,
-                new_actor = function(actor_id: string)
-                    return {
-                        id = function()
-                            return actor_id
-                        end,
-                    }
+                scope = function()
+                    return "test-scope"
                 end,
             }
         end)
@@ -262,7 +272,7 @@ local function define_tests()
                     return nil, "Failed to create workflow state"
                 end
 
-                local result = orchestrator.run({ dataflow_id = "test-workflow" })
+                local result = orchestrator.run({ dataflow_id = "test-workflow" }) :: any
 
                 test.is_false(result.success)
                 test.contains(result.error, "Failed to create workflow state")
@@ -273,7 +283,7 @@ local function define_tests()
                     return nil, "Failed to load state"
                 end
 
-                local result = orchestrator.run({ dataflow_id = "test-workflow" })
+                local result = orchestrator.run({ dataflow_id = "test-workflow" }) :: any
 
                 test.is_false(result.success)
                 test.contains(result.error, "Failed to load workflow state")
@@ -300,7 +310,7 @@ local function define_tests()
                     }
                 end
 
-                local result = orchestrator.run({ dataflow_id = "test-workflow" })
+                local result = orchestrator.run({ dataflow_id = "test-workflow" }) :: any
 
                 test.is_true(result.success)
                 test.is_true(scheduler_called)
@@ -389,6 +399,10 @@ local function define_tests()
                             table.insert(captured_actors, actor)
                             return self
                         end
+                        function executor:with_scope(scope: any): any
+                            table.insert(captured_scopes, scope)
+                            return self
+                        end
                         function executor:call(_func_id: string, args: any): (any?, string?)
                             init_called = true
                             init_args = args
@@ -424,6 +438,23 @@ local function define_tests()
                 test.eq(#captured_actors, 1)
                 test.is_true(captured_actors[1] == current_actor)
                 test.eq(captured_actors[1]:id(), "test-actor-123")
+                test.eq(#captured_scopes, 1)
+                test.eq(captured_scopes[1], "test-scope")
+            end)
+
+            it("should fail when started under a different actor than the workflow owner", function()
+                current_actor = {
+                    id = function()
+                        return "wrong-actor"
+                    end,
+                }
+
+                local result = orchestrator.run({
+                    dataflow_id = "test-workflow",
+                })
+
+                test.is_false(result.success)
+                test.contains(result.error, "started under the wrong actor")
             end)
 
             it("should continue if init function fails", function()
@@ -432,6 +463,10 @@ local function define_tests()
                         local executor = {}
                         function executor:with_actor(actor: any): any
                             table.insert(captured_actors, actor)
+                            return self
+                        end
+                        function executor:with_scope(scope: any): any
+                            table.insert(captured_scopes, scope)
                             return self
                         end
                         function executor:call(_func_id: string, _args: any): (any?, string?)
@@ -447,6 +482,133 @@ local function define_tests()
                 })
 
                 test.is_true(result.success)
+            end)
+
+            it("should bail without scheduling when the dataflow is already terminal", function()
+                local scheduler_called = false
+                local unregistered: { string } = {}
+
+                mock_scheduler.find_next_work = function(_snapshot: any): { type: string, payload: any }
+                    scheduler_called = true
+                    return {
+                        type = "complete_workflow",
+                        payload = { success = true },
+                    }
+                end
+
+                mock_workflow_state.get_dataflow_status = function(): string?
+                    return consts.STATUS.COMPLETED_SUCCESS
+                end
+
+                mock_process.registry.unregister = function(name: string)
+                    table.insert(unregistered, name)
+                end
+
+                local result = orchestrator.run({ dataflow_id = "done-workflow" })
+
+                test.is_true(result.success)
+                test.is_false(scheduler_called)
+                test.contains(result.message, "terminal state")
+                test.eq(#unregistered, 1)
+                test.eq(unregistered[1], "dataflow.done-workflow")
+            end)
+
+            it("should fire the on_complete hook on successful completion", function()
+                local hook_calls: { { func_id: string, args: any } } = {}
+
+                mock_workflow_state.get_dataflow_metadata = function(): { [string]: any }
+                    return { on_complete = "app:notify" }
+                end
+
+                orchestrator.funcs = {
+                    new = function(): any
+                        local executor = {}
+                        function executor:with_actor(_actor: any): any
+                            return self
+                        end
+                        function executor:with_scope(_scope: any): any
+                            return self
+                        end
+                        function executor:call(func_id: string, args: any): (any?, string?)
+                            table.insert(hook_calls, { func_id = func_id, args = args })
+                            return { success = true }, nil
+                        end
+                        return executor
+                    end,
+                }
+
+                local result = orchestrator.run({ dataflow_id = "hook-workflow" })
+
+                test.is_true(result.success)
+                test.eq(#hook_calls, 1)
+                test.eq(hook_calls[1].func_id, "app:notify")
+                test.eq(hook_calls[1].args.dataflow_id, "hook-workflow")
+                test.eq(hook_calls[1].args.status, consts.STATUS.COMPLETED_SUCCESS)
+            end)
+
+            it("should fire the on_complete hook with error details on failure", function()
+                local hook_calls: { { func_id: string, args: any } } = {}
+
+                mock_workflow_state.get_dataflow_metadata = function(): { [string]: any }
+                    return { on_complete = "app:notify" }
+                end
+
+                mock_scheduler.find_next_work = function(_snapshot: any): { type: string, payload: any }
+                    return {
+                        type = "complete_workflow",
+                        payload = { success = false, message = "boom" },
+                    }
+                end
+
+                orchestrator.funcs = {
+                    new = function(): any
+                        local executor = {}
+                        function executor:with_actor(_actor: any): any
+                            return self
+                        end
+                        function executor:with_scope(_scope: any): any
+                            return self
+                        end
+                        function executor:call(func_id: string, args: any): (any?, string?)
+                            table.insert(hook_calls, { func_id = func_id, args = args })
+                            return { success = true }, nil
+                        end
+                        return executor
+                    end,
+                }
+
+                local result = orchestrator.run({ dataflow_id = "fail-workflow" })
+
+                test.is_false(result.success)
+                test.eq(#hook_calls, 1)
+                test.eq(hook_calls[1].args.status, consts.STATUS.COMPLETED_FAILURE)
+                test.contains(hook_calls[1].args.error, "boom")
+            end)
+
+            it("should not call a hook when none is configured", function()
+                local hook_calls: { any } = {}
+
+                orchestrator.funcs = {
+                    new = function(): any
+                        local executor = {}
+                        function executor:with_actor(_actor: any): any
+                            return self
+                        end
+                        function executor:with_scope(_scope: any): any
+                            return self
+                        end
+                        function executor:call(func_id: string, args: any): (any?, string?)
+                            table.insert(hook_calls, { func_id = func_id, args = args })
+                            return { success = true }, nil
+                        end
+                        return executor
+                    end,
+                }
+
+                local result = orchestrator.run({ dataflow_id = "no-hook-workflow" })
+
+                test.is_true(result.success)
+                test.eq(#hook_calls, 0)
             end)
         end)
 
@@ -687,7 +849,7 @@ local function define_tests()
                 test.is_false(result.success)
                 test.contains(result.error, "Node [node-1] failed: Test error")
                 test.eq(result.dataflow_id, "test-workflow")
-                test.is_nil(result.output)
+                test.is_nil((result :: any).output)
             end)
 
             it("should handle failed completion without specific errors", function()
@@ -761,7 +923,7 @@ local function define_tests()
                         }
                     end
 
-                    local result = orchestrator.run({ dataflow_id = "test-workflow-" .. decision.type })
+                    local result = orchestrator.run({ dataflow_id = "test-workflow-" .. decision.type }) :: any
 
                     test.eq(result.success, decision.expected_success)
                     if decision.payload and decision.payload.message and decision.expected_success then
@@ -797,7 +959,7 @@ local function define_tests()
                     }
                 end
 
-                local result = orchestrator.run({ dataflow_id = "test-workflow" })
+                local result = orchestrator.run({ dataflow_id = "test-workflow" }) :: any
 
                 test.is_true(result.success)
                 test.is_true(load_state_called)
@@ -855,7 +1017,7 @@ local function define_tests()
                 test.is_false(result.success)
                 test.eq(type(result.error), "string")
                 test.eq(result.dataflow_id, "test-workflow")
-                test.is_nil(result.output)
+                test.is_nil((result :: any).output)
             end)
         end)
 
@@ -906,7 +1068,7 @@ local function define_tests()
                     }
                 end
 
-                local failure_result = orchestrator.run({ dataflow_id = "failure-test" })
+                local failure_result = orchestrator.run({ dataflow_id = "failure-test" }) :: any
 
                 test.is_false(failure_result.success)
                 test.eq(failure_result.dataflow_id, "failure-test")

@@ -1,4 +1,5 @@
 local consts = require("consts")
+local time = require("time")
 
 local scheduler = {}
 
@@ -33,6 +34,43 @@ local function create_nodes_execution(nodes)
     return create_decision(DECISION_TYPE.EXECUTE_NODES, {
         nodes = nodes
     })
+end
+
+local function parse_timeout_deadline(deadline_value: any): any
+    if type(deadline_value) ~= "string" or deadline_value == "" then
+        return nil
+    end
+
+    local deadline, err = time.parse(time.RFC3339NANO, deadline_value)
+    if err then
+        deadline, err = time.parse(time.RFC3339, deadline_value)
+    end
+    if err then
+        return nil
+    end
+
+    return deadline
+end
+
+local function signal_timeout_result(parent_id, yield_info)
+    return {
+        timeout = true,
+        error = true,
+        code = "SIGNAL_TIMEOUT",
+        message = "Signal timed out: " .. tostring(yield_info.signal_id or parent_id),
+        signal_id = yield_info.signal_id,
+        timeout_deadline = yield_info.timeout_deadline,
+        timeout_ms = yield_info.timeout_ms
+    }
+end
+
+local function signal_timeout_expired(yield_info, now)
+    local deadline = parse_timeout_deadline(yield_info.timeout_deadline)
+    if not deadline then
+        return false
+    end
+
+    return now:after(deadline) or now:equal(deadline)
 end
 
 local function node_has_required_inputs(node_id, node_data, input_tracker)
@@ -73,6 +111,8 @@ local function yield_children_complete(yield_info)
 end
 
 local function find_yield_driven_work(state)
+    local now = time.now()
+
     for parent_id, yield_info in pairs(state.active_yields) do
         -- detached yields belong to a dead process (parent was reset on recovery).
         -- satisfying them would send the reply into a void AND trick find_yield_driven_work
@@ -91,6 +131,14 @@ local function find_yield_driven_work(state)
                     yield_id = yield_info.yield_id,
                     reply_to = yield_info.reply_to,
                     results = yield_info.signal_data
+                })
+            end
+            if signal_timeout_expired(yield_info, now) then
+                return create_decision(DECISION_TYPE.SATISFY_YIELD, {
+                    parent_id = parent_id,
+                    yield_id = yield_info.yield_id,
+                    reply_to = yield_info.reply_to,
+                    results = signal_timeout_result(parent_id, yield_info)
                 })
             end
             -- signal not received yet, skip this yield
@@ -148,6 +196,29 @@ local function find_yield_driven_work(state)
     end
 
     return nil
+end
+
+function scheduler.next_wake_duration(state)
+    local now = time.now()
+    local soonest_ns = nil
+
+    for _, yield_info in pairs(state.active_yields or {}) do
+        if yield_info.wait_for_signal and not yield_info.detached and yield_info.signal_data == nil then
+            local deadline = parse_timeout_deadline(yield_info.timeout_deadline)
+            if deadline then
+                if now:after(deadline) or now:equal(deadline) then
+                    return 0
+                end
+
+                local remaining_ns = deadline:sub(now):nanoseconds()
+                if remaining_ns > 0 and (soonest_ns == nil or remaining_ns < soonest_ns) then
+                    soonest_ns = remaining_ns
+                end
+            end
+        end
+    end
+
+    return soonest_ns
 end
 
 local function find_input_ready_work(state)

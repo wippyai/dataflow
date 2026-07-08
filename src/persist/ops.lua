@@ -612,6 +612,7 @@ handlers[constants.COMMAND_TYPES.CREATE_WORKFLOW] = function(tx, dataflow_id, op
             dataflow_id = wf_id,
             parent_dataflow_id = payload.parent_dataflow_id or sql.as.null(),
             actor_id = payload.actor_id,
+            actor_context = payload.actor_context or sql.as.null(),
             type = payload.type,
             status = payload.status or "pending",
             metadata = meta_json_val_for_db,

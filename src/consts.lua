@@ -43,9 +43,6 @@ consts.COMMAND_TYPES = {
     CREATE_DATA = "CREATE_DATA",
     UPDATE_DATA = "UPDATE_DATA",
     DELETE_DATA = "DELETE_DATA",
-
-    -- Signal Operations
-    SATISFY_SIGNAL = "SATISFY_SIGNAL",
 }
 
 -- Meta key constants (from ops.lua)
@@ -105,7 +102,8 @@ consts.CONTEXT_DISCRIMINATOR = {
 consts.ERROR = {
     NO_INPUT = "No input data found",
     INVALID_INPUT = "Invalid input data: ",
-    REFERENCE_NOT_FOUND = "Referenced input not found: "
+    REFERENCE_NOT_FOUND = "Referenced input not found: ",
+    SIGNAL_TIMEOUT_INVALID = "Invalid signal timeout"
 }
 
 return consts

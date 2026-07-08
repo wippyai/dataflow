@@ -1215,6 +1215,43 @@ local function define_tests()
                 test.eq(submit_call.commands[1].payload.data_type, consts.DATA_TYPE.NODE_YIELD)
             end)
 
+            it("should persist signal timeout deadline in yield context", function()
+                test.not_nil(test_node)
+                local result, err = test_node:yield({
+                    wait_for_signal = true,
+                    signal_id = "approval",
+                    timeout = "5s",
+                })
+
+                test.is_nil(err)
+                test.not_nil(result)
+
+                local yield_command = captured_calls.commit_submit[1].commands[1]
+                local yield_context = yield_command.payload.content.yield_context
+                test.eq(yield_context.wait_for_signal, true, "wait_for_signal persisted")
+                test.eq(yield_context.signal_id, "approval", "signal_id persisted")
+                test.eq(yield_context.timeout, "5s", "timeout persisted")
+                test.eq(yield_context.timeout_ms, 5000, "timeout_ms persisted")
+                test.not_nil(yield_context.timeout_deadline, "deadline persisted")
+
+                local signal_context = captured_calls.process_send[1].payload.yield_context
+                test.eq(signal_context.timeout_deadline, yield_context.timeout_deadline, "message uses durable deadline")
+            end)
+
+            it("should reject invalid signal timeout before yielding", function()
+                test.not_nil(test_node)
+                local result, err = test_node:yield({
+                    wait_for_signal = true,
+                    signal_id = "approval",
+                    timeout = "not-a-duration",
+                })
+
+                test.is_nil(result)
+                test.contains(err, "Invalid signal timeout")
+                test.eq(#captured_calls.commit_submit, 0, "invalid timeout is not persisted")
+                test.eq(#captured_calls.process_send, 0, "invalid timeout is not signaled")
+            end)
+
             it("should differ from submit in that it sends process signals", function()
                 test.not_nil(test_node)
                 test_node:data(consts.DATA_TYPE.NODE_OUTPUT, { message = "test" })

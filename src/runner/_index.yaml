@@ -25,6 +25,8 @@ entries:
       - uuid
       - funcs
       - security
+      - time
+      - logger
     imports:
       commit: userspace.dataflow.persist:commit
       consts: userspace.dataflow:consts
@@ -61,6 +63,73 @@ entries:
       test: wippy.test:test
     method: run_tests
     
+  # userspace.dataflow.runner:sweeper
+  - name: sweeper
+    kind: process.lua
+    meta:
+      name: Dataflow Revival Sweeper
+      comment: Periodic service that respawns orchestrators for parked non-terminal dataflows
+      tags:
+        - dataflow
+        - revival
+        - durability
+        - supervision
+      description: |
+        Scans for dataflows in a non-terminal status (pending/running) with no live
+        dataflow.{id} orchestrator process and respawns them. Covers crash-during-park
+        and dropped commit notifications for days-long human-in-the-loop runs.
+      default_host: app:processes
+    source: file://sweeper.lua
+    modules:
+      - time
+      - env
+      - logger
+    imports:
+      dataflow_repo: userspace.dataflow.persist:dataflow_repo
+      client: userspace.dataflow:client
+    method: run
+
+  # userspace.dataflow.runner:sweeper.service
+  - name: sweeper.service
+    kind: process.service
+    meta:
+      comment: Supervises the revival sweeper with the module. host literal default is overridden by the module's process_host requirement.
+    process: userspace.dataflow.runner:sweeper
+    host: app:processes
+    lifecycle:
+      depends_on: []
+      auto_start: true
+      security:
+        actor:
+          id: system.dataflow.sweeper
+        groups: []
+
+  # userspace.dataflow.runner:sweeper_test
+  - name: sweeper_test
+    kind: function.lua
+    meta:
+      name: Revival Sweeper Tests
+      type: test
+      comment: Unit tests for the revival sweeper
+      group: Workflow
+      tags:
+        - dataflow
+        - revival
+        - durability
+        - tests
+      description: |
+        Tests the revival sweeper's dead-orchestrator detection, respawn behavior,
+        live-process skipping, and env-driven interval clamping using dependency
+        injection.
+    source: file://sweeper_test.lua
+    modules:
+      - time
+    imports:
+      consts: userspace.dataflow:consts
+      sweeper: userspace.dataflow.runner:sweeper
+      test: wippy.test:test
+    method: run_tests
+
   # userspace.dataflow.runner:scheduler
   - name: scheduler
     kind: library.lua
@@ -78,6 +147,8 @@ entries:
         Takes workflow state snapshots and returns execution decisions without side effects.
         Handles yield-driven, input-ready, and root node execution priorities with deadlock detection.
     source: file://scheduler.lua
+    modules:
+      - time
     imports:
       consts: userspace.dataflow:consts
     

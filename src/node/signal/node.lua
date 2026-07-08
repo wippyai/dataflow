@@ -26,6 +26,7 @@ local function run(args)
     local results, yield_err = n:yield({
         wait_for_signal = true,
         signal_id = signal_id,
+        timeout = config.timeout,
     })
 
     if yield_err then
