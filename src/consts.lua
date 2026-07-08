@@ -43,9 +43,6 @@ consts.COMMAND_TYPES = {
     CREATE_DATA = "CREATE_DATA",
     UPDATE_DATA = "UPDATE_DATA",
     DELETE_DATA = "DELETE_DATA",
-
-    -- Signal Operations
-    SATISFY_SIGNAL = "SATISFY_SIGNAL",
 }
 
 -- Meta key constants (from ops.lua)

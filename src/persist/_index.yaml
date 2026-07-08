@@ -148,6 +148,8 @@ entries:
       - sql
       - json
       - time
+    imports:
+      dataflow_consts: userspace.dataflow:consts
 
   # userspace.dataflow.persist:dataflow_repo_test
   - name: dataflow_repo_test

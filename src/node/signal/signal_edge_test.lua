@@ -361,7 +361,7 @@ local function define_tests()
         -- ==========================================
 
         describe("signal after completion", function()
-            it("signal to completed workflow does not error", function()
+            it("signal to completed workflow is refused with a structured terminal error", function()
                 local sid = "post-complete-" .. uuid.v7()
                 local df_id = make_signal_wf(sid)
                 c:start(df_id)
@@ -370,10 +370,13 @@ local function define_tests()
                 c:signal(df_id, sid, { first = true })
                 test.is_true(wait_complete(df_id), "completed")
 
-                -- send another signal after completion
                 local result, err = c:signal(df_id, sid, { second = true })
-                -- should not crash - commit write is durable regardless
-                test.is_nil(err, "no error sending signal after completion")
+                test.is_nil(result, "no result for a finished run")
+                test.not_nil(err, "structured refusal returned")
+                test.contains(tostring(err), "terminal state", "refusal names terminality")
+                test.contains(tostring(err), consts.STATUS.COMPLETED_SUCCESS, "refusal carries the terminal status")
+
+                test.eq(c:get_status(df_id), consts.STATUS.COMPLETED_SUCCESS, "status unchanged")
             end)
         end)
 

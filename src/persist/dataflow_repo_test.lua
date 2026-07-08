@@ -535,6 +535,44 @@ local function define_tests()
                 test.eq(#wfs, 0)
             end)
         end)
+
+        describe("Non-terminal Listing", function()
+            local nt_type = "nonterminal_" .. uuid.v7()
+            local nt_actor = uuid.v7()
+            local pending_id = uuid.v7()
+            local running_id = uuid.v7()
+            local completed_id = uuid.v7()
+            local cancelled_id = uuid.v7()
+
+            before_all(function()
+                local _, e1 = create_test_dataflow(pending_id, nt_actor, nt_type, { status = "pending" })
+                test.is_nil(e1)
+                local _, e2 = create_test_dataflow(running_id, nt_actor, nt_type, { status = "running" })
+                test.is_nil(e2)
+                local _, e3 = create_test_dataflow(completed_id, nt_actor, nt_type, { status = "completed" })
+                test.is_nil(e3)
+                local _, e4 = create_test_dataflow(cancelled_id, nt_actor, nt_type, { status = "cancelled" })
+                test.is_nil(e4)
+            end)
+
+            it("returns only pending and running dataflows", function()
+                local all, err = dataflow_repo.list_non_terminal()
+                test.is_nil(err)
+                test.not_nil(all)
+
+                local seen = {}
+                for _, df in ipairs(all) do
+                    if df.type == nt_type then
+                        seen[df.dataflow_id] = df.status
+                    end
+                end
+
+                test.eq(seen[pending_id], "pending")
+                test.eq(seen[running_id], "running")
+                test.is_nil(seen[completed_id])
+                test.is_nil(seen[cancelled_id])
+            end)
+        end)
     end)
 end
 

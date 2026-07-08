@@ -14,15 +14,20 @@ local function define_tests()
         before_each(function()
             captured_calls = {
                 commit_execute = {},
+                commit_submit = {},
                 funcs_call = {},
                 process_spawn = {},
                 process_with_actor = {},
+                process_with_scope = {},
                 process_cancel = {},
                 process_terminate = {},
                 process_lookup = {},
                 dataflow_repo_get = {},
                 dataflow_repo_get_direct = {},
                 funcs_with_actor = {},
+                funcs_with_scope = {},
+                identity_capture = {},
+                identity_spawn = {},
                 data_reader_calls = {}
             }
 
@@ -65,6 +70,15 @@ local function define_tests()
                             options = options
                         })
                         return { changes_made = true }, nil
+                    end,
+                    submit = function(dataflow_id: string, op_id: string, commands: { any }, context: any?)
+                        table.insert(captured_calls.commit_submit, {
+                            dataflow_id = dataflow_id,
+                            op_id = op_id,
+                            commands = commands,
+                            context = context
+                        })
+                        return { commit_id = "mock-commit-id" }, nil
                     end
                 },
                 data_reader = {
@@ -133,6 +147,10 @@ local function define_tests()
                             table.insert(captured_calls.process_with_actor, actor)
                             return self
                         end
+                        function spawner:with_scope(scope: any)
+                            table.insert(captured_calls.process_with_scope, scope)
+                            return self
+                        end
                         function spawner:spawn(process_type: string, host: string, args: any)
                             return mock_deps.process.spawn(process_type, host, args)
                         end
@@ -168,6 +186,10 @@ local function define_tests()
                             table.insert(captured_calls.funcs_with_actor, actor)
                             return self
                         end
+                        function executor:with_scope(scope: any)
+                            table.insert(captured_calls.funcs_with_scope, scope)
+                            return self
+                        end
                         function executor:call(func_name: string, args: any)
                             table.insert(captured_calls.funcs_call, {
                                 func_name = func_name,
@@ -186,13 +208,17 @@ local function define_tests()
                     actor = function()
                         return mock_security_actor
                     end,
+                    scope = function()
+                        return "test-scope"
+                    end,
                     new_actor = function(actor_id: string, meta: any)
                         return {
                             id = function() return actor_id end,
                             meta = meta
                         }
                     end
-                }
+                },
+                identity_contract = false
             }
         end)
 
@@ -271,7 +297,7 @@ local function define_tests()
                 test.eq(#captured_calls.dataflow_repo_get_direct, 1)
             end)
 
-            it("should create a workflow actor only when stored actor differs", function()
+            it("should reject direct actor reconstruction when stored actor differs", function()
                 mock_deps.dataflow_repo.get = function(dataflow_id: string)
                     return {
                         dataflow_id = dataflow_id,
@@ -280,24 +306,17 @@ local function define_tests()
                     }, nil
                 end
 
-                local created_actor_id: string? = nil
                 mock_deps.security.new_actor = function(actor_id: string, meta: any)
-                    created_actor_id = actor_id
-                    return {
-                        id = function() return actor_id end,
-                        meta = meta
-                    }
+                    error("should not create actor " .. actor_id)
                 end
 
                 local instance, err = client.new(mock_deps)
                 test.is_nil(err)
 
-                local actor = instance:_actor_for_workflow("workflow-456")
+                local actor, actor_err = instance:_actor_for_workflow("workflow-456")
 
-                test.not_nil(actor)
-                test.eq(actor:id(), "other-actor")
-                test.eq(created_actor_id, "other-actor")
-                test.eq(actor.meta.dataflow_id, "workflow-456")
+                test.is_nil(actor)
+                test.contains(actor_err, "workflow actor differs")
             end)
 
         end)
@@ -324,7 +343,49 @@ local function define_tests()
                 test.eq(#call.commands, 1)
                 test.eq(call.commands[1].type, consts.COMMAND_TYPES.CREATE_WORKFLOW)
                 test.eq(call.commands[1].payload.actor_id, "test-actor-123")
+                test.is_nil(call.commands[1].payload.actor_context)
                 test.eq(call.commands[1].payload.type, "workflow")
+            end)
+
+            it("should persist opaque actor_context when execution identity contract is bound", function()
+                mock_deps.identity_contract = {
+                    capture = function(_self: any, args: any): any
+                        table.insert(captured_calls.identity_capture, args)
+                        return {
+                            success = true,
+                            actor_id = "test-actor-123",
+                            actor_context = '{"scope":"captured"}',
+                        }
+                    end,
+                }
+                test_client, _ = client.new(mock_deps)
+
+                local dataflow_id, err = test_client:create_workflow()
+
+                test.is_nil(err)
+                test.not_nil(dataflow_id)
+                test.eq(#captured_calls.identity_capture, 1)
+                local call = captured_calls.commit_execute[1]
+                test.eq(call.commands[1].payload.actor_context, '{"scope":"captured"}')
+            end)
+
+            it("should fail creation when the identity contract captures a different actor", function()
+                mock_deps.identity_contract = {
+                    capture = function(_self: any, _args: any): any
+                        return {
+                            success = true,
+                            actor_id = "other-actor",
+                            actor_context = '{"scope":"captured"}',
+                        }
+                    end,
+                }
+                test_client, _ = client.new(mock_deps)
+
+                local dataflow_id, err = test_client:create_workflow()
+
+                test.is_nil(dataflow_id)
+                test.contains(err, "actor mismatch")
+                test.eq(#captured_calls.commit_execute, 0)
             end)
 
             it("should create workflow with additional commands", function()
@@ -384,6 +445,18 @@ local function define_tests()
 
                 test.is_nil(dataflow_id)
                 test.eq(err, "Database error")
+            end)
+
+            it("should persist on_complete hook into workflow metadata", function()
+                local dataflow_id, err = test_client:create_workflow({}, {
+                    on_complete = "app:notify_complete"
+                })
+
+                test.is_nil(err)
+                test.not_nil(dataflow_id)
+
+                local call = captured_calls.commit_execute[1]
+                test.eq(call.commands[1].payload.metadata.on_complete, "app:notify_complete")
             end)
         end)
 
@@ -616,6 +689,18 @@ local function define_tests()
                 test.eq(spawn_call.args.init_func_id, "app:setup")
             end)
 
+            it("should thread on_complete hook into orchestrator args", function()
+                local dataflow_id, err = test_client:start("existing-workflow-456", {
+                    on_complete = "app:notify_complete"
+                })
+
+                test.is_nil(err)
+                test.eq(dataflow_id, "existing-workflow-456")
+
+                local spawn_call = captured_calls.process_spawn[1]
+                test.eq(spawn_call.args.on_complete, "app:notify_complete")
+            end)
+
             it("should fail with missing dataflow_id", function()
                 local dataflow_id, err = test_client:start("")
 
@@ -694,13 +779,33 @@ local function define_tests()
                 test.contains(err, "cannot be cancelled in current state: completed")
             end)
 
-            it("should fail when process not found in registry", function()
+            it("should cancel a parked run via direct status update when no live process exists", function()
                 mock_deps.process.registry.lookup = function() return nil end
+
+                local success, err, info = test_client:cancel("workflow-123")
+
+                test.is_true(success)
+                test.is_nil(err)
+                test.eq(#captured_calls.process_cancel, 0)
+                test.eq(#captured_calls.commit_execute, 1)
+
+                local commit_call = captured_calls.commit_execute[1]
+                test.eq(commit_call.commands[1].type, consts.COMMAND_TYPES.UPDATE_WORKFLOW)
+                test.eq(commit_call.commands[1].payload.status, consts.STATUS.CANCELLED)
+
+                local i = info :: any
+                test.is_false(i.process_cancelled)
+                test.is_true(i.status_updated)
+            end)
+
+            it("should fail when parked-run cancel commit fails", function()
+                mock_deps.process.registry.lookup = function() return nil end
+                mock_deps.commit.execute = function() return nil, "Commit failed" end
 
                 local success, err = test_client:cancel("workflow-123")
 
                 test.is_false(success)
-                test.contains(err, "Workflow process not found in registry")
+                test.contains(err, "Failed to cancel workflow: Commit failed")
             end)
 
             it("should fail when cancel signal fails", function()
@@ -919,6 +1024,208 @@ local function define_tests()
                 local result, err = test_client:wait("")
 
                 test.is_nil(result)
+                test.contains(err, "Workflow ID is required")
+            end)
+        end)
+
+        describe("Signal Method", function()
+            local test_client: any
+
+            before_each(function()
+                test_client, _ = client.new(mock_deps)
+                test.not_nil(test_client._deps)
+            end)
+
+            it("should write a durable NODE_SIGNAL commit for a running workflow", function()
+                local result, err = test_client:signal("workflow-123", "approve", { decision = "yes" })
+
+                test.is_nil(err)
+                test.not_nil(result)
+                test.eq(#captured_calls.commit_submit, 1)
+
+                local submit_call = captured_calls.commit_submit[1]
+                test.eq(submit_call.dataflow_id, "workflow-123")
+                test.eq(submit_call.commands[1].type, consts.COMMAND_TYPES.CREATE_DATA)
+                test.eq(submit_call.commands[1].payload.data_type, consts.DATA_TYPE.NODE_SIGNAL)
+                test.eq(submit_call.commands[1].payload.key, "approve")
+            end)
+
+            it("should not respawn when the orchestrator is alive", function()
+                local _, err = test_client:signal("workflow-123", "approve", {})
+
+                test.is_nil(err)
+                test.eq(#captured_calls.process_spawn, 0)
+            end)
+
+            it("should respawn the orchestrator when it is dead", function()
+                mock_deps.process.registry.lookup = function() return nil end
+
+                local _, err = test_client:signal("workflow-123", "approve", {})
+
+                test.is_nil(err)
+                test.eq(#captured_calls.commit_submit, 1)
+                test.eq(#captured_calls.process_spawn, 1)
+                test.eq(captured_calls.process_spawn[1].args.dataflow_id, "workflow-123")
+            end)
+
+            it("should refuse to signal a terminal workflow", function()
+                mock_deps.dataflow_repo.get = function(dataflow_id: string)
+                    return {
+                        dataflow_id = dataflow_id,
+                        status = consts.STATUS.COMPLETED_SUCCESS,
+                        actor_id = "test-actor-123"
+                    }, nil
+                end
+
+                local result, err = test_client:signal("workflow-123", "approve", {})
+
+                test.is_nil(result)
+                test.not_nil(err)
+                test.contains(tostring(err), "terminal state")
+                test.eq(#captured_calls.commit_submit, 0)
+            end)
+
+            it("should refuse to signal a missing workflow", function()
+                mock_deps.dataflow_repo.get = function() return nil, "Workflow not found" end
+
+                local result, err = test_client:signal("workflow-123", "approve", {})
+
+                test.is_nil(result)
+                test.not_nil(err)
+                test.contains(tostring(err), "not found")
+                test.eq(#captured_calls.commit_submit, 0)
+            end)
+
+            it("should fail with missing signal_id", function()
+                local result, err = test_client:signal("workflow-123", "")
+
+                test.is_nil(result)
+                test.contains(err, "Signal ID is required")
+            end)
+
+            it("should fail with missing dataflow_id", function()
+                local result, err = test_client:signal("", "approve")
+
+                test.is_nil(result)
+                test.contains(err, "Workflow ID is required")
+            end)
+        end)
+
+        describe("Revive Method", function()
+            local test_client: any
+
+            before_each(function()
+                test_client, _ = client.new(mock_deps)
+                test.not_nil(test_client._deps)
+            end)
+
+            it("should return the live pid without respawning", function()
+                local pid, err, info = test_client:revive("workflow-123")
+
+                test.is_nil(err)
+                test.eq(pid, "mock-registry-pid-789")
+                test.eq(#captured_calls.process_spawn, 0)
+                local i = info :: any
+                test.is_false(i.spawned)
+            end)
+
+            it("should respawn the orchestrator when none is registered", function()
+                mock_deps.process.registry.lookup = function() return nil end
+
+                local pid, err, info = test_client:revive("workflow-123")
+
+                test.is_nil(err)
+                test.eq(pid, "mock-pid-456")
+                test.eq(#captured_calls.process_spawn, 1)
+                test.eq(captured_calls.process_spawn[1].args.dataflow_id, "workflow-123")
+                local i = info :: any
+                test.is_true(i.spawned)
+            end)
+
+            it("should use execution identity contract when reviving another actor's workflow", function()
+                mock_deps.process.registry.lookup = function() return nil end
+                mock_deps.dataflow_repo.get = function(dataflow_id: string)
+                    return {
+                        dataflow_id = dataflow_id,
+                        actor_id = "other-actor",
+                        actor_context = '{"scope":"captured"}',
+                        status = "running"
+                    }, nil
+                end
+                mock_deps.identity_contract = {
+                    spawn_orchestrator = function(_self: any, args: any): any
+                        table.insert(captured_calls.identity_spawn, args)
+                        return { success = true, pid = "contract-pid-999" }
+                    end,
+                }
+                test_client, _ = client.new(mock_deps)
+
+                local pid, err, info = test_client:revive("workflow-456")
+
+                test.is_nil(err)
+                test.eq(pid, "contract-pid-999")
+                test.eq(#captured_calls.process_spawn, 0)
+                test.eq(#captured_calls.identity_spawn, 1)
+                test.eq(captured_calls.identity_spawn[1].dataflow_id, "workflow-456")
+                test.eq(captured_calls.identity_spawn[1].process_id, consts.ORCHESTRATOR)
+                test.eq(captured_calls.identity_spawn[1].host_id, consts.HOST_ID)
+                test.eq(captured_calls.identity_spawn[1].args.dataflow_id, "workflow-456")
+                local i = info :: any
+                test.is_true(i.spawned)
+            end)
+
+            it("should fail cross-actor revive when execution identity contract is unbound", function()
+                mock_deps.process.registry.lookup = function() return nil end
+                mock_deps.dataflow_repo.get = function(dataflow_id: string)
+                    return {
+                        dataflow_id = dataflow_id,
+                        actor_id = "other-actor",
+                        status = "running"
+                    }, nil
+                end
+                mock_deps.identity_contract = false
+                test_client, _ = client.new(mock_deps)
+
+                local pid, err = test_client:revive("workflow-456")
+
+                test.is_nil(pid)
+                test.contains(err, "execution identity contract is not bound")
+            end)
+
+            it("should fail cross-actor revive without crashing when contract definition is unbound", function()
+                mock_deps.process.registry.lookup = function() return nil end
+                mock_deps.dataflow_repo.get = function(dataflow_id: string)
+                    return {
+                        dataflow_id = dataflow_id,
+                        actor_id = "other-actor",
+                        status = "running"
+                    }, nil
+                end
+                mock_deps.identity_contract = nil
+                mock_deps.contract = {
+                    get = function(contract_id: string)
+                        test.eq(contract_id, "userspace.dataflow:execution_identity")
+                        return {
+                            with_actor = function(_self: any, _actor: any)
+                                return nil, "contract binding missing"
+                            end,
+                        }, nil
+                    end,
+                }
+                test_client, _ = client.new(mock_deps)
+
+                local pid, err = test_client:revive("workflow-456")
+
+                test.is_nil(pid)
+                test.contains(err, "execution identity contract is not bound")
+                test.eq(#captured_calls.process_spawn, 0)
+                test.eq(#captured_calls.identity_spawn, 0)
+            end)
+
+            it("should fail with missing dataflow_id", function()
+                local pid, err = test_client:revive("")
+
+                test.is_nil(pid)
                 test.contains(err, "Workflow ID is required")
             end)
         end)

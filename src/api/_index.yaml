@@ -36,6 +36,41 @@ entries:
     func: cancel_dataflow
     path: /dataflows/{id}/cancel
     
+  # userspace.dataflow.api:signal_dataflow
+  - name: signal_dataflow
+    kind: function.lua
+    meta:
+      comment: Deliver a signal to a waiting dataflow
+      description: Dataflow management HTTP endpoints
+      depends_on:
+        - app:api
+        - ns:userspace.dataflow
+        - ns:userspace.dataflow.persist
+      router: app:api
+    source: file://signal_dataflow.lua
+    modules:
+      - http
+      - security
+    imports:
+      client: userspace.dataflow:client
+      dataflow_repo: userspace.dataflow.persist:dataflow_repo
+    method: handler
+
+  # userspace.dataflow.api:signal_dataflow.endpoint
+  - name: signal_dataflow.endpoint
+    kind: http.endpoint
+    meta:
+      comment: Signal dataflow endpoint
+      description: Dataflow management HTTP endpoints
+      depends_on:
+        - app:api
+        - ns:userspace.dataflow
+        - ns:userspace.dataflow.persist
+      router: app:api
+    method: POST
+    func: signal_dataflow
+    path: /dataflows/{id}/signal
+
   # userspace.dataflow.api:get_dataflow
   - name: get_dataflow
     kind: function.lua

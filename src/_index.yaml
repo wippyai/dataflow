@@ -28,6 +28,7 @@ entries:
       - time
       - security
       - funcs
+      - contract
     imports:
       commit: userspace.dataflow.persist:commit
       dataflow_consts: userspace.dataflow:consts
@@ -99,6 +100,33 @@ entries:
       test: wippy.test:test
       agent_ref: userspace.dataflow:agent_ref
     method: run_tests
+
+  - name: execution_identity
+    kind: contract.definition
+    meta:
+      title: Dataflow Execution Identity
+      comment: Optional app-provided bridge for durable workflow identity capture and orchestrator revival.
+    methods:
+      - name: capture
+        description: Capture the current execution identity as an opaque actor_id plus actor_context row. Input { reason? }.
+        input_schemas:
+          - definition: |
+              { "type": "object", "properties": { "reason": { "type": "string" } } }
+            format: application/schema+json
+        output_schemas:
+          - definition: |
+              { "type": "object", "properties": { "success": { "type": "boolean" }, "actor_id": { "type": "string" }, "actor_context": {}, "error": { "type": "string" } }, "required": ["success"] }
+            format: application/schema+json
+      - name: spawn_orchestrator
+        description: Spawn the dataflow orchestrator for a persisted dataflow under that dataflow's captured identity. Input { dataflow_id, process_id, host_id, args? }.
+        input_schemas:
+          - definition: |
+              { "type": "object", "properties": { "dataflow_id": { "type": "string" }, "process_id": { "type": "string" }, "host_id": { "type": "string" }, "args": { "type": "object" } }, "required": ["dataflow_id", "process_id", "host_id"] }
+            format: application/schema+json
+        output_schemas:
+          - definition: |
+              { "type": "object", "properties": { "success": { "type": "boolean" }, "pid": { "type": "string" }, "error": { "type": "string" } }, "required": ["success"] }
+            format: application/schema+json
 
   # userspace.dataflow:integration_test
   - name: integration_test
@@ -205,6 +233,8 @@ entries:
         path: ".meta.target_db"
       - entry: userspace.dataflow.migrations:05_create_dataflow_commits_table
         path: ".meta.target_db"
+      - entry: userspace.dataflow.migrations:06_add_durability_indexes
+        path: ".meta.target_db"
 
   - name: web_host_origin_env
     kind: ns.requirement
@@ -224,15 +254,26 @@ entries:
       - entry: userspace.dataflow.env:checkpoint_function_id
         path: ".default"
 
+  - name: process_host
+    kind: ns.requirement
+    meta:
+      description: "Process host the supervised revival sweeper service runs on"
+    default: app:processes
+    targets:
+      - entry: userspace.dataflow.runner:sweeper.service
+        path: .host
+
   - name: user_security_scope
     kind: ns.requirement
     meta:
-      description: "Application security scope/group that may execute user-owned dataflow runtimes"
+      description: "Application security scope/group that may execute user-owned dataflow runtimes and supervise revival"
     targets:
       - entry: userspace.dataflow.security:runtime_process_spawn
         path: ".groups +="
       - entry: userspace.dataflow.security:runtime_process_registry
         path: ".groups +="
+      - entry: userspace.dataflow.runner:sweeper.service
+        path: ".lifecycle.security.groups +="
 
   # Dependencies
   - name: dep.wippy.test

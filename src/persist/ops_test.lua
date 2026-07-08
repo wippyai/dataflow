@@ -455,6 +455,7 @@ local function define_tests()
                 test.eq(#rows, 1)
                 test.eq(rows[1].dataflow_id, dataflow_id)
                 test.eq(rows[1].actor_id, actor_id)
+                test.is_nil(rows[1].actor_context)
                 test.eq(rows[1].type, "minimal_dataflow_type")
                 test.eq(rows[1].status, "pending")
                 test.is_nil(rows[1].parent_dataflow_id)
@@ -495,6 +496,7 @@ local function define_tests()
                         type = "full_dataflow_type",
                         status = "running",
                         parent_dataflow_id = parent_dataflow_id,
+                        actor_context = '{"scope":"captured"}',
                         metadata = {
                             source = "ops_test",
                             purpose = "testing",
@@ -519,6 +521,7 @@ local function define_tests()
                 test.eq(#rows, 1)
                 test.eq(rows[1].dataflow_id, dataflow_id)
                 test.eq(rows[1].actor_id, actor_id)
+                test.eq(rows[1].actor_context, '{"scope":"captured"}')
                 test.eq(rows[1].type, "full_dataflow_type")
                 test.eq(rows[1].status, "running")
                 test.eq(rows[1].parent_dataflow_id, parent_dataflow_id)

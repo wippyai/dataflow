@@ -548,8 +548,8 @@ local function define_tests()
             test.eq(status, consts.STATUS.TERMINATED, "workflow terminated")
         end)
 
-        it("signal after terminate respawns and completes (auto-respawn)", function()
-            local sid = "term-respawn-" .. uuid.v7()
+        it("signal after terminate is refused and the run stays terminated", function()
+            local sid = "term-refuse-" .. uuid.v7()
             local df_id = make_signal_wf(sid)
             c:start(df_id)
             time.sleep("500ms")
@@ -557,14 +557,14 @@ local function define_tests()
             c:terminate(df_id)
             time.sleep("500ms")
 
-            -- signal auto-respawns orchestrator which processes the signal
-            c:signal(df_id, sid, { revived = true })
+            local result, err = c:signal(df_id, sid, { revived = true })
+            test.is_nil(result, "signal returns no result")
+            test.not_nil(err, "signal returns structured refusal")
+            test.contains(tostring(err), "terminal state", "refusal names terminality")
             time.sleep("2s")
 
-            local status = c:get_status(df_id)
-            -- orchestrator doesn't check TERMINATED status on startup,
-            -- so signal respawn processes the workflow
-            test.eq(status, consts.STATUS.COMPLETED_SUCCESS, "respawned and completed")
+            test.eq(c:get_status(df_id), consts.STATUS.TERMINATED, "run stays terminated")
+            test.is_nil(process.registry.lookup("dataflow." .. df_id), "no orchestrator respawned")
         end)
 
         it("signal after kill without restart does not auto-complete", function()

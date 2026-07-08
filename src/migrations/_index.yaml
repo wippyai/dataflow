@@ -121,4 +121,24 @@ entries:
     imports:
       migration: wippy.migration:migration
     method: migrate
-    
+
+  # userspace.dataflow.migrations:06_add_durability_indexes
+  - name: 06_add_durability_indexes
+    kind: function.lua
+    meta:
+      type: migration
+      tags:
+        - dataflows
+        - dataflow
+        - indexes
+        - durability
+      description: Add actor listing indexes and a partial pending-commit index for durable long-running workflows
+      depends_on:
+        - ns:wippy.migration
+      target_db: app:db
+      timestamp: "2026-07-06T09:00:00Z"
+    source: file://06_add_durability_indexes.lua
+    imports:
+      migration: wippy.migration:migration
+    method: migrate
+

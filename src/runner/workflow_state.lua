@@ -447,6 +447,7 @@ function methods:load_state()
     end
 
     self.actor_id = dataflow.actor_id
+    self.dataflow_status = dataflow.status
     self.dataflow_metadata = dataflow.metadata or {}
 
     local nodes, err_nodes = dataflow_repo.get_nodes_for_dataflow(self.dataflow_id)
@@ -1129,6 +1130,12 @@ end
 
 function methods:get_dataflow_metadata()
     return self.dataflow_metadata
+end
+
+function methods:get_dataflow_status(): string?
+    local status = self.dataflow_status
+    if type(status) == "string" and status ~= "" then return status end
+    return nil
 end
 
 function methods:get_actor_id(): string?

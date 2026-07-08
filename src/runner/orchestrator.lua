@@ -3,6 +3,7 @@ local json = require("json")
 local time = require("time")
 local consts = require("consts")
 local security = require("security")
+local logger = require("logger"):named("dataflow.orchestrator")
 
 local orchestrator = {
     workflow_state = require("workflow_state"),
@@ -13,19 +14,83 @@ local orchestrator = {
     security = security
 }
 
-local function workflow_actor(actor_id: string?, dataflow_id: string)
+local TERMINAL_STATUS = {
+    [consts.STATUS.COMPLETED_SUCCESS] = true,
+    [consts.STATUS.COMPLETED_FAILURE] = true,
+    [consts.STATUS.CANCELLED] = true,
+    [consts.STATUS.TERMINATED] = true
+}
+
+---Invoke the durable on_complete hook exactly once for this orchestrator life.
+---Best-effort: hook failures are logged and never block completion persistence,
+---which has already happened by the time this runs.
+---@param state table Orchestrator state
+---@param result table|nil Final orchestration result
+local function fire_completion_hook(state, result)
+    if state.completion_hook_fired then
+        return
+    end
+    state.completion_hook_fired = true
+
+    local hook_id = state.on_complete_id
+    if type(hook_id) ~= "string" or hook_id == "" then
+        return
+    end
+
+    local status = state.final_status
+    if type(status) ~= "string" or status == "" then
+        status = (result and result.success) and consts.STATUS.COMPLETED_SUCCESS or consts.STATUS.COMPLETED_FAILURE
+    end
+
+    local hook_args: { [string]: any } = {
+        dataflow_id = state.dataflow_id,
+        status = status
+    }
+    if result and result.error then
+        hook_args.error = result.error
+    end
+
+    local executor = orchestrator.funcs.new()
+    if state.actor then
+        executor = executor:with_actor(state.actor)
+    end
+    if state.scope then
+        executor = executor:with_scope(state.scope)
+    end
+
+    local ok, call_err = pcall(function()
+        local _, err = executor:call(hook_id, hook_args)
+        if err then
+            error(err)
+        end
+    end)
+    if not ok then
+        logger:warn("on_complete hook failed", {
+            dataflow_id = state.dataflow_id,
+            hook = hook_id,
+            error = tostring(call_err)
+        })
+    end
+end
+
+---Fire the completion hook and return the result. Used at every terminal exit of run().
+---@param state table Orchestrator state
+---@param result table Final orchestration result
+---@return table result
+local function finish(state, result)
+    fire_completion_hook(state, result)
+    return result
+end
+
+local function workflow_identity(actor_id: string?, dataflow_id: string): (any?, any?, string?)
     if type(actor_id) ~= "string" or actor_id == "" then
-        return nil
+        return nil, nil, nil
     end
     local current_actor = orchestrator.security.actor()
     if current_actor and current_actor:id() == actor_id then
-        return current_actor
+        return current_actor, orchestrator.security.scope(), nil
     end
-    return orchestrator.security.new_actor(actor_id, {
-        kind = "dataflow.workflow",
-        dataflow_id = dataflow_id,
-        source = "userspace.dataflow.runner:orchestrator"
-    })
+    return nil, nil, "workflow " .. dataflow_id .. " started under the wrong actor"
 end
 
 ---Execute a single node
@@ -54,6 +119,9 @@ local function execute_single_node(state, node_info)
     if state.actor then
         spawner = spawner:with_actor(state.actor)
     end
+    if state.scope then
+        spawner = spawner:with_scope(state.scope)
+    end
 
     local pid, err_spawn = spawner:spawn_linked_monitored(node_type, consts.HOST_ID, {
         dataflow_id = state.dataflow_id,
@@ -75,7 +143,7 @@ end
 ---Process pending commits immediately
 ---@param state table Orchestrator state
 ---@return boolean success Whether processing succeeded
-local function process_pending_commits(state)
+local function process_pending_commits(state: any)
     if #state.incoming_commit_queue == 0 then
         return true
     end
@@ -109,6 +177,7 @@ local function process_pending_commits(state)
             }
         })
         local persist_result, persist_err = state.workflow_state:persist()
+        state.final_status = consts.STATUS.COMPLETED_FAILURE
         state.exit_result = {
             success = false,
             dataflow_id = state.dataflow_id,
@@ -128,7 +197,7 @@ end
 ---Load pending commits from durable storage for crash/restart recovery
 ---@param state table Orchestrator state
 ---@return boolean success Whether loading succeeded
-local function load_startup_pending_commits(state)
+local function load_startup_pending_commits(state: any)
     local pending_commit_ids, pending_err = orchestrator.commit.get_pending_commits(state.dataflow_id)
     if pending_err then
         local failure_message = "Failed to load pending commits: " .. pending_err
@@ -140,6 +209,7 @@ local function load_startup_pending_commits(state)
             }
         })
         local _persist_result, _persist_err = state.workflow_state:persist()
+        state.final_status = consts.STATUS.COMPLETED_FAILURE
         state.exit_result = {
             success = false,
             dataflow_id = state.dataflow_id,
@@ -159,7 +229,7 @@ end
 ---Call scheduler and handle the result immediately
 ---@param state table Orchestrator state
 ---@return boolean continue Whether to continue processing
-local function call_scheduler_and_handle(state)
+local function call_scheduler_and_handle(state: any)
     -- loop through SATISFY_YIELD decisions: they mutate state (clear active_yields)
     -- but don't guarantee forward progress on their own, especially when the yield's
     -- parent process is dead (recovery case). keep scheduling until a node starts,
@@ -193,7 +263,7 @@ end
 ---@param state table Orchestrator state
 ---@param payload table Execution payload
 ---@return boolean continue Whether to continue processing
-function handle_execute_nodes(state, payload)
+function handle_execute_nodes(state: any, payload: any)
     local nodes = payload.nodes or {}
 
     if #nodes == 0 then
@@ -260,6 +330,7 @@ function handle_execute_nodes(state, payload)
         })
         state.workflow_state:queue_commands(fail_commands)
         local persist_result, persist_err = state.workflow_state:persist()
+        state.final_status = consts.STATUS.COMPLETED_FAILURE
         state.exit_result = {
             success = false,
             dataflow_id = state.dataflow_id,
@@ -309,6 +380,7 @@ function handle_execute_nodes(state, payload)
 
         state.workflow_state:queue_commands(fail_commands)
         local persist_result, persist_err = state.workflow_state:persist()
+        state.final_status = consts.STATUS.COMPLETED_FAILURE
         state.exit_result = {
             success = false,
             dataflow_id = state.dataflow_id,
@@ -325,7 +397,7 @@ end
 ---@param state table Orchestrator state
 ---@param payload table Yield payload
 ---@return boolean continue Whether to continue processing
-function handle_satisfy_yield(state, payload)
+function handle_satisfy_yield(state: any, payload: any)
     local parent_id = payload.parent_id
     local yield_id = payload.yield_id
     local reply_to = payload.reply_to
@@ -349,7 +421,7 @@ function handle_satisfy_yield(state, payload)
     -- Send reply to yielding process ONLY AFTER successful persistence
     local process_info = state.active_processes[parent_id]
     if process_info and type(reply_to) == "string" then
-        orchestrator.process.send(process_info.pid, reply_to, {
+        orchestrator.process.send(tostring(process_info.pid), reply_to, {
             yield_id = yield_id,
             response_data = {
                 ok = true,
@@ -366,7 +438,7 @@ end
 ---@param state table Orchestrator state
 ---@param payload table Completion payload
 ---@return boolean continue Whether to continue processing (always false)
-function handle_complete_workflow(state, payload)
+function handle_complete_workflow(state: any, payload: any)
     local success = payload.success
     local message = payload.message
     local final_status = success and consts.STATUS.COMPLETED_SUCCESS or consts.STATUS.COMPLETED_FAILURE
@@ -395,6 +467,8 @@ function handle_complete_workflow(state, payload)
     state.workflow_state:queue_commands(commands)
     local persist_result, persist_err = state.workflow_state:persist()
 
+    state.final_status = final_status
+
     if success then
         state.exit_result = {
             success = true,
@@ -417,7 +491,7 @@ end
 ---@param state table Orchestrator state
 ---@param msg_payload table Yield request payload
 ---@param from_pid string Process ID that sent the request
-local function handle_yield_request(state, msg_payload, from_pid)
+local function handle_yield_request(state: any, msg_payload: any, from_pid: any)
     local node_id = nil
     local current_path = nil
     for nid, process_info in pairs(state.active_processes) do
@@ -444,7 +518,8 @@ local function handle_yield_request(state, msg_payload, from_pid)
         local reply_to = msg_payload and msg_payload.request_context and msg_payload.request_context.reply_to
 
         if wait_for_signal then
-            -- signal yield: track the yield and wait for external SATISFY_SIGNAL commit
+            -- signal yield: track the yield and wait for an external NODE_SIGNAL CREATE_DATA
+            -- commit (client:signal writes it durably; the scheduler satisfies the yield on arrival)
             local yield_info = {
                 yield_id = yield_id,
                 reply_to = reply_to,
@@ -458,7 +533,7 @@ local function handle_yield_request(state, msg_payload, from_pid)
             }
             state.workflow_state:track_yield(node_id, yield_info)
         elseif type(reply_to) == "string" and yield_id then
-            orchestrator.process.send(from_pid, reply_to, {
+            orchestrator.process.send(tostring(from_pid), reply_to, {
                 yield_id = yield_id,
                 response_data = {
                     ok = true,
@@ -500,7 +575,7 @@ end
 ---@param state table Orchestrator state
 ---@param event table Process event
 ---@return boolean continue Whether to continue processing
-local function handle_process_event(state, event)
+local function handle_process_event(state: any, event: any)
     if event.kind ~= orchestrator.process.event.EXIT and event.kind ~= orchestrator.process.event.LINK_DOWN then
         return true
     end
@@ -565,7 +640,7 @@ end
 ---Handle commit message immediately
 ---@param state table Orchestrator state
 ---@param msg_payload table Commit payload
-local function handle_commit_message(state, msg_payload)
+local function handle_commit_message(state: any, msg_payload: any)
     local commit_id = msg_payload and msg_payload.commit_id
     if commit_id then
         table.insert(state.incoming_commit_queue, commit_id)
@@ -575,7 +650,7 @@ end
 ---Handle cancellation request
 ---@param state table Orchestrator state
 ---@param event table Cancel event
-local function handle_cancellation(state, event)
+local function handle_cancellation(state: any, event: any)
     for node_id, process_info in pairs(state.active_processes) do
         if type(process_info.pid) == "string" then
             orchestrator.process.terminate(process_info.pid)
@@ -591,6 +666,7 @@ local function handle_cancellation(state, event)
     })
     local persist_result, persist_err = state.workflow_state:persist()
 
+    state.final_status = consts.STATUS.CANCELLED
     state.exit_result = {
         success = false,
         dataflow_id = state.dataflow_id,
@@ -621,16 +697,19 @@ local function run(args)
     local workflow_state = ws :: any
 
     -- Initialize state
-    local state = {
+    local state = ({
         dataflow_id = dataflow_id,
         workflow_state = workflow_state,
         active_processes = {},
         incoming_commit_queue = {},
         processed_commit_ids = {},
         workflow_status_updated = false,
+        actor = nil :: any,
+        scope = nil :: any,
+        on_complete_id = nil :: any,
         running = true,
         exit_result = nil
-    }
+    } :: any)
 
     -- Register process — if another orchestrator is already running, exit
     local _, reg_err = orchestrator.process.registry.register("dataflow." .. dataflow_id)
@@ -642,7 +721,7 @@ local function run(args)
             message = "Another orchestrator is already running for this workflow"
         }
     end
-    orchestrator.process.set_options({ trap_links = true })
+    orchestrator.process.set_options({ trap_links = true, upgradable = false })
 
     -- Load workflow state
     local result, load_err = workflow_state:load_state()
@@ -654,32 +733,68 @@ local function run(args)
         }
     end
 
-    -- Recover commit backlog that may have accumulated while orchestrator was offline.
-    -- This must happen before empty-workflow detection because commits can create nodes.
-    local backlog_loaded = load_startup_pending_commits(state)
-    if not backlog_loaded then
-        return state.exit_result or {
-            success = false,
+    -- Terminal-status guard: a respawned orchestrator (revival sweeper, late signal,
+    -- duplicate spawn) must not schedule work on an already-finished dataflow.
+    -- The completion hook fired in the life that reached terminal; a module-level
+    -- reconciler backstops any hook missed to a crash between persist and hook call.
+    local loaded_status = workflow_state:get_dataflow_status()
+    if loaded_status and TERMINAL_STATUS[loaded_status] then
+        orchestrator.process.registry.unregister("dataflow." .. dataflow_id)
+        return {
+            success = true,
             dataflow_id = dataflow_id,
-            error = "Failed to recover pending commits"
+            message = "Dataflow already in terminal state: " .. loaded_status
         }
     end
 
-    local pending_processed = process_pending_commits(state)
-    if not pending_processed then
-        return state.exit_result or {
-            success = false,
-            dataflow_id = dataflow_id,
-            error = "Failed to process pending commits"
-        }
-    end
-
+    -- Resolve the execution identity and durable completion hook before any terminal
+    -- path so every exit fires on_complete under the workflow's frozen actor. The hook
+    -- lives in dataflows.metadata so a respawned orchestrator still fires it; a caller
+    -- may override it transiently through orchestrator args.
     local raw_actor_id = workflow_state:get_actor_id()
     local actor_id: string? = nil
     if type(raw_actor_id) == "string" and raw_actor_id ~= "" then
         actor_id = raw_actor_id
     end
-    state.actor = workflow_actor(actor_id, dataflow_id)
+    local run_actor, run_scope, identity_err = workflow_identity(actor_id, dataflow_id)
+    if identity_err then
+        return finish(state, {
+            success = false,
+            dataflow_id = dataflow_id,
+            error = identity_err,
+        })
+    end
+    state.actor = run_actor
+    state.scope = run_scope
+    local runtime_state: any = state
+
+    local dataflow_metadata = workflow_state:get_dataflow_metadata() or {}
+    local metadata_hook = dataflow_metadata.on_complete
+    if type(metadata_hook) == "string" and metadata_hook ~= "" then
+        state.on_complete_id = metadata_hook
+    elseif args and type(args.on_complete) == "string" and args.on_complete ~= "" then
+        state.on_complete_id = args.on_complete
+    end
+
+    -- Recover commit backlog that may have accumulated while orchestrator was offline.
+    -- This must happen before empty-workflow detection because commits can create nodes.
+    local backlog_loaded = load_startup_pending_commits(runtime_state)
+    if not backlog_loaded then
+        return finish(state, state.exit_result or {
+            success = false,
+            dataflow_id = dataflow_id,
+            error = "Failed to recover pending commits"
+        })
+    end
+
+    local pending_processed = process_pending_commits(runtime_state)
+    if not pending_processed then
+        return finish(state, state.exit_result or {
+            success = false,
+            dataflow_id = dataflow_id,
+            error = "Failed to process pending commits"
+        })
+    end
 
     -- Check for empty workflow after applying pending commits
     local nodes = workflow_state:get_nodes()
@@ -689,11 +804,11 @@ local function run(args)
     end
 
     if node_count == 0 then
-        return {
+        return finish(state, {
             success = true,
             dataflow_id = dataflow_id,
             output = { message = "Empty workflow - no nodes to execute" }
-        }
+        })
     end
 
     -- Call init function if provided
@@ -701,6 +816,9 @@ local function run(args)
         local executor = orchestrator.funcs.new()
         if state.actor then
             executor = executor:with_actor(state.actor)
+        end
+        if state.scope then
+            executor = executor:with_scope(state.scope)
         end
         local _, _ = executor:call(init_func_id, {
             dataflow_id = dataflow_id,
@@ -713,13 +831,13 @@ local function run(args)
     local events = orchestrator.process.events()
 
     -- Initial scheduler call
-    local continue = call_scheduler_and_handle(state)
+    local continue = call_scheduler_and_handle(runtime_state)
     if not continue then
-        return state.exit_result or {
+        return finish(state, state.exit_result or {
             success = false,
             dataflow_id = dataflow_id,
             error = "Orchestrator exited without result"
-        }
+        })
     end
 
     -- Main processing loop
@@ -733,7 +851,7 @@ local function run(args)
         end
 
         if next_wake_duration ~= nil and next_wake_duration <= 0 then
-            call_scheduler_and_handle(state)
+            call_scheduler_and_handle(runtime_state)
             goto continue
         elseif next_wake_duration ~= nil then
             timer_channel = time.after(next_wake_duration)
@@ -764,43 +882,43 @@ local function run(args)
             local from_pid = msg:from()
 
             if topic == consts.MESSAGE_TOPIC.COMMIT then
-                handle_commit_message(state, payload_table)
-                local success = process_pending_commits(state)
+                handle_commit_message(runtime_state, payload_table)
+                local success = process_pending_commits(runtime_state)
                 if success and state.running then
-                    call_scheduler_and_handle(state)
+                    call_scheduler_and_handle(runtime_state)
                 end
             elseif topic == consts.MESSAGE_TOPIC.YIELD_REQUEST then
                 -- Process pending commits FIRST, before ANY yield handling
-                local success = process_pending_commits(state)
+                local success = process_pending_commits(runtime_state)
                 if success and state.running then
-                    handle_yield_request(state, payload_table, from_pid)
-                    call_scheduler_and_handle(state)
+                    handle_yield_request(runtime_state, payload_table, from_pid)
+                    call_scheduler_and_handle(runtime_state)
                 end
             end
         elseif result.channel == events then
             local event = result.value
 
             if event.kind == orchestrator.process.event.CANCEL then
-                handle_cancellation(state, event)
+                handle_cancellation(runtime_state, event)
             else
-                local continue = handle_process_event(state, event)
+                local continue = handle_process_event(runtime_state, event)
                 if continue and state.running then
                     -- load pending commits from DB before scheduling
                     -- exiting node may have submitted output data (commit in DB but message not yet received)
-                    load_startup_pending_commits(state)
-                    process_pending_commits(state)
-                    call_scheduler_and_handle(state)
+                    load_startup_pending_commits(runtime_state)
+                    process_pending_commits(runtime_state)
+                    call_scheduler_and_handle(runtime_state)
                 end
             end
         elseif timer_channel and result.channel == timer_channel then
-            call_scheduler_and_handle(state)
+            call_scheduler_and_handle(runtime_state)
         end
 
         ::continue::
     end
 
     -- Clean up and return result
-    return state.exit_result or { success = true, dataflow_id = dataflow_id }
+    return finish(state, state.exit_result or { success = true, dataflow_id = dataflow_id })
 end
 
 orchestrator.run = run
