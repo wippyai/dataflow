@@ -16,7 +16,7 @@ local sweeper = {
 }
 
 local INTERVAL_ENV = "userspace.dataflow.env:revival_interval_seconds"
-local DEFAULT_INTERVAL_SECONDS = 30
+local DEFAULT_INTERVAL_SECONDS = 120
 local MIN_INTERVAL_SECONDS = 5
 local MAX_INTERVAL_SECONDS = 3600
 local MAX_SCAN = 500
