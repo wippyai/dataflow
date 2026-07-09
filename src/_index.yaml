@@ -85,6 +85,8 @@ entries:
       name: Child Output Helpers
       comment: Shared helpers for collecting and resuming child node outputs.
     source: file://child_output.lua
+    modules:
+      - json
     imports:
       consts: userspace.dataflow:consts
 

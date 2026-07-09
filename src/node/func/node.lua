@@ -135,9 +135,12 @@ local function build_child_output_result(output_data)
     return nil, nil
 end
 
-local function collect_child_result(n, child_node_ids)
-    local output_data, collect_err = func._deps.child_output.query_node_outputs(n, child_node_ids)
+local function collect_child_result(n, child_node_ids, yield_result)
+    local output_data, collect_err = func._deps.child_output.collect_outputs(n, child_node_ids, yield_result)
     if collect_err then
+        if type(collect_err) == "table" then
+            return nil, collect_err
+        end
         return nil, "Failed to collect child outputs: " .. tostring(collect_err)
     end
 
@@ -176,7 +179,7 @@ end
 local function finish_with_children(n, created_node_ids, fallback_result)
     n:update_metadata({ func_pending = { child_node_ids = created_node_ids } })
 
-    local _yield_result, yield_err = n:yield({ run_nodes = created_node_ids })
+    local yield_result, yield_err = n:yield({ run_nodes = created_node_ids })
     if yield_err then
         return n:fail({
             code = ERROR_FUNCTION_EXECUTION_FAILED,
@@ -184,7 +187,15 @@ local function finish_with_children(n, created_node_ids, fallback_result)
         }, "Control command execution failed")
     end
 
-    return complete_from_children(n, created_node_ids, fallback_result)
+    local final_output, collect_err = collect_child_result(n, created_node_ids, yield_result)
+    if collect_err then
+        return fail_child_collect(n, collect_err)
+    end
+    if final_output ~= nil then
+        return n:complete(final_output, "Function executed successfully")
+    end
+
+    return n:complete(fallback_result, "Function executed successfully")
 end
 
 local function run(args)
