@@ -16,8 +16,13 @@ end
 
 local function make_reader(state)
     return {
+        with_data = function(self: any, data_ids: any)
+            state.queried_data_ids = data_ids
+            return self
+        end,
         with_nodes = function(self: any, node_ids: any)
             state.queried_nodes = node_ids
+            state.queried_data_ids = nil
             return self
         end,
         with_data_types = function(self: any, data_type: any)
@@ -30,6 +35,31 @@ local function make_reader(state)
         end,
         all = function()
             state.output_query_count = state.output_query_count + 1
+            if state.queried_data_type == consts.DATA_TYPE.NODE_RESULT then
+                local rows = {}
+                for _, data_id in ipairs(state.queried_data_ids or {}) do
+                    if data_id == "child-result-1" then
+                        table.insert(rows, {
+                            data_id = "child-result-1",
+                            data_type = consts.DATA_TYPE.NODE_RESULT,
+                            node_id = "child-1",
+                            content = state.result_content or {
+                                success = true,
+                                data_ids = state.result_data_ids or { "child-output-1" }
+                            }
+                        })
+                    end
+                end
+                return rows
+            end
+            if state.queried_data_type == consts.DATA_TYPE.NODE_OUTPUT and state.queried_data_ids then
+                for _, data_id in ipairs(state.queried_data_ids) do
+                    if data_id == "child-output-1" then
+                        return { child_output_row() }
+                    end
+                end
+                return {}
+            end
             if state.output_available and state.output_available(state) then
                 return { child_output_row() }
             end
@@ -81,7 +111,7 @@ local function install_async_function(result)
         end
     }
 
-    process.send(process.pid(), command_pair.topic, {})
+    process.send(process.pid(), command_pair.topic :: string, {})
 end
 
 local function make_mock_node(state, options)
@@ -118,7 +148,7 @@ local function make_mock_node(state, options)
             if options.yield_error then
                 return nil, options.yield_error
             end
-            return {}, nil
+            return options.yield_result or state.yield_result or {}, nil
         end,
         query = function()
             state.query_calls = state.query_calls + 1
@@ -165,10 +195,13 @@ local function define_tests()
             func._deps.consts = original_deps.consts
         end)
 
-        it("waits again when a child output is not visible after the first yield", function()
-            local state = make_state(function(s)
-                return s.yield_calls >= 2
+        it("collects child output through the yield node-result ids", function()
+            local state = make_state(function()
+                return false
             end)
+            state.yield_result = {
+                ["child-1"] = "child-result-1"
+            }
             local function_result = {
                 _control = {
                     commands = {
@@ -195,8 +228,88 @@ local function define_tests()
             local result = func.run({})
 
             test.is_true(result.success)
-            test.eq(state.yield_calls, 2, "func re-yields existing children when output is absent")
+            test.eq(state.yield_calls, 1, "func waits once for the child yield")
             test.eq(result.result._dataflow_ref, "child-output-1", "func completes from child output")
+            test.eq(state.queried_data_ids[1], "child-output-1", "func resolves output from node-result data ids")
+            test.is_nil(state.queried_nodes, "func does not fall back to node-id output lookup after yield")
+        end)
+
+        it("does not fall back to child node output after a completed yield omits data ids", function()
+            local state = make_state(function()
+                return true
+            end)
+            state.result_data_ids = {}
+            state.yield_result = {
+                ["child-1"] = "child-result-1"
+            }
+            local function_result = {
+                _control = {
+                    commands = {
+                        {
+                            type = consts.COMMAND_TYPES.CREATE_NODE,
+                            payload = {
+                                node_id = "child-1",
+                                node_type = "userspace.dataflow.node.func:node",
+                                status = consts.STATUS.PENDING,
+                                config = {}
+                            }
+                        }
+                    }
+                }
+            }
+
+            install_async_function(function_result)
+            func._deps.node = {
+                new = function()
+                    return make_mock_node(state), nil
+                end
+            }
+
+            local result = func.run({})
+
+            test.is_true(result.success)
+            test.eq(state.yield_calls, 1, "func waits once for the child yield")
+            test.eq(result.result._dataflow_ref, nil, "live yield result without output ids does not guess child output")
+            test.is_nil(state.queried_nodes, "live yield result path never falls back to node-id lookup")
+        end)
+
+        it("uses the returned result row node id only for legacy non-envelope results", function()
+            local state = make_state(function()
+                return true
+            end)
+            state.result_content = "Completed"
+            state.yield_result = {
+                ["child-1"] = "child-result-1"
+            }
+            local function_result = {
+                _control = {
+                    commands = {
+                        {
+                            type = consts.COMMAND_TYPES.CREATE_NODE,
+                            payload = {
+                                node_id = "child-1",
+                                node_type = "userspace.dataflow.node.func:node",
+                                status = consts.STATUS.PENDING,
+                                config = {}
+                            }
+                        }
+                    }
+                }
+            }
+
+            install_async_function(function_result)
+            func._deps.node = {
+                new = function()
+                    return make_mock_node(state), nil
+                end
+            }
+
+            local result = func.run({})
+
+            test.is_true(result.success)
+            test.eq(state.yield_calls, 1, "func waits once for the child yield")
+            test.eq(result.result._dataflow_ref, "child-output-1", "legacy result rows still resolve child output")
+            test.eq(state.queried_nodes[1], "child-1", "legacy fallback is scoped to the returned result row node id")
         end)
 
         it("collects pending child output on recovery before yielding", function()
