@@ -42,7 +42,7 @@ local function run(args)
         return 0
     end
 
-    return n:complete(results, "Signal received: " .. signal_id)
+    return (n:complete(results, "Signal received: " .. signal_id))
 end
 
 signal.run = run

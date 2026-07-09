@@ -4,7 +4,7 @@ local consts = require("consts")
 
 local function define_tests()
     describe("Orchestrator process events", function()
-        local function assert_failure_reason_is_preserved(failure_reason: any, result_value: any, expected_result: any)
+        local function assert_failure_reason_is_preserved(failure_reason: any, result_value: any, expected_result: any, event_error: any?)
             local exit_call: any = nil
             local pending_node_result: any = nil
             local persisted_node_result: any = nil
@@ -130,7 +130,10 @@ local function define_tests()
                             value = {
                                 kind = "pid.exit",
                                 from = "mock-pid-123",
-                                result = { error = failure_reason, value = result_value },
+                                result = {
+                                    error = event_error == false and nil or (event_error or failure_reason),
+                                    value = result_value,
+                                },
                             },
                         }
                     end
@@ -150,21 +153,28 @@ local function define_tests()
                 test.is_table(exit_call.result)
                 test.is_false(exit_call.result.success)
                 test.eq(exit_call.result.message, expected_result.message)
-                test.is_table(exit_call.result.error)
-                test.eq(exit_call.result.error.code, failure_reason.code)
-                test.eq(exit_call.result.error.message, failure_reason.message)
                 test.is_table(persisted_node_result)
                 test.is_false(persisted_node_result.success)
                 test.eq(persisted_node_result.message, expected_result.message)
-                test.is_table(persisted_node_result.error)
-                test.eq(persisted_node_result.error.code, failure_reason.code)
-                test.eq(persisted_node_result.error.message, failure_reason.message)
+                if type(failure_reason) == "table" then
+                    test.is_table(exit_call.result.error)
+                    test.eq(exit_call.result.error.code, failure_reason.code)
+                    test.eq(exit_call.result.error.message, failure_reason.message)
+                    test.is_table(persisted_node_result.error)
+                    test.eq(persisted_node_result.error.code, failure_reason.code)
+                    test.eq(persisted_node_result.error.message, failure_reason.message)
+                else
+                    test.eq(exit_call.result.error, failure_reason)
+                    test.eq(persisted_node_result.error, failure_reason)
+                end
             else
                 test.eq(exit_call.result, expected_result)
                 test.eq(persisted_node_result, expected_result)
             end
             test.is_false(result.success)
-            test.contains(result.error, type(failure_reason) == "table" and failure_reason.message or failure_reason)
+            local expected_message = type(failure_reason) == "table" and
+                tostring(failure_reason.message) or tostring(failure_reason)
+            test.contains(tostring(result.error), expected_message)
         end
 
         it("preserves a plain-string child failure reason through process exit persistence", function()
@@ -188,6 +198,18 @@ local function define_tests()
                 error = failure_reason,
                 data_ids = {},
             })
+        end)
+
+        it("preserves an output-transform completion envelope through process exit persistence", function()
+            local expression = "output.passed_items[1].contact_id"
+            local failure_reason = "Output transform failed for target[1] (expression: " .. expression .. "): index out of range"
+            local completion = {
+                success = false,
+                message = "Node [node-1] failed to route outputs: " .. failure_reason,
+                error = failure_reason,
+                data_ids = {},
+            }
+            assert_failure_reason_is_preserved(failure_reason, completion, completion, false)
         end)
     end)
 end

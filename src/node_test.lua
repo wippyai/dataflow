@@ -494,6 +494,53 @@ local function define_tests()
                 test.eq(#inputs.cheap_items.content, 1)
             end)
 
+            it("reports expr-lang's zero-based array index error for a one-item input", function()
+                local one_item_data_mock: any = {
+                    commit = mock_deps.commit,
+                    process = mock_deps.process,
+                    data_reader = {
+                        with_dataflow = function(_dataflow_id: string)
+                            return {
+                                with_nodes = function(_node_id: string)
+                                    return {
+                                        with_data_types = function(_data_type: string)
+                                            return {
+                                                fetch_options = function(_options: any)
+                                                    return {
+                                                        all = function()
+                                                            return {
+                                                                {
+                                                                    content = '{"passed_items":[{"contact_id":"contact-1"}]}',
+                                                                    content_type = consts.CONTENT_TYPE.JSON,
+                                                                    key = "default",
+                                                                },
+                                                            }
+                                                        end,
+                                                    }
+                                                end,
+                                            }
+                                        end,
+                                    }
+                                end,
+                            }
+                        end,
+                    },
+                }
+
+                local test_node, err = node.new({
+                    node_id = "test-node-123",
+                    dataflow_id = "test-dataflow-456",
+                    node = { config = { input_transform = "input.passed_items[1].contact_id" } },
+                }, one_item_data_mock)
+                test.is_nil(err)
+                test.not_nil(test_node)
+
+                local inputs, input_err = test_node:inputs()
+                test.is_nil(inputs)
+                test.contains(tostring(input_err), "Input transformation failed")
+                test.contains(tostring(input_err), "index")
+            end)
+
             it("should handle mathematical expressions", function()
                 local args = {
                     node_id = "test-node-123",
@@ -2124,6 +2171,50 @@ local function define_tests()
         end)
 
         describe("Expr Error Handling in Output Routing", function()
+            it("routes an out-of-range output transform to configured error targets", function()
+                local expression = "output.passed_items[1].contact_id"
+                local test_node_bad, _err = node.new({
+                    node_id = "test-node-123",
+                    dataflow_id = "test-dataflow-456",
+                    node = {
+                        config = {
+                            data_targets = {
+                                {
+                                    data_type = "next.input",
+                                    key = "next",
+                                    transform = expression,
+                                },
+                            },
+                            error_targets = {
+                                { data_type = "workflow.output", key = "error" },
+                            },
+                        },
+                    },
+                }, mock_deps)
+                test.not_nil(test_node_bad)
+
+                local result, error_msg = test_node_bad:complete({
+                    passed_items = { { contact_id = "contact-1" } },
+                })
+
+                test.is_false(result.success)
+                test.contains(tostring(result.message), "Output transform failed")
+                test.contains(tostring(result.message), expression)
+                test.contains(tostring(error_msg), expression)
+                test.contains(tostring(result.error), expression)
+
+                local submit_call = captured_calls.commit_submit[1]
+                test.not_nil(submit_call)
+                local error_data: any = nil
+                for _, command in ipairs(submit_call.commands) do
+                    if command.type == consts.COMMAND_TYPES.CREATE_DATA and command.payload.key == "error" then
+                        error_data = command.payload.content
+                    end
+                end
+                test.not_nil(error_data)
+                test.contains(tostring(error_data), expression)
+            end)
+
             it("BC_REGRESSION_C2_node_complete_returns_error_pair", function()
                 local test_node_bad, _err = node.new({
                     node_id = "test-node-123",

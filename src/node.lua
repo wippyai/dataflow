@@ -591,7 +591,8 @@ function methods:_route_outputs(content)
         if has_transform then
             local transformed, transform_err = expr.eval(target.transform :: string, env)
             if transform_err then
-                return nil, "Output transform failed for " .. target_desc .. ": " .. tostring(transform_err)
+                return nil, "Output transform failed for " .. target_desc ..
+                    " (expression: " .. tostring(target.transform) .. "): " .. tostring(transform_err)
             end
             output_content = transformed
         end
@@ -722,12 +723,17 @@ function methods:complete(output_content, message, extra_metadata)
     if output_content ~= nil then
         local routed_ids, route_err = self:_route_outputs(output_content)
         if route_err then
-            return {
-                success = false,
-                message = "Node [" .. self.node_id .. "] failed to route outputs: " .. tostring(route_err),
-                error = route_err,
-                data_ids = table.create(0, 0)
-            }, route_err
+            -- A data-target transform is part of this node's execution.  Returning a
+            -- bare failed completion leaves the node result for the orchestrator, but
+            -- skips this node's configured error targets entirely.  Route it through
+            -- the same failure path as a function error so the Error boundary gets the
+            -- original expression message and durable node metadata.
+            local failure_message = "Node [" .. self.node_id .. "] failed to route outputs: " .. tostring(route_err)
+            local failure_result, failure_err = self:fail(failure_message, failure_message)
+            if failure_err then
+                return failure_result, failure_err
+            end
+            return failure_result, failure_message
         end
         data_ids = routed_ids
     end

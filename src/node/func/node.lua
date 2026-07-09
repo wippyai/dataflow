@@ -168,10 +168,10 @@ local function complete_from_children(n, child_node_ids, fallback_result)
         return fail_child_collect(n, collect_err)
     end
     if final_output ~= nil then
-        return n:complete(final_output, "Function executed successfully")
+        return (n:complete(final_output, "Function executed successfully"))
     end
 
-    return n:complete(fallback_result, "Function executed successfully")
+    return (n:complete(fallback_result, "Function executed successfully"))
 end
 
 -- Checkpoints child ids before yielding so recovery resumes the same children
@@ -192,10 +192,10 @@ local function finish_with_children(n, created_node_ids, fallback_result)
         return fail_child_collect(n, collect_err)
     end
     if final_output ~= nil then
-        return n:complete(final_output, "Function executed successfully")
+        return (n:complete(final_output, "Function executed successfully"))
     end
 
-    return n:complete(fallback_result, "Function executed successfully")
+    return (n:complete(fallback_result, "Function executed successfully"))
 end
 
 local function run(args)
@@ -317,10 +317,10 @@ local function run(args)
             return finish_with_children(n, created_node_ids, cleaned_result)
         end
 
-        return n:complete(cleaned_result, "Function executed successfully")
+        return (n:complete(cleaned_result, "Function executed successfully"))
     end
 
-    return n:complete(function_result, "Function executed successfully")
+    return (n:complete(function_result, "Function executed successfully"))
 end
 
 func.run = run

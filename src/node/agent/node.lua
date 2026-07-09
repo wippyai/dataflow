@@ -2269,7 +2269,7 @@ local function run(args)
         }, lifecycle_err)
     end
 
-    return n:complete(output_content, message)
+    return (n:complete(output_content, message))
 end
 
 return {

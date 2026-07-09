@@ -1612,7 +1612,7 @@ local function run(args)
         final_output = apply_legacy_output_shape(config, parallel_result)
     end
 
-    return n:complete(final_output, "Parallel processing completed successfully")
+    return (n:complete(final_output, "Parallel processing completed successfully"))
 end
 
 parallel.run = run

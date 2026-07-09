@@ -76,7 +76,7 @@ local function run(args)
 
     if output_mode == "array" then
         local array_result = collect_inputs_as_array(n, ignored_set)
-        return n:complete(array_result, "State collection completed")
+        return (n:complete(array_result, "State collection completed"))
     end
 
     local collected = {}
@@ -88,7 +88,7 @@ local function run(args)
 
     if next(collected) == nil then
         for _, input in pairs(inputs) do
-            return n:complete(input.content, "State collection completed")
+            return (n:complete(input.content, "State collection completed"))
         end
     end
 
@@ -102,11 +102,11 @@ local function run(args)
         end
 
         if not has_other_keys then
-            return n:complete(collected.default, "State collection completed")
+            return (n:complete(collected.default, "State collection completed"))
         end
     end
 
-    return n:complete(collected, "State collection completed")
+    return (n:complete(collected, "State collection completed"))
 end
 
 state.run = run

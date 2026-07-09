@@ -943,7 +943,7 @@ local function run(args)
 
         if not should_continue then
             local final_result = control_commands and last_result or current_result
-            return n:complete(final_result, "Cycle completed after " .. iteration_number .. " iterations")
+            return (n:complete(final_result, "Cycle completed after " .. iteration_number .. " iterations"))
         end
     end
 
