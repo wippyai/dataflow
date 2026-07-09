@@ -9,6 +9,7 @@ local orchestrator = {
     workflow_state = require("workflow_state"),
     scheduler = require("scheduler"),
     process = process,
+    channel = channel,
     funcs = require("funcs"),
     commit = require("commit"),
     security = security
@@ -621,7 +622,8 @@ local function handle_process_event(state: any, event: any)
         error_message = "Node process linked down"
     end
 
-    local exit_info = state.workflow_state:handle_process_exit(from_pid, success, result_data)
+    local terminal_result = success and result_data or error_message
+    local exit_info = state.workflow_state:handle_process_exit(from_pid, success, terminal_result)
 
     local persist_result, persist_err = state.workflow_state:persist()
 
@@ -871,7 +873,7 @@ local function run(args)
             table.insert(select_cases, timer_channel:case_receive())
         end
 
-        local result = channel.select(select_cases)
+        local result = orchestrator.channel.select(select_cases)
 
         if not result.ok then
             break
