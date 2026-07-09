@@ -224,8 +224,8 @@ local function parse_json_metadata(metadata_str)
         return {}
     end
 
-    local success, parsed = pcall(json.decode, metadata_str)
-    if success then
+    local parsed, parse_err = json.decode(metadata_str)
+    if not parse_err then
         return parsed
     else
         return {}

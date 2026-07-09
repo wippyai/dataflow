@@ -329,7 +329,7 @@ function delegation_handler.collect_delegation_result(delegation_info, parent_no
     if actual_result_data.content_type == "application/json" and type(result_content) == "string" then
         local decoded, decode_err = json.decode(result_content)
         if decode_err then
-            return result_content, nil
+            return nil, "Failed to parse delegated result content: " .. tostring(decode_err)
         end
         result_content = decoded
     end
