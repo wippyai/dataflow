@@ -4,8 +4,7 @@ local consts = require("consts")
 
 local function define_tests()
     describe("Orchestrator process events", function()
-        it("preserves a child failure reason through process exit persistence", function()
-            local failure_reason = "exit schema validation failed: missing required field url"
+        local function assert_failure_reason_is_preserved(failure_reason: any, result_value: any, expected_result: any)
             local exit_call: any = nil
             local pending_node_result: any = nil
             local persisted_node_result: any = nil
@@ -56,7 +55,15 @@ local function define_tests()
                     return { changes_made = false }, nil
                 end,
                 get_failed_node_errors = function(): string?
-                    return "Node [node-1] failed: " .. tostring(persisted_node_result)
+                    local persisted_message = persisted_node_result
+                    if type(persisted_node_result) == "table" then
+                        if type(persisted_node_result.error) == "table" then
+                            persisted_message = persisted_node_result.error.message
+                        else
+                            persisted_message = persisted_node_result.message
+                        end
+                    end
+                    return "Node [node-1] failed: " .. (persisted_message or "Unknown error")
                 end,
             }
 
@@ -123,7 +130,7 @@ local function define_tests()
                             value = {
                                 kind = "pid.exit",
                                 from = "mock-pid-123",
-                                result = { error = failure_reason },
+                                result = { error = failure_reason, value = result_value },
                             },
                         }
                     end
@@ -139,10 +146,48 @@ local function define_tests()
             test.not_nil(exit_call)
             test.eq(exit_call.pid, "mock-pid-123")
             test.is_false(exit_call.success)
-            test.eq(exit_call.result, failure_reason)
-            test.eq(persisted_node_result, failure_reason)
+            if type(expected_result) == "table" then
+                test.is_table(exit_call.result)
+                test.is_false(exit_call.result.success)
+                test.eq(exit_call.result.message, expected_result.message)
+                test.is_table(exit_call.result.error)
+                test.eq(exit_call.result.error.code, failure_reason.code)
+                test.eq(exit_call.result.error.message, failure_reason.message)
+                test.is_table(persisted_node_result)
+                test.is_false(persisted_node_result.success)
+                test.eq(persisted_node_result.message, expected_result.message)
+                test.is_table(persisted_node_result.error)
+                test.eq(persisted_node_result.error.code, failure_reason.code)
+                test.eq(persisted_node_result.error.message, failure_reason.message)
+            else
+                test.eq(exit_call.result, expected_result)
+                test.eq(persisted_node_result, expected_result)
+            end
             test.is_false(result.success)
-            test.contains(result.error, failure_reason)
+            test.contains(result.error, type(failure_reason) == "table" and failure_reason.message or failure_reason)
+        end
+
+        it("preserves a plain-string child failure reason through process exit persistence", function()
+            local failure_reason = "exit schema validation failed: missing required field url"
+            assert_failure_reason_is_preserved(failure_reason, nil, failure_reason)
+        end)
+
+        it("preserves a structured child failure reason through process exit persistence", function()
+            local failure_reason = {
+                code = "MISSING_FUNC_ID",
+                message = "Function ID not specified in node configuration",
+            }
+            assert_failure_reason_is_preserved(failure_reason, {
+                success = false,
+                message = "Missing func_id in node config",
+                error = failure_reason,
+                data_ids = {},
+            }, {
+                success = false,
+                message = "Missing func_id in node config",
+                error = failure_reason,
+                data_ids = {},
+            })
         end)
     end)
 end

@@ -598,7 +598,7 @@ local function handle_process_event(state: any, event: any)
     state.active_processes[node_id] = nil
 
     local success = false
-    local error_message = "Unknown exit reason"
+    local error_reason: any = "Unknown exit reason"
     local result_data = nil
 
     if event.kind == orchestrator.process.event.EXIT then
@@ -607,10 +607,10 @@ local function handle_process_event(state: any, event: any)
 
             if event.result.error then
                 success = false
-                error_message = tostring(event.result.error)
+                error_reason = event.result.error
             elseif type(result_data) == "table" and result_data.success == false then
                 success = false
-                error_message = tostring(result_data.error or "Node returned {success=false}")
+                error_reason = result_data.error or result_data.message or "Node returned {success=false}"
             else
                 success = true
             end
@@ -619,10 +619,13 @@ local function handle_process_event(state: any, event: any)
         end
     elseif event.kind == orchestrator.process.event.LINK_DOWN then
         success = false
-        error_message = "Node process linked down"
+        error_reason = "Node process linked down"
     end
 
-    local terminal_result = success and result_data or error_message
+    local terminal_result = result_data
+    if not success and (type(result_data) ~= "table" or result_data.success ~= false) then
+        terminal_result = error_reason
+    end
     local exit_info = state.workflow_state:handle_process_exit(from_pid, success, terminal_result)
 
     local persist_result, persist_err = state.workflow_state:persist()
