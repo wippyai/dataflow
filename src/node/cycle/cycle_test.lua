@@ -1897,7 +1897,30 @@ local function define_tests()
                 local result, exec_err = c:execute(dataflow_id)
                 test.not_nil(exec_err)
                 test.is_false(result.success)
-                test.contains(result.error, "Template execution failed")
+                test.contains(result.error, "Template function failed on iteration 2 as requested")
+
+                local node_results = data_reader.with_dataflow(dataflow_id)
+                    :with_data_types(consts.DATA_TYPE.NODE_RESULT)
+                    :fetch_options({ replace_references = true })
+                    :all()
+                local child_failure = nil
+                local cycle_failure = nil
+                for _, node_result in ipairs(node_results) do
+                    if node_result.discriminator == "result.error" then
+                        local content = decode_json_content(node_result.content)
+                        if node_result.node_id == cycle_node_id then
+                            cycle_failure = content
+                        elseif type(content) == "table" and type(content.error) == "table" then
+                            child_failure = content.error
+                        end
+                    end
+                end
+
+                test.is_table(child_failure)
+                test.is_table(cycle_failure)
+                test.is_table(cycle_failure.error)
+                test.eq(cycle_failure.error.code, child_failure.code)
+                test.eq(cycle_failure.error.message, child_failure.message)
 
                 print("--- Template execution errors handled correctly")
                 print("=== CYCLE TEMPLATE ERROR HANDLING TEST COMPLETE ===")

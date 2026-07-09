@@ -151,17 +151,54 @@ local function call_func(func_id: string, data: any, context: {[string]: any}?)
     return executor:call(func_id, data)
 end
 
+local function error_message(error_value: any, fallback: string)
+    if type(error_value) == "string" then
+        return error_value
+    end
+
+    if type(error_value) == "table" then
+        local error_table = error_value :: any
+        if type(error_table.message) == "string" then
+            return error_table.message
+        end
+        if type(error_table.status) == "string" then
+            return error_table.status
+        end
+        if error_table.error ~= nil then
+            return error_message(error_table.error, fallback)
+        end
+        if type(error_table.code) == "string" then
+            return error_table.code
+        end
+        return fallback
+    end
+
+    if error_value == nil then
+        return fallback
+    end
+
+    return tostring(error_value)
+end
+
+local function prefixed_error(prefix: string, error_value: any, fallback: string)
+    if type(error_value) == "table" then
+        return error_value
+    end
+
+    return prefix .. error_message(error_value, fallback)
+end
+
 local function safe_inputs(n)
     local ok, inputs_or_err, inputs_err = pcall(function()
         return n:inputs()
     end)
 
     if not ok then
-        return nil, tostring(inputs_or_err)
+        return nil, inputs_or_err
     end
 
     if inputs_err then
-        return nil, tostring(inputs_err)
+        return nil, inputs_err
     end
 
     return inputs_or_err, nil
@@ -418,7 +455,12 @@ local function gather_run_nodes(iterations)
     return run_nodes
 end
 
-local function fail_iteration(n, message)
+local function fail_iteration(n, error_value)
+    if type(error_value) == "table" then
+        return n:fail(error_value, error_message(error_value, "Iteration failed"))
+    end
+
+    local message = error_message(error_value, "Iteration failed")
     return n:fail({
         code = parallel.ERRORS.ITERATION_FAILED,
         message = message
@@ -718,13 +760,12 @@ local function extract_iteration_index(row, total_iterations)
     return nil
 end
 
-local function extract_error_message(content)
-    if type(content) ~= "table" then
-        return tostring(content)
+local function extract_error_value(content)
+    if type(content) == "table" and content.error ~= nil then
+        return content.error
     end
 
-    local error_table = content :: {[string]: any}
-    return tostring(error_table.error or error_table.message or content)
+    return content
 end
 
 local function build_completion_from_output_row(row, total_iterations)
@@ -743,7 +784,7 @@ local function build_completion_from_output_row(row, total_iterations)
         outcome = outcome,
         attempt_id = row.metadata and row.metadata.attempt_id,
         result = outcome == PARALLEL_PROGRESS_OUTCOME.SUCCESS and content or nil,
-        error = outcome == PARALLEL_PROGRESS_OUTCOME.FAILURE and extract_error_message(content) or nil
+        error = outcome == PARALLEL_PROGRESS_OUTCOME.FAILURE and extract_error_value(content) or nil
     }
 end
 
@@ -973,7 +1014,7 @@ local function apply_iteration_completion(parallel_result, iteration: any, compl
     if completion.outcome == PARALLEL_PROGRESS_OUTCOME.SUCCESS then
         add_success(parallel_result, iteration, completion.result)
     elseif completion.outcome == PARALLEL_PROGRESS_OUTCOME.FAILURE then
-        add_failure(parallel_result, iteration, tostring(completion.error or "Iteration failed"))
+        add_failure(parallel_result, iteration, completion.error or "Iteration failed")
     end
 end
 
@@ -1023,7 +1064,7 @@ local function process_iteration_output(config: any, failure_strategy, parallel_
         for _, step in ipairs(config.item_steps) do
             local step_result, step_err = parallel.execute_item_pipeline_step(step, processed_result)
             if step_err then
-                local pipeline_err = "Item pipeline failed: " .. tostring(step_err)
+                local pipeline_err = prefixed_error("Item pipeline failed: ", step_err, "unknown")
                 if failure_strategy == parallel.FAILURE_STRATEGIES.FAIL_FAST then
                     return nil, pipeline_err
                 end
@@ -1061,11 +1102,11 @@ local function collect_iteration_completion(n, config: any, failure_strategy, pa
     local iteration_result, collect_err = parallel._deps.iterator.collect_results(n, iteration)
     if collect_err then
         if failure_strategy == parallel.FAILURE_STRATEGIES.FAIL_FAST then
-            return nil, "Iteration failed: " .. tostring(collect_err)
+            return nil, prefixed_error("Iteration failed: ", collect_err, "unknown")
         end
 
         local completion = build_iteration_completion(iteration, PARALLEL_PROGRESS_OUTCOME.FAILURE, {
-            error = tostring(collect_err)
+            error = collect_err
         })
         add_failure(parallel_result, iteration, completion.error)
         return completion, nil
@@ -1077,16 +1118,16 @@ end
 local function recover_iteration_completion(n, config: any, failure_strategy, parallel_result, iteration: any)
     local iteration_result, collect_err = parallel._deps.iterator.collect_results(n, iteration)
     if collect_err then
-        if string.find(tostring(collect_err), "No output data found for iteration", 1, true) ~= nil then
+        if string.find(error_message(collect_err, ""), "No output data found for iteration", 1, true) ~= nil then
             return nil, nil
         end
 
         if failure_strategy == parallel.FAILURE_STRATEGIES.FAIL_FAST then
-            return nil, "Iteration failed: " .. tostring(collect_err)
+            return nil, prefixed_error("Iteration failed: ", collect_err, "unknown")
         end
 
         local completion = build_iteration_completion(iteration, PARALLEL_PROGRESS_OUTCOME.FAILURE, {
-            error = tostring(collect_err)
+            error = collect_err
         })
         add_failure(parallel_result, iteration, completion.error)
         return completion, nil
@@ -1198,7 +1239,7 @@ local function recover_active_batch(n, config: any, failure_strategy, parallel_r
 
                 local submit_ok, submit_err = persist_iteration_completion(n, completion)
                 if not submit_ok then
-                    return nil, "Failed to persist parallel iteration progress: " .. tostring(submit_err)
+                    return nil, prefixed_error("Failed to persist parallel iteration progress: ", submit_err, "unknown")
                 end
             else
                 pending_count = pending_count + 1
@@ -1217,7 +1258,7 @@ local function recover_active_batch(n, config: any, failure_strategy, parallel_r
 
         local submit_ok, submit_err = persist_parallel_cursor(n, progress.cursor)
         if not submit_ok then
-            return nil, "Failed to persist parallel cursor: " .. tostring(submit_err)
+            return nil, prefixed_error("Failed to persist parallel cursor: ", submit_err, "unknown")
         end
     end
 
@@ -1261,14 +1302,14 @@ local function process_batch(n, template_graph, items, batch_start, batch_end, i
         discard_queued_commands(n)
 
         if failure_strategy == parallel.FAILURE_STRATEGIES.FAIL_FAST then
-            return "Iteration creation failed: " .. tostring(create_err)
+            return prefixed_error("Iteration creation failed: ", create_err, "unknown")
         end
 
         for _, iteration_index in ipairs(selected_iterations) do
             local completion = build_iteration_completion(
                 build_iteration_record(items, iteration_index, attempt_id),
                 PARALLEL_PROGRESS_OUTCOME.FAILURE,
-                { error = "Iteration creation failed: " .. tostring(create_err) }
+                { error = prefixed_error("Iteration creation failed: ", create_err, "unknown") }
             )
 
             progress.completed_iterations[iteration_index] = completion
@@ -1276,7 +1317,7 @@ local function process_batch(n, template_graph, items, batch_start, batch_end, i
 
             local submit_ok, submit_err = persist_iteration_completion(n, completion)
             if not submit_ok then
-                return "Failed to persist parallel iteration progress: " .. tostring(submit_err)
+                return prefixed_error("Failed to persist parallel iteration progress: ", submit_err, "unknown")
             end
         end
 
@@ -1285,7 +1326,7 @@ local function process_batch(n, template_graph, items, batch_start, batch_end, i
 
         local submit_ok, submit_err = persist_parallel_cursor(n, progress.cursor)
         if not submit_ok then
-            return "Failed to persist parallel cursor: " .. tostring(submit_err)
+            return prefixed_error("Failed to persist parallel cursor: ", submit_err, "unknown")
         end
 
         return nil
@@ -1294,7 +1335,7 @@ local function process_batch(n, template_graph, items, batch_start, batch_end, i
     local cursor_ok, cursor_err = queue_parallel_cursor(n, progress.cursor)
     if not cursor_ok then
         discard_queued_commands(n)
-        return "Failed to persist parallel cursor: " .. tostring(cursor_err)
+        return prefixed_error("Failed to persist parallel cursor: ", cursor_err, "unknown")
     end
 
     local run_nodes = gather_run_nodes(iterations)
@@ -1304,12 +1345,12 @@ local function process_batch(n, template_graph, items, batch_start, batch_end, i
             discard_queued_commands(n)
 
             if failure_strategy == parallel.FAILURE_STRATEGIES.FAIL_FAST then
-                return "Yield failed: " .. tostring(yield_err)
+                return prefixed_error("Yield failed: ", yield_err, "unknown")
             end
 
             for _, iteration in ipairs(iterations) do
                 local completion = build_iteration_completion(iteration :: any, PARALLEL_PROGRESS_OUTCOME.FAILURE, {
-                    error = "Yield failed: " .. tostring(yield_err)
+                    error = prefixed_error("Yield failed: ", yield_err, "unknown")
                 })
 
                 progress.completed_iterations[iteration.iteration] = completion
@@ -1317,7 +1358,7 @@ local function process_batch(n, template_graph, items, batch_start, batch_end, i
 
                 local submit_ok, submit_err = persist_iteration_completion(n, completion)
                 if not submit_ok then
-                    return "Failed to persist parallel iteration progress: " .. tostring(submit_err)
+                    return prefixed_error("Failed to persist parallel iteration progress: ", submit_err, "unknown")
                 end
             end
 
@@ -1326,7 +1367,7 @@ local function process_batch(n, template_graph, items, batch_start, batch_end, i
 
             local submit_ok, submit_err = persist_parallel_cursor(n, progress.cursor)
             if not submit_ok then
-                return "Failed to persist parallel cursor: " .. tostring(submit_err)
+                return prefixed_error("Failed to persist parallel cursor: ", submit_err, "unknown")
             end
 
             return nil
@@ -1335,7 +1376,7 @@ local function process_batch(n, template_graph, items, batch_start, batch_end, i
         local submit_ok, submit_err = n:submit()
         if not submit_ok then
             discard_queued_commands(n)
-            return "Failed to submit parallel batch: " .. tostring(submit_err)
+            return prefixed_error("Failed to submit parallel batch: ", submit_err, "unknown")
         end
     end
 
@@ -1356,7 +1397,7 @@ local function process_batch(n, template_graph, items, batch_start, batch_end, i
 
         local submit_ok, submit_err = persist_iteration_completion(n, completion)
         if not submit_ok then
-            return "Failed to persist parallel iteration progress: " .. tostring(submit_err)
+            return prefixed_error("Failed to persist parallel iteration progress: ", submit_err, "unknown")
         end
     end
 
@@ -1365,7 +1406,7 @@ local function process_batch(n, template_graph, items, batch_start, batch_end, i
 
     local submit_ok, submit_err = persist_parallel_cursor(n, progress.cursor)
     if not submit_ok then
-        return "Failed to persist parallel cursor: " .. tostring(submit_err)
+        return prefixed_error("Failed to persist parallel cursor: ", submit_err, "unknown")
     end
 
     return nil
@@ -1395,7 +1436,7 @@ local function run(args)
     if not validate_on_error_strategy(failure_strategy) then
         return n:fail({
             code = parallel.ERRORS.INVALID_ON_ERROR_STRATEGY,
-            message = "Invalid on_error/failure_strategy: " .. tostring(raw_on_error)
+            message = "Invalid on_error/failure_strategy: " .. error_message(raw_on_error, "invalid value")
         }, "Invalid on_error strategy")
     end
 
@@ -1404,7 +1445,7 @@ local function run(args)
         if not validate_filter_strategy(filter) then
             return n:fail({
                 code = parallel.ERRORS.INVALID_FILTER_STRATEGY,
-                message = "Invalid filter: " .. tostring(filter)
+                message = "Invalid filter: " .. error_message(filter, "invalid value")
             }, "Invalid filter strategy")
         end
     end
@@ -1439,7 +1480,7 @@ local function run(args)
     if config.reduction_extract ~= nil and parallel.extractors[config.reduction_extract] == nil then
         return n:fail({
             code = parallel.ERRORS.INVALID_EXTRACTOR,
-            message = "Invalid reduction extractor: " .. tostring(config.reduction_extract)
+            message = "Invalid reduction extractor: " .. error_message(config.reduction_extract, "invalid value")
         }, "Invalid reduction extractor")
     end
 
@@ -1449,7 +1490,7 @@ local function run(args)
     )
     if not reduction_valid then
         local code = parallel.ERRORS.INVALID_PIPELINE_STEP
-        if string.find(tostring(reduction_err), "extractor", 1, true) then
+        if string.find(error_message(reduction_err, ""), "extractor", 1, true) then
             code = parallel.ERRORS.INVALID_EXTRACTOR
         end
 
@@ -1461,6 +1502,9 @@ local function run(args)
 
     local inputs, inputs_err = safe_inputs(n)
     if inputs_err then
+        if type(inputs_err) == "table" then
+            return n:fail(inputs_err, error_message(inputs_err, "Failed to load inputs"))
+        end
         return n:fail({
             code = "INPUT_VALIDATION_FAILED",
             message = inputs_err
@@ -1514,7 +1558,7 @@ local function run(args)
         passthrough_keys
     )
     if passthrough_err then
-        return fail_iteration(n, "Failed to materialize passthrough inputs: " .. tostring(passthrough_err))
+        return fail_iteration(n, prefixed_error("Failed to materialize passthrough inputs: ", passthrough_err, "unknown"))
     end
 
     local template_graph, template_err = parallel._deps.template_graph.build_for_node(n)

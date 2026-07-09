@@ -59,6 +59,32 @@ type LifecyclePayload = {
     options: table?,
 }
 
+local function error_message(error_value: any, fallback: string)
+    if type(error_value) == "string" then
+        return error_value
+    end
+    if type(error_value) == "table" then
+        local error_table = error_value :: any
+        if type(error_table.message) == "string" then
+            return error_table.message
+        end
+        if type(error_table.status) == "string" then
+            return error_table.status
+        end
+        if error_table.error ~= nil then
+            return error_message(error_table.error, fallback)
+        end
+        if type(error_table.code) == "string" then
+            return error_table.code
+        end
+        return fallback
+    end
+    if error_value == nil then
+        return fallback
+    end
+    return tostring(error_value)
+end
+
 local function string_or_nil(value: any): string?
     if type(value) == "string" and value ~= "" then
         return value
@@ -734,14 +760,14 @@ end
 -- Record a checkpoint-skipped observation row so non-strict mode leaves an
 -- audit trail but doesn't kill the turn.
 local function record_checkpoint_skip(n, iteration, reason)
-    n:data(agent_consts.DATA_TYPE.AGENT_OBSERVATION, tostring(reason or "checkpoint skipped"), {
+    n:data(agent_consts.DATA_TYPE.AGENT_OBSERVATION, error_message(reason, "checkpoint skipped"), {
         key = tostring(iteration or 0) .. "_checkpoint_skipped",
         content_type = consts.CONTENT_TYPE.TEXT,
         node_id = n.node_id,
         metadata = {
             iteration = iteration,
             checkpoint_skipped = true,
-            checkpoint_error = tostring(reason or "")
+            checkpoint_error = error_message(reason, "")
         }
     })
 end
@@ -896,7 +922,7 @@ local function maybe_checkpoint_history(n, config, session_context, agent_instan
             history = history_payload
         })
         if runtime_err then
-            return nil, "checkpoint binding failed: " .. tostring(runtime_err), true
+            return nil, "checkpoint binding failed: " .. error_message(runtime_err, "unknown"), true
         end
         if runtime_result and runtime_result.result then
             summary_result = runtime_result.result
@@ -931,7 +957,7 @@ local function maybe_checkpoint_history(n, config, session_context, agent_instan
             })
 
         if call_err then
-            return nil, "checkpoint function " .. func_id .. " failed: " .. tostring(call_err)
+        return nil, "checkpoint function " .. func_id .. " failed: " .. error_message(call_err, "unknown")
         end
         checkpoint_source = "function"
     end
@@ -1145,9 +1171,9 @@ local function run_control_response_commands(control_responses, agent_ctx, n, it
         local output_data, output_err = child_output.collect_outputs(n, created_node_ids, yield_result)
         if output_err then
             if type(output_err) == "table" then
-                return tostring(output_err.message or output_err.status or "Child workflow failed")
+                return output_err
             end
-            return tostring(output_err)
+            return output_err
         end
 
         if output_data and #output_data > 0 then
@@ -1622,7 +1648,7 @@ local function recover_persisted_action(n, agent_ctx, agent_instance, caller, se
     configure_tool_wrappers(caller, agent_instance, n, agent_id, model_name, action_iteration, nil, string_or_nil(config.run_context_binding))
     local validated_tools, effective_tool_calls, validate_err = prepare_tools({ tool_calls = executable_tool_calls }, caller)
     if validate_err then
-        return false, nil, action_iteration, "Tool validation failed: " .. tostring(validate_err)
+        return false, nil, action_iteration, "Tool validation failed: " .. error_message(validate_err, "unknown")
     end
 
     local tool_call_to_node_id = create_tool_viz_nodes(n, effective_tool_calls, action_iteration, show_tool_calls,
@@ -1693,11 +1719,11 @@ local function safe_inputs(n)
     end)
 
     if not ok then
-        return nil, tostring(inputs_or_err)
+        return nil, inputs_or_err
     end
 
     if inputs_err then
-        return nil, tostring(inputs_err)
+        return nil, inputs_err
     end
 
     return inputs_or_err, nil
@@ -1720,6 +1746,9 @@ local function run(args)
 
     local inputs, inputs_err = safe_inputs(n)
     if inputs_err then
+        if type(inputs_err) == "table" then
+            return n:fail(inputs_err, error_message(inputs_err, "Failed to load inputs"))
+        end
         return n:fail({
             code = agent_consts.ERROR.INPUT_VALIDATION_FAILED,
             message = inputs_err
@@ -2101,10 +2130,15 @@ local function run(args)
 
             local _yield_result, yield_err = n:yield()
             if yield_err then
+                if type(yield_err) == "table" then
+                    return fail_with_lifecycle(yield_err, error_message(yield_err, "Failed to persist truncated agent turn"),
+                        REASON.HOST_FAILED, iteration)
+                end
+                local yield_message = "Failed to persist truncated agent turn: " .. error_message(yield_err, "unknown")
                 return fail_with_lifecycle({
                     code = agent_consts.ERROR.AGENT_EXEC_FAILED,
-                    message = "Failed to persist truncated agent turn: " .. tostring(yield_err)
-                }, "Failed to persist truncated agent turn: " .. tostring(yield_err), REASON.HOST_FAILED, iteration)
+                    message = yield_message
+                }, yield_message, REASON.HOST_FAILED, iteration)
             end
             pending_checkpoint_history = {}
             builder:with_pending_history(pending_checkpoint_history)
@@ -2136,10 +2170,15 @@ local function run(args)
 
         local submit_ok, submit_err = n:submit()
         if not submit_ok then
+            if type(submit_err) == "table" then
+                return fail_with_lifecycle(submit_err, error_message(submit_err, "Failed to persist agent turn"),
+                    REASON.HOST_FAILED, iteration)
+            end
+            local submit_message = "Failed to persist agent turn: " .. error_message(submit_err, "unknown")
             return fail_with_lifecycle({
                 code = agent_consts.ERROR.AGENT_EXEC_FAILED,
-                message = "Failed to persist agent turn: " .. tostring(submit_err)
-            }, "Failed to persist agent turn: " .. tostring(submit_err), REASON.HOST_FAILED, iteration)
+                message = submit_message
+            }, submit_message, REASON.HOST_FAILED, iteration)
         end
         pending_checkpoint_history = {}
         builder:with_pending_history(pending_checkpoint_history)
@@ -2149,10 +2188,15 @@ local function run(args)
         configure_tool_wrappers(caller, agent_instance, n, agent_id, model_name, iteration, nil, string_or_nil(config.run_context_binding))
         local validated_tools, effective_tool_calls, validate_err = prepare_tools({ tool_calls = executable_tool_calls }, caller)
         if validate_err then
+            if type(validate_err) == "table" then
+                return fail_with_lifecycle(validate_err, error_message(validate_err, "Tool validation failed"),
+                    REASON.HOST_FAILED, iteration)
+            end
+            local validation_message = "Tool validation failed: " .. error_message(validate_err, "unknown")
             return fail_with_lifecycle({
                 code = agent_consts.ERROR.AGENT_EXEC_FAILED,
-                message = "Tool validation failed: " .. tostring(validate_err)
-            }, "Tool validation failed: " .. tostring(validate_err), REASON.HOST_FAILED, iteration)
+                message = validation_message
+            }, validation_message, REASON.HOST_FAILED, iteration)
         end
 
         local tool_call_to_node_id = create_tool_viz_nodes(n, effective_tool_calls, iteration, show_tool_calls,
@@ -2190,10 +2234,14 @@ local function run(args)
             config.arena
         )
         if finalize_err then
+            if type(finalize_err) == "table" then
+                return fail_with_lifecycle(finalize_err, error_message(finalize_err, "Agent execution failed"),
+                    REASON.HOST_FAILED, iteration)
+            end
             return fail_with_lifecycle({
                 code = agent_consts.ERROR.STEP_FUNCTION_FAILED,
-                message = finalize_err :: string
-            }, finalize_err :: string, REASON.HOST_FAILED, iteration)
+                message = finalize_err
+            }, finalize_err, REASON.HOST_FAILED, iteration)
         end
 
         if finalized_complete then

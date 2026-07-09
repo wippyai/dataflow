@@ -42,6 +42,43 @@ local function create_array(size)
     return table.create(size or 0, 0)
 end
 
+local function error_message(error_value: any, fallback: string)
+    if type(error_value) == "string" then
+        return error_value
+    end
+
+    if type(error_value) == "table" then
+        local error_table = error_value :: any
+        if type(error_table.message) == "string" then
+            return error_table.message
+        end
+        if type(error_table.status) == "string" then
+            return error_table.status
+        end
+        if error_table.error ~= nil then
+            return error_message(error_table.error, fallback)
+        end
+        if type(error_table.code) == "string" then
+            return error_table.code
+        end
+        return fallback
+    end
+
+    if error_value == nil then
+        return fallback
+    end
+
+    return tostring(error_value)
+end
+
+local function prefixed_error(prefix: string, error_value: any, fallback: string)
+    if type(error_value) == "table" then
+        return error_value
+    end
+
+    return prefix .. error_message(error_value, fallback)
+end
+
 local function decode_json_content(content: any)
     if type(content) ~= "string" then
         return content
@@ -266,7 +303,7 @@ local function execute_function_iteration(executor, func_id, context, events_cha
 
     local payload, result_err = command:result()
     if result_err then
-        return nil, cycle.ERROR.FUNCTION_EXECUTION_FAILED, "Function execution failed: " .. result_err
+        return nil, cycle.ERROR.FUNCTION_EXECUTION_FAILED, result_err
     end
 
     return payload:data(), nil, nil
@@ -372,14 +409,6 @@ local function collect_outputs(n, node_ids, yield_result)
     return cycle._deps.child_output.collect_outputs(n, node_ids, yield_result)
 end
 
-local function collect_error_message(err)
-    if type(err) == "table" then
-        return tostring(err.message or err.status or err.code or "Child workflow failed")
-    end
-
-    return tostring(err)
-end
-
 local function collect_template_outputs(n, uuid_mapping, yield_result)
     local iteration_node_ids = collect_node_ids(uuid_mapping)
 
@@ -462,12 +491,12 @@ local function execute_template_iteration(n, template_graph, current_state, last
 
     local yield_result, yield_err = n:yield({ run_nodes = all_nodes })
     if yield_err then
-        return nil, "Template execution failed: " .. collect_error_message(yield_err)
+        return nil, prefixed_error("Template execution failed: ", yield_err, "unknown")
     end
 
     local outputs, collect_err = collect_template_outputs(n, uuid_mapping, yield_result)
     if collect_err then
-        return nil, "Template execution failed: " .. collect_error_message(collect_err)
+        return nil, prefixed_error("Template execution failed: ", collect_err, "unknown")
     end
 
     return outputs, nil
@@ -479,7 +508,7 @@ end
 local function collect_children_result(n, node_ids: {any}, yield_result)
     local output_data, collect_err = collect_outputs(n, node_ids, yield_result)
     if collect_err then
-        return nil, "Failed to collect child outputs: " .. collect_error_message(collect_err)
+        return nil, prefixed_error("Failed to collect child outputs: ", collect_err, "unknown")
     end
 
     if output_data and #output_data > 0 then
@@ -574,7 +603,7 @@ local function process_control_commands(n, control_commands, iteration_number, c
 
         local yield_result, yield_err = n:yield({ run_nodes = created_node_ids })
         if yield_err then
-            return nil, "Control command execution failed: " .. (yield_err :: string)
+            return nil, prefixed_error("Control command execution failed: ", yield_err, "unknown")
         end
 
         return collect_children_result(n, created_node_ids, yield_result)
@@ -598,7 +627,7 @@ end
 local function evaluate_continue_condition(continue_condition, context)
     local should_continue, condition_err = expr.eval(continue_condition :: string, context)
     if condition_err then
-        return nil, "Failed to evaluate continue_condition: " .. tostring(condition_err)
+        return nil, "Failed to evaluate continue_condition: " .. error_message(condition_err, "unknown")
     end
 
     return should_continue and true or false, nil
@@ -630,11 +659,11 @@ local function safe_inputs(n)
     end)
 
     if not ok then
-        return nil, tostring(inputs_or_err)
+        return nil, inputs_or_err
     end
 
     if inputs_err then
-        return nil, tostring(inputs_err)
+        return nil, inputs_err
     end
 
     return inputs_or_err, nil
@@ -690,6 +719,9 @@ local function run(args)
 
     local inputs, inputs_err = safe_inputs(n)
     if inputs_err then
+        if type(inputs_err) == "table" then
+            return n:fail(inputs_err, error_message(inputs_err, "Failed to load inputs"))
+        end
         return n:fail({
             code = "INPUT_VALIDATION_FAILED",
             message = inputs_err
@@ -773,6 +805,9 @@ local function run(args)
 
             local child_result, cmd_err = resume_children(n, resume_pending.child_node_ids)
             if cmd_err then
+                if type(cmd_err) == "table" then
+                    return n:fail(cmd_err, "Failed to resume control commands in iteration " .. iteration_number)
+                end
                 return n:fail({
                     code = cycle.ERROR.FUNCTION_EXECUTION_FAILED,
                     message = cmd_err
@@ -821,13 +856,18 @@ local function run(args)
             end
 
             if iter_err then
-                local error_code = iter_err
-                local error_message = iter_err_detail or iter_err
+                local error_detail = iter_err_detail or iter_err
+                local status_message = "Execution failed in iteration " .. iteration_number .. ": " ..
+                    error_message(error_detail, "unknown")
+
+                if type(error_detail) == "table" then
+                    return n:fail(error_detail, status_message)
+                end
 
                 return n:fail({
-                    code = error_code,
-                    message = error_message
-                }, "Execution failed in iteration " .. iteration_number .. ": " .. error_message)
+                    code = iter_err,
+                    message = error_detail
+                }, status_message)
             end
 
             local new_state = current_state
@@ -866,6 +906,9 @@ local function run(args)
                     has_explicit_continue = has_explicit_continue
                 })
                 if cmd_err then
+                    if type(cmd_err) == "table" then
+                        return n:fail(cmd_err, "Failed to execute control commands in iteration " .. iteration_number)
+                    end
                     return n:fail({
                         code = cycle.ERROR.FUNCTION_EXECUTION_FAILED,
                         message = cmd_err

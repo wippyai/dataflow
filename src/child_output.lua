@@ -6,6 +6,39 @@ child_output._deps = {
     consts = require("consts")
 }
 
+local function error_message(error_value: any, fallback: string)
+    if type(error_value) == "string" then
+        return error_value
+    end
+    if type(error_value) == "table" then
+        local error_table = error_value :: any
+        if type(error_table.message) == "string" then
+            return error_table.message
+        end
+        if type(error_table.status) == "string" then
+            return error_table.status
+        end
+        if error_table.error ~= nil then
+            return error_message(error_table.error, fallback)
+        end
+        if type(error_table.code) == "string" then
+            return error_table.code
+        end
+        return fallback
+    end
+    if error_value == nil then
+        return fallback
+    end
+    return tostring(error_value)
+end
+
+local function prefixed_error(prefix: string, error_value: any, fallback: string)
+    if type(error_value) == "table" then
+        return error_value
+    end
+    return prefix .. error_message(error_value, fallback)
+end
+
 function child_output.query_node_outputs(n, node_ids)
     if type(node_ids) ~= "table" or #node_ids == 0 then
         return {}, nil
@@ -20,7 +53,7 @@ function child_output.query_node_outputs(n, node_ids)
     end)
 
     if not ok then
-        return nil, "Failed to query output data: " .. tostring(output_data_or_err)
+        return nil, prefixed_error("Failed to query output data: ", output_data_or_err, "unknown")
     end
 
     return output_data_or_err, nil
@@ -38,12 +71,11 @@ local function decode_content(content)
     return content
 end
 
-local function child_failure_message(content)
-    if type(content.error) == "table" then
-        return tostring(content.error.message or content.error.status or content.message or "Child workflow failed")
+local function child_failure_reason(content)
+    if content.error ~= nil then
+        return content.error
     end
-
-    return tostring(content.error or content.message or "Child workflow failed")
+    return content.message or "Child workflow failed"
 end
 
 function child_output.outputs_from_yield_results(n, yield_results)
@@ -71,7 +103,7 @@ function child_output.outputs_from_yield_results(n, yield_results)
             :all()
     end)
     if not ok then
-        return nil, "Failed to query child result data: " .. tostring(result_rows_or_err)
+        return nil, prefixed_error("Failed to query child result data: ", result_rows_or_err, "unknown")
     end
 
     local output_ids = {}
@@ -86,11 +118,7 @@ function child_output.outputs_from_yield_results(n, yield_results)
         local content = decode_content(row.content)
         if type(content) == "table" then
             if content.success == false then
-                return nil, {
-                    code = "CHILD_WORKFLOW_FAILED",
-                    message = child_failure_message(content),
-                    status = "Child workflow failed"
-                }
+                return nil, child_failure_reason(content)
             end
 
             if content.data_ids ~= nil and type(content.data_ids) ~= "table" then
@@ -127,7 +155,7 @@ function child_output.outputs_from_yield_results(n, yield_results)
             :all()
     end)
     if not output_ok then
-        return nil, "Failed to query child output data: " .. tostring(output_rows_or_err)
+        return nil, prefixed_error("Failed to query child output data: ", output_rows_or_err, "unknown")
     end
 
     return output_rows_or_err, nil
@@ -166,7 +194,7 @@ function child_output.resume_children(n, child_node_ids, collect_children_result
 
     local yield_result, yield_err = n:yield({ run_nodes = child_node_ids })
     if yield_err then
-        return nil, "Failed to resume children: " .. tostring(yield_err)
+        return nil, prefixed_error("Failed to resume children: ", yield_err, "unknown")
     end
 
     return collect_children_result(n, child_node_ids, yield_result)

@@ -37,11 +37,11 @@ local function safe_inputs(n)
     end)
 
     if not ok then
-        return nil, tostring(inputs_or_err)
+        return nil, inputs_or_err
     end
 
     if inputs_err then
-        return nil, tostring(inputs_err)
+        return nil, inputs_err
     end
 
     return inputs_or_err, nil
@@ -64,6 +64,9 @@ local function run(args)
 
     local inputs, inputs_err = safe_inputs(n)
     if inputs_err then
+        if type(inputs_err) == "table" then
+            return n:fail(inputs_err, inputs_err.message or inputs_err.status or inputs_err.code or "Failed to load inputs")
+        end
         return n:fail({
             code = "INPUT_VALIDATION_FAILED",
             message = inputs_err

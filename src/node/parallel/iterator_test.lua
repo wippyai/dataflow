@@ -697,6 +697,63 @@ local function define_tests()
                 test.contains(err, "No output data found")
             end)
 
+            it("preserves a structured template failure envelope", function()
+                local parent_node = {
+                    dataflow_id = "test-df"
+                }
+
+                local iteration_info = {
+                    uuid_mapping = { ["template1"] = "actual-node-1" }
+                }
+
+                local child_failure = {
+                    code = "MISSING_CUSTOMER_ID",
+                    message = "customer_id is required for item bluebird"
+                }
+
+                local mock_data_reader = {
+                    with_dataflow = function(_dataflow_id: any)
+                        return {
+                            with_nodes = function(_node_ids: any)
+                                return {
+                                    with_data_types = function(_data_type: any)
+                                        return {
+                                            fetch_options = function(_options: any)
+                                                return {
+                                                    all = function()
+                                                        return {
+                                                            {
+                                                                type = consts.DATA_TYPE.NODE_RESULT,
+                                                                discriminator = "result.error",
+                                                                content = {
+                                                                    success = false,
+                                                                    message = "Template item failed",
+                                                                    error = child_failure
+                                                                },
+                                                                node_id = "actual-node-1"
+                                                            }
+                                                        }, nil
+                                                    end
+                                                }
+                                            end
+                                        }
+                                    end
+                                }
+                            end
+                        }, nil
+                    end
+                }
+
+                local result, err = iterator.collect_results(parent_node, iteration_info, {
+                    data_reader = mock_data_reader
+                })
+
+                test.is_nil(result)
+                test.is_table(err)
+                test.eq(err.code, child_failure.code)
+                test.eq(err.message, child_failure.message)
+            end)
+
             it("should parse JSON content correctly", function()
                 local parent_node = {
                     dataflow_id = "test-df"

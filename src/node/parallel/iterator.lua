@@ -9,6 +9,46 @@ local default_deps = {
 
 local iterator = {}
 
+local function error_message(error_value: any, fallback: string)
+    if type(error_value) == "string" then
+        return error_value
+    end
+    if type(error_value) == "table" then
+        local error_table = error_value :: any
+        if type(error_table.message) == "string" then
+            return error_table.message
+        end
+        if type(error_table.status) == "string" then
+            return error_table.status
+        end
+        if error_table.error ~= nil then
+            return error_message(error_table.error, fallback)
+        end
+        if type(error_table.code) == "string" then
+            return error_table.code
+        end
+        return fallback
+    end
+    if error_value == nil then
+        return fallback
+    end
+    return tostring(error_value)
+end
+
+local function prefixed_error(prefix: string, error_value: any, fallback: string)
+    if type(error_value) == "table" then
+        return error_value
+    end
+    return prefix .. error_message(error_value, fallback)
+end
+
+local function unwrap_error_content(content)
+    if type(content) == "table" and content.error ~= nil then
+        return content.error
+    end
+    return content
+end
+
 local function build_iteration_discriminator(iteration_index, attempt_id)
     local padded_iteration = string.format("%06d", iteration_index)
     if type(attempt_id) == "string" and attempt_id ~= "" then
@@ -276,7 +316,7 @@ function iterator.collect_results(parent_node, iteration_info, deps)
 
     local reader, reader_err = deps.data_reader.with_dataflow(parent_node.dataflow_id)
     if not reader then
-        return nil, "Failed to create data reader: " .. tostring(reader_err or "unknown")
+        return nil, prefixed_error("Failed to create data reader: ", reader_err, "unknown")
     end
 
     local output_data = {}
@@ -319,7 +359,7 @@ function iterator.collect_results(parent_node, iteration_info, deps)
                 :fetch_options({ replace_references = true })
                 :all()
             if child_query_err then
-                return nil, "Failed to query output data: " .. tostring(child_query_err)
+                return nil, prefixed_error("Failed to query output data: ", child_query_err, "unknown")
             end
 
             if child_rows then
@@ -334,7 +374,7 @@ function iterator.collect_results(parent_node, iteration_info, deps)
         end
 
         if parent_query_err then
-            return nil, "Failed to query output data: " .. tostring(parent_query_err)
+            return nil, prefixed_error("Failed to query output data: ", parent_query_err, "unknown")
         end
 
         if attempt < 15 then
@@ -376,16 +416,23 @@ function iterator.collect_results(parent_node, iteration_info, deps)
     end
 
     if #errors > 0 then
-        local error_messages = {}
-        for _, error_content in ipairs(errors) do
-            if type(error_content) == "table" then
-                local error_table = error_content :: {[string]: any}
-                error_content = error_table.error or error_table.message or tostring(error_content)
-            end
-            table.insert(error_messages, tostring(error_content))
+        if #errors == 1 then
+            return nil, unwrap_error_content(errors[1])
         end
 
-        return nil, table.concat(error_messages, "; ")
+        local error_messages = {}
+        local error_details = {}
+        for _, error_content in ipairs(errors) do
+            local error_detail = unwrap_error_content(error_content)
+            table.insert(error_details, error_detail)
+            table.insert(error_messages, error_message(error_detail, "Iteration failed"))
+        end
+
+        return nil, {
+            code = "ITERATION_FAILED",
+            message = table.concat(error_messages, "; "),
+            errors = error_details
+        }
     end
 
     if #parsed_outputs == 1 then

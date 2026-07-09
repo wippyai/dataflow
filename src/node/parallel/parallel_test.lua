@@ -1123,6 +1123,145 @@ local function define_tests()
                 test.contains(result.result[1].error, "Item pipeline failed")
             end)
 
+            it("preserves a structured template failure in the collected item result", function()
+                local child_failure = {
+                    code = "MISSING_CUSTOMER_ID",
+                    message = "customer_id is required for item bluebird"
+                }
+                local mock_node = {
+                    config = function(_self: any)
+                        return {
+                            source_array_key = "items",
+                            on_error = parallel.ON_ERROR_STRATEGIES.CONTINUE
+                        }
+                    end,
+                    inputs = function(_self: any)
+                        return {
+                            default = {
+                                content = { items = { "bluebird" } }
+                            }
+                        }
+                    end,
+                    yield = function(_self: any, _options: any)
+                        return {}, nil
+                    end,
+                    complete = function(_self: any, result: any, message: string?)
+                        return {
+                            success = true,
+                            result = result,
+                            message = message
+                        }
+                    end
+                }
+
+                parallel._deps.node = {
+                    new = function(_args: any)
+                        return mock_node, nil
+                    end
+                }
+                parallel._deps.template_graph = {
+                    build_for_node = function(_node: any)
+                        return {
+                            is_empty = function()
+                                return false
+                            end
+                        }, nil
+                    end
+                }
+                parallel._deps.iterator = {
+                    create_batch = function(_n: any, _template_graph: any, items: any)
+                        return {
+                            {
+                                iteration = 1,
+                                iteration_index = 1,
+                                input_item = items[1],
+                                root_nodes = { "template-item-1" }
+                            }
+                        }, nil
+                    end,
+                    collect_results = function()
+                        return nil, child_failure
+                    end
+                }
+
+                local result = parallel.run({})
+
+                test.is_true(result.success)
+                test.eq(#result.result, 1)
+                test.is_table(result.result[1].error)
+                test.eq(result.result[1].error.code, child_failure.code)
+                test.eq(result.result[1].error.message, child_failure.message)
+            end)
+
+            it("preserves a structured template failure rebuilt from durable iteration data", function()
+                local child_failure = {
+                    code = "MISSING_CUSTOMER_ID",
+                    message = "customer_id is required for item bluebird"
+                }
+                local mock_node = {
+                    node_id = "parallel-node",
+                    config = function(_self: any)
+                        return { source_array_key = "items" }
+                    end,
+                    inputs = function(_self: any)
+                        return {
+                            default = {
+                                content = { items = { "bluebird" } }
+                            }
+                        }
+                    end,
+                    query = function(_self: any)
+                        return {
+                            with_nodes = function(self: any, _node_ids: any)
+                                return self
+                            end,
+                            with_data_types = function(self: any, _types: any)
+                                return self
+                            end,
+                            all = function()
+                                return {
+                                    {
+                                        type = consts.DATA_TYPE.ITERATION_ERROR,
+                                        metadata = { iteration = 1 },
+                                        content = { error = child_failure }
+                                    }
+                                }, nil
+                            end
+                        }
+                    end,
+                    complete = function(_self: any, result: any, message: string?)
+                        return {
+                            success = true,
+                            result = result,
+                            message = message
+                        }
+                    end
+                }
+
+                parallel._deps.node = {
+                    new = function(_args: any)
+                        return mock_node, nil
+                    end
+                }
+                parallel._deps.template_graph = {
+                    build_for_node = function(_node: any)
+                        return {
+                            is_empty = function()
+                                return false
+                            end
+                        }, nil
+                    end
+                }
+
+                local result = parallel.run({})
+
+                test.is_true(result.success)
+                test.eq(result.result.failure_count, 1)
+                test.is_table(result.result.failures[1].error)
+                test.eq(result.result.failures[1].error.code, child_failure.code)
+                test.eq(result.result.failures[1].error.message, child_failure.message)
+            end)
+
             it("should support multi-step item pipelines", function()
                 local step_calls: {string} = {}
 
