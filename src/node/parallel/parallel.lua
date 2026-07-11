@@ -456,11 +456,20 @@ local function gather_run_nodes(iterations)
 end
 
 local function fail_iteration(n, error_value)
-    if type(error_value) == "table" then
-        return n:fail(error_value, error_message(error_value, "Iteration failed"))
+    local message = error_message(error_value, "Iteration failed")
+    if string.find(message, "Iteration failed", 1, true) == nil then
+        message = "Iteration failed: " .. message
     end
 
-    local message = error_message(error_value, "Iteration failed")
+    if type(error_value) == "table" then
+        local normalized_error = {}
+        for key, value in pairs(error_value) do
+            normalized_error[key] = value
+        end
+        normalized_error.message = message
+        return n:fail(normalized_error, message)
+    end
+
     return n:fail({
         code = parallel.ERRORS.ITERATION_FAILED,
         message = message
