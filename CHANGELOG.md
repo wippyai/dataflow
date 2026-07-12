@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/wippyai/dataflow/compare/v0.4.0...v0.4.1) (2026-07-12)
+
+
+### Bug Fixes
+
+* stabilize dataflow revival sweeper ([ce39cdc](https://github.com/wippyai/dataflow/commit/ce39cdcade94945d3d44f582430e4a1634194471))
+
 ## [0.4.0](https://github.com/wippyai/dataflow/compare/v0.3.10...v0.4.0) (2026-07-09)
 
 
