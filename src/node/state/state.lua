@@ -37,11 +37,11 @@ local function safe_inputs(n)
     end)
 
     if not ok then
-        return nil, tostring(inputs_or_err)
+        return nil, inputs_or_err
     end
 
     if inputs_err then
-        return nil, tostring(inputs_err)
+        return nil, inputs_err
     end
 
     return inputs_or_err, nil
@@ -64,6 +64,9 @@ local function run(args)
 
     local inputs, inputs_err = safe_inputs(n)
     if inputs_err then
+        if type(inputs_err) == "table" then
+            return n:fail(inputs_err, inputs_err.message or inputs_err.status or inputs_err.code or "Failed to load inputs")
+        end
         return n:fail({
             code = "INPUT_VALIDATION_FAILED",
             message = inputs_err
@@ -76,7 +79,7 @@ local function run(args)
 
     if output_mode == "array" then
         local array_result = collect_inputs_as_array(n, ignored_set)
-        return n:complete(array_result, "State collection completed")
+        return (n:complete(array_result, "State collection completed"))
     end
 
     local collected = {}
@@ -88,7 +91,7 @@ local function run(args)
 
     if next(collected) == nil then
         for _, input in pairs(inputs) do
-            return n:complete(input.content, "State collection completed")
+            return (n:complete(input.content, "State collection completed"))
         end
     end
 
@@ -102,11 +105,11 @@ local function run(args)
         end
 
         if not has_other_keys then
-            return n:complete(collected.default, "State collection completed")
+            return (n:complete(collected.default, "State collection completed"))
         end
     end
 
-    return n:complete(collected, "State collection completed")
+    return (n:complete(collected, "State collection completed"))
 end
 
 state.run = run

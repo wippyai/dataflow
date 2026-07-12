@@ -30,10 +30,13 @@ local function run(args)
     })
 
     if yield_err then
+        if type(yield_err) == "table" then
+            return n:fail(yield_err, yield_err.message or yield_err.status or yield_err.code or "Signal yield failed")
+        end
         return n:fail({
             code = "SIGNAL_YIELD_FAILED",
-            message = tostring(yield_err)
-        }, "Signal yield failed: " .. tostring(yield_err))
+            message = yield_err
+        }, "Signal yield failed: " .. yield_err)
     end
 
     -- nil results means the channel was closed (graceful shutdown)
@@ -42,7 +45,7 @@ local function run(args)
         return 0
     end
 
-    return n:complete(results, "Signal received: " .. signal_id)
+    return (n:complete(results, "Signal received: " .. signal_id))
 end
 
 signal.run = run

@@ -9,6 +9,7 @@ local orchestrator = {
     workflow_state = require("workflow_state"),
     scheduler = require("scheduler"),
     process = process,
+    channel = channel,
     funcs = require("funcs"),
     commit = require("commit"),
     security = security
@@ -487,6 +488,56 @@ function handle_complete_workflow(state: any, payload: any)
     return false
 end
 
+-- Invoke a persisted park arm under the workflow's recovered authority. The
+-- declaration contains only a function ref and data; it cannot override actor
+-- or scope. Returns a structured error payload for the waiting node.
+function orchestrator.arm_parked_yield(state: any, arm: any): any?
+    local declaration = type(arm) == "table" and arm or {}
+    local arm_ref = type(declaration.ref) == "string" and declaration.ref or ""
+    if arm_ref == "" then
+        return { code = "PARK_ARM_FAILED", message = "park arm.ref is required" }
+    end
+
+    local executor = orchestrator.funcs.new()
+    if state.actor then executor = executor:with_actor(state.actor) end
+    if state.scope then executor = executor:with_scope(state.scope) end
+    local ok, result_or_error, call_err = pcall(function()
+        return executor:call(arm_ref, type(declaration.args) == "table" and declaration.args or {})
+    end)
+    if not ok then
+        return { code = "PARK_ARM_FAILED", message = tostring(result_or_error) }
+    end
+    if call_err then
+        return { code = "PARK_ARM_FAILED", message = tostring(call_err) }
+    end
+    return nil
+end
+
+-- Track first, then arm, then acknowledge. The caller invokes the scheduler only
+-- after this returns, so even an already-persisted signal cannot beat the ACK to
+-- the node's reply mailbox.
+function orchestrator.track_signal_yield(state: any, node_id: string, yield_info: any, from_pid: any)
+    state.workflow_state:track_yield(node_id, yield_info)
+    if yield_info.park_ack ~= true or type(yield_info.reply_to) ~= "string" or not yield_info.yield_id then
+        return
+    end
+
+    local arm_error = orchestrator.arm_parked_yield(state, yield_info.arm)
+    if arm_error then
+        state.workflow_state:abandon_yield(node_id)
+        orchestrator.process.send(tostring(from_pid), yield_info.reply_to, {
+            yield_id = yield_info.yield_id,
+            parked = false,
+            error = arm_error,
+        })
+    else
+        orchestrator.process.send(tostring(from_pid), yield_info.reply_to, {
+            yield_id = yield_info.yield_id,
+            parked = true,
+        })
+    end
+end
+
 ---Handle yield request immediately
 ---@param state table Orchestrator state
 ---@param msg_payload table Yield request payload
@@ -530,8 +581,10 @@ local function handle_yield_request(state: any, msg_payload: any, from_pid: any)
                 pending_children = {},
                 results = {},
                 wait_for_signal = true,
+                park_ack = yield_context.park_ack == true,
+                arm = yield_context.arm,
             }
-            state.workflow_state:track_yield(node_id, yield_info)
+            orchestrator.track_signal_yield(state, tostring(node_id), yield_info, from_pid)
         elseif type(reply_to) == "string" and yield_id then
             orchestrator.process.send(tostring(from_pid), reply_to, {
                 yield_id = yield_id,
@@ -597,7 +650,7 @@ local function handle_process_event(state: any, event: any)
     state.active_processes[node_id] = nil
 
     local success = false
-    local error_message = "Unknown exit reason"
+    local error_reason: any = "Unknown exit reason"
     local result_data = nil
 
     if event.kind == orchestrator.process.event.EXIT then
@@ -606,10 +659,10 @@ local function handle_process_event(state: any, event: any)
 
             if event.result.error then
                 success = false
-                error_message = tostring(event.result.error)
+                error_reason = event.result.error
             elseif type(result_data) == "table" and result_data.success == false then
                 success = false
-                error_message = tostring(result_data.error or "Node returned {success=false}")
+                error_reason = result_data.error or result_data.message or "Node returned {success=false}"
             else
                 success = true
             end
@@ -618,10 +671,14 @@ local function handle_process_event(state: any, event: any)
         end
     elseif event.kind == orchestrator.process.event.LINK_DOWN then
         success = false
-        error_message = "Node process linked down"
+        error_reason = "Node process linked down"
     end
 
-    local exit_info = state.workflow_state:handle_process_exit(from_pid, success, result_data)
+    local terminal_result = result_data
+    if not success and (type(result_data) ~= "table" or result_data.success ~= false) then
+        terminal_result = error_reason
+    end
+    local exit_info = state.workflow_state:handle_process_exit(from_pid, success, terminal_result)
 
     local persist_result, persist_err = state.workflow_state:persist()
 
@@ -871,7 +928,7 @@ local function run(args)
             table.insert(select_cases, timer_channel:case_receive())
         end
 
-        local result = channel.select(select_cases)
+        local result = orchestrator.channel.select(select_cases)
 
         if not result.ok then
             break

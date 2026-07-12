@@ -12,6 +12,39 @@ func._deps = {
     child_output = require("child_output")
 }
 
+local function error_message(error_value: any, fallback: string)
+    if type(error_value) == "string" then
+        return error_value
+    end
+    if type(error_value) == "table" then
+        local error_table = error_value :: any
+        if type(error_table.message) == "string" then
+            return error_table.message
+        end
+        if type(error_table.status) == "string" then
+            return error_table.status
+        end
+        if error_table.error ~= nil then
+            return error_message(error_table.error, fallback)
+        end
+        if type(error_table.code) == "string" then
+            return error_table.code
+        end
+        return fallback
+    end
+    if error_value == nil then
+        return fallback
+    end
+    return tostring(error_value)
+end
+
+local function prefixed_error(prefix: string, error_value: any, fallback: string)
+    if type(error_value) == "table" then
+        return error_value
+    end
+    return prefix .. error_message(error_value, fallback)
+end
+
 local function build_execution_context_with_dataflow(base_context, dataflow_id, node_id, path)
     local execution_context = {}
 
@@ -94,11 +127,11 @@ local function safe_inputs(n)
     end)
 
     if not ok then
-        return nil, tostring(inputs_or_err)
+        return nil, inputs_or_err
     end
 
     if inputs_err then
-        return nil, tostring(inputs_err)
+        return nil, inputs_err
     end
 
     return inputs_or_err, nil
@@ -141,7 +174,7 @@ local function collect_child_result(n, child_node_ids, yield_result)
         if type(collect_err) == "table" then
             return nil, collect_err
         end
-        return nil, "Failed to collect child outputs: " .. tostring(collect_err)
+        return nil, prefixed_error("Failed to collect child outputs: ", collect_err, "unknown")
     end
 
     return build_child_output_result(output_data)
@@ -149,17 +182,13 @@ end
 
 local function fail_child_collect(n, collect_err)
     if type(collect_err) == "table" then
-        local status = collect_err.status or collect_err.message
-        return n:fail({
-            code = collect_err.code,
-            message = collect_err.message
-        }, status)
+        return n:fail(collect_err, error_message(collect_err, "Child workflow failed"))
     end
 
     return n:fail({
         code = ERROR_FUNCTION_EXECUTION_FAILED,
-        message = tostring(collect_err)
-    }, tostring(collect_err))
+        message = error_message(collect_err, "Child workflow failed")
+    }, error_message(collect_err, "Child workflow failed"))
 end
 
 local function complete_from_children(n, child_node_ids, fallback_result)
@@ -168,10 +197,10 @@ local function complete_from_children(n, child_node_ids, fallback_result)
         return fail_child_collect(n, collect_err)
     end
     if final_output ~= nil then
-        return n:complete(final_output, "Function executed successfully")
+        return (n:complete(final_output, "Function executed successfully"))
     end
 
-    return n:complete(fallback_result, "Function executed successfully")
+    return (n:complete(fallback_result, "Function executed successfully"))
 end
 
 -- Checkpoints child ids before yielding so recovery resumes the same children
@@ -181,9 +210,12 @@ local function finish_with_children(n, created_node_ids, fallback_result)
 
     local yield_result, yield_err = n:yield({ run_nodes = created_node_ids })
     if yield_err then
+        if type(yield_err) == "table" then
+            return n:fail(yield_err, "Control command execution failed")
+        end
         return n:fail({
             code = ERROR_FUNCTION_EXECUTION_FAILED,
-            message = "Control command execution failed: " .. yield_err
+            message = prefixed_error("Control command execution failed: ", yield_err, "unknown")
         }, "Control command execution failed")
     end
 
@@ -192,10 +224,10 @@ local function finish_with_children(n, created_node_ids, fallback_result)
         return fail_child_collect(n, collect_err)
     end
     if final_output ~= nil then
-        return n:complete(final_output, "Function executed successfully")
+        return (n:complete(final_output, "Function executed successfully"))
     end
 
-    return n:complete(fallback_result, "Function executed successfully")
+    return (n:complete(fallback_result, "Function executed successfully"))
 end
 
 local function run(args)
@@ -222,6 +254,9 @@ local function run(args)
 
     local inputs, inputs_err = safe_inputs(n)
     if inputs_err then
+        if type(inputs_err) == "table" then
+            return n:fail(inputs_err, error_message(inputs_err, "Failed to load inputs"))
+        end
         return n:fail({
             code = "INPUT_VALIDATION_FAILED",
             message = inputs_err
@@ -317,10 +352,10 @@ local function run(args)
             return finish_with_children(n, created_node_ids, cleaned_result)
         end
 
-        return n:complete(cleaned_result, "Function executed successfully")
+        return (n:complete(cleaned_result, "Function executed successfully"))
     end
 
-    return n:complete(function_result, "Function executed successfully")
+    return (n:complete(function_result, "Function executed successfully"))
 end
 
 func.run = run

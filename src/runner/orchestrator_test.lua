@@ -762,6 +762,124 @@ local function define_tests()
         end)
 
         describe("Yield Handling", function()
+            it("tracks a prequeued signal before arm and ACK", function()
+                local order: { string } = {}
+                orchestrator.funcs.new = function(): any
+                    local executor = {}
+                    function executor:with_actor(_actor: any): any return self end
+                    function executor:with_scope(_scope: any): any return self end
+                    function executor:call(_ref: string, _args: any): (any?, string?)
+                        table.insert(order, "arm")
+                        return {}, nil
+                    end
+                    return executor
+                end
+                orchestrator.process.send = function(_dest: string, _topic: string, payload: any)
+                    table.insert(order, "ack")
+                    test.eq(payload.parked, true)
+                end
+                local state = {
+                    actor = {}, scope = {},
+                    workflow_state = {
+                        track_yield = function(_self: any, _node_id: string, info: any)
+                            info.signal_data = { outcome = "approve" }
+                            table.insert(order, "track")
+                        end,
+                        abandon_yield = function() table.insert(order, "abandon") end,
+                    },
+                }
+                orchestrator.track_signal_yield(state, "await-1", {
+                    yield_id = "yield-1", reply_to = "reply", park_ack = true,
+                    wait_for_signal = true, signal_id = "approval-1",
+                    arm = { ref = "inbox:arm", args = {} },
+                }, "node-pid")
+                test.eq(table.concat(order, ","), "track,arm,ack")
+            end)
+
+            it("abandons the tracked wait before ACKing an arm failure", function()
+                local order: { string } = {}
+                orchestrator.funcs.new = function(): any
+                    local executor = {}
+                    function executor:with_actor(_actor: any): any return self end
+                    function executor:with_scope(_scope: any): any return self end
+                    function executor:call(): (any?, string?)
+                        table.insert(order, "arm")
+                        return nil, "inbox unavailable"
+                    end
+                    return executor
+                end
+                orchestrator.process.send = function(_dest: string, _topic: string, payload: any)
+                    table.insert(order, "ack")
+                    test.eq(payload.parked, false)
+                    test.eq(payload.error.code, "PARK_ARM_FAILED")
+                end
+                local state = {
+                    actor = {}, scope = {},
+                    workflow_state = {
+                        track_yield = function() table.insert(order, "track") end,
+                        abandon_yield = function() table.insert(order, "abandon") end,
+                    },
+                }
+                orchestrator.track_signal_yield(state, "await-1", {
+                    yield_id = "yield-1", reply_to = "reply", park_ack = true,
+                    arm = { ref = "inbox:arm", args = {} },
+                }, "node-pid")
+                test.eq(table.concat(order, ","), "track,arm,abandon,ack")
+            end)
+
+            it("arms a parked yield only under recovered workflow authority", function()
+                local called_ref = nil :: string?
+                local called_args = nil :: any
+                orchestrator.funcs.new = function(): any
+                    local executor = {}
+                    function executor:with_actor(actor: any): any
+                        table.insert(captured_actors, actor)
+                        return self
+                    end
+                    function executor:with_scope(scope: any): any
+                        table.insert(captured_scopes, scope)
+                        return self
+                    end
+                    function executor:call(ref: string, args: any): (any?, string?)
+                        called_ref, called_args = ref, args
+                        return { id = "decision-1" }, nil
+                    end
+                    return executor
+                end
+                local workflow_actor = { id = function() return "workflow-owner" end }
+                local arm_err = orchestrator.arm_parked_yield({
+                    actor = workflow_actor,
+                    scope = "workflow-scope",
+                }, {
+                    ref = "inbox:arm",
+                    args = { decision_id = "decision-1", actor = "attacker" },
+                })
+                test.is_nil(arm_err)
+                test.eq(called_ref, "inbox:arm")
+                test.eq(called_args.decision_id, "decision-1")
+                test.eq(captured_actors[1], workflow_actor)
+                test.eq(captured_scopes[1], "workflow-scope")
+            end)
+
+            it("returns a structured parked-arm failure", function()
+                orchestrator.funcs.new = function(): any
+                    local executor = {}
+                    function executor:with_actor(_actor: any): any return self end
+                    function executor:with_scope(_scope: any): any return self end
+                    function executor:call(_ref: string, _args: any): (any?, string?)
+                        return nil, "inbox unavailable"
+                    end
+                    return executor
+                end
+                local arm_err = orchestrator.arm_parked_yield({ actor = {}, scope = {} }, {
+                    ref = "inbox:arm",
+                    args = {},
+                })
+                test.not_nil(arm_err)
+                test.eq((arm_err :: any).code, "PARK_ARM_FAILED")
+                test.eq((arm_err :: any).message, "inbox unavailable")
+            end)
+
             it("should handle yield satisfaction", function()
                 local send_calls: { { dest: string, topic: string, payload: any } } = {}
                 mock_process.send = function(dest: string, topic: string, payload: any)

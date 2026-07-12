@@ -62,6 +62,24 @@ entries:
       orchestrator: userspace.dataflow.runner:orchestrator
       test: wippy.test:test
     method: run_tests
+
+  - name: orchestrator_process_event_test
+    kind: function.lua
+    meta:
+      name: Orchestrator Process Event Tests
+      type: test
+      comment: Regression coverage for process-exit failure propagation
+      group: Workflow
+      tags:
+        - dataflow
+        - orchestrator
+        - tests
+    source: file://orchestrator_process_event_test.lua
+    imports:
+      consts: userspace.dataflow:consts
+      orchestrator: userspace.dataflow.runner:orchestrator
+      test: wippy.test:test
+    method: run_tests
     
   # userspace.dataflow.runner:sweeper
   - name: sweeper

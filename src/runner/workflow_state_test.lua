@@ -1156,6 +1156,53 @@ local function define_tests()
         end)
 
         describe("Yield Recovery", function()
+            it("abandons a failed parked yield so later signals cannot revive it", function()
+                local ws = workflow_state.new(test_ctx.dataflow_id) :: any
+                ws.active_yields["await-1"] = {
+                    yield_id = "yield-1",
+                    signal_id = "approval-1",
+                    wait_for_signal = true,
+                }
+                ws:abandon_yield("await-1")
+                test.is_nil(ws.active_yields["await-1"])
+            end)
+
+            it("retains a declarative park arm across restart recovery", function()
+                local parent_id: string = uuid.v7()
+                local yield_id: string = uuid.v7()
+                create_test_nodes(test_ctx.tx, test_ctx.dataflow_id :: string, {
+                    { node_id = parent_id, type = "await_node", status = consts.STATUS.RUNNING },
+                })
+                create_test_data(test_ctx.tx, test_ctx.dataflow_id :: string, {
+                    {
+                        node_id = parent_id,
+                        type = consts.DATA_TYPE.NODE_YIELD,
+                        key = yield_id,
+                        content = string.format([[{
+                            "node_id":"%s","yield_id":"%s","reply_to":"park.reply",
+                            "yield_context":{"run_nodes":[],"wait_for_signal":true,
+                            "signal_id":"approval-1","park_ack":true,
+                            "arm":{"ref":"inbox:arm","args":{"decision_id":"decision-1"}}}
+                        }]], parent_id, yield_id),
+                        content_type = "application/json",
+                    },
+                })
+                test_ctx.tx:commit()
+                test_ctx.db:release()
+                test_ctx.tx = nil
+                test_ctx.db = nil
+
+                local ws = workflow_state.new(test_ctx.dataflow_id) :: any
+                local _result, load_err = ws:load_state()
+                test.is_nil(load_err)
+                local recovered = test.not_nil(ws.active_yields[parent_id]) :: any
+                test.eq(recovered.park_ack, true)
+                test.eq(recovered.arm.ref, "inbox:arm")
+                test.eq(recovered.arm.args.decision_id, "decision-1")
+                test.eq(recovered.signal_id, "approval-1")
+                test.eq(recovered.detached, true, "restarted node reattaches with a fresh reply mailbox")
+            end)
+
             it("should reconstruct simple yield with pending children", function()
                 local parent_id: string = uuid.v7()
                 local child1_id: string = uuid.v7()

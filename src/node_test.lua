@@ -494,6 +494,53 @@ local function define_tests()
                 test.eq(#inputs.cheap_items.content, 1)
             end)
 
+            it("reports expr-lang's zero-based array index error for a one-item input", function()
+                local one_item_data_mock: any = {
+                    commit = mock_deps.commit,
+                    process = mock_deps.process,
+                    data_reader = {
+                        with_dataflow = function(_dataflow_id: string)
+                            return {
+                                with_nodes = function(_node_id: string)
+                                    return {
+                                        with_data_types = function(_data_type: string)
+                                            return {
+                                                fetch_options = function(_options: any)
+                                                    return {
+                                                        all = function()
+                                                            return {
+                                                                {
+                                                                    content = '{"passed_items":[{"contact_id":"contact-1"}]}',
+                                                                    content_type = consts.CONTENT_TYPE.JSON,
+                                                                    key = "default",
+                                                                },
+                                                            }
+                                                        end,
+                                                    }
+                                                end,
+                                            }
+                                        end,
+                                    }
+                                end,
+                            }
+                        end,
+                    },
+                }
+
+                local test_node, err = node.new({
+                    node_id = "test-node-123",
+                    dataflow_id = "test-dataflow-456",
+                    node = { config = { input_transform = "input.passed_items[1].contact_id" } },
+                }, one_item_data_mock)
+                test.is_nil(err)
+                test.not_nil(test_node)
+
+                local inputs, input_err = test_node:inputs()
+                test.is_nil(inputs)
+                test.contains(tostring(input_err), "Input transformation failed")
+                test.contains(tostring(input_err), "index")
+            end)
+
             it("should handle mathematical expressions", function()
                 local args = {
                     node_id = "test-node-123",
@@ -1250,6 +1297,213 @@ local function define_tests()
                 test.contains(err, "Invalid signal timeout")
                 test.eq(#captured_calls.commit_submit, 0, "invalid timeout is not persisted")
                 test.eq(#captured_calls.process_send, 0, "invalid timeout is not signaled")
+            end)
+
+            it("parks durably before arming external work", function()
+                local order: { string } = {}
+                local receives = 0
+                local parked_yield_id = ""
+                local deps: any = {
+                    commit = {
+                        submit = function(_dataflow_id: string, _op_id: string, _commands: any)
+                            table.insert(order, "commit")
+                            return { commit_id = uuid.v7() }, nil
+                        end,
+                    },
+                    data_reader = mock_deps.data_reader,
+                    process = {
+                        send = function(_target: string, _topic: string, payload: any)
+                            table.insert(order, "request")
+                            test.eq(payload.yield_context.park_ack, true)
+                            test.eq(payload.yield_context.arm.ref, "inbox:arm")
+                            parked_yield_id = payload.request_context.yield_id
+                            return true
+                        end,
+                        listen = function(_topic: string)
+                            return {
+                                receive = function()
+                                    receives = receives + 1
+                                    if receives == 1 then
+                                        table.insert(order, "ack")
+                                        return { parked = true, yield_id = parked_yield_id }, true
+                                    end
+                                    table.insert(order, "result")
+                                    return { response_data = { run_node_results = { approved = true } } }, true
+                                end,
+                            }
+                        end,
+                    },
+                }
+                local parked_node = select(1, node.new({
+                    node_id = "park-node",
+                    dataflow_id = "park-flow",
+                }, deps))
+                local result, err = parked_node:park({
+                    wait_for_signal = true,
+                    signal_id = "approval-1",
+                    arm = { ref = "inbox:arm", args = { decision_id = "decision-1" } },
+                })
+
+                test.is_nil(err)
+                test.eq((result :: any).approved, true)
+                test.eq(table.concat(order, ","), "commit,request,ack,result")
+            end)
+
+            it("never requests an arm when the durable yield commit fails", function()
+                local deps: any = {
+                    commit = { submit = function() return nil, "disk unavailable" end },
+                    data_reader = mock_deps.data_reader,
+                    process = mock_deps.process,
+                }
+                local parked_node = select(1, node.new({ node_id = "park-node", dataflow_id = "park-flow" }, deps))
+                local result, err = parked_node:park({
+                    wait_for_signal = true,
+                    signal_id = "approval-1",
+                    arm = { ref = "inbox:arm", args = {} },
+                })
+                test.is_nil(result)
+                test.contains(err, "Failed to submit yield")
+                test.eq(#captured_calls.process_send, 0)
+            end)
+
+            it("rejects cyclic park arguments before persistence or signaling", function()
+                local args: any = { decision_id = "decision-1" }
+                args.self = args
+
+                local result, err = test_node:park({
+                    wait_for_signal = true,
+                    signal_id = "approval-1",
+                    arm = { ref = "inbox:arm", args = args },
+                })
+
+                test.is_nil(result)
+                test.eq((err :: any).code, "PARK_ARM_INVALID")
+                test.contains((err :: any).message, "cycle")
+                test.eq(#captured_calls.commit_submit, 0)
+                test.eq(#captured_calls.process_send, 0)
+            end)
+
+            it("rejects unsupported park argument values before persistence or signaling", function()
+                local result, err = test_node:park({
+                    wait_for_signal = true,
+                    signal_id = "approval-1",
+                    arm = { ref = "inbox:arm", args = { callback = function() end } },
+                })
+
+                test.is_nil(result)
+                test.eq((err :: any).code, "PARK_ARM_INVALID")
+                test.contains((err :: any).message, "unsupported value type")
+                test.eq(#captured_calls.commit_submit, 0)
+                test.eq(#captured_calls.process_send, 0)
+            end)
+
+            it("snapshots nested park arguments before the durable commit", function()
+                local original: any = {
+                    decision = { id = "decision-1", choices = { "approve", "reject" } },
+                    enabled = true,
+                }
+                local persisted_args: any = nil
+                local sent_args: any = nil
+                local parked_yield_id = ""
+                local receives = 0
+                local deps: any = {
+                    commit = {
+                        submit = function(_dataflow_id: string, _op_id: string, commands: any)
+                            persisted_args = commands[1].payload.content.yield_context.arm.args
+                            original.decision.id = "mutated-after-snapshot"
+                            original.decision.choices[1] = "mutated"
+                            return { commit_id = uuid.v7() }, nil
+                        end,
+                    },
+                    data_reader = mock_deps.data_reader,
+                    process = {
+                        send = function(_target: string, _topic: string, payload: any)
+                            parked_yield_id = payload.request_context.yield_id
+                            sent_args = payload.yield_context.arm.args
+                            return true
+                        end,
+                        listen = function()
+                            return {
+                                receive = function()
+                                    receives = receives + 1
+                                    if receives == 1 then
+                                        return { parked = true, yield_id = parked_yield_id }, true
+                                    end
+                                    return { response_data = { run_node_results = {} } }, true
+                                end,
+                            }
+                        end,
+                    },
+                }
+                local parked_node = select(1, node.new({ node_id = "park-node", dataflow_id = "park-flow" }, deps))
+                local _result, err = parked_node:park({
+                    wait_for_signal = true,
+                    signal_id = "approval-1",
+                    arm = { ref = "inbox:arm", args = original },
+                })
+
+                test.is_nil(err)
+                test.eq(persisted_args.decision.id, "decision-1")
+                test.eq(persisted_args.decision.choices[1], "approve")
+                test.eq(sent_args.decision.id, "decision-1")
+                test.eq(sent_args.decision.choices[1], "approve")
+                test.is_true(persisted_args ~= original)
+                test.is_true(persisted_args.decision ~= original.decision)
+            end)
+
+            it("returns arm failures after the park acknowledgement", function()
+                local receives = 0
+                local parked_yield_id = ""
+                local deps: any = {
+                    commit = mock_deps.commit,
+                    data_reader = mock_deps.data_reader,
+                    process = {
+                        send = function(_target: string, _topic: string, payload: any)
+                            parked_yield_id = payload.request_context.yield_id
+                            return true
+                        end,
+                        listen = function()
+                            return {
+                                receive = function()
+                                    receives = receives + 1
+                                    return {
+                                        parked = false,
+                                        yield_id = parked_yield_id,
+                                        error = { code = "PARK_ARM_FAILED", message = "inbox unavailable" },
+                                    }, true
+                                end,
+                            }
+                        end,
+                    },
+                }
+                local parked_node = select(1, node.new({ node_id = "park-node", dataflow_id = "park-flow" }, deps))
+                local result, err = parked_node:park({
+                    wait_for_signal = true,
+                    signal_id = "approval-1",
+                    arm = { ref = "inbox:arm", args = {} },
+                })
+                test.is_nil(result)
+                test.eq((err :: any).code, "PARK_ARM_FAILED")
+                test.eq((err :: any).message, "inbox unavailable")
+                test.eq(receives, 1, "arm failure must not wait for a final signal")
+            end)
+
+            it("requires signal semantics for a durable park", function()
+                local result, err = test_node:park({ arm = { ref = "inbox:arm", args = {} } })
+                test.is_nil(result)
+                test.eq((err :: any).code, "PARK_SIGNAL_REQUIRED")
+                test.eq(#captured_calls.commit_submit, 0)
+            end)
+
+            it("requires a stable signal id for replay correlation", function()
+                local result, err = test_node:park({
+                    wait_for_signal = true,
+                    signal_id = "",
+                    arm = { ref = "inbox:arm", args = {} },
+                })
+                test.is_nil(result)
+                test.eq((err :: any).code, "PARK_SIGNAL_REQUIRED")
+                test.eq(#captured_calls.commit_submit, 0)
             end)
 
             it("should differ from submit in that it sends process signals", function()
@@ -2124,6 +2378,50 @@ local function define_tests()
         end)
 
         describe("Expr Error Handling in Output Routing", function()
+            it("routes an out-of-range output transform to configured error targets", function()
+                local expression = "output.passed_items[1].contact_id"
+                local test_node_bad, _err = node.new({
+                    node_id = "test-node-123",
+                    dataflow_id = "test-dataflow-456",
+                    node = {
+                        config = {
+                            data_targets = {
+                                {
+                                    data_type = "next.input",
+                                    key = "next",
+                                    transform = expression,
+                                },
+                            },
+                            error_targets = {
+                                { data_type = "workflow.output", key = "error" },
+                            },
+                        },
+                    },
+                }, mock_deps)
+                test.not_nil(test_node_bad)
+
+                local result, error_msg = test_node_bad:complete({
+                    passed_items = { { contact_id = "contact-1" } },
+                })
+
+                test.is_false(result.success)
+                test.contains(tostring(result.message), "Output transform failed")
+                test.contains(tostring(result.message), expression)
+                test.contains(tostring(error_msg), expression)
+                test.contains(tostring(result.error), expression)
+
+                local submit_call = captured_calls.commit_submit[1]
+                test.not_nil(submit_call)
+                local error_data: any = nil
+                for _, command in ipairs(submit_call.commands) do
+                    if command.type == consts.COMMAND_TYPES.CREATE_DATA and command.payload.key == "error" then
+                        error_data = command.payload.content
+                    end
+                end
+                test.not_nil(error_data)
+                test.contains(tostring(error_data), expression)
+            end)
+
             it("BC_REGRESSION_C2_node_complete_returns_error_pair", function()
                 local test_node_bad, _err = node.new({
                     node_id = "test-node-123",

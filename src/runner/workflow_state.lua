@@ -638,6 +638,8 @@ function methods:_reconstruct_active_yields()
             timeout = yield_context.timeout,
             timeout_ms = yield_context.timeout_ms,
             timeout_deadline = yield_context.timeout_deadline,
+            park_ack = yield_context.park_ack == true,
+            arm = yield_context.arm,
         }
 
         -- for reset nodes, the original yielding process is dead. the reply_to
@@ -1077,6 +1079,14 @@ function methods:satisfy_yield(node_id, results)
         self.active_yields[node_id] = nil
     end
 
+    return self
+end
+
+-- Stop tracking a parked wait whose external arm failed. The node process receives
+-- the structured failure and persists its normal terminal node error; removing the
+-- in-memory wait prevents a later signal from reviving the failed park.
+function methods:abandon_yield(node_id)
+    self.active_yields[node_id] = nil
     return self
 end
 
