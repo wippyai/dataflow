@@ -199,14 +199,18 @@ local function parse_signal_timeout(timeout_value: any)
     local err: any = nil
 
     if type(timeout_value) == "number" then
-        duration = timeout_value * time.MILLISECOND
+        if timeout_value ~= timeout_value or timeout_value == math.huge or timeout_value == -math.huge then
+            return nil, consts.ERROR.SIGNAL_TIMEOUT_INVALID .. ": expected a finite millisecond number"
+        end
+        duration, err = time.parse_duration(timeout_value * time.MILLISECOND)
     elseif type(timeout_value) == "string" then
         duration, err = time.parse_duration(timeout_value)
-        if err then
-            return nil, consts.ERROR.SIGNAL_TIMEOUT_INVALID .. ": " .. tostring(timeout_value)
-        end
     else
         return nil, consts.ERROR.SIGNAL_TIMEOUT_INVALID .. ": expected string duration or millisecond number"
+    end
+
+    if err then
+        return nil, consts.ERROR.SIGNAL_TIMEOUT_INVALID .. ": " .. tostring(timeout_value)
     end
 
     if not duration or duration:nanoseconds() <= 0 then

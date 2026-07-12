@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.31](https://github.com/wippyai/dataflow/compare/v0.4.30...v0.4.31) (2026-07-12)
+
+
+### Bug Fixes
+
+* accept numeric millisecond timeouts in durable signal waits
+
 ## [0.4.1](https://github.com/wippyai/dataflow/compare/v0.4.0...v0.4.1) (2026-07-12)
 
 

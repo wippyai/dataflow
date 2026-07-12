@@ -1285,6 +1285,21 @@ local function define_tests()
                 test.eq(signal_context.timeout_deadline, yield_context.timeout_deadline, "message uses durable deadline")
             end)
 
+            it("should persist numeric millisecond signal timeouts", function()
+                local result, err = test_node:yield({
+                    wait_for_signal = true,
+                    signal_id = "approval",
+                    timeout = 86400,
+                })
+
+                test.is_nil(err)
+                test.not_nil(result)
+                local yield_context = captured_calls.commit_submit[1].commands[1].payload.content.yield_context
+                test.eq(yield_context.timeout, 86400)
+                test.eq(yield_context.timeout_ms, 86400)
+                test.not_nil(yield_context.timeout_deadline)
+            end)
+
             it("should reject invalid signal timeout before yielding", function()
                 test.not_nil(test_node)
                 local result, err = test_node:yield({
@@ -1297,6 +1312,20 @@ local function define_tests()
                 test.contains(err, "Invalid signal timeout")
                 test.eq(#captured_calls.commit_submit, 0, "invalid timeout is not persisted")
                 test.eq(#captured_calls.process_send, 0, "invalid timeout is not signaled")
+            end)
+
+            it("should reject non-positive and non-finite numeric signal timeouts", function()
+                for _, timeout in ipairs({ 0, -1, math.huge }) do
+                    local result, err = test_node:yield({
+                        wait_for_signal = true,
+                        signal_id = "approval",
+                        timeout = timeout,
+                    })
+                    test.is_nil(result)
+                    test.contains(err, "Invalid signal timeout")
+                end
+                test.eq(#captured_calls.commit_submit, 0, "invalid timeouts are not persisted")
+                test.eq(#captured_calls.process_send, 0, "invalid timeouts are not signaled")
             end)
 
             it("parks durably before arming external work", function()
