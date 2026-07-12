@@ -1,6 +1,6 @@
 organization: wippy
 module: dataflow
-version: 0.4.30
+version: 0.4.31
 description: Workflow execution engine with visual flow designer support
 license: Apache-2.0
 keywords:
