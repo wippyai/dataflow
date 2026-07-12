@@ -55,8 +55,8 @@ end
 
 local function decode_json_content(content)
     if type(content) == "string" then
-        local success, parsed = pcall(json.decode, content)
-        if success then
+        local parsed, parse_err = json.decode(content)
+        if not parse_err then
             return parsed
         end
         return nil
@@ -850,8 +850,8 @@ function methods:get_failed_node_errors()
                 local content = result.content or "Unknown error"
 
                 if result.content_type == "application/json" or result.content_type == consts.CONTENT_TYPE.JSON then
-                    local success, parsed = pcall(json.decode, content)
-                    if success and type(parsed) == "table" then
+                    local parsed, parse_err = json.decode(content)
+                    if not parse_err and type(parsed) == "table" then
                         if parsed.error and type(parsed.error) == "table" and parsed.error.message then
                             error_message = tostring(parsed.error.message)
                         elseif parsed.message then
@@ -1047,8 +1047,8 @@ function methods:track_yield(node_id, yield_info)
                     -- and handle_satisfy_yield see a table instead of coercing to {}
                     local content = sig.content
                     if type(content) == "string" then
-                        local ok, parsed = pcall(json.decode, content)
-                        if ok then content = parsed end
+                        local parsed, parse_err = json.decode(content)
+                        if not parse_err then content = parsed end
                     end
                     yield_info.signal_data = content
                 end

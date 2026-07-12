@@ -1313,6 +1313,37 @@ local function define_tests()
                 test.eq(data_commands, 2)
             end)
 
+            it("should preserve target-provided output data ids", function()
+                local fixed_data_id = "fixed-output-data-id"
+                local fixed_node, _err = node.new({
+                    node_id = "test-node-123",
+                    dataflow_id = "test-dataflow-456",
+                    node = {
+                        config = {
+                            data_targets = {
+                                { data_type = "output.result", key = "main", data_id = fixed_data_id }
+                            }
+                        }
+                    }
+                }, mock_deps)
+                test.not_nil(fixed_node)
+
+                local result = fixed_node:complete({ message = "success" })
+
+                test.is_true(result.success)
+                test.eq(result.data_ids[1], fixed_data_id)
+
+                local first_submit = captured_calls.commit_submit[1]
+                local data_command: any = nil
+                for _, cmd in ipairs(first_submit.commands) do
+                    if cmd.type == consts.COMMAND_TYPES.CREATE_DATA then
+                        data_command = cmd
+                    end
+                end
+                test.not_nil(data_command)
+                test.eq(data_command.payload.data_id, fixed_data_id)
+            end)
+
             it("should route errors via error_targets from config on fail", function()
                 test.not_nil(test_node)
                 local result = test_node:fail("Something went wrong")
@@ -1328,6 +1359,37 @@ local function define_tests()
                     end
                 end
                 test.eq(data_commands, 2)
+            end)
+
+            it("should preserve target-provided error data ids", function()
+                local fixed_data_id = "fixed-error-data-id"
+                local fixed_node, _err = node.new({
+                    node_id = "test-node-123",
+                    dataflow_id = "test-dataflow-456",
+                    node = {
+                        config = {
+                            error_targets = {
+                                { data_type = "error.details", key = "error", data_id = fixed_data_id }
+                            }
+                        }
+                    }
+                }, mock_deps)
+                test.not_nil(fixed_node)
+
+                local result = fixed_node:fail("Something went wrong")
+
+                test.is_false(result.success)
+                test.eq(result.data_ids[1], fixed_data_id)
+
+                local first_submit = captured_calls.commit_submit[1]
+                local data_command: any = nil
+                for _, cmd in ipairs(first_submit.commands) do
+                    if cmd.type == consts.COMMAND_TYPES.CREATE_DATA then
+                        data_command = cmd
+                    end
+                end
+                test.not_nil(data_command)
+                test.eq(data_command.payload.data_id, fixed_data_id)
             end)
 
             it("should handle complete without output content", function()

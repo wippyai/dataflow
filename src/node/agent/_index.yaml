@@ -169,6 +169,7 @@ entries:
       tools: wippy.agent.discovery:tools
       agent_consts: userspace.dataflow.node.agent:consts
       agent_context: wippy.agent:context
+      child_output: userspace.dataflow:child_output
       consts: userspace.dataflow:consts
       control_handler: userspace.dataflow.node.agent:control_handler
       delegation_handler: userspace.dataflow.node.agent:delegation_handler

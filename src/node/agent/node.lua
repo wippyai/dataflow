@@ -11,6 +11,7 @@ local checkpoint_runtime = require("checkpoint_runtime")
 local prompt_builder = require("prompt_builder")
 local control_handler = require("control_handler")
 local delegation_handler = require("delegation_handler")
+local child_output = require("child_output")
 local agent_consts = require("agent_consts")
 local consts = require("consts")
 local tools = require("tools")
@@ -1141,12 +1142,13 @@ local function run_control_response_commands(control_responses, agent_ctx, n, it
 
     local yield_result, yield_err = n:yield({ run_nodes = created_node_ids })
     if yield_result then
-        local reader = n:query()
-            :with_nodes(created_node_ids)
-            :with_data_types(consts.DATA_TYPE.NODE_OUTPUT)
-            :fetch_options({ replace_references = true })
-
-        local output_data = reader:all()
+        local output_data, output_err = child_output.collect_outputs(n, created_node_ids, yield_result)
+        if output_err then
+            if type(output_err) == "table" then
+                return tostring(output_err.message or output_err.status or "Child workflow failed")
+            end
+            return tostring(output_err)
+        end
 
         if output_data and #output_data > 0 then
             local output_content = output_data[1].content

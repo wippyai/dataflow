@@ -1,5 +1,4 @@
 local func = {}
-local time = require("time")
 
 local ERROR_MISSING_FUNC_ID = "MISSING_FUNC_ID"
 local ERROR_NO_INPUT_DATA = "NO_INPUT_DATA"
@@ -9,7 +8,8 @@ local ERROR_FUNCTION_EXECUTION_FAILED = "FUNCTION_EXECUTION_FAILED"
 func._deps = {
     node = require("node"),
     funcs = require("funcs"),
-    consts = require("consts")
+    consts = require("consts"),
+    child_output = require("child_output")
 }
 
 local function build_execution_context_with_dataflow(base_context, dataflow_id, node_id, path)
@@ -104,51 +104,23 @@ local function safe_inputs(n)
     return inputs_or_err, nil
 end
 
--- Yields for the given child nodes and completes from their outputs. Checkpoints the
--- child ids before yielding so a crash mid-yield resumes these same children on recovery
--- instead of re-running the user function (which would create duplicate children).
-local function finish_with_children(n, created_node_ids, fallback_result)
-    n:update_metadata({ func_pending = { child_node_ids = created_node_ids } })
-
-    local _yield_result, yield_err = n:yield({ run_nodes = created_node_ids })
-    if yield_err then
-        return n:fail({
-            code = ERROR_FUNCTION_EXECUTION_FAILED,
-            message = "Control command execution failed: " .. yield_err
-        }, "Control command execution failed")
-    end
-
-    local reader = n:query()
-        :with_nodes(created_node_ids)
-        :with_data_types(func._deps.consts.DATA_TYPE.NODE_OUTPUT)
-        :fetch_options({ replace_references = true })
-
-    local output_data = nil
-    for _ = 1, 10 do
-        output_data = reader:all()
-        if output_data and #output_data > 0 then
-            break
-        end
-        time.sleep("10ms")
-    end
-
+local function build_child_output_result(output_data)
     if output_data and #output_data > 0 then
         for _, output in ipairs(output_data) do
             if output.discriminator == "error" then
                 local error_content = output.content
-                return n:fail({
+                return nil, {
                     code = "CHILD_WORKFLOW_FAILED",
-                    message = type(error_content) == "string" and error_content or "Child workflow failed"
-                }, "Child workflow failed")
+                    message = type(error_content) == "string" and error_content or "Child workflow failed",
+                    status = "Child workflow failed"
+                }
             end
         end
 
-        local final_output
-
         if #output_data == 1 then
-            final_output = {
+            return {
                 _dataflow_ref = output_data[1].data_id
-            }
+            }, nil
         else
             local ref_array = {}
             for _, output in ipairs(output_data) do
@@ -156,9 +128,70 @@ local function finish_with_children(n, created_node_ids, fallback_result)
                     _dataflow_ref = output.data_id
                 })
             end
-            final_output = ref_array
+            return ref_array, nil
         end
+    end
 
+    return nil, nil
+end
+
+local function collect_child_result(n, child_node_ids, yield_result)
+    local output_data, collect_err = func._deps.child_output.collect_outputs(n, child_node_ids, yield_result)
+    if collect_err then
+        if type(collect_err) == "table" then
+            return nil, collect_err
+        end
+        return nil, "Failed to collect child outputs: " .. tostring(collect_err)
+    end
+
+    return build_child_output_result(output_data)
+end
+
+local function fail_child_collect(n, collect_err)
+    if type(collect_err) == "table" then
+        local status = collect_err.status or collect_err.message
+        return n:fail({
+            code = collect_err.code,
+            message = collect_err.message
+        }, status)
+    end
+
+    return n:fail({
+        code = ERROR_FUNCTION_EXECUTION_FAILED,
+        message = tostring(collect_err)
+    }, tostring(collect_err))
+end
+
+local function complete_from_children(n, child_node_ids, fallback_result)
+    local final_output, collect_err = func._deps.child_output.resume_children(n, child_node_ids, collect_child_result)
+    if collect_err then
+        return fail_child_collect(n, collect_err)
+    end
+    if final_output ~= nil then
+        return n:complete(final_output, "Function executed successfully")
+    end
+
+    return n:complete(fallback_result, "Function executed successfully")
+end
+
+-- Checkpoints child ids before yielding so recovery resumes the same children
+-- instead of re-running the function and creating duplicate children.
+local function finish_with_children(n, created_node_ids, fallback_result)
+    n:update_metadata({ func_pending = { child_node_ids = created_node_ids } })
+
+    local yield_result, yield_err = n:yield({ run_nodes = created_node_ids })
+    if yield_err then
+        return n:fail({
+            code = ERROR_FUNCTION_EXECUTION_FAILED,
+            message = "Control command execution failed: " .. yield_err
+        }, "Control command execution failed")
+    end
+
+    local final_output, collect_err = collect_child_result(n, created_node_ids, yield_result)
+    if collect_err then
+        return fail_child_collect(n, collect_err)
+    end
+    if final_output ~= nil then
         return n:complete(final_output, "Function executed successfully")
     end
 
@@ -173,11 +206,9 @@ local function run(args)
 
     local config = n:config()
 
-    -- Recovery: a prior attempt already created child nodes and yielded; resume those
-    -- children instead of re-running the function (avoids duplicate child creation).
     local pending = (n:metadata() or {}).func_pending
     if type(pending) == "table" and type(pending.child_node_ids) == "table" and #pending.child_node_ids > 0 then
-        return finish_with_children(n, pending.child_node_ids, {})
+        return complete_from_children(n, pending.child_node_ids, {})
     end
     local func_id = config.func_id
     if not func_id or func_id == "" then

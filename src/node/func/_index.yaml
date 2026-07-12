@@ -56,6 +56,23 @@ entries:
       test: wippy.test:test
     method: run_tests
 
+  # userspace.dataflow.node.func:func_child_output_test
+  - name: func_child_output_test
+    kind: function.lua
+    meta:
+      name: Func Node Child Output Tests
+      type: test
+      comment: Verifies func node child output collection and recovery waits.
+      group: Workflow / Function Node
+    source: file://func_child_output_test.lua
+    modules:
+      - uuid
+    imports:
+      consts: userspace.dataflow:consts
+      func: userspace.dataflow.node.func:node
+      test: wippy.test:test
+    method: run_tests
+
   # userspace.dataflow.node.func:func_test
   - name: func_test
     kind: function.lua
@@ -106,6 +123,7 @@ entries:
       - json
       - time
     imports:
+      child_output: userspace.dataflow:child_output
       consts: userspace.dataflow:consts
       node: userspace.dataflow:node
     method: run

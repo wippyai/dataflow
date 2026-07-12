@@ -601,7 +601,7 @@ function methods:_route_outputs(content)
                        " (transform: " .. tostring(target.transform or "none") .. ")"
         end
 
-        local data_id = uuid.v7()
+        local data_id = target.data_id or uuid.v7()
         data_id_count = data_id_count + 1
         routed_data_ids[data_id_count] = data_id
 
@@ -659,7 +659,7 @@ function methods:_route_errors(error_content)
             end
         end
 
-        local data_id = uuid.v7()
+        local data_id = target.data_id or uuid.v7()
         data_id_count = data_id_count + 1
         routed_data_ids[data_id_count] = data_id
 
