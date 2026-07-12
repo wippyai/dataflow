@@ -1299,6 +1299,213 @@ local function define_tests()
                 test.eq(#captured_calls.process_send, 0, "invalid timeout is not signaled")
             end)
 
+            it("parks durably before arming external work", function()
+                local order: { string } = {}
+                local receives = 0
+                local parked_yield_id = ""
+                local deps: any = {
+                    commit = {
+                        submit = function(_dataflow_id: string, _op_id: string, _commands: any)
+                            table.insert(order, "commit")
+                            return { commit_id = uuid.v7() }, nil
+                        end,
+                    },
+                    data_reader = mock_deps.data_reader,
+                    process = {
+                        send = function(_target: string, _topic: string, payload: any)
+                            table.insert(order, "request")
+                            test.eq(payload.yield_context.park_ack, true)
+                            test.eq(payload.yield_context.arm.ref, "inbox:arm")
+                            parked_yield_id = payload.request_context.yield_id
+                            return true
+                        end,
+                        listen = function(_topic: string)
+                            return {
+                                receive = function()
+                                    receives = receives + 1
+                                    if receives == 1 then
+                                        table.insert(order, "ack")
+                                        return { parked = true, yield_id = parked_yield_id }, true
+                                    end
+                                    table.insert(order, "result")
+                                    return { response_data = { run_node_results = { approved = true } } }, true
+                                end,
+                            }
+                        end,
+                    },
+                }
+                local parked_node = select(1, node.new({
+                    node_id = "park-node",
+                    dataflow_id = "park-flow",
+                }, deps))
+                local result, err = parked_node:park({
+                    wait_for_signal = true,
+                    signal_id = "approval-1",
+                    arm = { ref = "inbox:arm", args = { decision_id = "decision-1" } },
+                })
+
+                test.is_nil(err)
+                test.eq((result :: any).approved, true)
+                test.eq(table.concat(order, ","), "commit,request,ack,result")
+            end)
+
+            it("never requests an arm when the durable yield commit fails", function()
+                local deps: any = {
+                    commit = { submit = function() return nil, "disk unavailable" end },
+                    data_reader = mock_deps.data_reader,
+                    process = mock_deps.process,
+                }
+                local parked_node = select(1, node.new({ node_id = "park-node", dataflow_id = "park-flow" }, deps))
+                local result, err = parked_node:park({
+                    wait_for_signal = true,
+                    signal_id = "approval-1",
+                    arm = { ref = "inbox:arm", args = {} },
+                })
+                test.is_nil(result)
+                test.contains(err, "Failed to submit yield")
+                test.eq(#captured_calls.process_send, 0)
+            end)
+
+            it("rejects cyclic park arguments before persistence or signaling", function()
+                local args: any = { decision_id = "decision-1" }
+                args.self = args
+
+                local result, err = test_node:park({
+                    wait_for_signal = true,
+                    signal_id = "approval-1",
+                    arm = { ref = "inbox:arm", args = args },
+                })
+
+                test.is_nil(result)
+                test.eq((err :: any).code, "PARK_ARM_INVALID")
+                test.contains((err :: any).message, "cycle")
+                test.eq(#captured_calls.commit_submit, 0)
+                test.eq(#captured_calls.process_send, 0)
+            end)
+
+            it("rejects unsupported park argument values before persistence or signaling", function()
+                local result, err = test_node:park({
+                    wait_for_signal = true,
+                    signal_id = "approval-1",
+                    arm = { ref = "inbox:arm", args = { callback = function() end } },
+                })
+
+                test.is_nil(result)
+                test.eq((err :: any).code, "PARK_ARM_INVALID")
+                test.contains((err :: any).message, "unsupported value type")
+                test.eq(#captured_calls.commit_submit, 0)
+                test.eq(#captured_calls.process_send, 0)
+            end)
+
+            it("snapshots nested park arguments before the durable commit", function()
+                local original: any = {
+                    decision = { id = "decision-1", choices = { "approve", "reject" } },
+                    enabled = true,
+                }
+                local persisted_args: any = nil
+                local sent_args: any = nil
+                local parked_yield_id = ""
+                local receives = 0
+                local deps: any = {
+                    commit = {
+                        submit = function(_dataflow_id: string, _op_id: string, commands: any)
+                            persisted_args = commands[1].payload.content.yield_context.arm.args
+                            original.decision.id = "mutated-after-snapshot"
+                            original.decision.choices[1] = "mutated"
+                            return { commit_id = uuid.v7() }, nil
+                        end,
+                    },
+                    data_reader = mock_deps.data_reader,
+                    process = {
+                        send = function(_target: string, _topic: string, payload: any)
+                            parked_yield_id = payload.request_context.yield_id
+                            sent_args = payload.yield_context.arm.args
+                            return true
+                        end,
+                        listen = function()
+                            return {
+                                receive = function()
+                                    receives = receives + 1
+                                    if receives == 1 then
+                                        return { parked = true, yield_id = parked_yield_id }, true
+                                    end
+                                    return { response_data = { run_node_results = {} } }, true
+                                end,
+                            }
+                        end,
+                    },
+                }
+                local parked_node = select(1, node.new({ node_id = "park-node", dataflow_id = "park-flow" }, deps))
+                local _result, err = parked_node:park({
+                    wait_for_signal = true,
+                    signal_id = "approval-1",
+                    arm = { ref = "inbox:arm", args = original },
+                })
+
+                test.is_nil(err)
+                test.eq(persisted_args.decision.id, "decision-1")
+                test.eq(persisted_args.decision.choices[1], "approve")
+                test.eq(sent_args.decision.id, "decision-1")
+                test.eq(sent_args.decision.choices[1], "approve")
+                test.is_true(persisted_args ~= original)
+                test.is_true(persisted_args.decision ~= original.decision)
+            end)
+
+            it("returns arm failures after the park acknowledgement", function()
+                local receives = 0
+                local parked_yield_id = ""
+                local deps: any = {
+                    commit = mock_deps.commit,
+                    data_reader = mock_deps.data_reader,
+                    process = {
+                        send = function(_target: string, _topic: string, payload: any)
+                            parked_yield_id = payload.request_context.yield_id
+                            return true
+                        end,
+                        listen = function()
+                            return {
+                                receive = function()
+                                    receives = receives + 1
+                                    return {
+                                        parked = false,
+                                        yield_id = parked_yield_id,
+                                        error = { code = "PARK_ARM_FAILED", message = "inbox unavailable" },
+                                    }, true
+                                end,
+                            }
+                        end,
+                    },
+                }
+                local parked_node = select(1, node.new({ node_id = "park-node", dataflow_id = "park-flow" }, deps))
+                local result, err = parked_node:park({
+                    wait_for_signal = true,
+                    signal_id = "approval-1",
+                    arm = { ref = "inbox:arm", args = {} },
+                })
+                test.is_nil(result)
+                test.eq((err :: any).code, "PARK_ARM_FAILED")
+                test.eq((err :: any).message, "inbox unavailable")
+                test.eq(receives, 1, "arm failure must not wait for a final signal")
+            end)
+
+            it("requires signal semantics for a durable park", function()
+                local result, err = test_node:park({ arm = { ref = "inbox:arm", args = {} } })
+                test.is_nil(result)
+                test.eq((err :: any).code, "PARK_SIGNAL_REQUIRED")
+                test.eq(#captured_calls.commit_submit, 0)
+            end)
+
+            it("requires a stable signal id for replay correlation", function()
+                local result, err = test_node:park({
+                    wait_for_signal = true,
+                    signal_id = "",
+                    arm = { ref = "inbox:arm", args = {} },
+                })
+                test.is_nil(result)
+                test.eq((err :: any).code, "PARK_SIGNAL_REQUIRED")
+                test.eq(#captured_calls.commit_submit, 0)
+            end)
+
             it("should differ from submit in that it sends process signals", function()
                 test.not_nil(test_node)
                 test_node:data(consts.DATA_TYPE.NODE_OUTPUT, { message = "test" })

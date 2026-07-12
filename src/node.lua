@@ -27,6 +27,73 @@ local node = {}
 local methods = {}
 local mt = { __index = methods }
 
+local PARK_ARM_MAX_DEPTH = 32
+local PARK_ARM_MAX_ENTRIES = 10000
+
+local function park_arm_invalid(message: string)
+    return { code = "PARK_ARM_INVALID", message = message }
+end
+
+-- Park declarations cross both the commit and process boundaries. Snapshot only
+-- plain data here so runtime-owned tables, metatables, and later caller mutation
+-- cannot leak into the durable declaration.
+local function snapshot_park_value(value: any, depth: number, state: any): (any, any?)
+    local value_type = type(value)
+    if value_type == "nil" or value_type == "boolean" or value_type == "string" then
+        return value, nil
+    end
+    if value_type == "number" then
+        if value ~= value or value == math.huge or value == -math.huge then
+            return nil, park_arm_invalid("park arm.args contains a non-finite number")
+        end
+        return value, nil
+    end
+    if value_type ~= "table" then
+        return nil, park_arm_invalid("park arm.args contains unsupported value type " .. value_type)
+    end
+    if depth > PARK_ARM_MAX_DEPTH then
+        return nil, park_arm_invalid("park arm.args exceeds maximum depth of " .. tostring(PARK_ARM_MAX_DEPTH))
+    end
+    if state.active[value] then
+        return nil, park_arm_invalid("park arm.args contains a cycle")
+    end
+
+    state.active[value] = true
+    local copied = table.create(0, 0)
+    -- Raw iteration deliberately ignores __pairs and other metatable behavior.
+    for key, child in next, value do
+        local key_type = type(key)
+        if key_type ~= "string" and not (
+            key_type == "number" and key > 0 and key < math.huge and key % 1 == 0
+        ) then
+            state.active[value] = nil
+            return nil, park_arm_invalid("park arm.args contains an unsupported table key")
+        end
+
+        state.entries = state.entries + 1
+        if state.entries > PARK_ARM_MAX_ENTRIES then
+            state.active[value] = nil
+            return nil, park_arm_invalid("park arm.args exceeds maximum entry count of " .. tostring(PARK_ARM_MAX_ENTRIES))
+        end
+
+        local copied_child, child_err = snapshot_park_value(child, depth + 1, state)
+        if child_err then
+            state.active[value] = nil
+            return nil, child_err
+        end
+        copied[key] = copied_child
+    end
+    state.active[value] = nil
+    return copied, nil
+end
+
+local function snapshot_park_args(args: any): (any, any?)
+    return snapshot_park_value(args or table.create(0, 0), 1, {
+        active = {},
+        entries = 0,
+    })
+end
+
 local function merge_metadata(existing, new_fields)
     local existing_count = 0
     local new_count = 0
@@ -452,7 +519,7 @@ function methods:submit()
     end
 end
 
-function methods.yield(self: table, options)
+local function durable_yield(self: table, options: any, park: boolean)
     options = options or {}
 
     local yield_id = uuid.v7()
@@ -485,6 +552,8 @@ function methods.yield(self: table, options)
                     timeout = options.timeout,
                     timeout_ms = timeout_ms,
                     timeout_deadline = timeout_deadline,
+                    park_ack = park,
+                    arm = park and options.arm or nil,
                 }
             },
             content_type = consts.CONTENT_TYPE.JSON,
@@ -513,6 +582,8 @@ function methods.yield(self: table, options)
             timeout = options.timeout,
             timeout_ms = timeout_ms,
             timeout_deadline = timeout_deadline,
+            park_ack = park,
+            arm = park and options.arm or nil,
         }
     }
 
@@ -535,6 +606,21 @@ function methods.yield(self: table, options)
         return nil, "Yield channel closed"
     end
 
+    if park then
+        if type(received) ~= "table" or received.yield_id ~= yield_id then
+            return nil, { code = "PARK_ACK_UNAVAILABLE", message = "park acknowledgement unavailable" }
+        end
+        if received.parked ~= true then
+            if type(received.error) == "table" then return nil, received.error end
+            return nil, { code = "PARK_ARM_FAILED", message = tostring(received.error or "unknown") }
+        end
+
+        received, ok = self._yield_channel:receive()
+        if not ok then
+            return nil, "Yield channel closed"
+        end
+    end
+
     self._last_yield_id = yield_id
 
     if received and received.response_data then
@@ -542,6 +628,44 @@ function methods.yield(self: table, options)
     end
 
     return table.create(0, 0), nil
+end
+
+function methods.yield(self: table, options)
+    return durable_yield(self, options, false)
+end
+
+-- Persist and track a wait before the orchestrator invokes a declared external arm.
+-- The arm runs in the orchestrator's isolated function context under the workflow's
+-- frozen authority; node code never receives or manufactures an actor.
+function methods.park(self: table, options)
+    options = options or {}
+    if options.wait_for_signal ~= true then
+        return nil, { code = "PARK_SIGNAL_REQUIRED", message = "park requires wait_for_signal=true" }
+    end
+    if type(options.signal_id) ~= "string" or options.signal_id == "" then
+        return nil, { code = "PARK_SIGNAL_REQUIRED", message = "park requires a non-empty signal_id" }
+    end
+    local arm = options.arm
+    if type(arm) ~= "table" or type(arm.ref) ~= "string" or arm.ref == "" then
+        return nil, { code = "PARK_ARM_INVALID", message = "park arm.ref must be a non-empty string" }
+    end
+    if arm.args ~= nil and type(arm.args) ~= "table" then
+        return nil, { code = "PARK_ARM_INVALID", message = "park arm.args must be a table" }
+    end
+    local arm_args, arm_args_err = snapshot_park_args(arm.args)
+    if arm_args_err then
+        return nil, arm_args_err
+    end
+
+    local park_options = {}
+    for key, value in pairs(options) do
+        park_options[key] = value
+    end
+    park_options.arm = {
+        ref = arm.ref,
+        args = arm_args,
+    }
+    return durable_yield(self, park_options, true)
 end
 
 function methods:query()
