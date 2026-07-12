@@ -31,7 +31,7 @@ local function define_tests()
                     end
                 }
 
-                test.eq(sweeper.resolve_interval_seconds(), 30)
+                test.eq(sweeper.resolve_interval_seconds(), 120)
             end)
 
             it("parses a configured value", function()
@@ -71,7 +71,7 @@ local function define_tests()
                     end
                 }
 
-                test.eq(sweeper.resolve_interval_seconds(), 30)
+                test.eq(sweeper.resolve_interval_seconds(), 120)
             end)
         end)
 

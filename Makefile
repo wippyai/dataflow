@@ -19,6 +19,16 @@ test-static:
 		echo "dataflow state view must not link to keeper-owned UI"; \
 		exit 1; \
 	fi
+	@awk '''BEGIN { in_user=0; in_sweeper=0; user_has_sweeper=0; sweeper_has_service=0 } \
+		/^  - name: user_security_scope$$/ { in_user=1; in_sweeper=0; next } \
+		/^  - name: sweeper_security_scope$$/ { in_user=0; in_sweeper=1; next } \
+		/^  - name: / { in_user=0; in_sweeper=0 } \
+		in_user && /userspace\.dataflow\.runner:sweeper\.service/ { user_has_sweeper=1 } \
+		in_sweeper && /userspace\.dataflow\.runner:sweeper\.service/ { sweeper_has_service=1 } \
+		END { \
+			if (user_has_sweeper) { print "user_security_scope must not grant the revival sweeper service"; exit 1 } \
+			if (!sweeper_has_service) { print "sweeper_security_scope must grant the revival sweeper service"; exit 1 } \
+		}''' src/_index.yaml
 
 lint:
 	cd $(TEST_DIR) && wippy lint
