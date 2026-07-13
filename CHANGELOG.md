@@ -8,6 +8,14 @@
   `client:execute`, asynchronous callers use `client:start` and retain the
   returned Dataflow handle, and in-flow composition uses `_control.commands`.
 
+## [0.5.1](https://github.com/wippyai/dataflow/compare/v0.5.0...v0.5.1) (2026-07-13)
+
+
+### Bug Fixes
+
+* **dataflow:** make durable wake recovery event-driven ([4987eab](https://github.com/wippyai/dataflow/commit/4987eab1df48116fc4a976dd732fe1ab2e7d0ede))
+* **dataflow:** make durable wake recovery event-driven ([1b52970](https://github.com/wippyai/dataflow/commit/1b52970b6a1bf4cfb3f1ac7ee56d2977094ce780))
+
 ## [0.5.0](https://github.com/wippyai/dataflow/compare/v0.4.31...v0.5.0) (2026-07-13)
 
 
