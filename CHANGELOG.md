@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## [0.5.2](https://github.com/wippyai/dataflow/compare/v0.5.1...v0.5.2) (2026-07-13)
+
+
+### Bug Fixes
+
+* **dataflow:** harden durable wake delivery and packaging ([093cdf9](https://github.com/wippyai/dataflow/commit/093cdf976f44a1960d97e1d1235180e33f0d496c))
+* **dataflow:** harden release startup and metadata ([57f8c5e](https://github.com/wippyai/dataflow/commit/57f8c5e535b0519c3c27ff0166027fd9708fc41e))
+* **dataflow:** make durable wake delivery exact ([4c1ec29](https://github.com/wippyai/dataflow/commit/4c1ec29b05a7ce0d45755a60a3b9c6c020772efe))
+
 ## [0.5.1](https://github.com/wippyai/dataflow/compare/v0.5.0...v0.5.1) (2026-07-13)
 
 
