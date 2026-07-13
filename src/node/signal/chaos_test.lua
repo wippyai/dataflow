@@ -18,8 +18,20 @@ local function define_tests()
         local function kill_orchestrator(df_id)
             local pid = process.registry.lookup("dataflow." .. df_id)
             if pid then
-                process.terminate(pid)
-                time.sleep("100ms")
+                local events = process.events()
+                local monitored, monitor_err = process.monitor(pid)
+                test.is_nil(monitor_err)
+                test.is_true(monitored, "orchestrator monitored before termination")
+
+                local terminated, terminate_err = process.terminate(pid)
+                test.is_nil(terminate_err)
+                test.is_true(terminated, "orchestrator termination requested")
+
+                local timeout = time.after("3s")
+                local result = channel.select({ events:case_receive(), timeout:case_receive() })
+                test.eq(result.channel, events, "orchestrator exit observed before restart")
+                test.eq(result.value.kind, process.event.EXIT, "orchestrator emitted EXIT")
+                test.eq(tostring(result.value.from), tostring(pid), "observed the terminated orchestrator")
             end
         end
 

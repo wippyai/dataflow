@@ -461,6 +461,10 @@ function handle_satisfy_yield(state: any, payload: any)
     if persist_err then
         return true
     end
+    -- NODE_YIELD_RESULT consumes its durable wake in the same transaction.
+    -- Notify only after commit so the exact-deadline service can release its
+    -- delivery monitor and move to the next indexed deadline.
+    orchestrator.wake_process.notify()
 
     -- Send reply to yielding process ONLY AFTER successful persistence
     local process_info = state.active_processes[parent_id]
@@ -623,6 +627,7 @@ function orchestrator.track_signal_yield(state: any, node_id: string, yield_info
             })
             return
         end
+        orchestrator.wake_process.notify()
         orchestrator.process.send(tostring(from_pid), yield_info.reply_to, {
             yield_id = yield_info.yield_id,
             parked = true,

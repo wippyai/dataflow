@@ -699,6 +699,21 @@ local function define_tests()
                 test.eq(captured_calls.process_with_actor[1]:id(), "test-actor-123")
             end)
 
+            it("does not depend on a separate wake supervisor during first launch", function()
+                mock_deps.process.send = function()
+                    error("workflow launch must not message a wake supervisor")
+                end
+                mock_deps.process.terminate = function()
+                    error("workflow launch must not terminate a successful native spawn")
+                end
+
+                local dataflow_id, err = test_client:start("first-workflow")
+
+                test.is_nil(err)
+                test.eq(dataflow_id, "first-workflow")
+                test.eq(#captured_calls.process_spawn, 1)
+            end)
+
             it("should start workflow with init function", function()
                 local dataflow_id, err = test_client:start("existing-workflow-456", {
                     init_func_id = "app:setup"

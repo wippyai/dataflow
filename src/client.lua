@@ -186,27 +186,9 @@ function methods:_spawn_orchestrator(dataflow_id, args)
             local scope = current_scope(self._deps)
             if scope then spawner = spawner:with_scope(scope) end
             local pid, spawn_err = spawner:spawn(consts.ORCHESTRATOR, consts.HOST_ID, args)
-            if pid and type(self._deps.process.send) == "function" then
-                local registered, register_err = self._deps.process.send("dataflow.wakes", "dataflow.orchestrator.started", {
-                    dataflow_id = dataflow_id, pid = pid,
-                })
-                if not registered then
-                    if type(self._deps.process.terminate) == "function" then self._deps.process.terminate(pid) end
-                    return nil, "orchestrator supervision registration failed: " .. tostring(register_err)
-                end
-            end
             return pid, spawn_err
         end
         local pid, spawn_err = self._deps.process.spawn(consts.ORCHESTRATOR, consts.HOST_ID, args)
-        if pid and type(self._deps.process.send) == "function" then
-            local registered, register_err = self._deps.process.send("dataflow.wakes", "dataflow.orchestrator.started", {
-                dataflow_id = dataflow_id, pid = pid,
-            })
-            if not registered then
-                if type(self._deps.process.terminate) == "function" then self._deps.process.terminate(pid) end
-                return nil, "orchestrator supervision registration failed: " .. tostring(register_err)
-            end
-        end
         return pid, spawn_err
     end
 
@@ -228,15 +210,6 @@ function methods:_spawn_orchestrator(dataflow_id, args)
     end
     if type(result) ~= "table" or result.success == false then
         return nil, "execution identity spawn failed: " .. tostring(result and result.error or "invalid result")
-    end
-    if result.pid and type(self._deps.process.send) == "function" then
-        local registered, register_err = self._deps.process.send("dataflow.wakes", "dataflow.orchestrator.started", {
-            dataflow_id = dataflow_id, pid = result.pid,
-        })
-        if not registered then
-            if type(self._deps.process.terminate) == "function" then self._deps.process.terminate(result.pid) end
-            return nil, "orchestrator supervision registration failed: " .. tostring(register_err)
-        end
     end
     return result.pid, nil
 end
@@ -706,7 +679,7 @@ end
 -- one is registered, otherwise respawns the orchestrator under the workflow's frozen
 -- identity. The orchestrator's registry single-instance guard makes a concurrent
 -- double-spawn safe, and its terminal-status guard makes reviving a finished run a
--- no-op. Used by signal delivery and one-shot boot recovery.
+-- no-op. Used by exact durable wake and signal delivery.
 function methods:revive(dataflow_id)
     if not dataflow_id or dataflow_id == "" then
         return nil, "Workflow ID is required"

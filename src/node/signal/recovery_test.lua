@@ -165,25 +165,6 @@ local function define_tests()
         -- ==========================================
 
         describe("kill and recover", function()
-            it("supervisor revives an active workflow without a status scan", function()
-                local df_id = create_func_wf(1000)
-                c:start(df_id)
-                time.sleep("5ms")
-                local pid = process.registry.lookup("dataflow." .. df_id)
-                test.not_nil(pid, "active orchestrator registered")
-                process.terminate(pid)
-
-                local completed = false
-                for _ = 1, 50 do
-                    if c:get_status(df_id) == consts.STATUS.COMPLETED_SUCCESS then
-                        completed = true
-                        break
-                    end
-                    time.sleep("100ms")
-                end
-                test.is_true(completed, "monitor EXIT event revived active workflow")
-            end)
-
             it("recovers signal node after kill", function()
                 local sid = "kill-sig-" .. uuid.v7()
                 local df_id = create_signal_wf(sid)

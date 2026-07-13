@@ -83,17 +83,6 @@ entries:
       test: wippy.test:test
     method: run_tests
     
-  - name: boot_reconcile
-    kind: library.lua
-    meta:
-      private: true
-      comment: One-shot boot recovery for non-terminal dataflows; never loops or polls.
-    source: file://boot_reconcile.lua
-    modules: [logger]
-    imports:
-      dataflow_repo: userspace.dataflow.persist:dataflow_repo
-      client: userspace.dataflow:client
-
   - name: wake_process
     kind: process.lua
     meta:
@@ -105,14 +94,12 @@ entries:
     imports:
       wake_repo: userspace.dataflow.persist:wake_repo
       client: userspace.dataflow:client
-      dataflow_repo: userspace.dataflow.persist:dataflow_repo
-      boot_reconcile: userspace.dataflow.runner:boot_reconcile
     method: run
 
   - name: wake_process.service
     kind: process.service
     meta:
-      comment: Owns the single nearest-wake timer and one-shot boot reconciliation.
+      comment: Sleeps on the single nearest durable deadline and revives only the exact due dataflow.
     process: userspace.dataflow.runner:wake_process
     host: app:processes
     lifecycle:
@@ -122,7 +109,8 @@ entries:
       security:
         actor:
           id: system.dataflow
-        groups: []
+        groups:
+          - userspace.dataflow.security:root
 
   - name: wake_process_test
     kind: function.lua
@@ -130,12 +118,11 @@ entries:
       type: test
       suite: Workflow
       group: Workflow
-      comment: Proves due-only wake revival and one-shot boot reconciliation.
+      comment: Proves exact-deadline wake revival without polling or active-process supervision.
     source: file://wake_process_test.lua
     imports:
       test: wippy.test:test
       wake_process: userspace.dataflow.runner:wake_process
-      boot_reconcile: userspace.dataflow.runner:boot_reconcile
     method: run_tests
 
   # userspace.dataflow.runner:scheduler

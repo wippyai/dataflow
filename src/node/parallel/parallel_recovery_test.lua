@@ -194,6 +194,9 @@ local function define_tests()
             end
             test.is_true(children_active, "iteration children active before crash")
             kill_orchestrator(workflow.dataflow_id)
+            local restarted, restart_err = c:start(workflow.dataflow_id)
+            test.is_nil(restart_err)
+            test.eq(restarted, workflow.dataflow_id)
 
             test.is_true(wait_complete(workflow.dataflow_id, 15000), "durable child barrier recovered")
             local iteration_results = data_reader.with_dataflow(workflow.dataflow_id)

@@ -1082,6 +1082,26 @@ local function define_tests()
                 test.not_nil(result)
                 test.is_false(result.changes_made)
             end)
+
+            it("projects persisted commit results exactly once", function()
+                local ws = workflow_state.new(test_ctx.dataflow_id) :: any
+                local projections = 0
+                local persisted_result = { changes_made = true, results = {} }
+                ws._update_state_from_results = function(_self: any, result: any)
+                    test.eq(result, persisted_result)
+                    projections = projections + 1
+                end
+                ws.persist = function(self: any)
+                    self:_update_state_from_results(persisted_result)
+                    self.queued_commands = {}
+                    return persisted_result, nil
+                end
+
+                local result, err = ws:process_commits({ "commit-1" })
+                test.is_nil(err)
+                test.eq(result, persisted_result)
+                test.eq(projections, 1, "one commit result produces one in-memory projection")
+            end)
         end)
 
         describe("Activity Tracking", function()
@@ -1201,6 +1221,107 @@ local function define_tests()
                 test.eq(recovered.arm.args.decision_id, "decision-1")
                 test.eq(recovered.signal_id, "approval-1")
                 test.eq(recovered.detached, true, "restarted node reattaches with a fresh reply mailbox")
+            end)
+
+            it("replays a durably satisfied signal yield after a crash before node completion", function()
+                local parent_id = uuid.v7()
+                local yield_id = uuid.v7()
+                local persisted_retry_yield_id = uuid.v7()
+                local signal_data_id = uuid.v7()
+                local signal_id = "approval-1"
+                create_test_nodes(test_ctx.tx, test_ctx.dataflow_id :: string, {
+                    { node_id = parent_id, type = "await_node", status = consts.STATUS.WAITING },
+                })
+                create_test_data(test_ctx.tx, test_ctx.dataflow_id :: string, {
+                    {
+                        data_id = signal_data_id,
+                        node_id = parent_id,
+                        type = consts.DATA_TYPE.NODE_SIGNAL,
+                        key = signal_id,
+                        content = '{"decision":"approve"}',
+                    },
+                    {
+                        node_id = parent_id,
+                        type = consts.DATA_TYPE.NODE_YIELD,
+                        key = yield_id,
+                        created_at = "2026-07-12T20:00:00.000000000Z",
+                        content = string.format([[{
+                            "node_id":"%s","yield_id":"%s","reply_to":"old.reply",
+                            "yield_context":{"run_nodes":[],"wait_for_signal":true,"signal_id":"%s","park_ack":true}
+                        }]], parent_id, yield_id, signal_id),
+                    },
+                    {
+                        node_id = parent_id,
+                        type = consts.DATA_TYPE.NODE_YIELD_RESULT,
+                        key = yield_id,
+                        content = '{"decision":"approve"}',
+                    },
+                    {
+                        node_id = parent_id,
+                        type = consts.DATA_TYPE.NODE_SIGNAL_CONSUMED,
+                        key = signal_data_id,
+                        content = '{"consumed":true}',
+                    },
+                    {
+                        node_id = parent_id,
+                        type = consts.DATA_TYPE.NODE_YIELD,
+                        key = persisted_retry_yield_id,
+                        created_at = "2026-07-12T20:00:01.000000000Z",
+                        content = string.format([[{
+                            "node_id":"%s","yield_id":"%s","reply_to":"dead.retry.reply",
+                            "yield_context":{"run_nodes":[],"wait_for_signal":true,"signal_id":"%s","park_ack":true}
+                        }]], parent_id, persisted_retry_yield_id, signal_id),
+                    },
+                })
+                test_ctx.tx:commit()
+                test_ctx.db:release()
+                test_ctx.tx = nil
+                test_ctx.db = nil
+
+                local ws = workflow_state.new(test_ctx.dataflow_id) :: any
+                local _, load_err = ws:load_state()
+                test.is_nil(load_err)
+
+                local recovered = test.not_nil(ws.active_yields[parent_id]) :: any
+                test.is_true(recovered.detached)
+                test.eq(recovered.yield_id, persisted_retry_yield_id,
+                    "newest unsatisfied retry remains the reattachment point")
+                test.eq(recovered.signal_data.decision, "approve")
+                test.eq(#recovered.wake_keys, 1)
+                test.eq(recovered.wake_keys[1], "yield:" .. persisted_retry_yield_id)
+                test.is_nil(recovered.signal_wake_key, "consumed signal wake is not re-armed")
+
+                local fresh_yield_id = uuid.v7()
+                ws:track_yield(parent_id, {
+                    yield_id = fresh_yield_id,
+                    wait_for_signal = true,
+                    signal_id = signal_id,
+                    wake_keys = {
+                        recovered.wake_keys[1],
+                        "yield:" .. fresh_yield_id,
+                    },
+                    reply_to = "fresh.reply",
+                })
+                local attached = test.not_nil(ws.active_yields[parent_id]) :: any
+                test.eq(attached.signal_data.decision, "approve")
+
+                ws:satisfy_yield(parent_id, attached.signal_data)
+                local yield_results = 0
+                local consumed_markers = 0
+                local result_keys = {}
+                for _, command in ipairs(ws.queued_commands) do
+                    local payload = command.payload or {}
+                    if payload.data_type == consts.DATA_TYPE.NODE_YIELD_RESULT then
+                        yield_results = yield_results + 1
+                        result_keys[payload.key] = true
+                    elseif payload.data_type == consts.DATA_TYPE.NODE_SIGNAL_CONSUMED then
+                        consumed_markers = consumed_markers + 1
+                    end
+                end
+                test.eq(yield_results, 2, "fresh and persisted retry mailboxes are satisfied")
+                test.is_true(result_keys[fresh_yield_id])
+                test.is_true(result_keys[persisted_retry_yield_id])
+                test.eq(consumed_markers, 0, "replay does not consume the signal twice")
             end)
 
             it("should reconstruct simple yield with pending children", function()

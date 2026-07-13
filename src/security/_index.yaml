@@ -2,6 +2,22 @@ version: "1.0"
 namespace: userspace.dataflow.security
 
 entries:
+  - name: root
+    kind: registry.entry
+    meta:
+      comment: Module-owned authority group for the bounded dataflow wake service.
+
+  - name: root.policy
+    kind: security.policy
+    meta:
+      comment: Root policy for the module-owned dataflow wake service.
+    groups:
+      - userspace.dataflow.security:root
+    policy:
+      resources: '*'
+      actions: '*'
+      effect: allow
+
   - name: runtime_process_spawn
     kind: security.policy
     meta:
