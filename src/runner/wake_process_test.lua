@@ -112,6 +112,12 @@ local function run_tests()
             test.is_nil(wait_ns)
             test.contains(err, "invalid wake deadline")
         end)
+
+        test.it("treats a not-yet-migrated wake table as startup readiness", function()
+            test.is_true(wake_process.schema_not_ready("no such table: dataflow_wakes"))
+            test.is_true(wake_process.schema_not_ready('relation "dataflow_wakes" does not exist'))
+            test.is_false(wake_process.schema_not_ready("database connection lost"))
+        end)
     end)
 end
 

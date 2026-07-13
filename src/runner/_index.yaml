@@ -103,7 +103,9 @@ entries:
     process: userspace.dataflow.runner:wake_process
     host: app:processes
     lifecycle:
-      depends_on: []
+      depends_on:
+        - app:processes
+        - app:db
       auto_start: true
       restart_policy: always
       security:

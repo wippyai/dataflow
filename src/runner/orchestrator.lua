@@ -24,7 +24,7 @@ local TERMINAL_STATUS = {
     [consts.STATUS.TERMINATED] = true
 }
 
----Invoke the durable on_complete hook exactly once for this orchestrator life.
+---Invoke the legacy on_complete hook at most once in this orchestrator life.
 ---Best-effort: hook failures are logged and never block completion persistence,
 ---which has already happened by the time this runs.
 ---@param state table Orchestrator state
@@ -989,10 +989,10 @@ local function run(args)
         }
     end
 
-    -- Terminal-status guard: a respawned orchestrator (boot recovery, due wake, late signal,
+    -- Terminal-status guard: a respawned orchestrator (due wake, late signal,
     -- duplicate spawn) must not schedule work on an already-finished dataflow.
-    -- The completion hook fired in the life that reached terminal; a module-level
-    -- reconciler backstops any hook missed to a crash between persist and hook call.
+    -- The legacy completion hook is intentionally not replayed here: it is a
+    -- best-effort compatibility callback, not a durable completion contract.
     local loaded_status = workflow_state:get_dataflow_status()
     if loaded_status and TERMINAL_STATUS[loaded_status] then
         local _, clear_err = orchestrator.wake_repo.clear(dataflow_id)
@@ -1012,10 +1012,9 @@ local function run(args)
         }
     end
 
-    -- Resolve the execution identity and durable completion hook before any terminal
-    -- path so every exit fires on_complete under the workflow's frozen actor. The hook
-    -- lives in dataflows.metadata so a respawned orchestrator still fires it; a caller
-    -- may override it transiently through orchestrator args.
+    -- Resolve execution identity and the legacy completion hook before terminal
+    -- paths. Metadata preserves the callback reference across orchestrator lives,
+    -- but delivery remains best-effort; graph terminal nodes are the durable form.
     local raw_actor_id = workflow_state:get_actor_id()
     local actor_id: string? = nil
     if type(raw_actor_id) == "string" and raw_actor_id ~= "" then

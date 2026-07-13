@@ -11,6 +11,18 @@ local M = {
 local NAME = "dataflow.wakes"
 local TOPIC = "dataflow.wake.changed"
 
+-- The service and the migration bootloader both depend on the same database
+-- service, so a brand-new database can be reachable a moment before migration
+-- 07 creates the queue. That state is readiness, not a service failure. The
+-- actor waits for the first durable wake notification; every queue insert sends
+-- one after commit. Existing databases still query immediately on restart.
+local function schema_not_ready(err)
+    local message = string.lower(tostring(err or ""))
+    return message:find("no such table: dataflow_wakes", 1, true) ~= nil or
+        (message:find("dataflow_wakes", 1, true) ~= nil and
+            message:find("does not exist", 1, true) ~= nil)
+end
+
 function M.notify()
     -- The durable wake row is authoritative. This message only makes the
     -- service recalculate its exact timer after that row changes.
@@ -95,10 +107,18 @@ function M.run(_args)
     local monitored = {}
     while true do
         local revived, due_err = M.run_due(monitored)
-        if due_err then error("due wake query failed: " .. tostring(due_err)) end
+        local ready = true
+        if due_err then
+            if schema_not_ready(due_err) then
+                revived = 0
+                ready = false
+            else
+                error("due wake query failed: " .. tostring(due_err))
+            end
+        end
 
         local cases = { inbox:case_receive(), events:case_receive() }
-        if revived == 0 then
+        if ready and revived == 0 then
             local next_row, next_err = M.wake_repo.next()
             if next_err then error("next wake query failed: " .. tostring(next_err)) end
             if next_row then
@@ -133,4 +153,5 @@ M.TOPIC = TOPIC
 M.duration_until = duration_until
 M.monitor_delivery = monitor_delivery
 M.clear_delivery_monitors = clear_delivery_monitors
+M.schema_not_ready = schema_not_ready
 return M

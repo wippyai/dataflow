@@ -234,6 +234,7 @@ entries:
     kind: ns.requirement
     meta:
       description: "Application database ID for dataflow persistence"
+    default: app:db
     targets:
       - entry: userspace.dataflow:target_db
         path: .default
@@ -249,6 +250,8 @@ entries:
         path: ".meta.target_db"
       - entry: userspace.dataflow.migrations:07_create_dataflow_wakes
         path: ".meta.target_db"
+      - entry: userspace.dataflow.runner:wake_process.service
+        path: .lifecycle.depends_on[1]
 
   - name: web_host_origin_env
     kind: ns.requirement
@@ -276,6 +279,8 @@ entries:
     targets:
       - entry: userspace.dataflow.runner:wake_process.service
         path: .host
+      - entry: userspace.dataflow.runner:wake_process.service
+        path: .lifecycle.depends_on[0]
 
   - name: user_security_scope
     kind: ns.requirement
