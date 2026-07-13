@@ -1,6 +1,5 @@
 local uuid = require("uuid")
 local json = require("json")
-local time = require("time")
 local consts = require("consts")
 
 local default_deps = {
@@ -204,6 +203,7 @@ function iterator.create_iteration(parent_node, template_graph, input_item, iter
 
         merged_metadata.iteration = iteration_index
         merged_metadata.template_source = template_id
+        merged_metadata.attempt_id = attempt_id
 
         parent_node:command({
             type = consts.COMMAND_TYPES.CREATE_NODE,
@@ -320,66 +320,55 @@ function iterator.collect_results(parent_node, iteration_info, deps)
     end
 
     local output_data = {}
-    for attempt = 1, 15 do
-        output_data = {}
 
-        local parent_query_err = nil
-        if parent_node.node_id and iteration_info.iteration then
-            local iteration_discriminator = build_iteration_discriminator(
-                iteration_info.iteration :: number,
-                iteration_info.attempt_id
-            )
-            local parent_rows, err_parent = (reader :: any)
-                :with_nodes(parent_node.node_id)
-                :with_data_types({
-                    consts.DATA_TYPE.ITERATION_RESULT,
-                    consts.DATA_TYPE.ITERATION_ERROR
-                })
-                :with_data_discriminators(iteration_discriminator)
-                :fetch_options({ replace_references = true })
-                :all()
-            if err_parent then
-                parent_query_err = err_parent
-            elseif parent_rows then
-                for _, row in ipairs(parent_rows) do
-                    table.insert(output_data, row)
-                end
+    local parent_query_err = nil
+    if parent_node.node_id and iteration_info.iteration then
+        local iteration_discriminator = build_iteration_discriminator(
+            iteration_info.iteration :: number,
+            iteration_info.attempt_id
+        )
+        local parent_rows, err_parent = (reader :: any)
+            :with_nodes(parent_node.node_id)
+            :with_data_types({
+                consts.DATA_TYPE.ITERATION_RESULT,
+                consts.DATA_TYPE.ITERATION_ERROR
+            })
+            :with_data_discriminators(iteration_discriminator)
+            :fetch_options({ replace_references = true })
+            :all()
+        if err_parent then
+            parent_query_err = err_parent
+        elseif parent_rows then
+            for _, row in ipairs(parent_rows) do
+                table.insert(output_data, row)
             end
         end
+    end
 
-        if #output_data == 0 and #iteration_node_ids > 0 then
-            local child_rows, child_query_err = (reader :: any)
-                :with_nodes(iteration_node_ids)
-                :with_data_types({
-                    consts.DATA_TYPE.ITERATION_RESULT,
-                    consts.DATA_TYPE.ITERATION_ERROR,
-                    consts.DATA_TYPE.NODE_OUTPUT,
-                    consts.DATA_TYPE.NODE_RESULT
-                })
-                :fetch_options({ replace_references = true })
-                :all()
-            if child_query_err then
-                return nil, prefixed_error("Failed to query output data: ", child_query_err, "unknown")
+    if #output_data == 0 and #iteration_node_ids > 0 then
+        local child_rows, child_query_err = (reader :: any)
+            :with_nodes(iteration_node_ids)
+            :with_data_types({
+                consts.DATA_TYPE.ITERATION_RESULT,
+                consts.DATA_TYPE.ITERATION_ERROR,
+                consts.DATA_TYPE.NODE_OUTPUT,
+                consts.DATA_TYPE.NODE_RESULT
+            })
+            :fetch_options({ replace_references = true })
+            :all()
+        if child_query_err then
+            return nil, prefixed_error("Failed to query output data: ", child_query_err, "unknown")
+        end
+
+        if child_rows then
+            for _, row in ipairs(child_rows) do
+                table.insert(output_data, row)
             end
-
-            if child_rows then
-                for _, row in ipairs(child_rows) do
-                    table.insert(output_data, row)
-                end
-            end
         end
+    end
 
-        if #output_data > 0 then
-            break
-        end
-
-        if parent_query_err then
-            return nil, prefixed_error("Failed to query output data: ", parent_query_err, "unknown")
-        end
-
-        if attempt < 15 then
-            time.sleep("10ms")
-        end
+    if parent_query_err and #output_data == 0 then
+        return nil, prefixed_error("Failed to query output data: ", parent_query_err, "unknown")
     end
 
     if #output_data == 0 then

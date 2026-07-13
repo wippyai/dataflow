@@ -177,6 +177,30 @@ entries:
       test: wippy.test:test
     method: run_tests
 
+  - name: wake_repo
+    kind: library.lua
+    meta:
+      private: true
+      comment: Indexed persistence for independently addressable signal and yield wake transitions.
+    source: file://wake_repo.lua
+    modules: [sql]
+    imports:
+      dataflow_consts: userspace.dataflow:consts
+
+  - name: wake_repo_test
+    kind: function.lua
+    meta:
+      type: test
+      suite: Workflow
+      group: Workflow
+      comment: Proves per-trigger registration, exact consumption, and dataflow-wide terminal cleanup.
+    source: file://wake_repo_test.lua
+    modules: [sql, uuid, time]
+    imports:
+      test: wippy.test:test
+      wake_repo: userspace.dataflow.persist:wake_repo
+    method: run_tests
+
   # userspace.dataflow.persist:node_reader
   - name: node_reader
     kind: library.lua

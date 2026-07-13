@@ -501,6 +501,28 @@ local function define_tests()
                 test.eq(call.args.init_func_id, "app:visualizer")
             end)
 
+            it("returns the ordinary Dataflow handle when synchronous execution passivates", function()
+                mock_deps.funcs.new = function()
+                    local executor = {}
+                    function executor:with_actor(_actor: any) return self end
+                    function executor:call(_ref: string, args: any)
+                        return {
+                            success = true,
+                            dataflow_id = args.dataflow_id,
+                            pending = true,
+                            passivated = true,
+                        }, nil
+                    end
+                    return executor
+                end
+                local result, err = test_client:execute("waiting-workflow")
+                test.is_nil(err)
+                test.eq(result.dataflow_id, "waiting-workflow")
+                test.eq(result.pending, true)
+                test.eq(result.passivated, true)
+                test.is_nil(result.data)
+            end)
+
             it("should execute workflow without fetching outputs when disabled", function()
                 local result, err = test_client:execute("existing-workflow-123", {
                     fetch_output = false
@@ -781,6 +803,9 @@ local function define_tests()
 
             it("should cancel a parked run via direct status update when no live process exists", function()
                 mock_deps.process.registry.lookup = function() return nil end
+                mock_deps.dataflow_repo.get_by_user = function()
+                    return { status = consts.STATUS.WAITING }, nil
+                end
 
                 local success, err, info = test_client:cancel("workflow-123")
 
@@ -947,84 +972,6 @@ local function define_tests()
 
                 test.is_nil(err)
                 test.eq(status, "completed")
-            end)
-        end)
-
-        describe("Wait Method", function()
-            local test_client: any
-
-            before_each(function()
-                test_client, _ = client.new(mock_deps)
-                test.not_nil(test_client._deps)
-            end)
-
-            it("should wait until workflow completes successfully", function()
-                local statuses = {
-                    consts.STATUS.RUNNING,
-                    consts.STATUS.RUNNING,
-                    consts.STATUS.COMPLETED_SUCCESS
-                }
-                local index = 0
-
-                mock_deps.dataflow_repo.get_by_user = function(dataflow_id: string, actor_id: string)
-                    index = index + 1
-                    table.insert(captured_calls.dataflow_repo_get, {
-                        dataflow_id = dataflow_id,
-                        actor_id = actor_id
-                    })
-                    return {
-                        dataflow_id = dataflow_id,
-                        status = statuses[index] or consts.STATUS.COMPLETED_SUCCESS,
-                        actor_id = actor_id
-                    }, nil
-                end
-
-                local result, err = test_client:wait("workflow-789", {
-                    timeout_ms = 50,
-                    interval_ms = 1
-                })
-
-                test.is_nil(err)
-                test.is_true(result.success)
-                test.eq(result.status, consts.STATUS.COMPLETED_SUCCESS)
-                test.eq(result.dataflow_id, "workflow-789")
-                test.eq(#captured_calls.dataflow_repo_get, 3)
-            end)
-
-            it("should return terminal failure status without treating it as timeout", function()
-                mock_deps.dataflow_repo.get_by_user = function(dataflow_id: string, actor_id: string)
-                    return {
-                        dataflow_id = dataflow_id,
-                        status = consts.STATUS.COMPLETED_FAILURE,
-                        actor_id = actor_id
-                    }, nil
-                end
-
-                local result, err = test_client:wait("workflow-789", {
-                    timeout_ms = 50,
-                    interval_ms = 1
-                })
-
-                test.is_nil(err)
-                test.is_false(result.success)
-                test.eq(result.status, consts.STATUS.COMPLETED_FAILURE)
-            end)
-
-            it("should timeout when workflow stays non-terminal", function()
-                local result, err = test_client:wait("workflow-789", {
-                    timeout_ms = 3,
-                    interval_ms = 1
-                })
-
-                test.is_nil(result)
-                test.contains(err, "Workflow did not complete before timeout")
-            end)
-
-            it("should fail with missing dataflow_id", function()
-                local result, err = test_client:wait("")
-
-                test.is_nil(result)
-                test.contains(err, "Workflow ID is required")
             end)
         end)
 

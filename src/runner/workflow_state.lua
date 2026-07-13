@@ -53,7 +53,7 @@ local function sort_data_rows_desc(rows)
     return rows
 end
 
-local function decode_json_content(content)
+local function decode_json_content(content: any): any
     if type(content) == "string" then
         local parsed, parse_err = json.decode(content)
         if not parse_err then
@@ -128,6 +128,7 @@ function workflow_state.new(dataflow_id, options)
 
         active_processes = {},
         active_yields = {},
+        pending_signal_wake_keys = {},
 
         input_tracker = {
             requirements = {},
@@ -558,6 +559,34 @@ function methods:_reconstruct_active_yields()
         })
         :all()
 
+    local armed_records = data_reader.with_dataflow(self.dataflow_id)
+        :with_data_types(consts.DATA_TYPE.NODE_PARK_ARMED)
+        :fetch_options({ content = false, metadata = false, resolve_references = false })
+        :all()
+    local signal_records = data_reader.with_dataflow(self.dataflow_id)
+        :with_data_types(consts.DATA_TYPE.NODE_SIGNAL)
+        :all()
+    local consumed_signal_records = data_reader.with_dataflow(self.dataflow_id)
+        :with_data_types(consts.DATA_TYPE.NODE_SIGNAL_CONSUMED)
+        :fetch_options({ content = false, metadata = false, resolve_references = false })
+        :all()
+    local consumed_signal_ids = {}
+    for _, consumed in ipairs(consumed_signal_records or {}) do
+        local signal_data_id = consumed.key or consumed.discriminator
+        if type(signal_data_id) == "string" then consumed_signal_ids[signal_data_id] = true end
+    end
+    for _, signal_record in ipairs(signal_records or {}) do
+        local signal_data_id = tostring(signal_record.data_id or "")
+        if signal_data_id ~= "" and not consumed_signal_ids[signal_data_id] then
+            self.pending_signal_wake_keys["signal:" .. signal_data_id] = true
+        end
+    end
+    local armed_yields = {}
+    for _, armed in ipairs(armed_records or {}) do
+        local armed_id = armed.key or armed.discriminator
+        if type(armed_id) == "string" and armed_id ~= "" then armed_yields[armed_id] = true end
+    end
+
     local satisfied_yield_ids = {}
     for _, yield_result in ipairs(yield_result_records) do
         local yield_id = yield_result.key or yield_result.discriminator
@@ -581,7 +610,8 @@ function methods:_reconstruct_active_yields()
 
         local parent_node = self.nodes[parent_node_id]
 
-        if not parent_node or parent_node.status ~= consts.STATUS.PENDING then
+        if not parent_node or (parent_node.status ~= consts.STATUS.PENDING and
+            parent_node.status ~= consts.STATUS.WAITING) then
             reconstructed_parents[parent_node_id] = true
             goto continue
         end
@@ -629,6 +659,8 @@ function methods:_reconstruct_active_yields()
 
         local yield_info = {
             yield_id = yield_id,
+            episode_id = yield_id,
+            wake_keys = { "yield:" .. yield_id },
             reply_to = reply_to,
             pending_children = pending_children,
             results = results,
@@ -640,7 +672,48 @@ function methods:_reconstruct_active_yields()
             timeout_deadline = yield_context.timeout_deadline,
             park_ack = yield_context.park_ack == true,
             arm = yield_context.arm,
+            arm_completed = armed_yields[yield_id] == true,
         }
+
+        -- A parked node may have re-yielded several times while recovering.
+        -- They are retries of one wait episode, not new logical waits. Rebuild
+        -- the stable episode identity and every timer key so satisfaction
+        -- consumes the whole retry set and the external arm key never changes.
+        if yield_info.wait_for_signal then
+            local episode_id = yield_id
+            local wake_keys = {}
+            local arm_completed = yield_info.arm_completed
+            for _, candidate_record in ipairs(yield_records) do
+                if candidate_record.node_id == parent_node_id then
+                    local candidate = decode_json_content(candidate_record.content)
+                    local candidate_id = candidate and candidate.yield_id
+                    local candidate_context = candidate and candidate.yield_context or {}
+                    if type(candidate_id) == "string" and candidate_id ~= "" and
+                        not satisfied_yield_ids[candidate_id] and
+                        candidate_context.wait_for_signal == true and
+                        candidate_context.signal_id == yield_info.signal_id then
+                        table.insert(wake_keys, "yield:" .. candidate_id)
+                        if candidate_id < episode_id then episode_id = candidate_id end
+                        if armed_yields[candidate_id] == true then arm_completed = true end
+                    end
+                end
+            end
+            yield_info.episode_id = episode_id
+            yield_info.wake_keys = wake_keys
+            yield_info.arm_completed = arm_completed
+            for _, signal_record in ipairs(signal_records or {}) do
+                local signal_id = signal_record.key or signal_record.discriminator
+                if signal_id == yield_info.signal_id and not consumed_signal_ids[tostring(signal_record.data_id)] then
+                    local content = decode_json_content(signal_record.content)
+                    if content ~= nil then yield_info.signal_data = content end
+                    local signal_wake_key = "signal:" .. tostring(signal_record.data_id)
+                    yield_info.signal_wake_key = signal_wake_key
+                    yield_info.signal_wake_keys = yield_info.signal_wake_keys or {}
+                    table.insert(yield_info.signal_wake_keys, signal_wake_key)
+                    self.pending_signal_wake_keys[signal_wake_key] = nil
+                end
+            end
+        end
 
         -- for reset nodes, the original yielding process is dead. the reply_to
         -- mailbox no longer exists; satisfying this yield would deliver data
@@ -649,7 +722,7 @@ function methods:_reconstruct_active_yields()
         -- lets the parent re-run from scratch with a fresh reply_to. signal
         -- yields additionally keep signal_data in memory so a concurrently
         -- arriving signal is captured before the node re-attaches.
-        if was_reset then
+        if was_reset or parent_node.status == consts.STATUS.WAITING then
             yield_info.detached = true
         end
 
@@ -779,10 +852,19 @@ function methods:_update_state_from_results(results)
             elseif payload.data_type == consts.DATA_TYPE.NODE_SIGNAL then
                 -- deliver signal data to the matching waiting yield
                 local signal_id = payload.key or payload.discriminator
+                local signal_wake_key = type(payload.data_id) == "string" and
+                    ("signal:" .. payload.data_id) or nil
+                if signal_wake_key then self.pending_signal_wake_keys[signal_wake_key] = true end
                 if signal_id then
                     for node_id, yield_info in pairs(self.active_yields) do
                         if yield_info.wait_for_signal and yield_info.signal_id == signal_id then
                             yield_info.signal_data = payload.content
+                            if type(payload.data_id) == "string" then
+                                yield_info.signal_wake_key = "signal:" .. payload.data_id
+                                yield_info.signal_wake_keys = yield_info.signal_wake_keys or {}
+                                table.insert(yield_info.signal_wake_keys, yield_info.signal_wake_key)
+                                self.pending_signal_wake_keys[yield_info.signal_wake_key] = nil
+                            end
                             break
                         end
                     end
@@ -944,6 +1026,30 @@ function methods:track_process(node_id, pid)
     return self
 end
 
+function methods:prepare_passivation(node_id)
+    local yield_info = self.active_yields[node_id]
+    if not yield_info then return nil, "active yield not found" end
+    yield_info.detached = true
+    if self.nodes[node_id] then self.nodes[node_id].status = consts.STATUS.WAITING end
+    self:queue_commands({
+        type = consts.COMMAND_TYPES.UPDATE_NODE,
+        payload = { node_id = node_id, status = consts.STATUS.WAITING },
+    })
+    return true, nil
+end
+
+-- Release a node process after its indefinite signal wait has been persisted
+-- and armed. The node remains pending and its active yield remains durable.
+function methods:passivate_process(pid)
+    for node_id, tracked_pid in pairs(self.active_processes) do
+        if tracked_pid == pid then
+            self.active_processes[node_id] = nil
+            return node_id
+        end
+    end
+    return nil
+end
+
 function methods:handle_process_exit(pid, success, result)
     local exited_node_id = nil
     for node_id, tracked_pid in pairs(self.active_processes) do
@@ -1013,7 +1119,11 @@ function methods:handle_process_exit(pid, success, result)
 
             local all_complete = true
             for child_id, status in pairs(yield_info.pending_children) do
-                if status == consts.STATUS.PENDING then
+                if status ~= consts.STATUS.COMPLETED_SUCCESS and
+                   status ~= consts.STATUS.COMPLETED_FAILURE and
+                   status ~= consts.STATUS.CANCELLED and
+                   status ~= consts.STATUS.TERMINATED and
+                   status ~= consts.STATUS.SKIPPED then
                     all_complete = false
                     break
                 end
@@ -1037,14 +1147,29 @@ function methods:track_yield(node_id, yield_info)
         local existing = self.active_yields[node_id]
         if existing and existing.detached and existing.signal_data ~= nil then
             yield_info.signal_data = existing.signal_data
+            yield_info.signal_wake_key = existing.signal_wake_key
+            yield_info.signal_wake_keys = existing.signal_wake_keys
+            for _, wake_key in ipairs(type(yield_info.signal_wake_keys) == "table" and
+                yield_info.signal_wake_keys or {}) do
+                self.pending_signal_wake_keys[wake_key] = nil
+            end
         else
             -- 2. check DB (pre-queued: signal arrived before node ever yielded)
+            local consumed_records = data_reader.with_dataflow(self.dataflow_id)
+                :with_data_types(consts.DATA_TYPE.NODE_SIGNAL_CONSUMED)
+                :fetch_options({ content = false, metadata = false, resolve_references = false })
+                :all()
+            local consumed_signal_ids = {}
+            for _, consumed in ipairs(consumed_records or {}) do
+                local consumed_id = consumed.key or consumed.discriminator
+                if type(consumed_id) == "string" then consumed_signal_ids[consumed_id] = true end
+            end
             local signal_records = data_reader.with_dataflow(self.dataflow_id)
                 :with_data_types(consts.DATA_TYPE.NODE_SIGNAL)
                 :all()
             for _, sig in ipairs(signal_records) do
                 local sig_key = sig.key or sig.discriminator
-                if sig_key == yield_info.signal_id then
+                if sig_key == yield_info.signal_id and not consumed_signal_ids[tostring(sig.data_id)] then
                     -- DB content is raw bytes (string); parse JSON so scheduler
                     -- and handle_satisfy_yield see a table instead of coercing to {}
                     local content = sig.content
@@ -1053,6 +1178,10 @@ function methods:track_yield(node_id, yield_info)
                         if not parse_err then content = parsed end
                     end
                     yield_info.signal_data = content
+                    yield_info.signal_wake_key = "signal:" .. tostring(sig.data_id)
+                    yield_info.signal_wake_keys = yield_info.signal_wake_keys or {}
+                    table.insert(yield_info.signal_wake_keys, yield_info.signal_wake_key)
+                    self.pending_signal_wake_keys[yield_info.signal_wake_key] = nil
                 end
             end
         end
@@ -1065,6 +1194,19 @@ end
 function methods:satisfy_yield(node_id, results)
     local yield_info = self.active_yields[node_id]
     if yield_info then
+        local consume_wake_keys = {}
+        if type(yield_info.wake_keys) == "table" then
+            for _, wake_key in ipairs(yield_info.wake_keys) do table.insert(consume_wake_keys, wake_key) end
+        else
+            table.insert(consume_wake_keys, "yield:" .. tostring(yield_info.yield_id))
+        end
+        if type(yield_info.signal_wake_keys) == "table" then
+            for _, wake_key in ipairs(yield_info.signal_wake_keys) do
+                table.insert(consume_wake_keys, wake_key)
+            end
+        elseif type(yield_info.signal_wake_key) == "string" then
+            table.insert(consume_wake_keys, yield_info.signal_wake_key)
+        end
         table.insert(self.queued_commands, {
             type = consts.COMMAND_TYPES.CREATE_DATA,
             payload = {
@@ -1072,9 +1214,39 @@ function methods:satisfy_yield(node_id, results)
                 data_type = consts.DATA_TYPE.NODE_YIELD_RESULT,
                 content = results,
                 key = yield_info.yield_id,
+                consume_wake_keys = consume_wake_keys,
                 node_id = node_id
             }
         })
+        for _, wake_key in ipairs(consume_wake_keys) do
+            local retry_yield_id = string.match(wake_key, "^yield:(.+)$")
+            if retry_yield_id and retry_yield_id ~= yield_info.yield_id then
+                table.insert(self.queued_commands, {
+                    type = consts.COMMAND_TYPES.CREATE_DATA,
+                    payload = {
+                        data_id = uuid.v7(),
+                        data_type = consts.DATA_TYPE.NODE_YIELD_RESULT,
+                        content = results,
+                        key = retry_yield_id,
+                        node_id = node_id,
+                        consume_wake_keys = {},
+                    },
+                })
+            end
+            local signal_data_id = string.match(wake_key, "^signal:(.+)$")
+            if signal_data_id then
+                table.insert(self.queued_commands, {
+                    type = consts.COMMAND_TYPES.CREATE_DATA,
+                    payload = {
+                        data_id = uuid.v7(),
+                        data_type = consts.DATA_TYPE.NODE_SIGNAL_CONSUMED,
+                        content = { consumed = true },
+                        key = signal_data_id,
+                        node_id = node_id,
+                    },
+                })
+            end
+        end
 
         self.active_yields[node_id] = nil
     end
@@ -1088,6 +1260,19 @@ end
 function methods:abandon_yield(node_id)
     self.active_yields[node_id] = nil
     return self
+end
+
+function methods:observe_signal_wake(wake_key)
+    if type(wake_key) == "string" and string.match(wake_key, "^signal:") then
+        self.pending_signal_wake_keys[wake_key] = true
+    end
+end
+
+function methods:take_unclaimed_signal_wake_keys()
+    local keys = {}
+    for wake_key in pairs(self.pending_signal_wake_keys) do table.insert(keys, wake_key) end
+    self.pending_signal_wake_keys = {}
+    return keys
 end
 
 function methods:set_input_requirements(node_id, requirements)
@@ -1136,6 +1321,11 @@ end
 
 function methods:get_node(node_id)
     return self.nodes[node_id]
+end
+
+function methods:get_node_result_data_id(node_id)
+    local row = self:_load_node_result_row(node_id)
+    return row and row.data_id or nil
 end
 
 function methods:get_dataflow_metadata()

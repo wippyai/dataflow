@@ -204,11 +204,12 @@ local function define_tests()
             kill_orchestrator(df_id)
             c:start(df_id)
             test.not_nil(wait_until(function()
-                if c:get_status(df_id) == consts.STATUS.RUNNING then
+                local status = c:get_status(df_id)
+                if status == consts.STATUS.WAITING or status == consts.STATUS.RUNNING then
                     return true
                 end
                 return nil
-            end, 10000, 100), "workflow restarted before first signal")
+            end, 10000, 100), "workflow is recoverable before first nested signal")
             c:signal(df_id, signal_prefix .. "-1", { step = 1, ok = true })
 
             test.not_nil(wait_until(function()
@@ -293,7 +294,7 @@ local function define_tests()
 
             c:start(df_id)
             test.not_nil(wait_until(function()
-                if c:get_status(df_id) == consts.STATUS.RUNNING then
+                if c:get_status(df_id) == consts.STATUS.WAITING then
                     return true
                 end
                 return nil

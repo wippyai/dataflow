@@ -4,6 +4,7 @@ local time = require("time")
 local client = require("client")
 local consts = require("consts")
 local data_reader = require("data_reader")
+local node_reader = require("node_reader")
 
 local function define_tests()
     describe("Parallel Recovery Tests", function()
@@ -173,6 +174,39 @@ local function define_tests()
             test.is_nil(output_err, "workflow output available")
             test.eq(outputs.result.success_count, 6, "all items succeeded")
             test.eq(outputs.result.failure_count, 0, "no failures")
+        end)
+
+        it("resumes an in-flight child barrier without rerunning completed items", function()
+            local workflow = make_parallel_wf(make_items(4, 700), 4)
+            c:start(workflow.dataflow_id)
+
+            local children_active = false
+            for _ = 1, 50 do
+                local rows = (node_reader.with_dataflow(workflow.dataflow_id) :: any)
+                    :with_parent_nodes(workflow.parallel_node_id)
+                    :with_statuses(consts.STATUS.RUNNING)
+                    :all()
+                if rows and #rows > 0 then
+                    children_active = true
+                    break
+                end
+                time.sleep("50ms")
+            end
+            test.is_true(children_active, "iteration children active before crash")
+            kill_orchestrator(workflow.dataflow_id)
+
+            test.is_true(wait_complete(workflow.dataflow_id, 15000), "durable child barrier recovered")
+            local iteration_results = data_reader.with_dataflow(workflow.dataflow_id)
+                :with_nodes(workflow.parallel_node_id)
+                :with_data_types(consts.DATA_TYPE.ITERATION_RESULT)
+                :all()
+            local counts = {}
+            for _, row in ipairs(iteration_results or {}) do
+                local iteration = row.metadata and row.metadata.iteration
+                counts[iteration] = (counts[iteration] or 0) + 1
+            end
+            test.eq(#iteration_results, 4, "one result per input")
+            for index = 1, 4 do test.eq(counts[index], 1, "iteration did not rerun") end
         end)
     end)
 end

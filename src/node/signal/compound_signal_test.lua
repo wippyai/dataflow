@@ -109,7 +109,7 @@ local function define_tests()
             local iterations = math.ceil(timeout_ms / 100)
             for _ = 1, iterations do
                 local status = c:get_status(df_id)
-                if status == consts.STATUS.RUNNING then return true end
+                if status == consts.STATUS.WAITING then return true end
                 if status == consts.STATUS.COMPLETED_SUCCESS or status == consts.STATUS.COMPLETED_FAILURE then
                     return false
                 end
@@ -196,7 +196,7 @@ local function define_tests()
 
                 test.is_true(wait_running(df_id), "running")
                 time.sleep("500ms")
-                test.eq(c:get_status(df_id), consts.STATUS.RUNNING, "still running without signal")
+                test.eq(c:get_status(df_id), consts.STATUS.WAITING, "still running without signal")
 
                 c:signal(df_id, sid, { go = true })
                 test.is_true(wait_complete(df_id), "completes after signal")
@@ -325,7 +325,7 @@ local function define_tests()
                 test.is_true(wait_running(df_id), "running at sig1")
                 c:signal(df_id, sid1, { gate = 1 })
                 time.sleep("500ms")
-                test.eq(c:get_status(df_id), consts.STATUS.RUNNING, "still running at sig2")
+                test.eq(c:get_status(df_id), consts.STATUS.WAITING, "still running at sig2")
 
                 c:signal(df_id, sid2, { gate = 2, message = "final", delay_ms = 10, should_fail = false })
                 test.is_true(wait_complete(df_id), "completed after both signals")
@@ -363,7 +363,7 @@ local function define_tests()
                 -- send signal2 while sig1 is still waiting
                 c:signal(df_id, sid2, { early = true })
                 time.sleep("500ms")
-                test.eq(c:get_status(df_id), consts.STATUS.RUNNING, "still blocked at sig1")
+                test.eq(c:get_status(df_id), consts.STATUS.WAITING, "still blocked at sig1")
 
                 c:signal(df_id, sid1, { gate1 = true })
                 -- sig2 should be satisfied from the pre-queued signal
@@ -421,7 +421,7 @@ local function define_tests()
                 -- satisfy branch A
                 c:signal(df_id, sid_a, { branch = "A" })
                 time.sleep("500ms")
-                test.eq(c:get_status(df_id), consts.STATUS.RUNNING, "still waiting for branch B")
+                test.eq(c:get_status(df_id), consts.STATUS.WAITING, "still waiting for branch B")
 
                 -- satisfy branch B
                 c:signal(df_id, sid_b, { branch = "B" })
@@ -455,7 +455,7 @@ local function define_tests()
                 c:start(df_id)
 
                 time.sleep("500ms")
-                test.eq(c:get_status(df_id), consts.STATUS.RUNNING, "func done, waiting for signal")
+                test.eq(c:get_status(df_id), consts.STATUS.WAITING, "func done, waiting for signal")
 
                 c:signal(df_id, sid, { slow_data = true })
                 test.is_true(wait_complete(df_id), "completed after signal")
@@ -503,7 +503,7 @@ local function define_tests()
                 test.is_true(wait_running(df_id), "running at sig1")
                 c:signal(df_id, sid1, { message = "step2", delay_ms = 10, should_fail = false })
                 time.sleep("800ms")
-                test.eq(c:get_status(df_id), consts.STATUS.RUNNING, "waiting at sig2")
+                test.eq(c:get_status(df_id), consts.STATUS.WAITING, "waiting at sig2")
 
                 c:signal(df_id, sid2, { message = "step4", delay_ms = 10, should_fail = false })
                 test.is_true(wait_complete(df_id), "chain completed")
@@ -609,7 +609,7 @@ local function define_tests()
                 test.is_true(wait_running(df_id), "running")
                 -- func branch runs immediately, signal branch waits
                 time.sleep("500ms")
-                test.eq(c:get_status(df_id), consts.STATUS.RUNNING, "waiting for signal branch")
+                test.eq(c:get_status(df_id), consts.STATUS.WAITING, "waiting for signal branch")
 
                 c:signal(df_id, sid, { message = "approved", delay_ms = 10, should_fail = false })
                 test.is_true(wait_complete(df_id, 8000), "diamond completed")
@@ -720,7 +720,7 @@ local function define_tests()
                 kill_orchestrator(df_id)
                 c:signal(df_id, sid1, { gate1 = true })
                 time.sleep(WAIT)
-                test.eq(c:get_status(df_id), consts.STATUS.RUNNING, "now at sig2")
+                test.eq(c:get_status(df_id), consts.STATUS.WAITING, "now at sig2")
 
                 -- kill at sig2
                 kill_orchestrator(df_id)
@@ -784,19 +784,19 @@ local function define_tests()
 
                 time.sleep("500ms")
                 for i = 1, 3 do
-                    test.eq(c:get_status(df_ids[i]), consts.STATUS.RUNNING, "wf" .. i .. " running")
+                    test.eq(c:get_status(df_ids[i]), consts.STATUS.WAITING, "wf" .. i .. " waiting")
                 end
 
                 -- signal them in reverse order
                 c:signal(df_ids[3], sids[3], { order = 3 })
                 time.sleep("500ms")
                 test.eq(c:get_status(df_ids[3]), consts.STATUS.COMPLETED_SUCCESS, "wf3 done")
-                test.eq(c:get_status(df_ids[1]), consts.STATUS.RUNNING, "wf1 still waiting")
+                test.eq(c:get_status(df_ids[1]), consts.STATUS.WAITING, "wf1 still waiting")
 
                 c:signal(df_ids[1], sids[1], { order = 1 })
                 time.sleep("500ms")
                 test.eq(c:get_status(df_ids[1]), consts.STATUS.COMPLETED_SUCCESS, "wf1 done")
-                test.eq(c:get_status(df_ids[2]), consts.STATUS.RUNNING, "wf2 still waiting")
+                test.eq(c:get_status(df_ids[2]), consts.STATUS.WAITING, "wf2 still waiting")
 
                 c:signal(df_ids[2], sids[2], { order = 2 })
                 test.is_true(wait_complete(df_ids[2]), "wf2 done")

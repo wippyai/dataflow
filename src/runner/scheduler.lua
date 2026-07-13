@@ -7,7 +7,8 @@ local DECISION_TYPE = {
     EXECUTE_NODES = "execute_nodes",
     SATISFY_YIELD = "satisfy_yield",
     COMPLETE_WORKFLOW = "complete_workflow",
-    NO_WORK = "no_work"
+    NO_WORK = "no_work",
+    PASSIVATE = "passivate"
 }
 
 local TRIGGER_REASON = {
@@ -102,7 +103,11 @@ local function yield_children_complete(yield_info)
     end
 
     for child_id, status in pairs(yield_info.pending_children) do
-        if status == consts.STATUS.PENDING then
+        if status ~= consts.STATUS.COMPLETED_SUCCESS and
+           status ~= consts.STATUS.COMPLETED_FAILURE and
+           status ~= consts.STATUS.CANCELLED and
+           status ~= consts.STATUS.TERMINATED and
+           status ~= consts.STATUS.SKIPPED then
             return false
         end
     end
@@ -120,6 +125,18 @@ local function find_yield_driven_work(state)
         -- leave them in place so track_yield() can inherit accumulated signal_data
         -- when the node re-yields, but never satisfy here.
         if yield_info.detached then
+            local ready = yield_info.wait_for_signal and
+                (yield_info.signal_data ~= nil or signal_timeout_expired(yield_info, now)) or
+                (not yield_info.wait_for_signal and yield_children_complete(yield_info))
+            local parent = state.nodes[parent_id]
+            if ready and parent and not state.active_processes[parent_id] then
+                return create_nodes_execution({ {
+                    node_id = parent_id,
+                    node_type = parent.type,
+                    path = {},
+                    trigger_reason = TRIGGER_REASON.YIELD_DRIVEN,
+                } })
+            end
             goto continue
         end
 
@@ -227,6 +244,7 @@ local function find_input_ready_work(state)
     for node_id, node_data in pairs(state.nodes) do
         if node_data.status == consts.STATUS.PENDING and
            not state.active_processes[node_id] and
+           not state.active_yields[node_id] and
            state.input_tracker.requirements[node_id] and
            node_has_required_inputs(node_id, node_data, state.input_tracker) then
 
@@ -257,6 +275,8 @@ local function find_root_driven_work(state)
 
     for node_id, node_data in pairs(state.nodes) do
         if node_data.status == consts.STATUS.PENDING and
+           not state.active_processes[node_id] and
+           not state.active_yields[node_id] and
            not state.input_tracker.requirements[node_id] and
            node_has_available_inputs(node_id, state.input_tracker) then
 
@@ -368,6 +388,24 @@ local function check_workflow_completion(state)
     return nil
 end
 
+local function passivation_wake(state)
+    if next(state.active_processes) then return false end
+    local found = false
+    local wake_at = nil
+    for _, yield_info in pairs(state.active_yields or {}) do
+        found = true
+        if not yield_info.wait_for_signal or yield_info.signal_data ~= nil then
+            return false, nil
+        end
+        local candidate = yield_info.timeout_deadline
+        if type(candidate) == "string" and candidate ~= "" and
+           (wake_at == nil or candidate < wake_at) then
+            wake_at = candidate
+        end
+    end
+    return found, wake_at
+end
+
 function scheduler.find_next_work(state)
     local decision = find_yield_driven_work(state)
     if decision then
@@ -382,6 +420,15 @@ function scheduler.find_next_work(state)
     decision = find_root_driven_work(state)
     if decision then
         return decision
+    end
+
+
+    local passivate, wake_at = passivation_wake(state)
+    if passivate then
+        return create_decision(DECISION_TYPE.PASSIVATE, {
+            message = "Signal waits are durable; releasing resident processes",
+            wake_at = wake_at,
+        })
     end
 
     decision = check_workflow_completion(state)

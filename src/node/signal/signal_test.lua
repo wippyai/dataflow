@@ -299,7 +299,7 @@ local function define_tests()
 
             local decision = scheduler.find_next_work(state)
             test.not_nil(decision, "has decision")
-            test.eq(decision.type, scheduler.DECISION_TYPE.NO_WORK, "NO_WORK when signal not arrived")
+            test.eq(decision.type, scheduler.DECISION_TYPE.PASSIVATE, "NO_WORK when signal not arrived")
         end)
 
         test.it("satisfies signal yield when signal data arrives", function()
@@ -496,7 +496,7 @@ local function define_tests()
 
             -- signal_data defaults to nil
             local decision = scheduler.find_next_work(state)
-            test.eq(decision.type, scheduler.DECISION_TYPE.NO_WORK, "nil means no signal arrived")
+            test.eq(decision.type, scheduler.DECISION_TYPE.PASSIVATE, "nil means no signal arrived")
         end)
 
         test.it("signal yield with elapsed timeout is satisfied with timeout result", function()
@@ -982,7 +982,7 @@ local function define_tests()
             }
 
             local decision = scheduler.find_next_work(state)
-            test.eq(decision.type, scheduler.DECISION_TYPE.NO_WORK, "waiting for signal")
+            test.eq(decision.type, scheduler.DECISION_TYPE.PASSIVATE, "waiting for signal")
         end)
 
         test.it("signal yield + completed node with output = NO_WORK (yield blocks)", function()
@@ -999,7 +999,7 @@ local function define_tests()
             state.has_workflow_output = true
 
             local decision = scheduler.find_next_work(state)
-            test.eq(decision.type, scheduler.DECISION_TYPE.NO_WORK, "yield blocks even with output")
+            test.eq(decision.type, scheduler.DECISION_TYPE.PASSIVATE, "yield blocks even with output")
         end)
 
         test.it("workflow error with active signal yield = NO_WORK", function()
@@ -1015,7 +1015,7 @@ local function define_tests()
             state.has_workflow_error = true
 
             local decision = scheduler.find_next_work(state)
-            test.eq(decision.type, scheduler.DECISION_TYPE.NO_WORK, "error + yield = no work")
+            test.eq(decision.type, scheduler.DECISION_TYPE.PASSIVATE, "error + yield = no work")
         end)
     end)
 end

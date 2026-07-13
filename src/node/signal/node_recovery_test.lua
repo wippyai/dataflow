@@ -40,7 +40,7 @@ local function define_tests()
             local iters = math.ceil(timeout_ms / 100)
             for _ = 1, iters do
                 local status = c:get_status(df_id)
-                if status == consts.STATUS.RUNNING then return true end
+                if status == consts.STATUS.WAITING then return true end
                 if status == consts.STATUS.COMPLETED_SUCCESS or status == consts.STATUS.COMPLETED_FAILURE then
                     return false
                 end
