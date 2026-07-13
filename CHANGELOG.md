@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Breaking Changes
+
+* Remove the polling `client:wait` API. Synchronous and tool callers use
+  `client:execute`, asynchronous callers use `client:start` and retain the
+  returned Dataflow handle, and in-flow composition uses `_control.commands`.
+
 ## [0.4.31](https://github.com/wippyai/dataflow/compare/v0.4.30...v0.4.31) (2026-07-12)
 
 
