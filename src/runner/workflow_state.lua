@@ -553,7 +553,6 @@ function methods:_reconstruct_active_yields()
     local yield_result_records = data_reader.with_dataflow(self.dataflow_id)
         :with_data_types(consts.DATA_TYPE.NODE_YIELD_RESULT)
         :fetch_options({
-            content = false,
             metadata = false,
             resolve_references = false
         })
@@ -587,11 +586,11 @@ function methods:_reconstruct_active_yields()
         if type(armed_id) == "string" and armed_id ~= "" then armed_yields[armed_id] = true end
     end
 
-    local satisfied_yield_ids = {}
+    local satisfied_yields = {}
     for _, yield_result in ipairs(yield_result_records) do
         local yield_id = yield_result.key or yield_result.discriminator
         if type(yield_id) == "string" and yield_id ~= "" then
-            satisfied_yield_ids[yield_id] = true
+            satisfied_yields[yield_id] = yield_result
         end
     end
 
@@ -626,12 +625,21 @@ function methods:_reconstruct_active_yields()
             goto continue
         end
 
-        if satisfied_yield_ids[yield_id] then
+        local yield_context = yield_content.yield_context or {}
+        local was_reset = self._reset_node_ids and self._reset_node_ids[parent_node_id]
+        local satisfied_result = satisfied_yields[yield_id]
+        -- A crash can happen after a signal result and its consumed marker are
+        -- committed but before the resumed node persists its terminal result.
+        -- Keep that resolved episode only for the reset node so its fresh
+        -- mailbox can replay the durable result instead of arming a new wait
+        -- for an already-consumed signal.
+        local needs_signal_replay = yield_context.wait_for_signal == true and
+            (was_reset or parent_node.status == consts.STATUS.WAITING)
+        if satisfied_result and not needs_signal_replay then
             goto continue
         end
 
         local reply_to = yield_content.reply_to
-        local yield_context = yield_content.yield_context or {}
         local run_nodes = yield_context.run_nodes or {}
         local child_path = yield_content.child_path or {}
         local pending_children = {}
@@ -655,8 +663,6 @@ function methods:_reconstruct_active_yields()
             end
         end
 
-        local was_reset = self._reset_node_ids and self._reset_node_ids[parent_node_id]
-
         local yield_info = {
             yield_id = yield_id,
             episode_id = yield_id,
@@ -675,6 +681,11 @@ function methods:_reconstruct_active_yields()
             arm_completed = armed_yields[yield_id] == true,
         }
 
+        if satisfied_result then
+            yield_info.signal_data = decode_json_content(satisfied_result.content)
+            yield_info.wake_keys = {}
+        end
+
         -- A parked node may have re-yielded several times while recovering.
         -- They are retries of one wait episode, not new logical waits. Rebuild
         -- the stable episode identity and every timer key so satisfaction
@@ -683,34 +694,49 @@ function methods:_reconstruct_active_yields()
             local episode_id = yield_id
             local wake_keys = {}
             local arm_completed = yield_info.arm_completed
+            local episode_result = satisfied_result
             for _, candidate_record in ipairs(yield_records) do
                 if candidate_record.node_id == parent_node_id then
                     local candidate = decode_json_content(candidate_record.content)
                     local candidate_id = candidate and candidate.yield_id
                     local candidate_context = candidate and candidate.yield_context or {}
                     if type(candidate_id) == "string" and candidate_id ~= "" and
-                        not satisfied_yield_ids[candidate_id] and
                         candidate_context.wait_for_signal == true and
                         candidate_context.signal_id == yield_info.signal_id then
-                        table.insert(wake_keys, "yield:" .. candidate_id)
                         if candidate_id < episode_id then episode_id = candidate_id end
                         if armed_yields[candidate_id] == true then arm_completed = true end
+                        local candidate_result = satisfied_yields[candidate_id]
+                        if candidate_result then
+                            episode_result = episode_result or candidate_result
+                        else
+                            table.insert(wake_keys, "yield:" .. candidate_id)
+                        end
                     end
                 end
             end
             yield_info.episode_id = episode_id
             yield_info.wake_keys = wake_keys
             yield_info.arm_completed = arm_completed
-            for _, signal_record in ipairs(signal_records or {}) do
-                local signal_id = signal_record.key or signal_record.discriminator
-                if signal_id == yield_info.signal_id and not consumed_signal_ids[tostring(signal_record.data_id)] then
-                    local content = decode_json_content(signal_record.content)
-                    if content ~= nil then yield_info.signal_data = content end
-                    local signal_wake_key = "signal:" .. tostring(signal_record.data_id)
-                    yield_info.signal_wake_key = signal_wake_key
-                    yield_info.signal_wake_keys = yield_info.signal_wake_keys or {}
-                    table.insert(yield_info.signal_wake_keys, signal_wake_key)
-                    self.pending_signal_wake_keys[signal_wake_key] = nil
+            if episode_result then
+                -- A committed yield result is the continuation mailbox for the
+                -- whole signal-wait episode. It wins over any later signal with
+                -- the same public signal id and carries no signal wake key: the
+                -- original signal was already consumed atomically.
+                yield_info.signal_data = decode_json_content(episode_result.content)
+                yield_info.signal_wake_key = nil
+                yield_info.signal_wake_keys = nil
+            else
+                for _, signal_record in ipairs(signal_records or {}) do
+                    local signal_id = signal_record.key or signal_record.discriminator
+                    if signal_id == yield_info.signal_id and not consumed_signal_ids[tostring(signal_record.data_id)] then
+                        local content = decode_json_content(signal_record.content)
+                        if content ~= nil then yield_info.signal_data = content end
+                        local signal_wake_key = "signal:" .. tostring(signal_record.data_id)
+                        yield_info.signal_wake_key = signal_wake_key
+                        yield_info.signal_wake_keys = yield_info.signal_wake_keys or {}
+                        table.insert(yield_info.signal_wake_keys, signal_wake_key)
+                        self.pending_signal_wake_keys[signal_wake_key] = nil
+                    end
                 end
             end
         end
@@ -772,8 +798,6 @@ function methods:process_commits(commit_ids)
     if err then
         return nil, err
     end
-
-    self:_update_state_from_results(result)
 
     return result, nil
 end

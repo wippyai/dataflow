@@ -17,6 +17,19 @@ entries:
       migration_bootloader: wippy.migration:migration_bootloader
     method: run
 
+  - name: wake_service_scope_test
+    kind: function.lua
+    meta:
+      type: test
+      suite: "00_setup"
+      comment: Proves the bounded wake service carries canonical module-owned process authority.
+    source: file://wake_service_scope_test.lua
+    modules:
+      - registry
+    imports:
+      test: wippy.test:test
+    method: run
+
   - name: db
     kind: db.sql.sqlite
     meta:
