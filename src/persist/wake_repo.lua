@@ -19,22 +19,6 @@ function wake_repo.clear(dataflow_id)
     return true, nil
 end
 
--- Register a newly parked timed wait without moving an already-earlier wake.
-function wake_repo.register(dataflow_id, wake_key, wake_at)
-    if type(dataflow_id) ~= "string" or dataflow_id == "" then return nil, "dataflow_id is required" end
-    if type(wake_at) ~= "string" or wake_at == "" then return nil, "wake_at is required" end
-    if type(wake_key) ~= "string" or wake_key == "" then return nil, "wake_key is required" end
-    local db, db_err = get_db()
-    if db_err then return nil, db_err end
-    local _, write_err = db:execute([[
-        INSERT INTO dataflow_wakes(dataflow_id, wake_key, wake_at) VALUES (?, ?, ?)
-        ON CONFLICT(dataflow_id, wake_key) DO UPDATE SET wake_at = excluded.wake_at
-    ]], { dataflow_id, wake_key, wake_at })
-    db:release()
-    if write_err then return nil, write_err end
-    return true, nil
-end
-
 function wake_repo.next()
     local db, db_err = get_db()
     if db_err then return nil, db_err end

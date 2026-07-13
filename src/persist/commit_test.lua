@@ -14,6 +14,7 @@ local function define_tests()
             db = nil,
             tx = nil,
             resources = nil,
+            isolated_dataflows = {},
             mocks = {}
         }
 
@@ -25,7 +26,7 @@ local function define_tests()
             mock_calls = {
                 process_messages = {},
                 user_id_calls = 0,
-                timestamp_calls = 0
+                timestamp_calls = 0,
             }
 
             -- Mock process message sending
@@ -94,6 +95,25 @@ local function define_tests()
             if test_ctx.db then
                 test_ctx.db:release()
                 test_ctx.db = nil
+            end
+
+            if #test_ctx.isolated_dataflows > 0 then
+                local cleanup_db, cleanup_db_err = sql.get("app:db")
+                if cleanup_db_err then
+                    error("Failed to connect for isolated dataflow cleanup: " .. cleanup_db_err)
+                end
+                for _, dataflow_id in ipairs(test_ctx.isolated_dataflows) do
+                    local _, cleanup_err = cleanup_db:execute(
+                        "DELETE FROM dataflows WHERE dataflow_id = ?",
+                        { dataflow_id }
+                    )
+                    if cleanup_err then
+                        cleanup_db:release()
+                        error("Failed to clean isolated dataflow " .. dataflow_id .. ": " .. cleanup_err)
+                    end
+                end
+                cleanup_db:release()
+                test_ctx.isolated_dataflows = {}
             end
 
             test_ctx.resources = nil
@@ -181,6 +201,7 @@ local function define_tests()
             end
 
             db:release()
+            table.insert(test_ctx.isolated_dataflows, dataflow_id)
             return dataflow_id
         end
 
@@ -199,6 +220,16 @@ local function define_tests()
             end
 
             return rows[1].row_count
+        end
+
+        local function count_process_messages(target_process, topic)
+            local count = 0
+            for _, message in ipairs(mock_calls.process_messages) do
+                if message.target_process == target_process and message.topic == topic then
+                    count = count + 1
+                end
+            end
+            return count
         end
 
         local function get_commit_op_id(tx, commit_id)
@@ -755,6 +786,90 @@ local function define_tests()
                 local final_pending, final_err = commit.get_pending_commits(dataflow_id)
                 test.is_nil(final_err)
                 test.eq(#final_pending, 0)
+            end)
+        end)
+
+        describe("wake index notification", function()
+            it("notifies once after a committed wake-index transition", function()
+                if test_ctx.tx then test_ctx.tx:rollback(); test_ctx.tx = nil end
+                if test_ctx.db then test_ctx.db:release(); test_ctx.db = nil end
+                local dataflow_id = create_isolated_dataflow()
+                local wake_db, wake_db_err = sql.get("app:db")
+                test.is_nil(wake_db_err)
+                test.not_nil(wake_db)
+                local _, wake_insert_err = wake_db:execute([[
+                    INSERT INTO dataflow_wakes(dataflow_id, wake_key, wake_at)
+                    VALUES (?, ?, ?)
+                ]], { dataflow_id, "yield:terminal-test", "2099-01-01T00:00:00Z" })
+                wake_db:release()
+                test.is_nil(wake_insert_err)
+
+                local result, err = commit.execute(dataflow_id, nil, { {
+                    type = ops.COMMAND_TYPES.UPDATE_WORKFLOW,
+                    payload = { dataflow_id = dataflow_id, status = consts.STATUS.COMPLETED_SUCCESS },
+                } }, { publish = false })
+
+                test.is_nil(err)
+                test.not_nil(result)
+                test.eq(count_process_messages("dataflow.wakes", "dataflow.wake.changed"), 1)
+                local message = test.not_nil(mock_calls.process_messages[1]) :: any
+                test.eq(message.target_process, "dataflow.wakes")
+                test.eq(message.topic, "dataflow.wake.changed")
+            end)
+
+            it("does not notify for unrelated commits or failed transactions", function()
+                if test_ctx.tx then test_ctx.tx:rollback(); test_ctx.tx = nil end
+                if test_ctx.db then test_ctx.db:release(); test_ctx.db = nil end
+                local dataflow_id = create_isolated_dataflow()
+
+                local result, err = commit.execute(dataflow_id, nil, { {
+                    type = ops.COMMAND_TYPES.CREATE_NODE,
+                    payload = { node_id = uuid.v7(), node_type = "notification_test" },
+                } }, { publish = false })
+                test.is_nil(err)
+                test.not_nil(result)
+                test.eq(#mock_calls.process_messages, 0)
+
+                result, err = commit.execute(dataflow_id, nil, { {
+                    type = ops.COMMAND_TYPES.UPDATE_WORKFLOW,
+                    payload = { dataflow_id = dataflow_id, status = consts.STATUS.COMPLETED_SUCCESS },
+                } }, { publish = false })
+                test.is_nil(err)
+                test.not_nil(result)
+                test.eq(#mock_calls.process_messages, 0)
+
+                result, err = commit.execute(dataflow_id, nil, { {
+                    type = consts.COMMAND.APPLY_COMMIT,
+                    payload = { commit_id = uuid.v7() },
+                } }, { publish = false })
+                test.is_nil(result)
+                test.not_nil(err)
+                test.eq(#mock_calls.process_messages, 0)
+            end)
+
+            it("notifies once after a timed-yield wake is committed to the outbox", function()
+                if test_ctx.tx then test_ctx.tx:rollback(); test_ctx.tx = nil end
+                if test_ctx.db then test_ctx.db:release(); test_ctx.db = nil end
+                local dataflow_id = create_isolated_dataflow()
+                local yield_id = uuid.v7()
+
+                local result, err = commit.submit(dataflow_id, nil, { {
+                    type = ops.COMMAND_TYPES.CREATE_DATA,
+                    payload = {
+                        data_id = uuid.v7(),
+                        data_type = consts.DATA_TYPE.NODE_YIELD,
+                        content = {
+                            yield_id = yield_id,
+                            yield_context = {
+                                timeout_deadline = "2099-01-01T00:00:00Z",
+                            },
+                        },
+                    },
+                } })
+
+                test.is_nil(err)
+                test.not_nil(result)
+                test.eq(count_process_messages("dataflow.wakes", "dataflow.wake.changed"), 1)
             end)
         end)
 

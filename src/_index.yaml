@@ -244,6 +244,8 @@ entries:
         path: ".meta.target_db"
       - entry: userspace.dataflow.migrations:03_create_data_table
         path: ".meta.target_db"
+      - entry: userspace.dataflow.migrations:04_add_data_uniqueness_guards
+        path: ".meta.target_db"
       - entry: userspace.dataflow.migrations:05_create_dataflow_commits_table
         path: ".meta.target_db"
       - entry: userspace.dataflow.migrations:06_add_durability_indexes
@@ -251,7 +253,7 @@ entries:
       - entry: userspace.dataflow.migrations:07_create_dataflow_wakes
         path: ".meta.target_db"
       - entry: userspace.dataflow.runner:wake_process.service
-        path: .lifecycle.depends_on[1]
+        path: ".lifecycle.depends_on +="
 
   - name: web_host_origin_env
     kind: ns.requirement
@@ -280,7 +282,7 @@ entries:
       - entry: userspace.dataflow.runner:wake_process.service
         path: .host
       - entry: userspace.dataflow.runner:wake_process.service
-        path: .lifecycle.depends_on[0]
+        path: ".lifecycle.depends_on +="
 
   - name: user_security_scope
     kind: ns.requirement

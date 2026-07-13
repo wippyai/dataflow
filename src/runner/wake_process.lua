@@ -14,8 +14,8 @@ local TOPIC = "dataflow.wake.changed"
 -- The service and the migration bootloader both depend on the same database
 -- service, so a brand-new database can be reachable a moment before migration
 -- 07 creates the queue. That state is readiness, not a service failure. The
--- actor waits for the first durable wake notification; every queue insert sends
--- one after commit. Existing databases still query immediately on restart.
+-- actor waits for the post-migration bootloader notification. Existing
+-- databases still query immediately on restart.
 local function schema_not_ready(err)
     local message = string.lower(tostring(err or ""))
     return message:find("no such table: dataflow_wakes", 1, true) ~= nil or
@@ -87,7 +87,11 @@ function M.run_due(monitored)
             if revive_err then
                 wake_err = revive_err
             else
-                local monitored_ok, monitor_err = monitor_delivery(revived_pid, row.dataflow_id, monitored)
+                local monitored_ok, monitor_err = monitor_delivery(
+                    tostring(revived_pid),
+                    tostring(row.dataflow_id),
+                    monitored
+                )
                 if not monitored_ok then wake_err = monitor_err end
             end
         end

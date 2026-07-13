@@ -23,6 +23,12 @@ function commit._send_process_message(target_process, topic, payload)
     process.send(target_process, topic, payload)
 end
 
+-- Notify the exact-deadline actor only after a transaction commits. The
+-- indexed row is authoritative; this message only recalculates its timer.
+local function notify_wake_index()
+    commit._send_process_message("dataflow.wakes", "dataflow.wake.changed", { source = "commit" })
+end
+
 -- Isolated method for getting current user ID (can be mocked in tests)
 function commit._get_current_user_id(): string
     local actor = security.actor()
@@ -247,6 +253,14 @@ function commit.tx_execute(tx, dataflow_id, op_id, commands, options)
         result.skipped_commit_ids = skipped_commit_ids
     end
 
+    result.wake_index_changed = false
+    for _, command_result in ipairs(type(result.results) == "table" and result.results or {}) do
+        if type(command_result) == "table" and command_result.wake_index_changed == true then
+            result.wake_index_changed = true
+            break
+        end
+    end
+
     -- Handle publishing if enabled (default is true)
     if options.publish ~= false then
         commit.publish_updates(dataflow_id, op_id, result)
@@ -318,6 +332,10 @@ function commit.execute(dataflow_id, op_id, commands, options)
 
     -- Release the connection
     db:release()
+
+    local wake_index_changed = result.wake_index_changed == true
+    result.wake_index_changed = nil
+    if wake_index_changed then notify_wake_index() end
 
     -- Handle publishing if enabled (default is true)
     if options.publish ~= false then
@@ -450,6 +468,7 @@ function commit._create_commit_only(commit_id, dataflow_id, payload, metadata)
     -- Project every durable trigger in the same transaction as its outbox
     -- commit. Keys are transition identities, never timestamps or result data.
     local commands = type(payload) == "table" and payload.commands or {}
+    local wake_index_changed = false
     for _, command in ipairs(type(commands) == "table" and commands or {}) do
         local row = type(command) == "table" and command or {}
         local body = type(row.payload) == "table" and row.payload or {}
@@ -464,6 +483,7 @@ function commit._create_commit_only(commit_id, dataflow_id, payload, metadata)
                     tx:rollback(); db:release()
                     return nil, "Failed to project signal wake: " .. tostring(wake_err)
                 end
+                wake_index_changed = true
             end
         elseif row.type == consts.COMMAND_TYPES.CREATE_DATA and body.data_type == consts.DATA_TYPE.NODE_YIELD and
             type(body.content) == "table" and type(body.content.yield_context) == "table" then
@@ -478,6 +498,7 @@ function commit._create_commit_only(commit_id, dataflow_id, payload, metadata)
                     tx:rollback(); db:release()
                     return nil, "Failed to project yield wake: " .. tostring(wake_err)
                 end
+                wake_index_changed = true
             end
         end
     end
@@ -491,6 +512,8 @@ function commit._create_commit_only(commit_id, dataflow_id, payload, metadata)
     end
 
     db:release()
+
+    if wake_index_changed then notify_wake_index() end
 
     -- Return the created commit
     return {
