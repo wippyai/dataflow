@@ -1,6 +1,7 @@
 local test = require("test")
 local scheduler = require("scheduler")
 local consts = require("consts")
+local time = require("time")
 
 local function define_tests()
     describe("Dataflow Scheduler", function()
@@ -29,6 +30,74 @@ local function define_tests()
 
                 test.eq(decision.type, scheduler.DECISION_TYPE.COMPLETE_WORKFLOW)
                 test.is_true(decision.payload.success)
+            end)
+
+            it("passivates an indefinite signal wait without a wake timestamp", function()
+                local state = scheduler.create_empty_state()
+                state.nodes.wait = { status = consts.STATUS.RUNNING, type = "await" }
+                state.active_yields.wait = {
+                    wait_for_signal = true,
+                    signal_id = "approval",
+                    signal_data = nil,
+                }
+                local decision = scheduler.find_next_work(state)
+                test.eq(decision.type, scheduler.DECISION_TYPE.PASSIVATE)
+                test.is_nil(decision.payload.wake_at)
+            end)
+
+            it("passivates timed signal waits at the nearest persisted deadline", function()
+                local state = scheduler.create_empty_state()
+                local later = time.now():add(2 * time.HOUR):format(time.RFC3339NANO)
+                local sooner = time.now():add(time.HOUR):format(time.RFC3339NANO)
+                state.nodes.a = { status = consts.STATUS.RUNNING, type = "await" }
+                state.nodes.b = { status = consts.STATUS.RUNNING, type = "await" }
+                state.active_yields.a = {
+                    wait_for_signal = true,
+                    signal_id = "a",
+                    timeout_deadline = later,
+                }
+                state.active_yields.b = {
+                    wait_for_signal = true,
+                    signal_id = "b",
+                    timeout_deadline = sooner,
+                }
+                local decision = scheduler.find_next_work(state)
+                test.eq(decision.type, scheduler.DECISION_TYPE.PASSIVATE)
+                test.eq(decision.payload.wake_at, sooner)
+            end)
+
+            it("restarts a detached parent once its durable child barrier is complete", function()
+                local state = scheduler.create_empty_state()
+                state.nodes.parent = { status = consts.STATUS.PENDING, type = "parallel" }
+                state.nodes.child = { status = consts.STATUS.COMPLETED_SUCCESS, type = "func" }
+                state.active_yields.parent = {
+                    detached = true,
+                    pending_children = { child = consts.STATUS.COMPLETED_SUCCESS },
+                    results = { child = "result-1" },
+                }
+                state.input_tracker.available.parent = { default = true }
+
+                local decision = scheduler.find_next_work(state)
+                test.eq(decision.type, scheduler.DECISION_TYPE.EXECUTE_NODES)
+                test.eq(decision.payload.nodes[1].node_id, "parent")
+                test.eq(decision.payload.nodes[1].trigger_reason, "yield_driven")
+            end)
+
+            it("runs pending children before a detached parent and never schedules the owner generically", function()
+                local state = scheduler.create_empty_state()
+                state.nodes.parent = { status = consts.STATUS.PENDING, type = "parallel" }
+                state.nodes.child = { status = consts.STATUS.PENDING, type = "func" }
+                state.active_yields.parent = {
+                    detached = true,
+                    pending_children = { child = consts.STATUS.PENDING },
+                    child_path = { "parent" },
+                }
+                state.input_tracker.available.parent = { default = true }
+                state.input_tracker.available.child = { default = true }
+
+                local decision = scheduler.find_next_work(state)
+                test.eq(decision.type, scheduler.DECISION_TYPE.EXECUTE_NODES)
+                test.eq(decision.payload.nodes[1].node_id, "child")
             end)
         end)
 

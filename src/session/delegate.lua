@@ -4,9 +4,6 @@ local consts = require("consts")
 local agent_ref = require("agent_ref")
 local ctx = require("ctx")
 
-local DELEGATION_TIMEOUT_MS = 300000
-local DELEGATION_POLL_MS = 500
-
 local function is_empty_table(value)
     if type(value) ~= "table" then
         return false
@@ -127,30 +124,26 @@ local function handle(args)
         return nil, "Failed to create delegation workflow: " .. create_err
     end
 
-    -- Start the child workflow durably, then wait for its terminal status.
-    local _, start_err = (c :: any):start(dataflow_id, {
+    -- Delegation is a synchronous caller, so execute the Dataflow directly.
+    -- Async callers use client:start and observe through their own event hook.
+    local execute_result, execute_err = (c :: any):execute(dataflow_id, {
         init_func_id = "userspace.dataflow.session:artifact"
     })
 
-    if start_err then
-        return nil, "Failed to start delegation workflow: " .. start_err
+    if execute_err then
+        return nil, "Failed to execute delegation workflow: " .. tostring(execute_err)
     end
 
-    local wait_result, wait_err = (c :: any):wait(dataflow_id, {
-        timeout_ms = DELEGATION_TIMEOUT_MS,
-        interval_ms = DELEGATION_POLL_MS
-    })
-
-    if wait_err then
-        return nil, "Failed while waiting for delegation workflow: " .. wait_err
+    if execute_result and execute_result.pending then
+        return {
+            dataflow_id = dataflow_id,
+            pending = true,
+        }
     end
 
-    local output, output_err = (c :: any):output(dataflow_id)
-    if output_err then
-        return nil, "Failed to fetch delegation workflow output: " .. output_err
-    end
+    local output = execute_result and execute_result.data
 
-    if wait_result and not wait_result.success then
+    if execute_result and not execute_result.success then
         return nil, failure_message(output)
     end
 

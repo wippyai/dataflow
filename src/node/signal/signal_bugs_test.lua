@@ -84,7 +84,7 @@ local function define_tests()
                 },
             })
             local d = scheduler.find_next_work(state)
-            test.eq(d.type, scheduler.DECISION_TYPE.NO_WORK, "nil means no signal")
+            test.eq(d.type, scheduler.DECISION_TYPE.PASSIVATE, "nil means no signal")
         end)
 
         it("active signal yield blocks workflow completion even with output", function()
@@ -537,8 +537,11 @@ local function define_tests()
             local sid = "term-" .. uuid.v7()
             local df_id = make_signal_wf(sid)
             c:start(df_id)
-            time.sleep("500ms")
-            test.eq(c:get_status(df_id), consts.STATUS.RUNNING, "waiting for signal")
+            for _ = 1, 30 do
+                if c:get_status(df_id) == consts.STATUS.WAITING then break end
+                time.sleep("100ms")
+            end
+            test.eq(c:get_status(df_id), consts.STATUS.WAITING, "waiting for signal")
 
             local ok, err = c:terminate(df_id)
             test.is_nil(err, "terminate succeeded")

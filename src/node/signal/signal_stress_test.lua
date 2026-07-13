@@ -136,7 +136,7 @@ local function define_tests()
             local iters = math.ceil(timeout_ms / 100)
             for _ = 1, iters do
                 local status = c:get_status(df_id)
-                if status == consts.STATUS.RUNNING then return true end
+                if status == consts.STATUS.WAITING then return true end
                 if status == consts.STATUS.COMPLETED_SUCCESS or status == consts.STATUS.COMPLETED_FAILURE then
                     return false
                 end
@@ -172,7 +172,7 @@ local function define_tests()
                     c:signal(df_id, "wrong-" .. i, { nope = i })
                 end
                 time.sleep("500ms")
-                test.eq(c:get_status(df_id), consts.STATUS.RUNNING, "still waiting")
+                test.eq(c:get_status(df_id), consts.STATUS.WAITING, "still waiting")
 
                 c:signal(df_id, sid, { correct = true })
                 test.is_true(wait_complete(df_id), "correct signal works after noise")
@@ -221,13 +221,13 @@ local function define_tests()
                 kill_orchestrator(df_id)
                 c:signal(df_id, sid1, { gate = 1 })
                 time.sleep("2s")
-                test.eq(c:get_status(df_id), consts.STATUS.RUNNING, "at sig2")
+                test.eq(c:get_status(df_id), consts.STATUS.WAITING, "at sig2")
 
                 -- kill at sig2, send signal
                 kill_orchestrator(df_id)
                 c:signal(df_id, sid2, { gate = 2 })
                 time.sleep("2s")
-                test.eq(c:get_status(df_id), consts.STATUS.RUNNING, "at sig3")
+                test.eq(c:get_status(df_id), consts.STATUS.WAITING, "at sig3")
 
                 -- kill at sig3, send signal
                 kill_orchestrator(df_id)
@@ -270,15 +270,15 @@ local function define_tests()
                 })
                 c:start(df_id)
                 time.sleep("500ms")
-                test.eq(c:get_status(df_id), consts.STATUS.RUNNING, "all 3 waiting")
+                test.eq(c:get_status(df_id), consts.STATUS.WAITING, "all 3 waiting")
 
                 c:signal(df_id, sid_a, { branch = "a" })
                 time.sleep("300ms")
-                test.eq(c:get_status(df_id), consts.STATUS.RUNNING, "2 waiting")
+                test.eq(c:get_status(df_id), consts.STATUS.WAITING, "2 waiting")
 
                 c:signal(df_id, sid_b, { branch = "b" })
                 time.sleep("300ms")
-                test.eq(c:get_status(df_id), consts.STATUS.RUNNING, "1 waiting")
+                test.eq(c:get_status(df_id), consts.STATUS.WAITING, "1 waiting")
 
                 c:signal(df_id, sid_c, { branch = "c" })
                 test.is_true(wait_complete(df_id), "all 3 signals merge")
@@ -388,14 +388,14 @@ local function define_tests()
                 -- restart without signal
                 c:start(df_id)
                 time.sleep("500ms")
-                test.eq(c:get_status(df_id), consts.STATUS.RUNNING, "still waiting")
+                test.eq(c:get_status(df_id), consts.STATUS.WAITING, "still waiting")
 
                 -- kill 2
                 kill_orchestrator(df_id)
                 -- wrong signal
                 c:signal(df_id, "wrong-" .. uuid.v7(), { nope = true })
                 time.sleep("2s")
-                test.eq(c:get_status(df_id), consts.STATUS.RUNNING, "wrong signal ignored")
+                test.eq(c:get_status(df_id), consts.STATUS.WAITING, "wrong signal ignored")
 
                 -- kill 3
                 kill_orchestrator(df_id)
@@ -453,9 +453,9 @@ local function define_tests()
                 -- signal only wf2
                 c:signal(df2, sid, { wf = 2 })
                 time.sleep("500ms")
-                test.eq(c:get_status(df1), consts.STATUS.RUNNING, "wf1 still waiting")
+                test.eq(c:get_status(df1), consts.STATUS.WAITING, "wf1 still waiting")
                 test.eq(c:get_status(df2), consts.STATUS.COMPLETED_SUCCESS, "wf2 done")
-                test.eq(c:get_status(df3), consts.STATUS.RUNNING, "wf3 still waiting")
+                test.eq(c:get_status(df3), consts.STATUS.WAITING, "wf3 still waiting")
 
                 -- signal remaining
                 c:signal(df1, sid, { wf = 1 })
@@ -534,7 +534,7 @@ local function define_tests()
                 time.sleep("500ms")
 
                 -- func branch should be done, signal still waiting
-                test.eq(c:get_status(df_id), consts.STATUS.RUNNING, "waiting for signal")
+                test.eq(c:get_status(df_id), consts.STATUS.WAITING, "waiting for signal")
 
                 -- kill and recover with signal
                 kill_orchestrator(df_id)

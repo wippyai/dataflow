@@ -623,10 +623,6 @@ local function define_tests()
                 }
 
                 parallel._deps.iterator = mock_iterator
-                parallel._deps.time = {
-                    sleep = function(_delay: any)
-                    end
-                }
 
                 local result = parallel.run({})
                 test.is_true(result.success)
@@ -734,7 +730,8 @@ local function define_tests()
                                                 batch_start = 1,
                                                 batch_end = 2,
                                                 attempt_id = "attempt-1",
-                                                submitted_iterations = { 1, 2 }
+                                                submitted_iterations = { 1, 2 },
+                                                run_nodes = { "child-1", "child-2" }
                                             }
                                         },
                                         metadata = {},

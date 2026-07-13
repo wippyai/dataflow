@@ -205,7 +205,7 @@ function dataflow_repo.list_by_user(actor_id, filters)
 end
 
 -- List non-terminal dataflows (pending or running) across all actors, oldest first.
--- Used by the revival sweeper to find runs whose orchestrator may be dead.
+-- Used once at process boot to reconcile runs whose orchestrator died with the app.
 function dataflow_repo.list_non_terminal(limit)
     local db, err_db = get_db()
     if err_db then return nil, err_db end

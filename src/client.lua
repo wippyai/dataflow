@@ -32,10 +32,6 @@ local TERMINAL_STATUS = {
     [consts.STATUS.TERMINATED] = true
 }
 
-local function status_is_success(status)
-    return status == consts.STATUS.COMPLETED_SUCCESS
-end
-
 local function current_scope(deps)
     if deps.security and type(deps.security.scope) == "function" then
         return deps.security.scope()
@@ -189,9 +185,29 @@ function methods:_spawn_orchestrator(dataflow_id, args)
             local spawner = self._deps.process.with_context({}):with_actor(actor)
             local scope = current_scope(self._deps)
             if scope then spawner = spawner:with_scope(scope) end
-            return spawner:spawn(consts.ORCHESTRATOR, consts.HOST_ID, args)
+            local pid, spawn_err = spawner:spawn(consts.ORCHESTRATOR, consts.HOST_ID, args)
+            if pid and type(self._deps.process.send) == "function" then
+                local registered, register_err = self._deps.process.send("dataflow.wakes", "dataflow.orchestrator.started", {
+                    dataflow_id = dataflow_id, pid = pid,
+                })
+                if not registered then
+                    if type(self._deps.process.terminate) == "function" then self._deps.process.terminate(pid) end
+                    return nil, "orchestrator supervision registration failed: " .. tostring(register_err)
+                end
+            end
+            return pid, spawn_err
         end
-        return self._deps.process.spawn(consts.ORCHESTRATOR, consts.HOST_ID, args)
+        local pid, spawn_err = self._deps.process.spawn(consts.ORCHESTRATOR, consts.HOST_ID, args)
+        if pid and type(self._deps.process.send) == "function" then
+            local registered, register_err = self._deps.process.send("dataflow.wakes", "dataflow.orchestrator.started", {
+                dataflow_id = dataflow_id, pid = pid,
+            })
+            if not registered then
+                if type(self._deps.process.terminate) == "function" then self._deps.process.terminate(pid) end
+                return nil, "orchestrator supervision registration failed: " .. tostring(register_err)
+            end
+        end
+        return pid, spawn_err
     end
 
     local provider = self:_identity_contract()
@@ -213,6 +229,15 @@ function methods:_spawn_orchestrator(dataflow_id, args)
     if type(result) ~= "table" or result.success == false then
         return nil, "execution identity spawn failed: " .. tostring(result and result.error or "invalid result")
     end
+    if result.pid and type(self._deps.process.send) == "function" then
+        local registered, register_err = self._deps.process.send("dataflow.wakes", "dataflow.orchestrator.started", {
+            dataflow_id = dataflow_id, pid = result.pid,
+        })
+        if not registered then
+            if type(self._deps.process.terminate) == "function" then self._deps.process.terminate(result.pid) end
+            return nil, "orchestrator supervision registration failed: " .. tostring(register_err)
+        end
+    end
     return result.pid, nil
 end
 
@@ -226,7 +251,7 @@ function methods:create_workflow(commands, options)
     local metadata = options.metadata or {}
 
     -- Persist the optional completion hook durably in metadata so a respawned
-    -- orchestrator (revival sweeper, late signal) still fires it on terminal.
+    -- orchestrator (boot recovery, due wake, or late signal) still fires it.
     if type(options.on_complete) == "string" and options.on_complete ~= "" then
         metadata.on_complete = options.on_complete
     end
@@ -310,7 +335,9 @@ function methods:execute(dataflow_id, options)
         success = orch_result.success,
         dataflow_id = orch_result.dataflow_id or dataflow_id,
         data = nil,
-        error = orch_result.error
+        error = orch_result.error,
+        pending = orch_result.pending == true,
+        passivated = orch_result.passivated == true,
     }
 
     -- Handle workflow failure: return both result AND error so callers can
@@ -326,6 +353,11 @@ function methods:execute(dataflow_id, options)
                 success = false
             }
         })
+    end
+
+
+    if result.pending then
+        return result, nil
     end
 
     -- Handle successful workflow - fetch outputs if requested
@@ -453,7 +485,8 @@ function methods:cancel(dataflow_id, timeout)
     -- Check if workflow can be cancelled
     local cancellable_states = {
         [consts.STATUS.PENDING] = true,
-        [consts.STATUS.RUNNING] = true
+        [consts.STATUS.RUNNING] = true,
+        [consts.STATUS.WAITING] = true
     }
 
     if not cancellable_states[workflow.status] then
@@ -596,37 +629,6 @@ function methods:get_status(dataflow_id)
     return workflow.status, nil
 end
 
-function methods:wait(dataflow_id, options)
-    options = options or {}
-
-    if not dataflow_id or dataflow_id == "" then
-        return nil, "Workflow ID is required"
-    end
-
-    local timeout_ms = options.timeout_ms or 120000
-    local interval_ms = options.interval_ms or 250
-    local max_attempts = math.max(1, math.ceil(timeout_ms / interval_ms))
-
-    for _ = 1, max_attempts do
-        local status, status_err = self:get_status(dataflow_id)
-        if status_err then
-            return nil, status_err
-        end
-
-        if TERMINAL_STATUS[status] then
-            return {
-                dataflow_id = dataflow_id,
-                status = status,
-                success = status_is_success(status)
-            }, nil
-        end
-
-        time.sleep(tostring(interval_ms) .. "ms")
-    end
-
-    return nil, "Workflow did not complete before timeout: " .. dataflow_id
-end
-
 -- Send a signal to a waiting signal node in a workflow.
 -- If the orchestrator is dead, respawns it to process the signal from the outbox.
 function methods:signal(dataflow_id, signal_id, data)
@@ -676,6 +678,12 @@ function methods:signal(dataflow_id, signal_id, data)
         return nil, "Failed to send signal: " .. tostring(err)
     end
 
+    -- NODE_SIGNAL atomically creates an immediate targeted wake row. Nudge the
+    -- single wake process for latency; durability does not depend on this send.
+    if type(self._deps.process.send) == "function" then
+        self._deps.process.send("dataflow.wakes", "dataflow.wake.changed", { dataflow_id = dataflow_id })
+    end
+
     -- 2. Check if orchestrator is alive
     local pid = self._deps.process.registry.lookup("dataflow." .. dataflow_id)
     if not pid then
@@ -698,7 +706,7 @@ end
 -- one is registered, otherwise respawns the orchestrator under the workflow's frozen
 -- identity. The orchestrator's registry single-instance guard makes a concurrent
 -- double-spawn safe, and its terminal-status guard makes reviving a finished run a
--- no-op. Used by the revival sweeper.
+-- no-op. Used by signal delivery and one-shot boot recovery.
 function methods:revive(dataflow_id)
     if not dataflow_id or dataflow_id == "" then
         return nil, "Workflow ID is required"

@@ -658,6 +658,43 @@ local function define_tests()
                 test.contains(err, "Failed to query output data")
             end)
 
+            it("uses child output when the parent projection read fails", function()
+                local parent_node = { dataflow_id = "test-df", node_id = "parallel-parent" }
+                local iteration_info = {
+                    iteration = 1,
+                    attempt_id = "attempt-1",
+                    uuid_mapping = { template1 = "actual-node-1" },
+                }
+                local mock_data_reader = {
+                    with_dataflow = function()
+                        return {
+                            with_nodes = function(_self: any, node_ids: any)
+                                local is_parent = node_ids == "parallel-parent"
+                                local builder: any = {}
+                                function builder:with_data_types() return self end
+                                function builder:with_data_discriminators() return self end
+                                function builder:fetch_options() return self end
+                                function builder:all()
+                                    if is_parent then return nil, "parent projection unavailable" end
+                                    return { {
+                                        data_id = "out-1",
+                                        type = consts.DATA_TYPE.NODE_OUTPUT,
+                                        content = { ok = true },
+                                    } }, nil
+                                end
+                                return builder
+                            end,
+                        }, nil
+                    end,
+                }
+
+                local result, err = iterator.collect_results(parent_node, iteration_info, {
+                    data_reader = mock_data_reader,
+                })
+                test.is_nil(err)
+                test.is_table(result)
+            end)
+
             it("should handle no output data", function()
                 local parent_node = {
                     dataflow_id = "test-df"

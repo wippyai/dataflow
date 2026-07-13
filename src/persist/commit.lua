@@ -447,6 +447,41 @@ function commit._create_commit_only(commit_id, dataflow_id, payload, metadata)
         return nil, "Failed to create commit: " .. err_exec
     end
 
+    -- Project every durable trigger in the same transaction as its outbox
+    -- commit. Keys are transition identities, never timestamps or result data.
+    local commands = type(payload) == "table" and payload.commands or {}
+    for _, command in ipairs(type(commands) == "table" and commands or {}) do
+        local row = type(command) == "table" and command or {}
+        local body = type(row.payload) == "table" and row.payload or {}
+        if row.type == consts.COMMAND_TYPES.CREATE_DATA and body.data_type == consts.DATA_TYPE.NODE_SIGNAL then
+            local signal_data_id = body.data_id
+            if type(signal_data_id) == "string" and signal_data_id ~= "" then
+                local _, wake_err = tx:execute([[
+                    INSERT INTO dataflow_wakes(dataflow_id, wake_key, wake_at) VALUES (?, ?, ?)
+                    ON CONFLICT(dataflow_id, wake_key) DO NOTHING
+                ]], { dataflow_id, "signal:" .. signal_data_id, created_at })
+                if wake_err then
+                    tx:rollback(); db:release()
+                    return nil, "Failed to project signal wake: " .. tostring(wake_err)
+                end
+            end
+        elseif row.type == consts.COMMAND_TYPES.CREATE_DATA and body.data_type == consts.DATA_TYPE.NODE_YIELD and
+            type(body.content) == "table" and type(body.content.yield_context) == "table" then
+            local deadline = body.content.yield_context.timeout_deadline
+            local yield_id = body.content.yield_id or body.key
+            if type(deadline) == "string" and deadline ~= "" and type(yield_id) == "string" and yield_id ~= "" then
+                local _, wake_err = tx:execute([[
+                    INSERT INTO dataflow_wakes(dataflow_id, wake_key, wake_at) VALUES (?, ?, ?)
+                    ON CONFLICT(dataflow_id, wake_key) DO UPDATE SET wake_at = excluded.wake_at
+                ]], { dataflow_id, "yield:" .. yield_id, deadline })
+                if wake_err then
+                    tx:rollback(); db:release()
+                    return nil, "Failed to project yield wake: " .. tostring(wake_err)
+                end
+            end
+        end
+    end
+
     -- Commit transaction
     local _, err_commit = tx:commit()
     if err_commit then

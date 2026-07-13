@@ -106,7 +106,7 @@ local function define_tests()
             local iterations = math.ceil(timeout_ms / 100)
             for _ = 1, iterations do
                 local status = c:get_status(df_id)
-                if status == consts.STATUS.RUNNING then return true end
+                if status == consts.STATUS.WAITING then return true end
                 if status == consts.STATUS.COMPLETED_SUCCESS or status == consts.STATUS.COMPLETED_FAILURE then
                     return false
                 end
@@ -182,7 +182,7 @@ local function define_tests()
                     time.sleep("200ms")
                 end
 
-                test.eq(c:get_status(df_id), consts.STATUS.RUNNING, "still running after 5 cycles")
+                test.eq(c:get_status(df_id), consts.STATUS.WAITING, "still running after 5 cycles")
                 c:signal(df_id, sid, { cycles = 5 })
                 test.is_true(wait_complete(df_id, 8000), "completed after rapid cycles")
             end)
@@ -285,7 +285,7 @@ local function define_tests()
 
                 -- still no signal
                 time.sleep("500ms")
-                test.eq(c:get_status(df_id), consts.STATUS.RUNNING, "still waiting")
+                test.eq(c:get_status(df_id), consts.STATUS.WAITING, "still waiting")
 
                 -- kill again, this time with signal
                 kill_orchestrator(df_id)
@@ -308,8 +308,8 @@ local function define_tests()
                 c:start(df1)
                 c:start(df2)
                 time.sleep("300ms")
-                test.eq(c:get_status(df1), consts.STATUS.RUNNING, "wf1 running")
-                test.eq(c:get_status(df2), consts.STATUS.RUNNING, "wf2 running")
+                test.eq(c:get_status(df1), consts.STATUS.WAITING, "wf1 running")
+                test.eq(c:get_status(df2), consts.STATUS.WAITING, "wf2 running")
 
                 -- kill both
                 kill_orchestrator(df1)

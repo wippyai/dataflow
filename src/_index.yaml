@@ -247,6 +247,8 @@ entries:
         path: ".meta.target_db"
       - entry: userspace.dataflow.migrations:06_add_durability_indexes
         path: ".meta.target_db"
+      - entry: userspace.dataflow.migrations:07_create_dataflow_wakes
+        path: ".meta.target_db"
 
   - name: web_host_origin_env
     kind: ns.requirement
@@ -269,10 +271,10 @@ entries:
   - name: process_host
     kind: ns.requirement
     meta:
-      description: "Process host the supervised revival sweeper service runs on"
+      description: "Process host the targeted dataflow wake service runs on"
     default: app:processes
     targets:
-      - entry: userspace.dataflow.runner:sweeper.service
+      - entry: userspace.dataflow.runner:wake_process.service
         path: .host
 
   - name: user_security_scope
@@ -285,12 +287,12 @@ entries:
       - entry: userspace.dataflow.security:runtime_process_registry
         path: ".groups +="
 
-  - name: sweeper_security_scope
+  - name: wake_security_scope
     kind: ns.requirement
     meta:
-      description: "Application security scope/group for the supervised dataflow revival sweeper"
+      description: "Application security scope/group for the targeted dataflow wake service"
     targets:
-      - entry: userspace.dataflow.runner:sweeper.service
+      - entry: userspace.dataflow.runner:wake_process.service
         path: ".lifecycle.security.groups +="
 
   # Dependencies

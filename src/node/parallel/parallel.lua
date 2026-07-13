@@ -13,9 +13,9 @@ parallel._deps = {
     iterator = require("iterator"),
     funcs = require("funcs"),
     json = require("json"),
-    time = require("time"),
     uuid = require("uuid"),
-    consts = require("consts")
+    consts = require("consts"),
+    node_reader = require("node_reader")
 }
 
 parallel.DEFAULTS = {
@@ -61,9 +61,6 @@ parallel.ERRORS = {
     INVALID_PIPELINE_STEP = "INVALID_PIPELINE_STEP",
     INVALID_EXTRACTOR = "INVALID_EXTRACTOR"
 }
-
-parallel.RECOVERY_READ_ATTEMPTS = 5
-parallel.RECOVERY_READ_DELAY = "25ms"
 
 local function create_array(size)
     return table.create(math.floor(size or 0), 0)
@@ -426,12 +423,12 @@ end
 local function gather_run_nodes(iterations)
     local total_run_nodes = 0
     for _, iteration in ipairs(iterations) do
-        if type(iteration.root_nodes) == "table" and #iteration.root_nodes > 0 then
-            total_run_nodes = total_run_nodes + #iteration.root_nodes
-        elseif type(iteration.uuid_mapping) == "table" then
+        if type(iteration.uuid_mapping) == "table" and next(iteration.uuid_mapping) ~= nil then
             for _ in pairs(iteration.uuid_mapping) do
                 total_run_nodes = total_run_nodes + 1
             end
+        elseif type(iteration.root_nodes) == "table" then
+            total_run_nodes = total_run_nodes + #iteration.root_nodes
         end
     end
 
@@ -439,13 +436,13 @@ local function gather_run_nodes(iterations)
     local run_node_count = 0
 
     for _, iteration in ipairs(iterations) do
-        if type(iteration.root_nodes) == "table" and #iteration.root_nodes > 0 then
-            for _, node_id in ipairs(iteration.root_nodes) do
+        if type(iteration.uuid_mapping) == "table" and next(iteration.uuid_mapping) ~= nil then
+            for _, node_id in pairs(iteration.uuid_mapping) do
                 run_node_count = run_node_count + 1
                 run_nodes[run_node_count] = node_id
             end
-        elseif type(iteration.uuid_mapping) == "table" then
-            for _, node_id in pairs(iteration.uuid_mapping) do
+        elseif type(iteration.root_nodes) == "table" then
+            for _, node_id in ipairs(iteration.root_nodes) do
                 run_node_count = run_node_count + 1
                 run_nodes[run_node_count] = node_id
             end
@@ -826,6 +823,18 @@ local function normalize_submitted_iterations(submitted_iterations, batch_start,
     return normalized
 end
 
+local function normalize_string_array(values)
+    local normalized = {}
+    local seen = {}
+    for _, value in ipairs(type(values) == "table" and values or {}) do
+        if type(value) == "string" and value ~= "" and not seen[value] then
+            seen[value] = true
+            table.insert(normalized, value)
+        end
+    end
+    return normalized
+end
+
 local function normalize_progress_cursor(content, total_iterations)
     local cursor = {
         next_batch_start = 1,
@@ -855,7 +864,8 @@ local function normalize_progress_cursor(content, total_iterations)
                     content.active_batch.submitted_iterations,
                     batch_start,
                     batch_end
-                )
+                ),
+                run_nodes = normalize_string_array(content.active_batch.run_nodes)
             }
         end
     end
@@ -1189,30 +1199,6 @@ local function merge_loaded_completions(parallel_result, items, progress: any, l
     end
 end
 
-local function await_late_iteration_rows(n, parallel_result, items, progress: any, pending_iterations)
-    if #pending_iterations == 0 then
-        return pending_iterations
-    end
-
-    if type(parallel._deps.time) ~= "table" or type(parallel._deps.time.sleep) ~= "function" then
-        return pending_iterations
-    end
-
-    for _ = 1, parallel.RECOVERY_READ_ATTEMPTS do
-        parallel._deps.time.sleep(parallel.RECOVERY_READ_DELAY)
-
-        local loaded_progress = load_parallel_progress(n, #items)
-        merge_loaded_completions(parallel_result, items, progress, loaded_progress, pending_iterations)
-
-        pending_iterations = collect_pending_iterations(progress)
-        if #pending_iterations == 0 then
-            return pending_iterations
-        end
-    end
-
-    return pending_iterations
-end
-
 local function discard_queued_commands(n)
     if type(n._queued_commands) == "table" then
         n._queued_commands = table.create(10, 0)
@@ -1258,7 +1244,51 @@ local function recover_active_batch(n, config: any, failure_strategy, parallel_r
     end
 
     if pending_count > 0 then
-        pending_iterations = await_late_iteration_rows(n, parallel_result, items, progress, pending_iterations)
+        local run_nodes = normalize_string_array(active_batch.run_nodes)
+        if #run_nodes == 0 then
+            local reader, reader_err = parallel._deps.node_reader.with_dataflow(n.dataflow_id)
+            if not reader then return nil, prefixed_error("Recovery node read failed: ", reader_err, "unknown") end
+            local rows, rows_err = (reader :: any):with_parent_nodes(n.node_id):all()
+            if rows_err then return nil, prefixed_error("Recovery node read failed: ", rows_err, "unknown") end
+            local submitted = {}
+            for _, iteration_index in ipairs(active_batch.submitted_iterations or {}) do
+                submitted[iteration_index] = true
+            end
+            for _, row in ipairs(rows or {}) do
+                local metadata = type(row.metadata) == "table" and row.metadata or {}
+                if submitted[tonumber(metadata.iteration)] and
+                    (metadata.attempt_id == nil or metadata.attempt_id == active_batch.attempt_id) and
+                    row.status ~= parallel._deps.consts.STATUS.TEMPLATE then
+                    table.insert(run_nodes, row.node_id)
+                end
+            end
+        end
+        if #run_nodes > 0 then
+            local _, yield_err = n:yield({ run_nodes = run_nodes })
+            if yield_err then return nil, prefixed_error("Recovery yield failed: ", yield_err, "unknown") end
+        end
+
+        local loaded_progress = load_parallel_progress(n, #items)
+        merge_loaded_completions(parallel_result, items, progress, loaded_progress, pending_iterations)
+        pending_iterations = collect_pending_iterations(progress)
+
+        local still_pending = {}
+        for _, iteration_index in ipairs(pending_iterations) do
+            local iteration = build_iteration_record(items, iteration_index :: number, active_batch.attempt_id)
+            local completion, recover_err = recover_iteration_completion(
+                n, config, failure_strategy, parallel_result, iteration)
+            if recover_err then return nil, recover_err end
+            if completion then
+                progress.completed_iterations[iteration_index] = completion
+                local submit_ok, submit_err = persist_iteration_completion(n, completion)
+                if not submit_ok then
+                    return nil, prefixed_error("Failed to persist parallel iteration progress: ", submit_err, "unknown")
+                end
+            else
+                table.insert(still_pending, iteration_index)
+            end
+        end
+        pending_iterations = still_pending
     end
 
     if #pending_iterations == 0 then
@@ -1341,13 +1371,14 @@ local function process_batch(n, template_graph, items, batch_start, batch_end, i
         return nil
     end
 
+    local run_nodes = gather_run_nodes(iterations)
+    progress.cursor.active_batch.run_nodes = run_nodes
     local cursor_ok, cursor_err = queue_parallel_cursor(n, progress.cursor)
     if not cursor_ok then
         discard_queued_commands(n)
         return prefixed_error("Failed to persist parallel cursor: ", cursor_err, "unknown")
     end
 
-    local run_nodes = gather_run_nodes(iterations)
     if #run_nodes > 0 then
         local _, yield_err = n:yield({ run_nodes = run_nodes })
         if yield_err then

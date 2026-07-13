@@ -19,7 +19,8 @@ consts.MESSAGE_TOPIC = {
     COMMIT_REQUEST = "dataflow.commit_request",
     COMMIT = "dataflow.commit",
     COMMIT_RESPONSE_PREFIX = "dataflow.commit.",
-    YIELD_REPLY_PREFIX = "dataflow.yield_reply."
+    YIELD_REPLY_PREFIX = "dataflow.yield_reply.",
+    WAKE = "dataflow.wake"
 }
 
 -- Command constants
@@ -56,6 +57,7 @@ consts.STATUS = {
     PENDING = "pending",
     READY = "ready",
     RUNNING = "running",
+    WAITING = "waiting",
     PAUSED = "paused",
     COMPLETED_SUCCESS = "completed",
     COMPLETED_FAILURE = "failed",
@@ -70,8 +72,10 @@ consts.DATA_TYPE = {
     NODE_INPUT = "node.input",
     NODE_YIELD = "node.yield",
     NODE_YIELD_RESULT = "node.yield.result",
+    NODE_PARK_ARMED = "node.park.armed",
     NODE_RESULT = "node.result",
     NODE_SIGNAL = "node.signal",
+    NODE_SIGNAL_CONSUMED = "node.signal.consumed",
     NODE_CONFIG = "node.config",
     WORKFLOW_OUTPUT = "dataflow.output",
     WORKFLOW_INPUT = "dataflow.input",

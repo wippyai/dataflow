@@ -556,7 +556,7 @@ local function durable_yield(self: table, options: any, park: boolean)
                     timeout = options.timeout,
                     timeout_ms = timeout_ms,
                     timeout_deadline = timeout_deadline,
-                    park_ack = park,
+                    park_ack = options.wait_for_signal == true,
                     arm = park and options.arm or nil,
                 }
             },
@@ -586,7 +586,7 @@ local function durable_yield(self: table, options: any, park: boolean)
             timeout = options.timeout,
             timeout_ms = timeout_ms,
             timeout_deadline = timeout_deadline,
-            park_ack = park,
+            park_ack = options.wait_for_signal == true,
             arm = park and options.arm or nil,
         }
     }
@@ -610,7 +610,13 @@ local function durable_yield(self: table, options: any, park: boolean)
         return nil, "Yield channel closed"
     end
 
-    if park then
+    if options.wait_for_signal == true then
+        -- Prequeued signal compatibility: the orchestrator may satisfy the
+        -- durable wait immediately instead of issuing a separate park ACK.
+        if type(received) == "table" and type(received.response_data) == "table" then
+            self._last_yield_id = yield_id
+            return received.response_data.run_node_results or table.create(0, 0), nil
+        end
         if type(received) ~= "table" or received.yield_id ~= yield_id then
             return nil, { code = "PARK_ACK_UNAVAILABLE", message = "park acknowledgement unavailable" }
         end
@@ -619,10 +625,16 @@ local function durable_yield(self: table, options: any, park: boolean)
             return nil, { code = "PARK_ARM_FAILED", message = tostring(received.error or "unknown") }
         end
 
-        received, ok = self._yield_channel:receive()
-        if not ok then
-            return nil, "Yield channel closed"
+        if type(received.response_data) == "table" then
+            self._last_yield_id = yield_id
+            return received.response_data.run_node_results or table.create(0, 0), nil
         end
+
+        -- The signal wait is now durable, externally armed when requested, and
+        -- wait registered in the indexed wake queue by the orchestrator.
+        -- Release this node process; signal or due-wake delivery reactivates it.
+        self._last_yield_id = yield_id
+        return nil, nil
     end
 
     self._last_yield_id = yield_id

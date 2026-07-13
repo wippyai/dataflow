@@ -12,6 +12,8 @@ local orchestrator = {
     channel = channel,
     funcs = require("funcs"),
     commit = require("commit"),
+    wake_repo = require("wake_repo"),
+    wake_process = require("wake_process"),
     security = security
 }
 
@@ -79,7 +81,7 @@ end
 ---@param result table Final orchestration result
 ---@return table result
 local function finish(state, result)
-    fire_completion_hook(state, result)
+    if TERMINAL_STATUS[state.final_status] then fire_completion_hook(state, result) end
     return result
 end
 
@@ -252,6 +254,47 @@ local function call_scheduler_and_handle(state: any)
                 return cont
             end
             -- re-enter the loop: yield satisfied, state changed, re-schedule
+        elseif decision.type == orchestrator.scheduler.DECISION_TYPE.PASSIVATE then
+            state.workflow_state:queue_commands({
+                type = consts.COMMAND_TYPES.UPDATE_WORKFLOW,
+                payload = { status = consts.STATUS.WAITING },
+            })
+            local _, status_err = state.workflow_state:persist()
+            if status_err then
+                state.running = false
+                state.exit_result = {
+                    success = false,
+                    dataflow_id = state.dataflow_id,
+                    error = "Failed to persist waiting status: " .. tostring(status_err),
+                }
+                return false
+            end
+            local unclaimed_wakes = {}
+            if type(state.workflow_state.take_unclaimed_signal_wake_keys) == "function" then
+                unclaimed_wakes = state.workflow_state:take_unclaimed_signal_wake_keys()
+            end
+            for _, wake_key in ipairs(unclaimed_wakes) do
+                local _, cleanup_err = orchestrator.wake_repo.remove(state.dataflow_id, wake_key)
+                if cleanup_err then
+                    logger:warn("unclaimed signal wake cleanup failed", {
+                        dataflow_id = state.dataflow_id,
+                        wake_key = wake_key,
+                        error = tostring(cleanup_err),
+                    })
+                end
+            end
+            -- NODE_YIELD projected its deadline atomically. Do not rewrite the
+            -- wake here: a concurrent NODE_SIGNAL may already have replaced it
+            -- with an immediate wake between this decision and persistence.
+            orchestrator.wake_process.notify()
+            state.running = false
+            state.exit_result = {
+                success = true,
+                pending = true,
+                passivated = true,
+                dataflow_id = state.dataflow_id,
+            }
+            return false
         else
             return true
         end
@@ -468,6 +511,20 @@ function handle_complete_workflow(state: any, payload: any)
     state.workflow_state:queue_commands(commands)
     local persist_result, persist_err = state.workflow_state:persist()
 
+    if persist_err then
+        state.exit_result = {
+            success = false,
+            dataflow_id = state.dataflow_id,
+            error = "Failed to persist workflow completion: " .. tostring(persist_err),
+        }
+        state.running = false
+        return false
+    end
+
+    local _, clear_err = orchestrator.wake_repo.clear(state.dataflow_id)
+    if clear_err then logger:warn("terminal wake cleanup failed", { dataflow_id = state.dataflow_id, error = tostring(clear_err) }) end
+    orchestrator.wake_process.notify()
+
     state.final_status = final_status
 
     if success then
@@ -491,7 +548,7 @@ end
 -- Invoke a persisted park arm under the workflow's recovered authority. The
 -- declaration contains only a function ref and data; it cannot override actor
 -- or scope. Returns a structured error payload for the waiting node.
-function orchestrator.arm_parked_yield(state: any, arm: any): any?
+function orchestrator.arm_parked_yield(state: any, arm: any, idempotency_key: string?): any?
     local declaration = type(arm) == "table" and arm or {}
     local arm_ref = type(declaration.ref) == "string" and declaration.ref or ""
     if arm_ref == "" then
@@ -501,8 +558,13 @@ function orchestrator.arm_parked_yield(state: any, arm: any): any?
     local executor = orchestrator.funcs.new()
     if state.actor then executor = executor:with_actor(state.actor) end
     if state.scope then executor = executor:with_scope(state.scope) end
+    local arm_args = {}
+    for key, value in pairs(type(declaration.args) == "table" and declaration.args or {}) do arm_args[key] = value end
+    -- Reserved by Dataflow: retries across any number of process crashes must
+    -- address the same external side effect.
+    arm_args.idempotency_key = idempotency_key
     local ok, result_or_error, call_err = pcall(function()
-        return executor:call(arm_ref, type(declaration.args) == "table" and declaration.args or {})
+        return executor:call(arm_ref, arm_args)
     end)
     if not ok then
         return { code = "PARK_ARM_FAILED", message = tostring(result_or_error) }
@@ -517,12 +579,79 @@ end
 -- after this returns, so even an already-persisted signal cannot beat the ACK to
 -- the node's reply mailbox.
 function orchestrator.track_signal_yield(state: any, node_id: string, yield_info: any, from_pid: any)
+    local before = state.workflow_state:get_scheduler_snapshot().active_yields[node_id]
+    yield_info.episode_id = yield_info.yield_id
+    yield_info.wake_keys = { "yield:" .. tostring(yield_info.yield_id) }
+    if before and before.signal_id == yield_info.signal_id then
+        -- A reattached node keeps the original absolute deadline. Recomputing
+        -- it from config would make every restart extend the timeout.
+        yield_info.timeout = before.timeout
+        yield_info.timeout_ms = before.timeout_ms
+        yield_info.timeout_deadline = before.timeout_deadline
+        yield_info.episode_id = before.episode_id or before.yield_id
+        yield_info.wake_keys = {}
+        for _, wake_key in ipairs(type(before.wake_keys) == "table" and before.wake_keys or
+            { "yield:" .. tostring(before.yield_id) }) do
+            table.insert(yield_info.wake_keys, wake_key)
+        end
+        table.insert(yield_info.wake_keys, "yield:" .. tostring(yield_info.yield_id))
+        yield_info.signal_data = before.signal_data
+        yield_info.signal_wake_key = before.signal_wake_key
+        yield_info.signal_wake_keys = before.signal_wake_keys
+    end
+    local has_arm = type(yield_info.arm) == "table" and type(yield_info.arm.ref) == "string"
+    local already_armed = not has_arm or (before and before.arm_completed == true)
     state.workflow_state:track_yield(node_id, yield_info)
     if yield_info.park_ack ~= true or type(yield_info.reply_to) ~= "string" or not yield_info.yield_id then
         return
     end
 
-    local arm_error = orchestrator.arm_parked_yield(state, yield_info.arm)
+    -- A durable signal or due wake may already be present when this passivated
+    -- node reattaches. Persist satisfaction and combine it with the park ACK so
+    -- the node never exits between acknowledgement and its resume value.
+    local decision = orchestrator.scheduler.find_next_work(state.workflow_state:get_scheduler_snapshot())
+    if decision.type == orchestrator.scheduler.DECISION_TYPE.SATISFY_YIELD and
+       decision.payload.parent_id == node_id then
+        state.workflow_state:satisfy_yield(node_id, decision.payload.results or {})
+        local _, persist_err = state.workflow_state:persist()
+        if persist_err then
+            state.workflow_state:abandon_yield(node_id)
+            orchestrator.process.send(tostring(from_pid), yield_info.reply_to, {
+                yield_id = yield_info.yield_id,
+                parked = false,
+                error = { code = "PARK_RESUME_FAILED", message = tostring(persist_err) },
+            })
+            return
+        end
+        orchestrator.process.send(tostring(from_pid), yield_info.reply_to, {
+            yield_id = yield_info.yield_id,
+            parked = true,
+            response_data = {
+                ok = true,
+                run_node_results = decision.payload.results or {},
+                all_completed = true,
+            },
+        })
+        return
+    end
+
+    local arm_error = nil
+    local arm_key = state.dataflow_id .. ":park:" .. tostring(yield_info.episode_id)
+    if not already_armed then arm_error = orchestrator.arm_parked_yield(state, yield_info.arm, arm_key) end
+    if not arm_error and has_arm then
+        state.workflow_state:queue_commands({
+            type = consts.COMMAND_TYPES.CREATE_DATA,
+            payload = {
+                data_id = uuid.v7(),
+                data_type = consts.DATA_TYPE.NODE_PARK_ARMED,
+                content = { armed = true },
+                key = yield_info.yield_id,
+                node_id = node_id,
+            },
+        })
+        local _, armed_err = state.workflow_state:persist()
+        if armed_err then arm_error = { code = "PARK_ARM_STATE_FAILED", message = tostring(armed_err) } end
+    end
     if arm_error then
         state.workflow_state:abandon_yield(node_id)
         orchestrator.process.send(tostring(from_pid), yield_info.reply_to, {
@@ -531,10 +660,35 @@ function orchestrator.track_signal_yield(state: any, node_id: string, yield_info
             error = arm_error,
         })
     else
-        orchestrator.process.send(tostring(from_pid), yield_info.reply_to, {
+        local prepared, prepare_err = state.workflow_state:prepare_passivation(node_id)
+        if not prepared then
+            orchestrator.process.send(tostring(from_pid), yield_info.reply_to, {
+                yield_id = yield_info.yield_id,
+                parked = false,
+                error = { code = "PARK_PASSIVATION_FAILED", message = tostring(prepare_err) },
+            })
+            return
+        end
+        local _, persist_err = state.workflow_state:persist()
+        if persist_err then
+            orchestrator.process.send(tostring(from_pid), yield_info.reply_to, {
+                yield_id = yield_info.yield_id,
+                parked = false,
+                error = { code = "PARK_PASSIVATION_FAILED", message = tostring(persist_err) },
+            })
+            return
+        end
+        if type(yield_info.timeout_deadline) == "string" then orchestrator.wake_process.notify() end
+        local ack_sent = orchestrator.process.send(tostring(from_pid), yield_info.reply_to, {
             yield_id = yield_info.yield_id,
             parked = true,
         })
+        if not ack_sent then
+            -- The durable WAITING transition is already committed. Do not
+            -- leave a live node blocked forever on a reply that never arrived;
+            -- LINK_DOWN recovery will detach it and the targeted wake retries.
+            orchestrator.process.terminate(tostring(from_pid))
+        end
     end
 end
 
@@ -615,7 +769,17 @@ local function handle_yield_request(state: any, msg_payload: any, from_pid: any)
             if type(child_id) == "string" then
                 local child_node = state.workflow_state:get_node(child_id)
                 if child_node and child_node.status ~= consts.STATUS.TEMPLATE then
-                    yield_info.pending_children[child_id] = consts.STATUS.PENDING
+                    -- Recovery may re-establish a barrier after some or all
+                    -- children have already committed terminal state. Preserve
+                    -- that durable status instead of inventing pending work
+                    -- that can never emit another EXIT event.
+                    yield_info.pending_children[child_id] = child_node.status
+                    if child_node.status == consts.STATUS.COMPLETED_SUCCESS or
+                        child_node.status == consts.STATUS.COMPLETED_FAILURE then
+                        local result_data_id = type(state.workflow_state.get_node_result_data_id) == "function" and
+                            state.workflow_state:get_node_result_data_id(child_id) or nil
+                        if result_data_id then yield_info.results[child_id] = result_data_id end
+                    end
                 end
             end
         end
@@ -644,6 +808,22 @@ local function handle_process_event(state: any, event: any)
     end
 
     if not node_id then
+        return true
+    end
+
+
+    local snapshot = state.workflow_state:get_scheduler_snapshot()
+    local parked = snapshot.active_yields and snapshot.active_yields[node_id]
+    local parked_node = snapshot.nodes and snapshot.nodes[node_id]
+    local event_value = event.result and event.result.value
+    local clean_exit = event.kind == orchestrator.process.event.EXIT and
+        (not event.result or not event.result.error) and
+        not (type(event_value) == "table" and event_value.success == false)
+    local prepared_link_down = event.kind == orchestrator.process.event.LINK_DOWN and
+        parked and parked.detached == true and parked_node and parked_node.status == consts.STATUS.WAITING
+    if (clean_exit or prepared_link_down) and parked and parked.park_ack == true and parked.wait_for_signal == true then
+        state.active_processes[node_id] = nil
+        state.workflow_state:passivate_process(from_pid)
         return true
     end
 
@@ -677,6 +857,12 @@ local function handle_process_event(state: any, event: any)
     local terminal_result = result_data
     if not success and (type(result_data) ~= "table" or result_data.success ~= false) then
         terminal_result = error_reason
+    end
+    -- A child can submit its routed output immediately before EXIT. Apply that
+    -- durable commit before deadlock analysis so newly-runnable descendants are
+    -- never mistaken for unreachable branches and cancelled.
+    if not load_startup_pending_commits(state) or not process_pending_commits(state) then
+        return false
     end
     local exit_info = state.workflow_state:handle_process_exit(from_pid, success, terminal_result)
 
@@ -728,6 +914,8 @@ local function handle_cancellation(state: any, event: any)
         }
     })
     local persist_result, persist_err = state.workflow_state:persist()
+    orchestrator.wake_repo.clear(state.dataflow_id)
+    orchestrator.wake_process.notify()
 
     state.final_status = consts.STATUS.CANCELLED
     state.exit_result = {
@@ -796,12 +984,21 @@ local function run(args)
         }
     end
 
-    -- Terminal-status guard: a respawned orchestrator (revival sweeper, late signal,
+    -- Terminal-status guard: a respawned orchestrator (boot recovery, due wake, late signal,
     -- duplicate spawn) must not schedule work on an already-finished dataflow.
     -- The completion hook fired in the life that reached terminal; a module-level
     -- reconciler backstops any hook missed to a crash between persist and hook call.
     local loaded_status = workflow_state:get_dataflow_status()
     if loaded_status and TERMINAL_STATUS[loaded_status] then
+        local _, clear_err = orchestrator.wake_repo.clear(dataflow_id)
+        if clear_err then
+            return {
+                success = false,
+                dataflow_id = dataflow_id,
+                error = "Failed to clear stale terminal wake: " .. tostring(clear_err),
+            }
+        end
+        orchestrator.wake_process.notify()
         orchestrator.process.registry.unregister("dataflow." .. dataflow_id)
         return {
             success = true,
@@ -903,30 +1100,13 @@ local function run(args)
         })
     end
 
-    -- Main processing loop
+    -- Main processing loop. Signal waits leave through PASSIVATE; a durable
+    -- signal commit or indexed due wake starts the next orchestrator life.
     while state.running do
-        local timer_channel = nil
-        local next_wake_duration = nil
-        if type(orchestrator.scheduler.next_wake_duration) == "function" then
-            next_wake_duration = orchestrator.scheduler.next_wake_duration(
-                state.workflow_state:get_scheduler_snapshot()
-            )
-        end
-
-        if next_wake_duration ~= nil and next_wake_duration <= 0 then
-            call_scheduler_and_handle(runtime_state)
-            goto continue
-        elseif next_wake_duration ~= nil then
-            timer_channel = time.after(next_wake_duration)
-        end
-
         local select_cases = {
             inbox:case_receive(),
             events:case_receive()
         }
-        if timer_channel then
-            table.insert(select_cases, timer_channel:case_receive())
-        end
 
         local result = orchestrator.channel.select(select_cases)
 
@@ -957,6 +1137,15 @@ local function run(args)
                     handle_yield_request(runtime_state, payload_table, from_pid)
                     call_scheduler_and_handle(runtime_state)
                 end
+            elseif topic == consts.MESSAGE_TOPIC.WAKE then
+                -- The targeted wake row is already due. No status polling or
+                -- broad scan: re-enter the pure scheduler against durable state.
+                if payload_table and type(runtime_state.workflow_state.observe_signal_wake) == "function" then
+                    runtime_state.workflow_state:observe_signal_wake(payload_table.wake_key)
+                end
+                local loaded = load_startup_pending_commits(runtime_state)
+                if loaded then process_pending_commits(runtime_state) end
+                call_scheduler_and_handle(runtime_state)
             end
         elseif result.channel == events then
             local event = result.value
@@ -973,11 +1162,7 @@ local function run(args)
                     call_scheduler_and_handle(runtime_state)
                 end
             end
-        elseif timer_channel and result.channel == timer_channel then
-            call_scheduler_and_handle(runtime_state)
         end
-
-        ::continue::
     end
 
     -- Clean up and return result

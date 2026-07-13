@@ -28,14 +28,3 @@ entries:
       private: true
     variable: DATAFLOW_CHECKPOINT_FUNCTION_ID
     storage: userspace.dataflow.env:memory
-
-  # userspace.dataflow.env:revival_interval_seconds
-  - name: revival_interval_seconds
-    kind: env.variable
-    meta:
-      comment: Seconds between revival sweeper scans for non-terminal dataflows whose orchestrator is dead
-      icon: tabler:refresh
-      private: true
-    variable: DATAFLOW_REVIVAL_INTERVAL_SECONDS
-    storage: userspace.dataflow.env:memory
-    default: "120"

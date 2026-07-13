@@ -1356,8 +1356,7 @@ local function define_tests()
                                         table.insert(order, "ack")
                                         return { parked = true, yield_id = parked_yield_id }, true
                                     end
-                                    table.insert(order, "result")
-                                    return { response_data = { run_node_results = { approved = true } } }, true
+                                    error("an indefinite park must not keep receiving after durable ACK")
                                 end,
                             }
                         end,
@@ -1374,8 +1373,43 @@ local function define_tests()
                 })
 
                 test.is_nil(err)
-                test.eq((result :: any).approved, true)
-                test.eq(table.concat(order, ","), "commit,request,ack,result")
+                test.is_nil(result)
+                test.eq(table.concat(order, ","), "commit,request,ack")
+            end)
+
+            it("resumes directly when the park ACK carries an already-durable result", function()
+                local parked_yield_id = ""
+                local deps: any = {
+                    commit = { submit = function() return { commit_id = uuid.v7() }, nil end },
+                    data_reader = mock_deps.data_reader,
+                    process = {
+                        send = function(_target: string, _topic: string, payload: any)
+                            parked_yield_id = payload.request_context.yield_id
+                            return true
+                        end,
+                        listen = function()
+                            return {
+                                receive = function()
+                                    return {
+                                        parked = true,
+                                        yield_id = parked_yield_id,
+                                        response_data = { run_node_results = { outcome = "reject", timed_out = true } },
+                                    }, true
+                                end,
+                            }
+                        end,
+                    },
+                }
+                local parked_node = select(1, node.new({ node_id = "park-node", dataflow_id = "park-flow" }, deps))
+                local result, err = parked_node:park({
+                    wait_for_signal = true,
+                    signal_id = "approval-1",
+                    timeout = "1m",
+                    arm = { ref = "inbox:arm", args = {} },
+                })
+                test.is_nil(err)
+                test.eq((result :: any).outcome, "reject")
+                test.eq((result :: any).timed_out, true)
             end)
 
             it("never requests an arm when the durable yield commit fails", function()

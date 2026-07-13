@@ -5,6 +5,7 @@ local time = require("time")
 local client = require("client")
 local consts = require("consts")
 local data_reader = require("data_reader")
+local sql = require("sql")
 
 local WAIT = "3s"
 
@@ -215,7 +216,7 @@ local function define_tests()
                 c:signal(df1, sid, { wf = 1 })
                 time.sleep("500ms")
                 test.eq(c:get_status(df1), consts.STATUS.COMPLETED_SUCCESS, "wf1 completed")
-                test.eq(c:get_status(df2), consts.STATUS.RUNNING, "wf2 still waiting")
+                test.eq(c:get_status(df2), consts.STATUS.WAITING, "wf2 still waiting")
 
                 c:signal(df2, sid, { wf = 2 })
                 test.is_true(wait_complete(df2), "wf2 completed independently")
@@ -284,10 +285,10 @@ local function define_tests()
                 local df_id = make_signal_wf(sid)
                 c:start(df_id)
                 time.sleep("300ms")
-                test.eq(c:get_status(df_id), consts.STATUS.RUNNING, "still waiting")
+                test.eq(c:get_status(df_id), consts.STATUS.WAITING, "still waiting")
 
                 time.sleep("1s")
-                test.eq(c:get_status(df_id), consts.STATUS.RUNNING, "still waiting after 1s")
+                test.eq(c:get_status(df_id), consts.STATUS.WAITING, "still waiting after 1s")
 
                 c:signal(df_id, sid, { finally = true })
                 test.is_true(wait_complete(df_id), "completed after delay")
@@ -307,7 +308,7 @@ local function define_tests()
 
                 c:signal(df_id, "wrong-" .. uuid.v7(), { nope = true })
                 time.sleep("500ms")
-                test.eq(c:get_status(df_id), consts.STATUS.RUNNING, "not satisfied by wrong id")
+                test.eq(c:get_status(df_id), consts.STATUS.WAITING, "not satisfied by wrong id")
 
                 c:signal(df_id, sid, { correct = true })
                 test.is_true(wait_complete(df_id), "satisfied by correct id")
@@ -323,10 +324,31 @@ local function define_tests()
                     c:signal(df_id, "wrong-" .. i .. "-" .. uuid.v7(), { attempt = i })
                 end
                 time.sleep("500ms")
-                test.eq(c:get_status(df_id), consts.STATUS.RUNNING, "still waiting after 5 wrong signals")
+                test.eq(c:get_status(df_id), consts.STATUS.WAITING, "still waiting after 5 wrong signals")
 
                 c:signal(df_id, sid, { correct = true })
                 test.is_true(wait_complete(df_id), "correct signal works after wrong ones")
+            end)
+
+            it("wrong signals become quiescent after durable passivation", function()
+                local sid = "quiescent-" .. uuid.v7()
+                local df_id = make_signal_wf(sid)
+                c:start(df_id)
+                time.sleep("300ms")
+                c:signal(df_id, "wrong-" .. sid, { timeout_deadline = "2099-01-01T00:00:00Z" })
+                time.sleep("1200ms")
+
+                test.eq(c:get_status(df_id), consts.STATUS.WAITING, "wrong signal leaves wait parked")
+                local db = test.not_nil(select(1, sql.get("app:db"))) :: any
+                local rows, query_err = db:query(
+                    "SELECT wake_key FROM dataflow_wakes WHERE dataflow_id = ? AND wake_key LIKE 'signal:%'",
+                    { df_id })
+                db:release()
+                test.is_nil(query_err)
+                test.eq(#(rows or {}), 0, "applied wrong signal has no retry wake")
+
+                c:signal(df_id, sid, { approved = true })
+                test.is_true(wait_complete(df_id), "correct signal still completes")
             end)
         end)
 
@@ -427,7 +449,7 @@ local function define_tests()
 
                 time.sleep("500ms")
                 for i = 1, count do
-                    test.eq(c:get_status(df_ids[i]), consts.STATUS.RUNNING, "wf" .. i .. " running")
+                    test.eq(c:get_status(df_ids[i]), consts.STATUS.WAITING, "wf" .. i .. " waiting")
                 end
 
                 -- signal in reverse
@@ -488,7 +510,7 @@ local function define_tests()
 
                 c:start(df_id)
                 time.sleep("200ms")
-                test.not_nil(kill_orchestrator(df_id), "orchestrator was running before restart")
+                test.is_nil(process.registry.lookup("dataflow." .. df_id), "parked wait has no resident orchestrator")
                 c:start(df_id)
 
                 test.is_true(wait_complete(df_id, 5000), "workflow completes via persisted timeout after restart")

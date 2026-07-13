@@ -372,7 +372,8 @@ handlers[constants.COMMAND_TYPES.CREATE_DATA] = function(tx, dataflow_id, op_id,
     end
 
     local data_id = payload.data_id or uuid.v7()
-    local content_value = payload.content
+    local raw_content = payload.content
+    local content_value = raw_content
 
     if type(content_value) == "table" then
         local encoded, err_encode = json.encode(content_value)
@@ -458,6 +459,38 @@ handlers[constants.COMMAND_TYPES.CREATE_DATA] = function(tx, dataflow_id, op_id,
         local _, release_err = release_savepoint(tx, insert_savepoint)
         if release_err then
             return nil, release_err
+        end
+    end
+
+    -- A timed signal yield and its wake must commit atomically. This is a
+    -- targeted projection of the persisted deadline, never a scan of yield JSON.
+    if payload.data_type == consts.DATA_TYPE.NODE_YIELD and type(raw_content) == "table" then
+        local yield_context = type(raw_content.yield_context) == "table" and raw_content.yield_context or {}
+        local wake_at = yield_context.timeout_deadline
+        if type(wake_at) == "string" and wake_at ~= "" then
+            local yield_id = raw_content.yield_id or payload.key
+            local _, wake_err = tx:execute([[
+                INSERT INTO dataflow_wakes(dataflow_id, wake_key, wake_at) VALUES (?, ?, ?)
+                ON CONFLICT(dataflow_id, wake_key) DO UPDATE SET wake_at = excluded.wake_at
+            ]], { dataflow_id, "yield:" .. tostring(yield_id), wake_at })
+            if wake_err then return nil, "Failed to register dataflow wake: " .. tostring(wake_err) end
+        end
+    end
+
+    -- Consuming a wait result removes exactly that wait's timer in the same
+    -- transaction. Other branches and later wait episodes remain untouched.
+    if payload.data_type == consts.DATA_TYPE.NODE_YIELD_RESULT then
+        local consume_wake_keys = payload.consume_wake_keys
+        if type(consume_wake_keys) ~= "table" then
+            consume_wake_keys = type(payload.key) == "string" and { "yield:" .. payload.key } or {}
+        end
+        for _, wake_key in ipairs(consume_wake_keys) do
+            if type(wake_key) == "string" and wake_key ~= "" then
+                local _, wake_err = tx:execute(
+                    "DELETE FROM dataflow_wakes WHERE dataflow_id = ? AND wake_key = ?",
+                    { dataflow_id, wake_key })
+                if wake_err then return nil, "Failed to consume yield wake: " .. tostring(wake_err) end
+            end
         end
     end
 
@@ -772,6 +805,15 @@ handlers[constants.COMMAND_TYPES.UPDATE_WORKFLOW] = function(tx, dataflow_id, op
 
     if result_exec.rows_affected == 0 then
         return nil, "Workflow not found or no changes applied"
+    end
+
+    local terminal = payload.status == constants.STATUS.COMPLETED_SUCCESS or
+        payload.status == constants.STATUS.COMPLETED_FAILURE or
+        payload.status == constants.STATUS.CANCELLED or
+        payload.status == constants.STATUS.TERMINATED
+    if terminal then
+        local _, wake_err = tx:execute("DELETE FROM dataflow_wakes WHERE dataflow_id = ?", { wf_id_to_update })
+        if wake_err then return nil, "Failed to clear terminal dataflow wake: " .. tostring(wake_err) end
     end
 
     return {
