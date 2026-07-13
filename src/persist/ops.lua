@@ -374,6 +374,7 @@ handlers[constants.COMMAND_TYPES.CREATE_DATA] = function(tx, dataflow_id, op_id,
     local data_id = payload.data_id or uuid.v7()
     local raw_content = payload.content
     local content_value = raw_content
+    local wake_index_changed = false
 
     if type(content_value) == "table" then
         local encoded, err_encode = json.encode(content_value)
@@ -469,11 +470,12 @@ handlers[constants.COMMAND_TYPES.CREATE_DATA] = function(tx, dataflow_id, op_id,
         local wake_at = yield_context.timeout_deadline
         if type(wake_at) == "string" and wake_at ~= "" then
             local yield_id = raw_content.yield_id or payload.key
-            local _, wake_err = tx:execute([[
+            local wake_result, wake_err = tx:execute([[
                 INSERT INTO dataflow_wakes(dataflow_id, wake_key, wake_at) VALUES (?, ?, ?)
                 ON CONFLICT(dataflow_id, wake_key) DO UPDATE SET wake_at = excluded.wake_at
             ]], { dataflow_id, "yield:" .. tostring(yield_id), wake_at })
             if wake_err then return nil, "Failed to register dataflow wake: " .. tostring(wake_err) end
+            wake_index_changed = (wake_result.rows_affected or 0) > 0
         end
     end
 
@@ -486,10 +488,11 @@ handlers[constants.COMMAND_TYPES.CREATE_DATA] = function(tx, dataflow_id, op_id,
         end
         for _, wake_key in ipairs(consume_wake_keys) do
             if type(wake_key) == "string" and wake_key ~= "" then
-                local _, wake_err = tx:execute(
+                local wake_result, wake_err = tx:execute(
                     "DELETE FROM dataflow_wakes WHERE dataflow_id = ? AND wake_key = ?",
                     { dataflow_id, wake_key })
                 if wake_err then return nil, "Failed to consume yield wake: " .. tostring(wake_err) end
+                wake_index_changed = wake_index_changed or (wake_result.rows_affected or 0) > 0
             end
         end
     end
@@ -497,7 +500,8 @@ handlers[constants.COMMAND_TYPES.CREATE_DATA] = function(tx, dataflow_id, op_id,
     return {
         data_id = data_id,
         changes_made = true,
-        op_id = op_id
+        op_id = op_id,
+        wake_index_changed = wake_index_changed,
     }
 end
 
@@ -812,8 +816,12 @@ handlers[constants.COMMAND_TYPES.UPDATE_WORKFLOW] = function(tx, dataflow_id, op
         payload.status == constants.STATUS.CANCELLED or
         payload.status == constants.STATUS.TERMINATED
     if terminal then
-        local _, wake_err = tx:execute("DELETE FROM dataflow_wakes WHERE dataflow_id = ?", { wf_id_to_update })
+        local wake_result, wake_err = tx:execute(
+            "DELETE FROM dataflow_wakes WHERE dataflow_id = ?",
+            { wf_id_to_update }
+        )
         if wake_err then return nil, "Failed to clear terminal dataflow wake: " .. tostring(wake_err) end
+        terminal = (wake_result.rows_affected or 0) > 0
     end
 
     return {
@@ -821,7 +829,8 @@ handlers[constants.COMMAND_TYPES.UPDATE_WORKFLOW] = function(tx, dataflow_id, op
         changes_made = true,
         op_id = op_id,
         rows_affected = result_exec.rows_affected,
-        metadata_merged = merge_metadata
+        metadata_merged = merge_metadata,
+        wake_index_changed = terminal,
     }
 end
 
@@ -832,6 +841,13 @@ handlers[constants.COMMAND_TYPES.DELETE_WORKFLOW] = function(tx, dataflow_id, op
 
     local payload = command.payload or {}
     local wf_id_to_delete = payload.dataflow_id or dataflow_id
+
+    local wake_result, wake_err = tx:execute(
+        "DELETE FROM dataflow_wakes WHERE dataflow_id = ?",
+        { wf_id_to_delete }
+    )
+    if wake_err then return nil, "Failed to clear deleted dataflow wake: " .. tostring(wake_err) end
+    local wake_index_changed = (wake_result.rows_affected or 0) > 0
 
     local delete_query = sql.builder.delete("dataflows")
         :where("dataflow_id = ?", wf_id_to_delete)
@@ -852,7 +868,8 @@ handlers[constants.COMMAND_TYPES.DELETE_WORKFLOW] = function(tx, dataflow_id, op
         changes_made = true,
         op_id = op_id,
         rows_affected = result_exec.rows_affected,
-        deleted = true
+        deleted = true,
+        wake_index_changed = wake_index_changed,
     }
 end
 

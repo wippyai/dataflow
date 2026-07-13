@@ -1,16 +1,0 @@
-Linting... 30%Linting... 40%Linting... 50%Linting... 60%Linting... 70%Linting... 80%Linting... 90%Linting... 100%                    [1;33mwarning[E0000][0m[1m: type inference did not converge for 'self' (SCC size 2); widened to unknown[0m
-   [1;34m--> [0muserspace.dataflow:node:84:37
-   [1;34m|[0m
-[1;34m84 | [0mlocal function create_reference_data(self, target, ref_id: string)
-   [1;34m| [0m                                    [1;33m^[0m
-
-
-[1;33mwarning[E0000][0m[1m: type inference did not converge for 'self' (SCC size 2); widened to unknown[0m
-    [1;34m--> [0muserspace.dataflow:node:387:23
-    [1;34m|[0m
-[1;34m387 | [0mfunction methods:yield(options)
-    [1;34m| [0m                      [1;33m^[0m
-
-
-Checked 71 entries: 2 errors, 2 warnings
-Error: lint failed: 2 errors, 2 warnings

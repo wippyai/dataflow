@@ -223,8 +223,9 @@ function methods:create_workflow(commands, options)
     local workflow_type = options.type or "workflow"
     local metadata = options.metadata or {}
 
-    -- Persist the optional completion hook durably in metadata so a respawned
-    -- orchestrator (boot recovery, due wake, or late signal) still fires it.
+    -- Preserve the legacy completion-hook reference across orchestrator lives.
+    -- Delivery is best-effort; new flows should model completion as an explicit
+    -- terminal node in the graph instead of relying on this compatibility hook.
     if type(options.on_complete) == "string" and options.on_complete ~= "" then
         metadata.on_complete = options.on_complete
     end

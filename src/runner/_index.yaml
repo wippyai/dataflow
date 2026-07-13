@@ -105,12 +105,22 @@ entries:
     lifecycle:
       depends_on: []
       auto_start: true
-      restart_policy: always
       security:
         actor:
           id: system.dataflow
         groups:
           - userspace.dataflow.security:root
+
+  - name: wake_process.migrations_ready
+    kind: function.lua
+    meta:
+      type: bootloader
+      order: 21
+      comment: Notifies the wake process after the migration bootloader has completed.
+      requires:
+        - wippy.migration:migration_bootloader
+    source: file://wake_migrations_ready.lua
+    method: run
 
   - name: wake_process_test
     kind: function.lua

@@ -3,6 +3,22 @@ local wake_process = require("wake_process")
 
 local function run_tests()
     test.describe("Targeted dataflow wake lifecycle", function()
+        local original_wake_repo
+        local original_client
+        local original_process
+
+        test.before_each(function()
+            original_wake_repo = wake_process.wake_repo
+            original_client = wake_process.client
+            original_process = wake_process.process
+        end)
+
+        test.after_each(function()
+            wake_process.wake_repo = original_wake_repo
+            wake_process.client = original_client
+            wake_process.process = original_process
+        end)
+
         test.it("revives only due wake rows and leaves durable advancement to the orchestrator", function()
             local revived = {}
             wake_process.wake_repo = {
@@ -60,7 +76,8 @@ local function run_tests()
             test.is_nil(err)
             test.eq(count, 1)
             test.eq(monitored[1], "pid-exact")
-            test.eq(deliveries["pid-exact"], "df-exact")
+            local exact_deliveries = test.not_nil(deliveries) :: any
+            test.eq(exact_deliveries["pid-exact"], "df-exact")
         end)
 
         test.it("fails the service cycle when exact revival fails", function()
@@ -112,6 +129,13 @@ local function run_tests()
             test.is_nil(wait_ns)
             test.contains(err, "invalid wake deadline")
         end)
+
+        test.it("treats a not-yet-migrated wake table as startup readiness", function()
+            test.is_true(wake_process.schema_not_ready("no such table: dataflow_wakes"))
+            test.is_true(wake_process.schema_not_ready('relation "dataflow_wakes" does not exist'))
+            test.is_false(wake_process.schema_not_ready("database connection lost"))
+        end)
+
     end)
 end
 

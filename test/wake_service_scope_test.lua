@@ -12,6 +12,11 @@ local function run()
     local groups = entry.data.lifecycle.security.groups or {}
     test.eq(#groups, 1)
     test.eq(tostring(groups[1]), "userspace.dataflow.security:root")
+
+    local dependencies = entry.data.lifecycle.requires or entry.data.lifecycle.depends_on or {}
+    test.eq(#dependencies, 2)
+    test.eq(tostring(dependencies[1]), "app:processes")
+    test.eq(tostring(dependencies[2]), "app:db")
     return true
 end
 

@@ -8,6 +8,10 @@
       "extra-files": [
         {
           "type": "generic",
+          "path": "wippy.yaml"
+        },
+        {
+          "type": "generic",
           "path": "src/_index.yaml"
         }
       ]
