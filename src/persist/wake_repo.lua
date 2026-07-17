@@ -13,9 +13,12 @@ function wake_repo.clear(dataflow_id)
     if type(dataflow_id) ~= "string" or dataflow_id == "" then return nil, "dataflow_id is required" end
     local db, db_err = get_db()
     if db_err then return nil, db_err end
-    local _, write_err = db:execute("DELETE FROM dataflow_wakes WHERE dataflow_id = ?", { dataflow_id })
-    if write_err then db:release(); return nil, write_err end
+    local executor = sql.builder.delete("dataflow_wakes")
+        :where("dataflow_id = ?", dataflow_id)
+        :run_with(db)
+    local _, write_err = executor:exec()
     db:release()
+    if write_err then return nil, write_err end
     return true, nil
 end
 
@@ -33,10 +36,13 @@ end
 function wake_repo.due(now_value, limit)
     local db, db_err = get_db()
     if db_err then return nil, db_err end
-    local rows, query_err = db:query(
-        "SELECT dataflow_id, wake_key, wake_at FROM dataflow_wakes WHERE wake_at <= ? ORDER BY wake_at ASC LIMIT ?",
-        { now_value, tonumber(limit) or 100 }
-    )
+    local executor = sql.builder.select("dataflow_id", "wake_key", "wake_at")
+        :from("dataflow_wakes")
+        :where("wake_at <= ?", now_value)
+        :order_by("wake_at ASC")
+        :limit(tonumber(limit) or 100)
+        :run_with(db)
+    local rows, query_err = executor:query()
     db:release()
     if query_err then return nil, query_err end
     return rows or {}, nil
@@ -47,9 +53,11 @@ function wake_repo.remove(dataflow_id, wake_key)
     if type(wake_key) ~= "string" or wake_key == "" then return nil, "wake_key is required" end
     local db, db_err = get_db()
     if db_err then return nil, db_err end
-    local _, write_err = db:execute(
-        "DELETE FROM dataflow_wakes WHERE dataflow_id = ? AND wake_key = ?",
-        { dataflow_id, wake_key })
+    local executor = sql.builder.delete("dataflow_wakes")
+        :where("dataflow_id = ?", dataflow_id)
+        :where("wake_key = ?", wake_key)
+        :run_with(db)
+    local _, write_err = executor:exec()
     db:release()
     if write_err then return nil, write_err end
     return true, nil
