@@ -2,6 +2,44 @@
 
 ## Unreleased
 
+## [0.6.0](https://github.com/wippyai/dataflow/compare/v0.5.4...v0.6.0) (2026-07-17)
+
+
+### Features
+
+* add durable signal revival sweeper ([529a4d8](https://github.com/wippyai/dataflow/commit/529a4d884b75e5f2d3c7c57672948911dab33474))
+* **dataflow:** make waits and recovery event driven ([6d6908c](https://github.com/wippyai/dataflow/commit/6d6908c39bdc8d5688e7b43fcf610840993428d8))
+* **dataflow:** make waits and recovery event driven ([127b8c0](https://github.com/wippyai/dataflow/commit/127b8c013d24198a9006bb5e07667b95ef7676dd))
+* **dataflow:** route agent checkpoints through canonical bindings ([2185a94](https://github.com/wippyai/dataflow/commit/2185a94eaccb211016b5d5c057df7943f0e9fd55))
+* Define new param `web_host_origin_env` ([#1](https://github.com/wippyai/dataflow/issues/1)) ([0f663d9](https://github.com/wippyai/dataflow/commit/0f663d93030e2f890fe39d7ae26770192d48546f))
+* Move code from userspace ([c5d4a45](https://github.com/wippyai/dataflow/commit/c5d4a452cdf23a8b1fe90ed2fe51ead60cf062ba))
+
+
+### Bug Fixes
+
+* **agent:** resume control child DAGs after recovery ([35b96d0](https://github.com/wippyai/dataflow/commit/35b96d0e918234baf7ad95631e00b49dedb8500e))
+* **agent:** resume control child DAGs after recovery ([578e1ce](https://github.com/wippyai/dataflow/commit/578e1cec7bd480ae8ea6b100758b99b607d770ae))
+* bind dataflow sweeper security scope ([22e8bab](https://github.com/wippyai/dataflow/commit/22e8babec59a58ed0a682bf5c44484805e55d5ed))
+* build wake_repo queries so they run on postgres, and run the wake tests ([3de173c](https://github.com/wippyai/dataflow/commit/3de173c47e85f28a58a5bb11180c05f56164cf40))
+* build wake_repo queries so they run on postgres, and run the wake tests ([e07cce2](https://github.com/wippyai/dataflow/commit/e07cce2e16bb2c6f00c5510b8ab2d5227fe0fe6d))
+* **ci:** repair release-please auth and version bumping ([#22](https://github.com/wippyai/dataflow/issues/22)) ([b0dc2be](https://github.com/wippyai/dataflow/commit/b0dc2bebff5e46c3f237d46985f9802f9d1e350d))
+* dataflow_nodes table name ([#6](https://github.com/wippyai/dataflow/issues/6)) ([7a4b4a9](https://github.com/wippyai/dataflow/commit/7a4b4a9f4ee0cfa5904841e23b10d830c03c016f))
+* **dataflow:** harden durable wake delivery and packaging ([093cdf9](https://github.com/wippyai/dataflow/commit/093cdf976f44a1960d97e1d1235180e33f0d496c))
+* **dataflow:** harden release startup and metadata ([57f8c5e](https://github.com/wippyai/dataflow/commit/57f8c5e535b0519c3c27ff0166027fd9708fc41e))
+* **dataflow:** make durable wake delivery exact ([4c1ec29](https://github.com/wippyai/dataflow/commit/4c1ec29b05a7ce0d45755a60a3b9c6c020772efe))
+* **dataflow:** make durable wake recovery event-driven ([4987eab](https://github.com/wippyai/dataflow/commit/4987eab1df48116fc4a976dd732fe1ab2e7d0ede))
+* **dataflow:** make durable wake recovery event-driven ([1b52970](https://github.com/wippyai/dataflow/commit/1b52970b6a1bf4cfb3f1ac7ee56d2977094ce780))
+* declare modules/imports for require() under per-chunk import scoping ([8156953](https://github.com/wippyai/dataflow/commit/81569536e0c3f242a14b903348c11c4bc71c96d2))
+* improve error handling, validation, and diagnostics in flow compiler ([#7](https://github.com/wippyai/dataflow/issues/7)) ([5b6d891](https://github.com/wippyai/dataflow/commit/5b6d891c8859fdc3c409b57ce40d2fdd05f8fe6b))
+* preserve agent node context ([cf30632](https://github.com/wippyai/dataflow/commit/cf30632eb067350b1de86ca15bdf9861d210d026))
+* preserve exact dataflow execution identity ([f7da5a9](https://github.com/wippyai/dataflow/commit/f7da5a9aaea6cfb9bd47503d9854bf440a9e4b5d))
+* preserve exact dataflow execution identity ([d5e83ff](https://github.com/wippyai/dataflow/commit/d5e83ff3a980653853cdfd57b0696b179513233b))
+* recover pending commits on orchestrator restart ([ffdc855](https://github.com/wippyai/dataflow/commit/ffdc855fa3a43ea1f0aa1ef3c4259e14f7eb3462))
+* relax dataflow revival sweep interval ([bda632e](https://github.com/wippyai/dataflow/commit/bda632e7486c408c0d507dc8fcc814070dc2855e))
+* restore backward-compatible API across node, client, and func modules ([8939a59](https://github.com/wippyai/dataflow/commit/8939a599bc568bb5f059651f348ee336eedceed1))
+* restore parallel node BC with on_error/filter/unwrap config API ([3e3e876](https://github.com/wippyai/dataflow/commit/3e3e87693b713506cd93b04978b47971332db1f5))
+* stabilize dataflow revival sweeper ([ce39cdc](https://github.com/wippyai/dataflow/commit/ce39cdcade94945d3d44f582430e4a1634194471))
+
 ## [0.5.4](https://github.com/wippyai/dataflow/compare/v0.5.3...v0.5.4) (2026-07-17)
 
 
