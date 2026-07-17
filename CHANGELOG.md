@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## [0.5.4](https://github.com/wippyai/dataflow/compare/v0.5.3...v0.5.4) (2026-07-17)
+
+
+### Bug Fixes
+
+* build wake_repo queries so they run on postgres, and run the wake tests ([e07cce2](https://github.com/wippyai/dataflow/commit/e07cce2e16bb2c6f00c5510b8ab2d5227fe0fe6d))
+* preserve exact dataflow execution identity ([d5e83ff](https://github.com/wippyai/dataflow/commit/d5e83ff3a980653853cdfd57b0696b179513233b))
+
 ## [0.5.3](https://github.com/wippyai/dataflow/compare/v0.5.2...v0.5.3) (2026-07-17)
 
 
