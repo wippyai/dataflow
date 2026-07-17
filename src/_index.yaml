@@ -28,12 +28,12 @@ entries:
       - time
       - security
       - funcs
-      - contract
     imports:
       commit: userspace.dataflow.persist:commit
       dataflow_consts: userspace.dataflow:consts
       data_reader: userspace.dataflow.persist:data_reader
       dataflow_repo: userspace.dataflow.persist:dataflow_repo
+      execution_frame: userspace.dataflow:execution_frame
 
   # userspace.dataflow:client_test
   - name: client_test

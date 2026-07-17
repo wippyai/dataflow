@@ -1,11 +1,6 @@
 local uuid = require("uuid")
 local time = require("time")
-local security = require("security")
-local funcs = require("funcs")
-local contract = require("contract")
 local consts = require("dataflow_consts")
-
-local EXECUTION_IDENTITY_CONTRACT = "userspace.dataflow:execution_identity"
 
 -- Get default dependencies (lazy loaded)
 local function get_default_deps()
@@ -16,7 +11,7 @@ local function get_default_deps()
         process = process,
         funcs = require("funcs"),
         security = require("security"),
-        contract = require("contract")
+        execution_frame = require("execution_frame")
     }
 end
 
@@ -31,72 +26,32 @@ local TERMINAL_STATUS = {
     [consts.STATUS.TERMINATED] = true
 }
 
-function methods:_identity_contract()
-    if self._deps.identity_contract ~= nil then
-        return self._deps.identity_contract
-    end
-
-    local contract_mod = self._deps.contract or contract
-    local def, get_err = contract_mod.get(EXECUTION_IDENTITY_CONTRACT)
-    if get_err or not def then
-        return nil
-    end
-
-    local actor = self._actor
-    local scope = self._scope
-    if not actor or not scope then
-        return nil
-    end
-
-    if type(def.with_actor) ~= "function" then
-        return nil
-    end
-
-    local scoped_def, actor_err = def:with_actor(actor)
-    if actor_err or not scoped_def or type(scoped_def.with_scope) ~= "function" then
-        return nil
-    end
-
-    local bound_def, scope_err = scoped_def:with_scope(scope)
-    if scope_err or not bound_def or type(bound_def.open) ~= "function" then
-        return nil
-    end
-
-    local opened, open_err = bound_def:open()
-    if open_err or not opened then
-        return nil
-    end
-    return opened
-end
-
 function methods:_capture_identity()
-    local provider = self:_identity_contract()
-    if not provider or type(provider.capture) ~= "function" then
-        return nil, nil
-    end
-
-    local ok, result = pcall(function()
-        return provider:capture({ reason = "dataflow" })
+    local ok, result, capture_err = pcall(function()
+        return self._deps.execution_frame.capture()
     end)
     if not ok then
         return nil, "execution identity capture failed: " .. tostring(result)
     end
+    if capture_err then
+        return nil, "execution identity capture failed: " .. tostring(capture_err)
+    end
     if type(result) ~= "table" then
         return nil, "execution identity capture returned invalid result"
     end
-    if result.success == false then
-        return nil, "execution identity capture failed: " .. tostring(result.error)
+    if type(result.actor_id) ~= "string" or result.actor_id == "" then
+        return nil, "execution identity capture returned no actor"
     end
-    if type(result.actor_id) == "string" and result.actor_id ~= "" then
-        if result.actor_id ~= self._actor_id then
-            return nil, "execution identity capture actor mismatch"
-        end
-        return {
-            actor_id = result.actor_id,
-            actor_context = result.actor_context,
-        }, nil
+    if result.actor_id ~= self._actor_id then
+        return nil, "execution identity capture actor mismatch"
     end
-    return nil, nil
+    if type(result.actor_context) ~= "string" or result.actor_context == "" then
+        return nil, "execution identity capture returned no context"
+    end
+    return {
+        actor_id = result.actor_id,
+        actor_context = result.actor_context,
+    }, nil
 end
 
 -- Constructor
@@ -133,7 +88,7 @@ function client.new(deps)
     return setmetatable(instance, mt) :: any, nil
 end
 
-function methods:_workflow_for_spawn(dataflow_id)
+function methods:_workflow_for_direct_call(dataflow_id)
     if not dataflow_id or dataflow_id == "" then
         return nil, "Workflow ID is required"
     end
@@ -152,51 +107,14 @@ function methods:_workflow_for_spawn(dataflow_id)
 end
 
 function methods:_actor_for_workflow(dataflow_id)
-    local workflow, err = self:_workflow_for_spawn(dataflow_id)
+    local workflow, err = self:_workflow_for_direct_call(dataflow_id)
     if not workflow then
         return nil, err
     end
     if workflow.actor_id == self._actor_id then
         return self._actor
     end
-    return nil, "workflow actor differs from current actor and no execution identity contract is used for direct calls"
-end
-
-function methods:_spawn_orchestrator(dataflow_id, args)
-    local workflow, workflow_err = self:_workflow_for_spawn(dataflow_id)
-    if not workflow then
-        return nil, workflow_err
-    end
-
-    if workflow.actor_id == self._actor_id then
-        local actor = self._actor
-        local spawner = self._deps.process.with_context({})
-            :with_actor(actor)
-            :with_scope(self._scope)
-        local pid, spawn_err = spawner:spawn(consts.ORCHESTRATOR, consts.HOST_ID, args)
-        return pid, spawn_err
-    end
-
-    local provider = self:_identity_contract()
-    if not provider or type(provider.spawn_orchestrator) ~= "function" then
-        return nil, "execution identity contract is not bound; cannot revive workflow " .. tostring(dataflow_id)
-    end
-
-    local ok, result = pcall(function()
-        return provider:spawn_orchestrator({
-            dataflow_id = dataflow_id,
-            process_id = consts.ORCHESTRATOR,
-            host_id = consts.HOST_ID,
-            args = args or {},
-        })
-    end)
-    if not ok then
-        return nil, "execution identity spawn failed: " .. tostring(result)
-    end
-    if type(result) ~= "table" or result.success == false then
-        return nil, "execution identity spawn failed: " .. tostring(result and result.error or "invalid result")
-    end
-    return result.pid, nil
+    return nil, "workflow actor differs from current actor; synchronous execution cannot impersonate it"
 end
 
 -- Create workflow with optional commands and options
@@ -225,7 +143,7 @@ function methods:create_workflow(commands, options)
             dataflow_id = dataflow_id,
             type = workflow_type,
             actor_id = self._actor_id,
-            actor_context = identity_row and identity_row.actor_context or nil,
+            actor_context = identity_row.actor_context,
             metadata = metadata
         }
     }
@@ -280,13 +198,45 @@ function methods:execute(dataflow_id, options)
         executor = executor:with_actor(actor)
     end
     executor = executor:with_scope(self._scope)
-    local orch_result, err = executor:call(consts.ORCHESTRATOR, orchestrator_args)
+
+    -- Fence the synchronous attempt only after ownership validation. Do not
+    -- notify the overseer before this direct call can register its orchestrator.
+    local activation, activation_err = self._deps.commit.request_activation(
+        dataflow_id,
+        orchestrator_args,
+        { notify = false }
+    )
+    if activation_err then
+        return nil, "Failed to activate workflow: " .. tostring(activation_err)
+    end
+    if type(activation) ~= "table" then
+        return nil, "Failed to activate workflow: invalid activation result"
+    end
+    if activation.terminal == true then
+        return nil, "Failed to activate workflow in terminal state: " .. tostring(activation.status)
+    end
+    local activation_generation = tonumber(activation.generation)
+    if not activation_generation or activation_generation < 1 or activation_generation % 1 ~= 0 then
+        return nil, "Failed to activate workflow: invalid activation generation"
+    end
+    orchestrator_args.activation_generation = activation_generation
+
+    local call_ok, orch_result, err = pcall(function()
+        return executor:call(consts.ORCHESTRATOR, orchestrator_args)
+    end)
+
+    if not call_ok then
+        pcall(self._deps.commit.notify_activation, dataflow_id, activation_generation)
+        return nil, "Failed to execute workflow: " .. tostring(orch_result)
+    end
 
     if err then
+        pcall(self._deps.commit.notify_activation, dataflow_id, activation_generation)
         return nil, "Failed to execute workflow: " .. err
     end
 
     if not orch_result then
+        pcall(self._deps.commit.notify_activation, dataflow_id, activation_generation)
         return nil, "No result returned from orchestrator"
     end
 
@@ -415,10 +365,15 @@ function methods:start(dataflow_id, options)
         orchestrator_args.on_complete = options.on_complete
     end
 
-    -- Spawn orchestrator process
-    local pid, spawn_err = self:_spawn_orchestrator(dataflow_id, orchestrator_args)
-    if not pid then
-        return nil, "Failed to spawn workflow process: " .. tostring(spawn_err)
+    local activation, activation_err = self._deps.commit.request_activation(dataflow_id, orchestrator_args)
+    if activation_err then
+        return nil, "Failed to activate workflow: " .. tostring(activation_err)
+    end
+    if type(activation) ~= "table" then
+        return nil, "Failed to activate workflow: invalid activation result"
+    end
+    if activation.terminal == true then
+        return nil, "Failed to activate workflow in terminal state: " .. tostring(activation.status)
     end
 
     return dataflow_id, nil
@@ -589,10 +544,15 @@ function methods:get_status(dataflow_id)
     return workflow.status, nil
 end
 
+<<<<<<< HEAD
 -- Send a signal to a waiting signal node in a workflow. The signal commit
 -- projects an immediate durable wake in the same database transaction. The
 -- central wake process owns delivery and restart; callers never race workflow
 -- shutdown by inspecting the registry or spawning an orchestrator themselves.
+=======
+-- Send a signal to a waiting signal node. commit.submit atomically persists the
+-- signal activation and owns the post-commit overseer notification.
+>>>>>>> 00d795d (feat(dataflow): route client activation through overseer)
 function methods:signal(dataflow_id, signal_id, data)
     if not dataflow_id or dataflow_id == "" then
         return nil, "Workflow ID is required"
@@ -640,20 +600,12 @@ function methods:signal(dataflow_id, signal_id, data)
         return nil, "Failed to send signal: " .. tostring(err)
     end
 
-    -- NODE_SIGNAL atomically creates an immediate targeted wake row. Nudge the
-    -- single wake process for latency; durability does not depend on this send.
-    if type(self._deps.process.send) == "function" then
-        self._deps.process.send("dataflow.wakes", "dataflow.wake.changed", { dataflow_id = dataflow_id })
-    end
-
     return result, nil
 end
 
--- Ensure a live orchestrator exists for a dataflow. Returns the existing pid when
--- one is registered, otherwise respawns the orchestrator under the workflow's frozen
--- identity. The orchestrator's registry single-instance guard makes a concurrent
--- double-spawn safe, and its terminal-status guard makes reviving a finished run a
--- no-op. Used by exact durable wake and signal delivery.
+-- Ensure the desired activation exists and notify the overseer. A registered
+-- orchestrator PID remains observable for compatibility; a newly accepted
+-- activation is explicitly pending and is never represented as a PID.
 function methods:revive(dataflow_id)
     if not dataflow_id or dataflow_id == "" then
         return nil, "Workflow ID is required"
@@ -661,16 +613,39 @@ function methods:revive(dataflow_id)
 
     local pid = self._deps.process.registry.lookup("dataflow." .. dataflow_id)
     if pid then
-        return pid, nil, { spawned = false }
+        return pid, nil, {
+            accepted = true,
+            pending = false,
+            existing = true,
+            spawned = false,
+        }
     end
 
-    local spawned_pid, spawn_err = self:_spawn_orchestrator(dataflow_id, {
+    local activation, activation_err = self._deps.commit.request_activation(dataflow_id, {
         dataflow_id = dataflow_id
     })
-    if spawn_err then
-        return nil, spawn_err
+    if activation_err then
+        return nil, activation_err
     end
-    return spawned_pid, nil, { spawned = true }
+    if type(activation) ~= "table" then
+        return nil, "invalid activation result"
+    end
+    if activation.terminal == true then
+        return nil, nil, {
+            accepted = false,
+            pending = false,
+            terminal = true,
+            status = activation.status,
+            spawned = false,
+        }
+    end
+    return nil, nil, {
+        accepted = true,
+        pending = true,
+        dataflow_id = dataflow_id,
+        generation = activation.generation,
+        spawned = false,
+    }
 end
 
 return client
