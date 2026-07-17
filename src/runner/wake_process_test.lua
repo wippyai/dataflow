@@ -139,4 +139,4 @@ local function run_tests()
     end)
 end
 
-return { run_tests = run_tests }
+return { run_tests = test.run_cases(run_tests) }
