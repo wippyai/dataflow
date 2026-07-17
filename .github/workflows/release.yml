@@ -16,5 +16,5 @@ jobs:
   release:
     uses: wippyai/template-module/.github/workflows/reusable-release.yml@v1
     with:
-      publish: false
+      publish: true
     secrets: inherit
