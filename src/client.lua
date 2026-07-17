@@ -26,6 +26,11 @@ local TERMINAL_STATUS = {
     [consts.STATUS.TERMINATED] = true
 }
 
+local function has_actor_context(value)
+    return (type(value) == "string" and value ~= "") or
+        (type(value) == "table" and next(value) ~= nil)
+end
+
 function methods:_capture_identity()
     local ok, result, capture_err = pcall(function()
         return self._deps.execution_frame.capture()
@@ -88,33 +93,56 @@ function client.new(deps)
     return setmetatable(instance, mt) :: any, nil
 end
 
-function methods:_workflow_for_direct_call(dataflow_id)
+function methods:_owned_workflow(dataflow_id)
     if not dataflow_id or dataflow_id == "" then
         return nil, "Workflow ID is required"
     end
 
-    local workflow, err = self._deps.dataflow_repo.get(dataflow_id)
+    local workflow, err = self._deps.dataflow_repo.get_by_user(dataflow_id, self._actor_id)
     if err or type(workflow) ~= "table" then
-        return nil, "failed to load workflow identity: " .. tostring(err or "workflow not found")
+        return nil, "failed to load owned workflow: " .. tostring(err or "workflow not found")
     end
-
-    local actor_id = workflow.actor_id
-    if type(actor_id) ~= "string" or actor_id == "" then
-        return nil, "workflow is missing actor_id"
+    if workflow.actor_id ~= self._actor_id then
+        return nil, "workflow actor differs from current actor"
     end
 
     return workflow, nil
 end
 
+function methods:_ensure_workflow_context(workflow)
+    if type(workflow) ~= "table" then return nil, "workflow is required" end
+    if has_actor_context(workflow.actor_context) then
+        return workflow, nil
+    end
+    local identity, identity_err = self:_capture_identity()
+    if identity_err then return nil, identity_err end
+    if type(self._deps.dataflow_repo.capture_context_if_empty) ~= "function" then
+        return nil, "workflow execution context upgrade is unavailable"
+    end
+    local persisted, persist_err = self._deps.dataflow_repo.capture_context_if_empty(
+        workflow.dataflow_id, self._actor_id, identity.actor_context)
+    if persist_err or type(persisted) ~= "table" then
+        return nil, "failed to persist workflow execution context: " ..
+            tostring(persist_err or "invalid persistence result")
+    end
+    if persisted.actor_id ~= self._actor_id then
+        return nil, "persisted workflow actor differs from current actor"
+    end
+    if not has_actor_context(persisted.actor_context) then
+        return nil, "persisted workflow execution context is empty"
+    end
+    return persisted, nil
+end
+
 function methods:_actor_for_workflow(dataflow_id)
-    local workflow, err = self:_workflow_for_direct_call(dataflow_id)
+    local workflow, err = self:_owned_workflow(dataflow_id)
     if not workflow then
         return nil, err
     end
-    if workflow.actor_id == self._actor_id then
-        return self._actor
-    end
-    return nil, "workflow actor differs from current actor; synchronous execution cannot impersonate it"
+    if TERMINAL_STATUS[workflow.status] then return self._actor, nil end
+    workflow, err = self:_ensure_workflow_context(workflow)
+    if not workflow then return nil, err end
+    return self._actor, nil
 end
 
 -- Create workflow with optional commands and options
@@ -351,6 +379,13 @@ function methods:start(dataflow_id, options)
     if not dataflow_id or dataflow_id == "" then
         return nil, "Dataflow ID is required"
     end
+    local workflow, ownership_err = self:_owned_workflow(dataflow_id)
+    if not workflow then return nil, "Failed to authorize workflow activation: " .. tostring(ownership_err) end
+    if TERMINAL_STATUS[workflow.status] then
+        return nil, "Failed to activate workflow in terminal state: " .. tostring(workflow.status)
+    end
+    workflow, ownership_err = self:_ensure_workflow_context(workflow)
+    if not workflow then return nil, "Failed to prepare workflow activation: " .. tostring(ownership_err) end
 
     -- Prepare orchestrator arguments
     local orchestrator_args = {
@@ -554,11 +589,7 @@ function methods:signal(dataflow_id, signal_id, data)
         return nil, "Signal ID is required"
     end
 
-    -- Refuse to signal a missing or terminal dataflow: a late signal must not
-    -- resurrect a finished run. Access control is the caller's concern (the HTTP
-    -- endpoint authorizes via get_by_user); internal callers already run under
-    -- the workflow's frozen identity.
-    local workflow, get_err = self._deps.dataflow_repo.get(dataflow_id)
+    local workflow, get_err = self:_owned_workflow(dataflow_id)
     if get_err or not workflow then
         return nil, errors.new({
             message = "Cannot signal workflow: " .. (get_err or "not found"),
@@ -573,6 +604,8 @@ function methods:signal(dataflow_id, signal_id, data)
             details = { dataflow_id = dataflow_id, status = workflow.status }
         })
     end
+    workflow, get_err = self:_ensure_workflow_context(workflow)
+    if not workflow then return nil, "Cannot signal workflow: " .. tostring(get_err) end
 
     -- 1. Write signal commit to outbox (durable, survives crashes)
     local op_id = uuid.v7()
@@ -603,6 +636,17 @@ function methods:revive(dataflow_id)
     if not dataflow_id or dataflow_id == "" then
         return nil, "Workflow ID is required"
     end
+    local workflow, ownership_err = self:_owned_workflow(dataflow_id)
+    if not workflow then return nil, "Failed to authorize workflow revival: " .. tostring(ownership_err) end
+    if TERMINAL_STATUS[workflow.status] then
+        return nil, nil, {
+            accepted = false,
+            pending = false,
+            terminal = true,
+            status = workflow.status,
+            spawned = false,
+        }
+    end
 
     local pid = self._deps.process.registry.lookup("dataflow." .. dataflow_id)
     if pid then
@@ -613,6 +657,9 @@ function methods:revive(dataflow_id)
             spawned = false,
         }
     end
+
+    workflow, ownership_err = self:_ensure_workflow_context(workflow)
+    if not workflow then return nil, "Failed to prepare workflow revival: " .. tostring(ownership_err) end
 
     local activation, activation_err = self._deps.commit.request_activation(dataflow_id, {
         dataflow_id = dataflow_id

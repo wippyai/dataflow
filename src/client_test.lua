@@ -27,6 +27,7 @@ local function define_tests()
                 process_send = {},
                 dataflow_repo_get = {},
                 dataflow_repo_get_direct = {},
+                dataflow_repo_capture_context = {},
                 funcs_with_actor = {},
                 funcs_with_scope = {},
                 execution_frame_capture = {},
@@ -48,6 +49,7 @@ local function define_tests()
                             dataflow_id = dataflow_id,
                             status = "running",
                             actor_id = "test-actor-123",
+                            actor_context = '{"kind":"dataflow.execution_frame","version":1}',
                             type = "test_workflow"
                         }, nil
                     end,
@@ -60,7 +62,23 @@ local function define_tests()
                             dataflow_id = dataflow_id,
                             status = "running",
                             actor_id = actor_id,
+                            actor_context = '{"kind":"dataflow.execution_frame","version":1}',
                             type = "test_workflow"
+                        }, nil
+                    end,
+                    capture_context_if_empty = function(dataflow_id: string, actor_id: string, actor_context: string)
+                        table.insert(captured_calls.dataflow_repo_capture_context, {
+                            dataflow_id = dataflow_id,
+                            actor_id = actor_id,
+                            actor_context = actor_context,
+                        })
+                        return {
+                            dataflow_id = dataflow_id,
+                            status = "running",
+                            actor_id = actor_id,
+                            actor_context = actor_context,
+                            type = "test_workflow",
+                            context_captured = true,
                         }, nil
                     end
                 },
@@ -333,14 +351,15 @@ local function define_tests()
 
                 test.not_nil(actor)
                 test.eq(actor:id(), "test-actor-123")
-                test.eq(#captured_calls.dataflow_repo_get_direct, 1)
+                test.eq(#captured_calls.dataflow_repo_get, 1)
             end)
 
             it("should reject direct actor reconstruction when stored actor differs", function()
-                mock_deps.dataflow_repo.get = function(dataflow_id: string)
+                mock_deps.dataflow_repo.get_by_user = function(dataflow_id: string)
                     return {
                         dataflow_id = dataflow_id,
                         actor_id = "other-actor",
+                        actor_context = '{"kind":"dataflow.execution_frame","version":1}',
                         status = "running"
                     }, nil
                 end
@@ -613,20 +632,40 @@ local function define_tests()
             end)
 
             it("does not create an activation before actor ownership is validated", function()
-                mock_deps.dataflow_repo.get = function(dataflow_id: string)
-                    return {
-                        dataflow_id = dataflow_id,
-                        actor_id = "other-actor",
-                        status = consts.STATUS.PENDING,
-                    }, nil
+                mock_deps.dataflow_repo.get_by_user = function()
+                    return nil, "Workflow not found or access denied"
                 end
 
                 local result, err = test_client:execute("other-workflow")
 
                 test.is_nil(result)
-                test.contains(err, "cannot impersonate")
+                test.contains(err, "access denied")
                 test.eq(#captured_calls.activation_request, 0)
                 test.eq(#captured_calls.funcs_call, 0)
+            end)
+
+            it("captures and persists a legacy execution frame before synchronous activation", function()
+                mock_deps.dataflow_repo.get_by_user = function(dataflow_id: string, actor_id: string)
+                    return {
+                        dataflow_id = dataflow_id,
+                        actor_id = actor_id,
+                        actor_context = nil,
+                        status = consts.STATUS.PENDING,
+                    }, nil
+                end
+
+                local result, err = test_client:execute("legacy-workflow", { fetch_output = false })
+
+                test.is_nil(err)
+                test.not_nil(result)
+                test.eq(#captured_calls.execution_frame_capture, 1)
+                test.eq(#captured_calls.dataflow_repo_capture_context, 1)
+                local capture = captured_calls.dataflow_repo_capture_context[1]
+                test.eq(capture.dataflow_id, "legacy-workflow")
+                test.eq(capture.actor_id, "test-actor-123")
+                test.contains(capture.actor_context, "dataflow.execution_frame")
+                test.eq(#captured_calls.activation_request, 1)
+                test.eq(#captured_calls.funcs_call, 1)
             end)
 
             it("should handle funcs execution failure", function()
@@ -900,6 +939,137 @@ local function define_tests()
                 test.is_nil(dataflow_id)
                 test.contains(err, "terminal state")
                 test.eq(#captured_calls.process_spawn, 0)
+            end)
+
+            it("refuses cross-actor asynchronous activation before persistence", function()
+                mock_deps.dataflow_repo.get_by_user = function()
+                    return nil, "Workflow not found or access denied"
+                end
+
+                local dataflow_id, err = test_client:start("other-workflow")
+
+                test.is_nil(dataflow_id)
+                test.contains(err, "access denied")
+                test.eq(#captured_calls.activation_request, 0)
+                test.eq(#captured_calls.execution_frame_capture, 0)
+            end)
+
+            it("upgrades a legacy workflow before asynchronous activation", function()
+                mock_deps.dataflow_repo.get_by_user = function(dataflow_id: string, actor_id: string)
+                    return {
+                        dataflow_id = dataflow_id,
+                        actor_id = actor_id,
+                        actor_context = "",
+                        status = consts.STATUS.PENDING,
+                    }, nil
+                end
+
+                local dataflow_id, err = test_client:start("legacy-workflow")
+
+                test.is_nil(err)
+                test.eq(dataflow_id, "legacy-workflow")
+                test.eq(#captured_calls.execution_frame_capture, 1)
+                test.eq(#captured_calls.dataflow_repo_capture_context, 1)
+                test.eq(#captured_calls.activation_request, 1)
+            end)
+
+            it("accepts a PostgreSQL JSONB execution frame without recapturing it", function()
+                mock_deps.dataflow_repo.get_by_user = function(dataflow_id: string, actor_id: string)
+                    return {
+                        dataflow_id = dataflow_id,
+                        actor_id = actor_id,
+                        actor_context = {
+                            kind = "dataflow.execution_frame",
+                            version = 1,
+                            policy_ids = {},
+                        },
+                        status = consts.STATUS.PENDING,
+                    }, nil
+                end
+
+                local dataflow_id, err = test_client:start("postgres-workflow")
+
+                test.is_nil(err)
+                test.eq(dataflow_id, "postgres-workflow")
+                test.eq(#captured_calls.execution_frame_capture, 0)
+                test.eq(#captured_calls.dataflow_repo_capture_context, 0)
+                test.eq(#captured_calls.activation_request, 1)
+            end)
+
+            it("accepts the persisted winner when legacy context capture races", function()
+                mock_deps.dataflow_repo.get_by_user = function(dataflow_id: string, actor_id: string)
+                    return {
+                        dataflow_id = dataflow_id,
+                        actor_id = actor_id,
+                        actor_context = nil,
+                        status = consts.STATUS.PENDING,
+                    }, nil
+                end
+                mock_deps.dataflow_repo.capture_context_if_empty = function(
+                    dataflow_id: string, actor_id: string, actor_context: string)
+                    table.insert(captured_calls.dataflow_repo_capture_context, {
+                        dataflow_id = dataflow_id,
+                        actor_id = actor_id,
+                        actor_context = actor_context,
+                    })
+                    return {
+                        dataflow_id = dataflow_id,
+                        actor_id = actor_id,
+                        actor_context = '{"kind":"dataflow.execution_frame","version":1,"winner":"other-call"}',
+                        status = consts.STATUS.PENDING,
+                        context_captured = false,
+                    }, nil
+                end
+
+                local dataflow_id, err = test_client:start("legacy-race")
+
+                test.is_nil(err)
+                test.eq(dataflow_id, "legacy-race")
+                test.eq(#captured_calls.dataflow_repo_capture_context, 1)
+                test.eq(#captured_calls.activation_request, 1)
+            end)
+
+            it("does not upgrade or activate legacy workflow from a mismatched frame", function()
+                mock_deps.dataflow_repo.get_by_user = function(dataflow_id: string, actor_id: string)
+                    return {
+                        dataflow_id = dataflow_id,
+                        actor_id = actor_id,
+                        actor_context = nil,
+                        status = consts.STATUS.PENDING,
+                    }, nil
+                end
+                mock_deps.execution_frame.capture = function()
+                    return {
+                        actor_id = "other-actor",
+                        actor_context = '{"kind":"dataflow.execution_frame","version":1}',
+                    }, nil
+                end
+
+                local dataflow_id, err = test_client:start("legacy-workflow")
+
+                test.is_nil(dataflow_id)
+                test.contains(err, "actor mismatch")
+                test.eq(#captured_calls.dataflow_repo_capture_context, 0)
+                test.eq(#captured_calls.activation_request, 0)
+            end)
+
+            it("does not capture context for an owned terminal legacy workflow", function()
+                mock_deps.dataflow_repo.get_by_user = function(dataflow_id: string, actor_id: string)
+                    return {
+                        dataflow_id = dataflow_id,
+                        actor_id = actor_id,
+                        actor_context = nil,
+                        status = consts.STATUS.COMPLETED_SUCCESS,
+                    }, nil
+                end
+
+                local dataflow_id, err = test_client:start("legacy-terminal")
+
+                test.is_nil(dataflow_id)
+                test.contains(err, "terminal state")
+                test.eq(#captured_calls.execution_frame_capture, 0)
+                test.eq(#captured_calls.dataflow_repo_capture_context, 0)
+                test.eq(#captured_calls.activation_request, 0)
             end)
         end)
 
@@ -1187,11 +1357,12 @@ local function define_tests()
             end)
 
             it("should refuse to signal a terminal workflow", function()
-                mock_deps.dataflow_repo.get = function(dataflow_id: string)
+                mock_deps.dataflow_repo.get_by_user = function(dataflow_id: string)
                     return {
                         dataflow_id = dataflow_id,
                         status = consts.STATUS.COMPLETED_SUCCESS,
-                        actor_id = "test-actor-123"
+                        actor_id = "test-actor-123",
+                        actor_context = '{"kind":"dataflow.execution_frame","version":1}'
                     }, nil
                 end
 
@@ -1204,7 +1375,7 @@ local function define_tests()
             end)
 
             it("should refuse to signal a missing workflow", function()
-                mock_deps.dataflow_repo.get = function() return nil, "Workflow not found" end
+                mock_deps.dataflow_repo.get_by_user = function() return nil, "Workflow not found" end
 
                 local result, err = test_client:signal("workflow-123", "approve", {})
 
@@ -1212,6 +1383,19 @@ local function define_tests()
                 test.not_nil(err)
                 test.contains(tostring(err), "not found")
                 test.eq(#captured_calls.commit_submit, 0)
+            end)
+
+            it("refuses a cross-actor signal before creating its outbox", function()
+                mock_deps.dataflow_repo.get_by_user = function()
+                    return nil, "Workflow not found or access denied"
+                end
+
+                local result, err = test_client:signal("other-workflow", "approve", {})
+
+                test.is_nil(result)
+                test.contains(tostring(err), "access denied")
+                test.eq(#captured_calls.commit_submit, 0)
+                test.eq(#captured_calls.execution_frame_capture, 0)
             end)
 
             it("should fail with missing signal_id", function()
@@ -1266,28 +1450,45 @@ local function define_tests()
                 test.eq(i.generation, 1)
             end)
 
-            it("does not inspect identity or open a contract for cross-actor activation", function()
+            it("refuses cross-actor revival before process lookup or activation", function()
                 mock_deps.process.registry.lookup = function() return nil end
-                mock_deps.dataflow_repo.get = function(dataflow_id: string)
-                    return {
-                        dataflow_id = dataflow_id,
-                        actor_id = "other-actor",
-                        actor_context = '{"scope":"captured"}',
-                        status = "running"
-                    }, nil
+                mock_deps.dataflow_repo.get_by_user = function()
+                    return nil, "Workflow not found or access denied"
                 end
                 test_client, _ = client.new(mock_deps)
 
                 local pid, err, info = test_client:revive("workflow-456")
 
-                test.is_nil(err)
                 test.is_nil(pid)
+                test.is_nil(info)
+                test.contains(err, "access denied")
                 test.eq(#captured_calls.process_spawn, 0)
+                test.eq(#captured_calls.process_lookup, 0)
                 test.eq(#captured_calls.contract_get, 0)
+                test.eq(#captured_calls.activation_request, 0)
+            end)
+
+            it("persists a legacy frame before restart activation", function()
+                mock_deps.process.registry.lookup = function() return nil end
+                mock_deps.dataflow_repo.get_by_user = function(dataflow_id: string, actor_id: string)
+                    return {
+                        dataflow_id = dataflow_id,
+                        actor_id = actor_id,
+                        actor_context = nil,
+                        status = consts.STATUS.WAITING,
+                    }, nil
+                end
+
+                local pid, err, info = test_client:revive("legacy-workflow")
+
+                test.is_nil(pid)
+                test.is_nil(err)
+                test.eq(#captured_calls.execution_frame_capture, 1)
+                test.eq(#captured_calls.dataflow_repo_capture_context, 1)
                 test.eq(#captured_calls.activation_request, 1)
-                local i = info :: any
-                test.is_true(i.accepted)
-                test.is_true(i.pending)
+                local details = info :: any
+                test.is_true(details.accepted)
+                test.is_true(details.pending)
             end)
 
             it("surfaces activation persistence failure without spawning", function()

@@ -7,6 +7,11 @@ local DB_RESOURCE = "app:db"
 
 local dataflow_repo = {}
 
+local function has_actor_context(value)
+    return (type(value) == "string" and value ~= "") or
+        (type(value) == "table" and next(value) ~= nil)
+end
+
 local function get_db()
     local db, err = sql.get(DB_RESOURCE)
     if err then
@@ -78,6 +83,64 @@ function dataflow_repo.get_by_user(dataflow_id, actor_id)
     if not dataflows_data or #dataflows_data == 0 then return nil, "Workflow not found or access denied" end
 
     return parse_dataflow_metadata(dataflows_data[1])
+end
+
+function dataflow_repo.capture_context_if_empty(dataflow_id, actor_id, actor_context)
+    if type(dataflow_id) ~= "string" or dataflow_id == "" then
+        return nil, "Workflow ID is required"
+    end
+    if type(actor_id) ~= "string" or actor_id == "" then
+        return nil, "Actor ID is required"
+    end
+    if type(actor_context) ~= "string" or actor_context == "" then
+        return nil, "Actor context is required"
+    end
+
+    local db, db_err = get_db()
+    if db_err then return nil, db_err end
+    local db_type, type_err = db:type()
+    if type_err then
+        db:release()
+        return nil, "Failed to detect database type: " .. tostring(type_err)
+    end
+    local empty_predicate = sql.builder.expr("(actor_context IS NULL OR actor_context = '')")
+    if db_type == sql.type.POSTGRES or db_type == "postgres" then
+        empty_predicate = sql.builder.expr("actor_context IS NULL")
+    end
+    local update_result, update_err = sql.builder.update("dataflows")
+        :set("actor_context", actor_context)
+        :set("updated_at", time.now():format(time.RFC3339NANO))
+        :where("dataflow_id = ?", dataflow_id)
+        :where("actor_id = ?", actor_id)
+        :where(empty_predicate)
+        :run_with(db):exec()
+    if update_err then
+        db:release()
+        return nil, "Failed to capture workflow execution context: " .. tostring(update_err)
+    end
+
+    local rows, query_err = sql.builder.select(
+            "dataflow_id", "parent_dataflow_id", "actor_id", "actor_context",
+            "type", "status", "metadata", "created_at", "updated_at"
+        )
+        :from("dataflows")
+        :where("dataflow_id = ?", dataflow_id)
+        :where("actor_id = ?", actor_id)
+        :limit(1)
+        :run_with(db):query()
+    db:release()
+    if query_err then
+        return nil, "Failed to read captured workflow execution context: " .. tostring(query_err)
+    end
+    if not rows or not rows[1] then
+        return nil, "Workflow not found or access denied"
+    end
+    local workflow = parse_dataflow_metadata(rows[1])
+    if not has_actor_context(workflow.actor_context) then
+        return nil, "Workflow execution context remains empty after capture"
+    end
+    workflow.context_captured = update_result and (update_result.rows_affected or 0) > 0
+    return workflow, nil
 end
 
 function dataflow_repo.get_nodes_for_dataflow(dataflow_id)
