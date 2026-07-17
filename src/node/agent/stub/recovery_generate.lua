@@ -9,7 +9,7 @@ local function response_tokens(prompt_tokens, completion_tokens)
     }
 end
 
-local function tool_call_response(scenario_id, step, delay_ms, prompt_tokens, completion_tokens)
+local function tool_call_response(scenario_id, step, delay_ms, prompt_tokens, completion_tokens, tool_name)
     return {
         success = true,
         result = {
@@ -17,7 +17,7 @@ local function tool_call_response(scenario_id, step, delay_ms, prompt_tokens, co
             tool_calls = {
                 {
                     id = helpers.call_id(scenario_id, step),
-                    name = "recovery_tool",
+                    name = tool_name or "recovery_tool",
                     arguments = {
                         scenario_id = scenario_id,
                         step = step,
@@ -66,6 +66,21 @@ local function handler(contract_args)
     if scenario.mode == "single_tool_then_final" then
         if result_count == 0 then
             return tool_call_response(scenario.scenario_id, 1, scenario.tool_delay_ms, base_prompt or 13, 8)
+        end
+
+        return final_response(scenario.scenario_id, scenario.mode, result_count, base_prompt or 9, 4)
+    end
+
+    if scenario.mode == "control_child_then_final" then
+        if result_count == 0 then
+            return tool_call_response(
+                scenario.scenario_id,
+                1,
+                scenario.tool_delay_ms,
+                base_prompt or 13,
+                8,
+                "recovery_control_tool"
+            )
         end
 
         return final_response(scenario.scenario_id, scenario.mode, result_count, base_prompt or 9, 4)

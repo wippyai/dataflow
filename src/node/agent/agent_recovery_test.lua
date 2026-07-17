@@ -119,7 +119,8 @@ local function define_tests()
                                 max_iterations = opts.max_iterations or 6,
                                 tool_calling = "auto",
                                 tools = {
-                                    "userspace.dataflow.node.agent.stub:recovery_tool"
+                                    "userspace.dataflow.node.agent.stub:recovery_tool",
+                                    "userspace.dataflow.node.agent.stub:recovery_control_tool"
                                 }
                             },
                             data_targets = {
@@ -263,6 +264,60 @@ local function define_tests()
             test.eq(metrics.tool_effects, 1, "tool side effect applied once")
             test.eq(metrics.step1_effect, 1, "first tool call effect recorded once")
             test.gte(metrics.tool_attempts, 1, "tool was attempted")
+        end)
+
+        it("resumes the same control-command child DAG after restart", function()
+            local workflow = create_workflow({
+                mode = "control_child_then_final"
+            })
+
+            c:start(workflow.dataflow_id)
+            local pending = wait_until(function()
+                local node = (node_reader.with_dataflow(workflow.dataflow_id) :: any)
+                    :with_nodes(workflow.node_id)
+                    :one()
+                local value = node and node.metadata and node.metadata.agent_pending
+                if type(value) == "table"
+                    and type(value.child_node_ids) == "table"
+                    and #value.child_node_ids == 1 then
+                    return value
+                end
+                return nil
+            end, 12000, 50) :: any
+            test.not_nil(pending, "control child checkpoint persisted")
+            local original_child_id = pending.child_node_ids[1]
+
+            kill_orchestrator(workflow.dataflow_id)
+            c:start(workflow.dataflow_id)
+            test.not_nil(wait_until(function()
+                if c:get_status(workflow.dataflow_id) == consts.STATUS.RUNNING then return true end
+                return nil
+            end, 10000, 100), "workflow restarted")
+            c:signal(workflow.dataflow_id, "agent-control-" .. workflow.scenario_id, {
+                approved = true
+            })
+
+            test.is_true(wait_complete(workflow.dataflow_id, 20000), "workflow recovered")
+            test.eq(get_output_text(workflow.dataflow_id),
+                "final:control_child_then_final:" .. workflow.scenario_id .. ":1")
+
+            local child_ids = {}
+            local nodes = (node_reader.with_dataflow(workflow.dataflow_id) :: any):all()
+            for _, node in ipairs(nodes or {}) do
+                if node.type == "userspace.dataflow.node.signal:node" then
+                    table.insert(child_ids, node.node_id)
+                end
+            end
+            test.eq(#child_ids, 1, "control DAG was not duplicated")
+            test.eq(child_ids[1], original_child_id, "the checkpointed child was resumed")
+
+            local agent_node = (node_reader.with_dataflow(workflow.dataflow_id) :: any)
+                :with_nodes(workflow.node_id)
+                :one()
+            test.eq(agent_node.metadata.agent_pending, false, "pending checkpoint cleared after collection")
+
+            local metrics = get_metrics(workflow.scenario_id)
+            test.eq(metrics.llm_calls, 2, "recovery did not ask the model to compose another DAG")
         end)
 
         it("replays the LLM when crash happens after response but before durable submit", function()

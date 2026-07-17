@@ -48,6 +48,15 @@ entries:
     lifecycle:
       auto_start: true
 
+  - name: test_policy
+    kind: security.policy
+    groups:
+      - dataflow_test_runtime
+    policy:
+      resources: '*'
+      actions: '*'
+      effect: allow
+
   - name: gateway
     kind: http.service
     addr: :19097
@@ -71,8 +80,15 @@ entries:
     meta:
       description: Dataflow module configuration for testing
     component: "wippy/dataflow"
+    version: "*"
     parameters:
-      - name: target_db
+      - name: userspace.dataflow:target_db
+        value: app:db
+      - name: userspace.dataflow:process_host
+        value: app:processes
+      - name: userspace.dataflow:user_security_scope
+        value: dataflow_test_runtime
+      - name: wippy.migration:app_db
         value: app:db
 
   - name: dep.wippy.bootloader
@@ -80,10 +96,11 @@ entries:
     meta:
       description: Bootloader dependency configuration for testing
     component: "wippy/bootloader"
+    version: "*"
     parameters:
-      - name: application_host
+      - name: wippy.bootloader:application_host
         value: app:processes
-      - name: env_storage
+      - name: wippy.bootloader:env_storage
         value: app:env_storage
 
   - name: dep.wippy.llm
@@ -91,10 +108,11 @@ entries:
     meta:
       description: LLM dependency configuration for testing
     component: "wippy/llm"
+    version: "*"
     parameters:
-      - name: process_host
+      - name: wippy.llm:process_host
         value: app:processes
-      - name: env_storage
+      - name: wippy.llm:env_storage
         value: app:env_storage
 
   - name: dep.wippy.session
@@ -102,21 +120,25 @@ entries:
     meta:
       description: Session dependency configuration for testing
     component: "wippy/session"
+    version: "*"
     parameters:
-      - name: database_resource
+      - name: wippy.session:database_resource
         value: app:db
-      - name: api_router
+      - name: wippy.session:api_router
         value: app:api.public
-      - name: env_storage
+      - name: wippy.session:env_storage
         value: app:env_storage
+      - name: wippy.session:delegation_func_id
+        value: userspace.dataflow.session:delegate
 
   - name: dep.wippy.views
     kind: ns.dependency
     meta:
       description: Views dependency configuration for testing
     component: "wippy/views"
+    version: "*"
     parameters:
-      - name: api_router
+      - name: wippy.views:api_router
         value: app:api.public
-      - name: env_storage
+      - name: wippy.views:env_storage
         value: app:env_storage

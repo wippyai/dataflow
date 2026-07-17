@@ -54,6 +54,32 @@ entries:
   imports:
     helpers: userspace.dataflow.node.agent.stub:recovery_helpers
   method: handler
+- name: recovery_control_tool
+  kind: function.lua
+  meta:
+    type: tool
+    name: recovery_control_tool
+    title: Recovery Control Tool
+    test_only: true
+    comment: Creates a child DAG for Agent control-command recovery tests
+    input_schema:
+      type: object
+      properties:
+        scenario_id:
+          type: string
+        step:
+          type: number
+        delay_ms:
+          type: number
+      required:
+      - scenario_id
+  source: file://recovery_control_tool.lua
+  modules:
+  - ctx
+  - uuid
+  imports:
+    consts: userspace.dataflow:consts
+  method: handler
 - name: recovery_metrics_reset
   kind: function.lua
   meta:
