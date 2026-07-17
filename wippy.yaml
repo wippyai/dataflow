@@ -1,6 +1,6 @@
 organization: wippy
 module: dataflow
-version: 0.5.2 # x-release-please-version
+version: 0.5.3 # x-release-please-version
 description: Workflow execution engine with visual flow designer support
 license: Apache-2.0
 keywords:

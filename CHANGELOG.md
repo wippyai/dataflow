@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## [0.5.3](https://github.com/wippyai/dataflow/compare/v0.5.2...v0.5.3) (2026-07-17)
+
+
+### Bug Fixes
+
+* **agent:** resume control child DAGs after recovery ([35b96d0](https://github.com/wippyai/dataflow/commit/35b96d0e918234baf7ad95631e00b49dedb8500e))
+* **agent:** resume control child DAGs after recovery ([578e1ce](https://github.com/wippyai/dataflow/commit/578e1cec7bd480ae8ea6b100758b99b607d770ae))
+
 ## [0.5.2](https://github.com/wippyai/dataflow/compare/v0.5.1...v0.5.2) (2026-07-13)
 
 
