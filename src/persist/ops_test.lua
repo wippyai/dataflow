@@ -5,6 +5,7 @@ local time = require("time")
 local sql = require("sql")
 
 local ops = require("ops")
+local activation_repo = require("activation_repo")
 
 -- rebind ? placeholders to $1,$2 for postgres
 local function rebind(query, db_type)
@@ -747,6 +748,200 @@ local function define_tests()
                 test.is_nil(err_query)
                 test.eq(#rows, 1)
                 test.eq(rows[1].status, "running")
+            end)
+
+            it("passivates only the currently owned activation generation", function()
+                local resources = setup_test_resources()
+                local tx = get_test_transaction()
+                local activation, activation_err = activation_repo.request_activation_tx(
+                    tx, resources.dataflow_id, { init_func_id = "app:init" },
+                    time.now():format(time.RFC3339NANO))
+                test.is_nil(activation_err)
+                test.eq(activation.generation, 1)
+
+                local _, running_err = tx:execute(rebind(
+                    "UPDATE dataflows SET status = ? WHERE dataflow_id = ?", tx:db_type()),
+                    { ops.STATUS.RUNNING, resources.dataflow_id })
+                test.is_nil(running_err)
+
+                local result, err = ops.execute(tx, resources.dataflow_id, nil, {
+                    type = ops.COMMAND_TYPES.PASSIVATE_WORKFLOW,
+                    payload = { activation_generation = 1 },
+                })
+                test.is_nil(err)
+                test.is_true(result.changes_made)
+                test.is_true(result.results[1].released)
+                test.eq(result.results[1].current_generation, 1)
+
+                local rows, query_err = txq(tx,
+                    "SELECT status FROM dataflows WHERE dataflow_id = ?", { resources.dataflow_id })
+                test.is_nil(query_err)
+                test.eq(rows[1].status, ops.STATUS.WAITING)
+                local activation_rows, activation_query_err = txq(tx, [[
+                    SELECT desired_active FROM dataflow_activations WHERE dataflow_id = ?
+                ]], { resources.dataflow_id })
+                test.is_nil(activation_query_err)
+                test.eq(tonumber(activation_rows[1].desired_active), 0)
+            end)
+
+            it("leaves workflow status unchanged when passivation generation is stale", function()
+                local resources = setup_test_resources()
+                local tx = get_test_transaction()
+                local timestamp = time.now():format(time.RFC3339NANO)
+                local first, first_err = activation_repo.request_activation_tx(
+                    tx, resources.dataflow_id, {}, timestamp)
+                test.is_nil(first_err)
+                local second, second_err = activation_repo.request_activation_tx(
+                    tx, resources.dataflow_id, {}, timestamp)
+                test.is_nil(second_err)
+                test.eq(second.generation, 2)
+                local _, running_err = tx:execute(rebind(
+                    "UPDATE dataflows SET status = ? WHERE dataflow_id = ?", tx:db_type()),
+                    { ops.STATUS.RUNNING, resources.dataflow_id })
+                test.is_nil(running_err)
+
+                local result, err = ops.execute(tx, resources.dataflow_id, nil, {
+                    type = ops.COMMAND_TYPES.PASSIVATE_WORKFLOW,
+                    payload = { activation_generation = first.generation },
+                })
+                test.is_nil(err)
+                test.is_false(result.changes_made)
+                test.is_false(result.results[1].released)
+                test.eq(result.results[1].current_generation, 2)
+
+                local rows, query_err = txq(tx,
+                    "SELECT status FROM dataflows WHERE dataflow_id = ?", { resources.dataflow_id })
+                test.is_nil(query_err)
+                test.eq(rows[1].status, ops.STATUS.RUNNING)
+            end)
+
+            it("serializes terminal cleanup before later signal activation", function()
+                local resources = setup_test_resources()
+                local tx = get_test_transaction()
+                local timestamp = time.now():format(time.RFC3339NANO)
+                local activation, activation_err = activation_repo.request_activation_tx(
+                    tx, resources.dataflow_id, {}, timestamp)
+                test.is_nil(activation_err)
+                test.eq(activation.generation, 1)
+                local signal, signal_err = activation_repo.activate_for_signal_tx(
+                    tx, resources.dataflow_id, "signal:before-terminal", timestamp, timestamp)
+                test.is_nil(signal_err)
+                test.is_true(signal.wake_inserted)
+
+                local terminal_result, terminal_err = ops.execute(tx, resources.dataflow_id, nil, {
+                    type = ops.COMMAND_TYPES.UPDATE_WORKFLOW,
+                    payload = { status = ops.STATUS.COMPLETED_SUCCESS },
+                })
+                test.is_nil(terminal_err)
+                test.is_true(terminal_result.results[1].terminal)
+                test.is_true(terminal_result.results[1].wake_index_changed)
+
+                local after, after_err = activation_repo.activate_for_signal_tx(
+                    tx, resources.dataflow_id, "signal:after-terminal", timestamp, timestamp)
+                test.is_nil(after_err)
+                test.is_true(after.terminal)
+                test.is_false(after.wake_inserted)
+                local wakes, wake_err = txq(tx,
+                    "SELECT wake_key FROM dataflow_wakes WHERE dataflow_id = ?", { resources.dataflow_id })
+                test.is_nil(wake_err)
+                test.eq(#wakes, 0)
+                local activations, active_err = txq(tx, [[
+                    SELECT desired_active FROM dataflow_activations WHERE dataflow_id = ?
+                ]], { resources.dataflow_id })
+                test.is_nil(active_err)
+                test.eq(tonumber(activations[1].desired_active), 0)
+            end)
+
+            it("rejects stale completion after a newer signal activation", function()
+                local resources = setup_test_resources()
+                local tx = get_test_transaction()
+                local timestamp = time.now():format(time.RFC3339NANO)
+                local first, first_err = activation_repo.request_activation_tx(
+                    tx, resources.dataflow_id, {}, timestamp)
+                test.is_nil(first_err)
+                local signal, signal_err = activation_repo.activate_for_signal_tx(
+                    tx, resources.dataflow_id, "signal:new-generation", timestamp, timestamp)
+                test.is_nil(signal_err)
+                test.eq(signal.generation, 2)
+
+                local result, completion_err = ops.execute(tx, resources.dataflow_id, nil, {
+                    type = ops.COMMAND_TYPES.COMPLETE_WORKFLOW,
+                    payload = {
+                        activation_generation = first.generation,
+                        status = ops.STATUS.COMPLETED_SUCCESS,
+                    },
+                })
+                test.is_nil(completion_err)
+                test.is_false(result.changes_made)
+                test.is_false(result.results[1].completed)
+                test.eq(result.results[1].current_generation, 2)
+
+                local rows, query_err = txq(tx,
+                    "SELECT status FROM dataflows WHERE dataflow_id = ?", { resources.dataflow_id })
+                test.is_nil(query_err)
+                test.neq(rows[1].status, ops.STATUS.COMPLETED_SUCCESS)
+                local wakes, wake_err = txq(tx,
+                    "SELECT activation_generation FROM dataflow_wakes WHERE dataflow_id = ?",
+                    { resources.dataflow_id })
+                test.is_nil(wake_err)
+                test.eq(#wakes, 1)
+                test.eq(tonumber(wakes[1].activation_generation), 2)
+            end)
+
+            it("completes the owned generation before rejecting a later signal", function()
+                local resources = setup_test_resources()
+                local tx = get_test_transaction()
+                local timestamp = time.now():format(time.RFC3339NANO)
+                local activation, activation_err = activation_repo.request_activation_tx(
+                    tx, resources.dataflow_id, {}, timestamp)
+                test.is_nil(activation_err)
+
+                local result, completion_err = ops.execute(tx, resources.dataflow_id, nil, {
+                    type = ops.COMMAND_TYPES.COMPLETE_WORKFLOW,
+                    payload = {
+                        activation_generation = activation.generation,
+                        status = ops.STATUS.COMPLETED_SUCCESS,
+                        metadata = { completed_by = "owner" },
+                    },
+                })
+                test.is_nil(completion_err)
+                test.is_true(result.changes_made)
+                test.is_true(result.results[1].completed)
+                test.is_true(result.results[1].wake_index_changed)
+
+                local signal, signal_err = activation_repo.activate_for_signal_tx(
+                    tx, resources.dataflow_id, "signal:too-late", timestamp, timestamp)
+                test.is_nil(signal_err)
+                test.is_true(signal.terminal)
+                test.is_false(signal.wake_inserted)
+                local rows, query_err = txq(tx,
+                    "SELECT status, metadata FROM dataflows WHERE dataflow_id = ?",
+                    { resources.dataflow_id })
+                test.is_nil(query_err)
+                test.eq(rows[1].status, ops.STATUS.COMPLETED_SUCCESS)
+                local metadata = test.not_nil(select(1, json.decode(rows[1].metadata))) :: any
+                test.eq(metadata.completed_by, "owner")
+            end)
+
+            it("rejects administrative terminal statuses from owner completion", function()
+                local resources = setup_test_resources()
+                local tx = get_test_transaction()
+                local activation, activation_err = activation_repo.request_activation_tx(
+                    tx, resources.dataflow_id, {}, time.now():format(time.RFC3339NANO))
+                test.is_nil(activation_err)
+                local result, completion_err = ops.execute(tx, resources.dataflow_id, nil, {
+                    type = ops.COMMAND_TYPES.COMPLETE_WORKFLOW,
+                    payload = {
+                        activation_generation = activation.generation,
+                        status = ops.STATUS.CANCELLED,
+                    },
+                })
+                test.is_nil(result)
+                test.contains(completion_err, "completed or failed")
+                local rows, query_err = txq(tx,
+                    "SELECT status FROM dataflows WHERE dataflow_id = ?", { resources.dataflow_id })
+                test.is_nil(query_err)
+                test.neq(rows[1].status, ops.STATUS.CANCELLED)
             end)
 
             it("should delete a dataflow with DELETE_WORKFLOW command", function()

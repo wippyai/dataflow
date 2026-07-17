@@ -3,6 +3,7 @@ local time = require("time")
 local uuid = require("uuid")
 local json = require("json")
 local consts = require("dataflow_consts")
+local activation_repo = require("activation_repo")
 
 -- Use shared constants from consts
 local constants = {
@@ -802,7 +803,8 @@ handlers[constants.COMMAND_TYPES.UPDATE_WORKFLOW] = function(tx, dataflow_id, op
         }
     end
 
-    update_query_builder = update_query_builder:set("updated_at", time.now():format(time.RFC3339NANO))
+    local now_ts = time.now():format(time.RFC3339NANO)
+    update_query_builder = update_query_builder:set("updated_at", now_ts)
 
     local executor = update_query_builder:run_with(tx)
     local result_exec, err_exec = executor:exec()
@@ -820,12 +822,10 @@ handlers[constants.COMMAND_TYPES.UPDATE_WORKFLOW] = function(tx, dataflow_id, op
         payload.status == constants.STATUS.CANCELLED or
         payload.status == constants.STATUS.TERMINATED
     if terminal then
-        local wake_result, wake_err = sql.builder.delete("dataflow_wakes")
-            :where("dataflow_id = ?", wf_id_to_update)
-            :run_with(tx)
-            :exec()
-        if wake_err then return nil, "Failed to clear terminal dataflow wake: " .. tostring(wake_err) end
-        terminal = (wake_result.rows_affected or 0) > 0
+        local _, projection_err = activation_repo.disable_terminal_tx(tx, wf_id_to_update, now_ts)
+        if projection_err then
+            return nil, "Failed to disable terminal activation: " .. tostring(projection_err)
+        end
     end
 
     return {
@@ -834,8 +834,103 @@ handlers[constants.COMMAND_TYPES.UPDATE_WORKFLOW] = function(tx, dataflow_id, op
         op_id = op_id,
         rows_affected = result_exec.rows_affected,
         metadata_merged = merge_metadata,
+        terminal = terminal,
         wake_index_changed = terminal,
     }
+end
+
+handlers[constants.COMMAND_TYPES.PASSIVATE_WORKFLOW] = function(tx, dataflow_id, op_id, command)
+    if not dataflow_id or dataflow_id == "" then
+        return nil, "Workflow ID is required"
+    end
+
+    local payload = command.payload or {}
+    local wf_id = payload.dataflow_id or dataflow_id
+    local generation = tonumber(payload.activation_generation)
+    if not generation or generation < 1 or generation % 1 ~= 0 then
+        return nil, "Activation generation must be a positive integer"
+    end
+
+    local now_ts = time.now():format(time.RFC3339NANO)
+    local release, release_err = activation_repo.release_if_generation_tx(tx, wf_id, generation, now_ts)
+    if release_err then return nil, "Failed to release activation: " .. tostring(release_err) end
+    if not release.released then
+        return {
+            dataflow_id = wf_id,
+            changes_made = false,
+            op_id = op_id,
+            released = false,
+            terminal = release.terminal == true,
+            current_generation = release.generation,
+        }
+    end
+
+    local update_result, update_err = sql.builder.update("dataflows")
+        :set("status", constants.STATUS.WAITING)
+        :set("updated_at", now_ts)
+        :where("dataflow_id = ?", wf_id)
+        :run_with(tx):exec()
+    if update_err then return nil, "Failed to passivate workflow: " .. tostring(update_err) end
+    if not update_result or (update_result.rows_affected or 0) ~= 1 then
+        return nil, "Workflow not found while passivating"
+    end
+
+    return {
+        dataflow_id = wf_id,
+        changes_made = true,
+        op_id = op_id,
+        released = true,
+        generation = generation,
+        current_generation = generation,
+        status = constants.STATUS.WAITING,
+        wake_index_changed = true,
+    }
+end
+
+handlers[constants.COMMAND_TYPES.COMPLETE_WORKFLOW] = function(tx, dataflow_id, op_id, command)
+    if not dataflow_id or dataflow_id == "" then
+        return nil, "Workflow ID is required"
+    end
+    local payload = command.payload or {}
+    local wf_id = payload.dataflow_id or dataflow_id
+    local generation = tonumber(payload.activation_generation)
+    if not generation or generation < 1 or generation % 1 ~= 0 then
+        return nil, "Activation generation must be a positive integer"
+    end
+    local status = payload.status
+    local terminal = status == constants.STATUS.COMPLETED_SUCCESS or
+        status == constants.STATUS.COMPLETED_FAILURE
+    if not terminal then return nil, "Completion status must be completed or failed" end
+
+    local now_ts = time.now():format(time.RFC3339NANO)
+    local release, release_err = activation_repo.release_if_generation_tx(tx, wf_id, generation, now_ts)
+    if release_err then return nil, "Failed to fence workflow completion: " .. tostring(release_err) end
+    if not release.released then
+        return {
+            dataflow_id = wf_id,
+            changes_made = false,
+            op_id = op_id,
+            completed = false,
+            terminal = release.terminal == true,
+            current_generation = release.generation,
+        }
+    end
+
+    local update_result, update_err = handlers[constants.COMMAND_TYPES.UPDATE_WORKFLOW](
+        tx, dataflow_id, op_id, {
+            type = constants.COMMAND_TYPES.UPDATE_WORKFLOW,
+            payload = {
+                dataflow_id = wf_id,
+                status = status,
+                metadata = payload.metadata,
+                merge_metadata = payload.merge_metadata,
+            },
+        })
+    if update_err then return nil, update_err end
+    update_result.completed = true
+    update_result.generation = generation
+    update_result.current_generation = generation
+    return update_result
 end
 
 handlers[constants.COMMAND_TYPES.DELETE_WORKFLOW] = function(tx, dataflow_id, op_id, command)

@@ -443,6 +443,28 @@ local function define_tests()
                 test.not_nil(msg.payload.updated_at)
             end)
 
+            it("publishes passivation and completion as workflow transitions", function()
+                local dataflow_id = "test-dataflow-id"
+                for _, command_type in ipairs({
+                    ops.COMMAND_TYPES.PASSIVATE_WORKFLOW,
+                    ops.COMMAND_TYPES.COMPLETE_WORKFLOW,
+                }) do
+                    mock_calls.process_messages = {}
+                    commit.publish_updates(dataflow_id, "test-op-id", {
+                        changes_made = true,
+                        results = { {
+                            changes_made = true,
+                            input = { type = command_type, payload = {} },
+                        } },
+                    })
+                    test.eq(#mock_calls.process_messages, 1)
+                    local message = (mock_calls.process_messages :: any)[1]
+                    test.eq(message.target_process, "user.test-user-123")
+                    test.eq(message.topic, "dataflow:" .. dataflow_id)
+                    test.eq(message.payload.dataflow_id, dataflow_id)
+                end
+            end)
+
             it("should handle mixed operation types", function()
                 local dataflow_id = "test-dataflow-id"
                 local _op_id = "test-op-id"
@@ -790,6 +812,204 @@ local function define_tests()
         end)
 
         describe("wake index notification", function()
+            it("requests activation durably and notifies only after commit", function()
+                if test_ctx.tx then test_ctx.tx:rollback(); test_ctx.tx = nil end
+                if test_ctx.db then test_ctx.db:release(); test_ctx.db = nil end
+                local dataflow_id = create_isolated_dataflow()
+
+                local activation_raw, activation_err = commit.request_activation(
+                    dataflow_id, { init_func_id = "app:init" })
+                test.is_nil(activation_err)
+                local activation = test.not_nil(activation_raw) :: any
+                test.eq(activation.generation, 1)
+                test.is_true(activation.desired_active)
+                test.eq(count_process_messages(
+                    "dataflow.overseer", "dataflow.activation.changed"), 1)
+                local message = test.not_nil(mock_calls.process_messages[1]) :: any
+                test.eq(message.payload.dataflow_id, dataflow_id)
+                test.eq(message.payload.generation, 1)
+
+                local second_raw, second_err = commit.request_activation(
+                    dataflow_id, { init_func_id = "app:second" }, { notify = false })
+                test.is_nil(second_err)
+                local second = test.not_nil(second_raw) :: any
+                test.eq(second.generation, 2)
+                test.eq(count_process_messages(
+                    "dataflow.overseer", "dataflow.activation.changed"), 1)
+                local notified, notify_err = commit.notify_activation(dataflow_id, second.generation)
+                test.is_nil(notify_err)
+                test.is_true(notified)
+                test.eq(count_process_messages(
+                    "dataflow.overseer", "dataflow.activation.changed"), 2)
+            end)
+
+            it("does not notify activation when a terminal request is rejected", function()
+                if test_ctx.tx then test_ctx.tx:rollback(); test_ctx.tx = nil end
+                if test_ctx.db then test_ctx.db:release(); test_ctx.db = nil end
+                local dataflow_id = create_isolated_dataflow()
+                local db = test.not_nil(select(1, sql.get("app:db"))) :: any
+                local _, update_err = db:execute(
+                    "UPDATE dataflows SET status = ? WHERE dataflow_id = ?",
+                    { consts.STATUS.COMPLETED_SUCCESS, dataflow_id })
+                db:release()
+                test.is_nil(update_err)
+
+                local activation_raw, activation_err = commit.request_activation(dataflow_id, {})
+                test.is_nil(activation_err)
+                local activation = test.not_nil(activation_raw) :: any
+                test.is_true(activation.terminal)
+                test.is_false(activation.changed)
+                test.eq(count_process_messages(
+                    "dataflow.overseer", "dataflow.activation.changed"), 0)
+            end)
+
+            it("returns a committed activation when its notification hint fails", function()
+                if test_ctx.tx then test_ctx.tx:rollback(); test_ctx.tx = nil end
+                if test_ctx.db then test_ctx.db:release(); test_ctx.db = nil end
+                local dataflow_id = create_isolated_dataflow()
+                commit._send_process_message = function()
+                    error("overseer unavailable")
+                end
+
+                local activation_raw, activation_err = commit.request_activation(dataflow_id, {})
+                test.is_nil(activation_err)
+                local activation = test.not_nil(activation_raw) :: any
+                test.eq(activation.generation, 1)
+                test.contains(activation.notify_error, "overseer unavailable")
+
+                local db = test.not_nil(select(1, sql.get("app:db"))) :: any
+                local rows, query_err = db:query([[
+                    SELECT generation, desired_active FROM dataflow_activations WHERE dataflow_id = ?
+                ]], { dataflow_id })
+                db:release()
+                test.is_nil(query_err)
+                test.eq(tonumber(rows[1].generation), 1)
+                test.eq(tonumber(rows[1].desired_active), 1)
+            end)
+
+            it("disables legacy terminal activation and reconciles after commit", function()
+                if test_ctx.tx then test_ctx.tx:rollback(); test_ctx.tx = nil end
+                if test_ctx.db then test_ctx.db:release(); test_ctx.db = nil end
+                local dataflow_id = create_isolated_dataflow()
+                local activation, activation_err = commit.request_activation(
+                    dataflow_id, {}, { notify = false })
+                test.is_nil(activation_err)
+                test.not_nil(activation)
+                local db = test.not_nil(select(1, sql.get("app:db"))) :: any
+                local _, wake_err = db:execute([[
+                    INSERT INTO dataflow_wakes(dataflow_id, wake_key, wake_at, activation_generation)
+                    VALUES (?, ?, ?, ?)
+                ]], { dataflow_id, "signal:legacy-terminal", "2023-01-01T12:00:00Z", 1 })
+                test.is_nil(wake_err)
+                local _, terminal_err = db:execute(
+                    "UPDATE dataflows SET status = ? WHERE dataflow_id = ?",
+                    { consts.STATUS.COMPLETED_FAILURE, dataflow_id })
+                db:release()
+                test.is_nil(terminal_err)
+
+                local result, disable_err = commit.disable_terminal_activation(dataflow_id)
+                test.is_nil(disable_err)
+                test.is_true(result.terminal)
+                test.eq(count_process_messages(
+                    "dataflow.wakes", "dataflow.wake.changed"), 1)
+                test.eq(count_process_messages(
+                    "dataflow.overseer", "dataflow.activation.changed"), 1)
+
+                db = test.not_nil(select(1, sql.get("app:db"))) :: any
+                local rows, query_err = db:query([[
+                    SELECT desired_active FROM dataflow_activations WHERE dataflow_id = ?
+                ]], { dataflow_id })
+                local wakes, wakes_err = db:query(
+                    "SELECT wake_key FROM dataflow_wakes WHERE dataflow_id = ?", { dataflow_id })
+                db:release()
+                test.is_nil(query_err)
+                test.is_nil(wakes_err)
+                test.eq(tonumber(rows[1].desired_active), 0)
+                test.eq(#wakes, 0)
+            end)
+
+            it("projects a signal wake and activation in the commit transaction", function()
+                if test_ctx.tx then test_ctx.tx:rollback(); test_ctx.tx = nil end
+                if test_ctx.db then test_ctx.db:release(); test_ctx.db = nil end
+                local dataflow_id = create_isolated_dataflow()
+                local signal_id = uuid.v7()
+                local command = {
+                    type = ops.COMMAND_TYPES.CREATE_DATA,
+                    payload = {
+                        data_id = signal_id,
+                        data_type = consts.DATA_TYPE.NODE_SIGNAL,
+                        content = { signal_id = "resume" },
+                    },
+                }
+
+                local result, err = commit.submit(dataflow_id, nil, { command })
+                test.is_nil(err)
+                test.eq(result.activation_generation, 1)
+                test.eq(count_process_messages(
+                    "dataflow.wakes", "dataflow.wake.changed"), 1)
+                test.eq(count_process_messages(
+                    "dataflow.overseer", "dataflow.activation.changed"), 1)
+
+                local db = test.not_nil(select(1, sql.get("app:db"))) :: any
+                local rows, query_err = db:query([[
+                    SELECT w.activation_generation, a.generation, a.desired_active
+                    FROM dataflow_wakes w
+                    JOIN dataflow_activations a ON a.dataflow_id = w.dataflow_id
+                    WHERE w.dataflow_id = ? AND w.wake_key = ?
+                ]], { dataflow_id, "signal:" .. signal_id })
+                db:release()
+                test.is_nil(query_err)
+                test.eq(#rows, 1)
+                test.eq(tonumber(rows[1].activation_generation), 1)
+                test.eq(tonumber(rows[1].generation), 1)
+                test.eq(tonumber(rows[1].desired_active), 1)
+
+                local duplicate, duplicate_err = commit.submit(dataflow_id, nil, { command })
+                test.is_nil(duplicate_err)
+                test.eq(duplicate.activation_generation, 1)
+                test.eq(count_process_messages(
+                    "dataflow.wakes", "dataflow.wake.changed"), 1)
+                test.eq(count_process_messages(
+                    "dataflow.overseer", "dataflow.activation.changed"), 1)
+            end)
+
+            it("rejects a terminal-losing signal without leaving an outbox row", function()
+                if test_ctx.tx then test_ctx.tx:rollback(); test_ctx.tx = nil end
+                if test_ctx.db then test_ctx.db:release(); test_ctx.db = nil end
+                local dataflow_id = create_isolated_dataflow()
+                local db = test.not_nil(select(1, sql.get("app:db"))) :: any
+                local _, terminal_err = db:execute(
+                    "UPDATE dataflows SET status = ? WHERE dataflow_id = ?",
+                    { consts.STATUS.COMPLETED_SUCCESS, dataflow_id })
+                test.is_nil(terminal_err)
+                local before_rows, before_err = db:query(
+                    "SELECT COUNT(*) AS row_count FROM dataflow_commits WHERE dataflow_id = ?",
+                    { dataflow_id })
+                test.is_nil(before_err)
+                local signal_id = uuid.v7()
+                local result, submit_err = commit.submit(dataflow_id, nil, { {
+                    type = ops.COMMAND_TYPES.CREATE_DATA,
+                    payload = {
+                        data_id = signal_id,
+                        data_type = consts.DATA_TYPE.NODE_SIGNAL,
+                        content = { signal_id = "late" },
+                    },
+                } })
+                test.is_nil(result)
+                test.contains(submit_err, "terminal")
+                local after_rows, after_err = db:query(
+                    "SELECT COUNT(*) AS row_count FROM dataflow_commits WHERE dataflow_id = ?",
+                    { dataflow_id })
+                test.is_nil(after_err)
+                local wakes, wake_err = db:query(
+                    "SELECT wake_key FROM dataflow_wakes WHERE dataflow_id = ?", { dataflow_id })
+                db:release()
+                test.is_nil(wake_err)
+                test.eq(tonumber(after_rows[1].row_count), tonumber(before_rows[1].row_count))
+                test.eq(#wakes, 0)
+                test.eq(#mock_calls.process_messages, 0)
+            end)
+
             it("notifies once after a committed wake-index transition", function()
                 if test_ctx.tx then test_ctx.tx:rollback(); test_ctx.tx = nil end
                 if test_ctx.db then test_ctx.db:release(); test_ctx.db = nil end
@@ -829,7 +1049,7 @@ local function define_tests()
                 } }, { publish = false })
                 test.is_nil(err)
                 test.not_nil(result)
-                test.eq(#mock_calls.process_messages, 0)
+                test.eq(count_process_messages("dataflow.wakes", "dataflow.wake.changed"), 0)
 
                 result, err = commit.execute(dataflow_id, nil, { {
                     type = ops.COMMAND_TYPES.UPDATE_WORKFLOW,
@@ -837,7 +1057,7 @@ local function define_tests()
                 } }, { publish = false })
                 test.is_nil(err)
                 test.not_nil(result)
-                test.eq(#mock_calls.process_messages, 0)
+                test.eq(count_process_messages("dataflow.wakes", "dataflow.wake.changed"), 1)
 
                 result, err = commit.execute(dataflow_id, nil, { {
                     type = consts.COMMAND.APPLY_COMMIT,
@@ -845,7 +1065,7 @@ local function define_tests()
                 } }, { publish = false })
                 test.is_nil(result)
                 test.not_nil(err)
-                test.eq(#mock_calls.process_messages, 0)
+                test.eq(count_process_messages("dataflow.wakes", "dataflow.wake.changed"), 1)
             end)
 
             it("notifies once after a timed-yield wake is committed to the outbox", function()

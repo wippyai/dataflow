@@ -544,15 +544,8 @@ function methods:get_status(dataflow_id)
     return workflow.status, nil
 end
 
-<<<<<<< HEAD
--- Send a signal to a waiting signal node in a workflow. The signal commit
--- projects an immediate durable wake in the same database transaction. The
--- central wake process owns delivery and restart; callers never race workflow
--- shutdown by inspecting the registry or spawning an orchestrator themselves.
-=======
 -- Send a signal to a waiting signal node. commit.submit atomically persists the
 -- signal activation and owns the post-commit overseer notification.
->>>>>>> 00d795d (feat(dataflow): route client activation through overseer)
 function methods:signal(dataflow_id, signal_id, data)
     if not dataflow_id or dataflow_id == "" then
         return nil, "Workflow ID is required"
