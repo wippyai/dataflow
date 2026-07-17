@@ -4,7 +4,6 @@ local logger = require("logger"):named("dataflow.overseer")
 local M = {
     activation_repo = require("activation_repo"),
     dataflow_repo = require("dataflow_repo"),
-    execution_frame = require("execution_frame"),
     overseer_state = require("overseer_state"),
     consts = require("consts"),
     sql = require("sql"),
@@ -80,6 +79,12 @@ M.with_tx = with_tx
 
 local function is_terminal(status)
     return TERMINAL_STATUS[string.lower(tostring(status or ""))] == true
+end
+
+local function has_frozen_context(value)
+    if type(value) == "string" then return value:match("%S") ~= nil end
+    if type(value) == "table" then return next(value) ~= nil end
+    return false
 end
 
 local function log_flow(_level: string, message: string, dataflow_id: any, err: any)
@@ -209,40 +214,31 @@ function M.drive_decision(runtime: any, initial: any)
                     status = workflow.status,
                 }))
             else
-                local actor, scope, frame_err = M.execution_frame.reconstruct(
-                    workflow.actor_id, workflow.actor_context)
-                if frame_err or not actor or not scope then
-                    decision = select(1, schedule_failed_observation(runtime, decision,
-                        "execution frame unavailable: " .. tostring(frame_err or "invalid frame")))
-                else
-                    local args = clone_launch_args(activation.launch_args)
-                    args.dataflow_id = dataflow_id
-                    args.activation_generation = generation
-                    local spawn_ok, spawn_pid, spawn_err = pcall(function()
-                        return M.process.with_context({})
-                            :with_actor(actor)
-                            :with_scope(scope)
-                            :with_name("dataflow." .. dataflow_id)
-                            :spawn_monitored(M.consts.ORCHESTRATOR, M.consts.HOST_ID, args)
-                    end)
-                    if not spawn_ok then
-                        spawn_err = tostring(spawn_pid)
-                        spawn_pid = nil
-                    end
-                    local registered_pid = select(1, lookup_owner(dataflow_id))
-                    decision = select(1, transition(runtime, M.overseer_state.on_spawn_observation, {
-                        dataflow_id = dataflow_id,
-                        generation = generation,
-                        spawn_pid = spawn_pid,
-                        registered_pid = registered_pid,
-                        -- A named spawn may return an existing owner. The host's
-                        -- spawn-or-signal shortcut does not install our monitor,
-                        -- so every returned/canonical PID is observed explicitly.
-                        monitor_ok = false,
-                    }))
-                    if not spawn_pid then
-                        log_flow("warn", "orchestrator spawn failed", dataflow_id, spawn_err)
-                    end
+                local args = clone_launch_args(activation.launch_args)
+                args.dataflow_id = dataflow_id
+                args.activation_generation = generation
+                local spawn_ok, spawn_pid, spawn_err = pcall(function()
+                    return M.process.with_context({})
+                        :with_name("dataflow." .. dataflow_id)
+                        :spawn_monitored(M.consts.ORCHESTRATOR, M.consts.HOST_ID, args)
+                end)
+                if not spawn_ok then
+                    spawn_err = tostring(spawn_pid)
+                    spawn_pid = nil
+                end
+                local registered_pid = select(1, lookup_owner(dataflow_id))
+                decision = select(1, transition(runtime, M.overseer_state.on_spawn_observation, {
+                    dataflow_id = dataflow_id,
+                    generation = generation,
+                    spawn_pid = spawn_pid,
+                    registered_pid = registered_pid,
+                    -- A named spawn may return an existing owner. The host's
+                    -- spawn-or-signal shortcut does not install our monitor,
+                    -- so every returned/canonical PID is observed explicitly.
+                    monitor_ok = false,
+                }))
+                if not spawn_pid then
+                    log_flow("warn", "orchestrator spawn failed", dataflow_id, spawn_err)
                 end
             end
         else
@@ -289,7 +285,7 @@ function M.recover_legacy_running(runtime)
     if list_err then return nil, list_err end
     local recovered = 0
     for _, workflow in ipairs(rows or {}) do
-        if workflow.status == M.consts.STATUS.RUNNING then
+        if workflow.status == M.consts.STATUS.RUNNING and has_frozen_context(workflow.actor_context) then
             local activation, activation_err = M.with_tx(function(tx)
                 return M.activation_repo.ensure_running_recovery_tx(
                     tx, tostring(workflow.dataflow_id), now_value())

@@ -95,7 +95,6 @@ entries:
       activation_repo: userspace.dataflow.persist:activation_repo
       consts: userspace.dataflow:consts
       dataflow_repo: userspace.dataflow.persist:dataflow_repo
-      execution_frame: userspace.dataflow:execution_frame
       overseer_state: userspace.dataflow.runner:overseer_state
     method: run
 

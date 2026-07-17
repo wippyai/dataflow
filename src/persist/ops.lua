@@ -471,12 +471,12 @@ handlers[constants.COMMAND_TYPES.CREATE_DATA] = function(tx, dataflow_id, op_id,
         local wake_at = yield_context.timeout_deadline
         if type(wake_at) == "string" and wake_at ~= "" then
             local yield_id = raw_content.yield_id or payload.key
-            local wake_result, wake_err = sql.builder.insert("dataflow_wakes")
-                :columns("dataflow_id", "wake_key", "wake_at")
-                :values(dataflow_id, "yield:" .. tostring(yield_id), wake_at)
-                :suffix("ON CONFLICT(dataflow_id, wake_key) DO UPDATE SET wake_at = excluded.wake_at")
-                :run_with(tx)
-                :exec()
+            local wake_result, wake_err = tx:execute([[
+                INSERT INTO dataflow_wakes(dataflow_id, wake_key, wake_at) VALUES (?, ?, ?)
+                ON CONFLICT(dataflow_id, wake_key) DO UPDATE SET
+                    wake_at = excluded.wake_at,
+                    activation_generation = NULL
+            ]], { dataflow_id, "yield:" .. tostring(yield_id), wake_at })
             if wake_err then return nil, "Failed to register dataflow wake: " .. tostring(wake_err) end
             wake_index_changed = (wake_result.rows_affected or 0) > 0
         end

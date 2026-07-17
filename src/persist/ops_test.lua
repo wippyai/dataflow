@@ -163,6 +163,52 @@ local function define_tests()
                 test.eq(rows[1].data_id, data_id)
             end)
 
+            it("re-arms a reused yield wake by clearing its previous activation fence", function()
+                local resources = setup_test_resources()
+                local tx = get_test_transaction()
+                local wake_key = "yield:reused-yield"
+                local first_deadline = "2026-07-17T10:00:00Z"
+                local second_deadline = "2026-07-17T11:00:00Z"
+
+                local function create_yield(data_id, deadline)
+                    return ops.execute(tx, resources.dataflow_id, nil, {
+                        type = ops.COMMAND_TYPES.CREATE_DATA,
+                        payload = {
+                            data_id = data_id,
+                            node_id = resources.node_id,
+                            key = "reused-yield",
+                            data_type = "node.yield",
+                            content = {
+                                yield_id = "reused-yield",
+                                yield_context = { timeout_deadline = deadline },
+                            },
+                            content_type = "application/json",
+                        },
+                    })
+                end
+
+                local first, first_err = create_yield(uuid.v7(), first_deadline)
+                test.is_nil(first_err)
+                test.is_true(first.results[1].wake_index_changed)
+                local _, fence_err = tx:execute(rebind([[
+                    UPDATE dataflow_wakes SET activation_generation = ?
+                    WHERE dataflow_id = ? AND wake_key = ?
+                ]], tx:db_type()), { 7, resources.dataflow_id, wake_key })
+                test.is_nil(fence_err)
+
+                local second, second_err = create_yield(uuid.v7(), second_deadline)
+                test.is_nil(second_err)
+                test.is_true(second.results[1].wake_index_changed)
+                local rows, query_err = txq(tx, [[
+                    SELECT wake_at, activation_generation FROM dataflow_wakes
+                    WHERE dataflow_id = ? AND wake_key = ?
+                ]], { resources.dataflow_id, wake_key })
+                test.is_nil(query_err)
+                test.eq(#rows, 1)
+                test.eq(rows[1].wake_at, second_deadline)
+                test.is_nil(rows[1].activation_generation)
+            end)
+
             it("should execute multiple commands in a batch", function()
                 local resources = setup_test_resources()
                 local tx = get_test_transaction()

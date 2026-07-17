@@ -196,6 +196,32 @@ local function terminal_result_from_status(status)
     return nil
 end
 
+-- The workflow row is already lifecycle-locked by the caller. Terminal state
+-- owns both durable activation intent and its wake index, so converge them in
+-- the same transaction before returning the terminal observation.
+local function cleanup_terminal_tx(tx, dataflow_id, status, now_value)
+    local activation_result, activation_err = tx_execute(tx, [[
+        UPDATE dataflow_activations
+        SET desired_active = ?, launch_args = NULL, updated_at = ?
+        WHERE dataflow_id = ? AND (desired_active = ? OR launch_args IS NOT NULL)
+    ]], { false, now_value, dataflow_id, true })
+    if activation_err then return nil, "failed to disable terminal activation: " .. tostring(activation_err) end
+
+    local wake_result, wake_err = tx_execute(tx,
+        "DELETE FROM dataflow_wakes WHERE dataflow_id = ?", { dataflow_id })
+    if wake_err then return nil, "failed to clear terminal wakes: " .. tostring(wake_err) end
+
+    local activation_disabled = activation_result and (activation_result.rows_affected or 0) > 0
+    local wake_index_changed = wake_result and (wake_result.rows_affected or 0) > 0
+    return {
+        changed = activation_disabled or wake_index_changed,
+        terminal = true,
+        status = status,
+        activation_disabled = activation_disabled,
+        wake_index_changed = wake_index_changed,
+    }, nil
+end
+
 local function advance_activation_tx(tx, dataflow_id, launch_args: any, now_value, preserve_launch_args)
     local encoded_args, encode_err = encode_launch_args(launch_args)
     if encode_err then return nil, encode_err end
@@ -370,8 +396,10 @@ function activation_repo.activate_due_tx(tx, dataflow_id, wake_key, now_value)
     if status_err then return nil, status_err end
     local terminal = terminal_result_from_status(status)
     if terminal then
-        terminal.promoted = false
-        return terminal, nil
+        local cleaned, cleanup_err = cleanup_terminal_tx(tx, dataflow_id, status, now_value)
+        if cleanup_err then return nil, cleanup_err end
+        cleaned.promoted = false
+        return cleaned, nil
     end
 
     -- This conditional no-op update is the row lock/CAS. On PostgreSQL a
@@ -512,23 +540,7 @@ function activation_repo.disable_terminal_tx(tx, dataflow_id, now_value)
     local status, status_err = lock_workflow_status_tx(tx, dataflow_id)
     if status_err then return nil, status_err end
     if not TERMINAL_STATUS[status] then return nil, "dataflow is not terminal" end
-
-    local activation_result, activation_err = tx_execute(tx, [[
-        UPDATE dataflow_activations
-        SET desired_active = ?, launch_args = NULL, updated_at = ?
-        WHERE dataflow_id = ?
-    ]], { false, now_value, dataflow_id })
-    if activation_err then return nil, "failed to disable activation: " .. tostring(activation_err) end
-    local wake_result, wake_err = tx_execute(tx,
-        "DELETE FROM dataflow_wakes WHERE dataflow_id = ?", { dataflow_id })
-    if wake_err then return nil, "failed to clear terminal wakes: " .. tostring(wake_err) end
-    return {
-        changed = (activation_result and (activation_result.rows_affected or 0) > 0) or
-            (wake_result and (wake_result.rows_affected or 0) > 0),
-        terminal = true,
-        status = status,
-        wake_index_changed = wake_result and (wake_result.rows_affected or 0) > 0,
-    }, nil
+    return cleanup_terminal_tx(tx, dataflow_id, status, now_value)
 end
 
 function activation_repo.get(dataflow_id)

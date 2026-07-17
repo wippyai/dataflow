@@ -73,6 +73,16 @@ local function define_tests()
             return rows and rows[1] and tonumber(rows[1].activation_generation) or nil
         end
 
+        local function wake_count(dataflow_id)
+            local db = test.not_nil(select(1, sql.get("app:db"))) :: any
+            local rows, query_err = db:query(
+                "SELECT COUNT(*) AS total FROM dataflow_wakes WHERE dataflow_id = ?",
+                { dataflow_id })
+            db:release()
+            test.is_nil(query_err)
+            return tonumber(rows and rows[1] and rows[1].total) or 0
+        end
+
         test.after_all(function()
             local db = test.not_nil(select(1, sql.get("app:db"))) :: any
             for _, id in ipairs(created) do
@@ -246,6 +256,50 @@ local function define_tests()
             test.is_false(result.due)
             test.is_nil(select(1, activation_repo.get(id)))
             test.is_nil(wake_generation(id, wake_key))
+        end)
+
+        test.it("converges terminal activation and every stale wake during due promotion", function()
+            local id = create_dataflow(consts.STATUS.RUNNING)
+            test.not_nil(select(1, transaction(function(tx)
+                return activation_repo.request_activation_tx(tx, id, { init_func_id = "app:init" }, now())
+            end)))
+            local due_key = "yield:" .. uuid.v7()
+            local future_key = "yield:" .. uuid.v7()
+            local db = test.not_nil(select(1, sql.get("app:db"))) :: any
+            local _, insert_err = db:execute([[
+                INSERT INTO dataflow_wakes(dataflow_id, wake_key, wake_at)
+                VALUES (?, ?, ?), (?, ?, ?)
+            ]], { id, due_key, now(-2), id, future_key, now(60) })
+            db:release()
+            test.is_nil(insert_err)
+            test.eq(wake_count(id), 2)
+
+            local result = test.not_nil(select(1, transaction(function(tx)
+                local _, status_err = tx:execute(
+                    "UPDATE dataflows SET status = ? WHERE dataflow_id = ?",
+                    { consts.STATUS.COMPLETED_SUCCESS, id })
+                if status_err then return nil, status_err end
+                return activation_repo.activate_due_tx(tx, id, due_key, now())
+            end))) :: any
+
+            test.is_true(result.terminal)
+            test.is_false(result.promoted)
+            test.is_true(result.activation_disabled)
+            test.is_true(result.wake_index_changed)
+            test.eq(wake_count(id), 0)
+            local stored = test.not_nil(select(1, activation_repo.get(id))) :: any
+            test.is_false(stored.desired_active)
+            test.is_nil(stored.launch_args)
+            test.is_nil(find_active(id))
+
+            local repeated = test.not_nil(select(1, transaction(function(tx)
+                return activation_repo.activate_due_tx(tx, id, due_key, now(1))
+            end))) :: any
+            test.is_true(repeated.terminal)
+            test.is_false(repeated.promoted)
+            test.is_false(repeated.changed)
+            test.is_false(repeated.activation_disabled)
+            test.is_false(repeated.wake_index_changed)
         end)
 
         test.it("rolls signal wake and generation back as one transaction", function()

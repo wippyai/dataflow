@@ -49,14 +49,6 @@ local function process_mock(captured, lookup)
     mock.with_context = function(context)
         captured.context = context
         local spawner = {}
-        function spawner:with_actor(actor)
-            captured.actor = actor
-            return self
-        end
-        function spawner:with_scope(scope)
-            captured.scope = scope
-            return self
-        end
         function spawner:with_name(name)
             captured.name = name
             return self
@@ -82,16 +74,10 @@ local function run_tests()
             originals = {
                 activation_repo = wake_process.activation_repo,
                 dataflow_repo = wake_process.dataflow_repo,
-                execution_frame = wake_process.execution_frame,
                 process = wake_process.process,
                 sql = wake_process.sql,
                 with_tx = wake_process.with_tx,
                 pending_due = wake_process.pending_due,
-            }
-            wake_process.execution_frame = {
-                reconstruct = function(actor_id, _context)
-                    return { id = actor_id }, { policies = {} }, nil
-                end,
             }
             wake_process.with_tx = function(fn) return fn({}) end
             wake_process.pending_due = function() return {}, nil end
@@ -101,7 +87,7 @@ local function run_tests()
             for key, value in pairs(originals) do wake_process[key] = value end
         end)
 
-        test.it("boot recovers legacy RUNNING only and leaves bare PENDING inert", function()
+        test.it("boot recovers framed legacy RUNNING only and leaves PENDING or unframed rows inert", function()
             local recovered = {}
             local active = activation("running", 1, { init_func_id = "app:init" })
             local observed = captures()
@@ -109,6 +95,12 @@ local function run_tests()
                 list_non_terminal = function()
                     return {
                         workflow("pending", wake_process.consts.STATUS.PENDING),
+                        {
+                            dataflow_id = "unframed",
+                            actor_id = "actor:unframed",
+                            actor_context = nil,
+                            status = wake_process.consts.STATUS.RUNNING,
+                        },
                         workflow("running", wake_process.consts.STATUS.RUNNING),
                     }, nil
                 end,
@@ -194,6 +186,56 @@ local function run_tests()
             test.is_nil(second_err)
             test.eq(first, 1)
             test.eq(second, 0)
+            test.eq(#observed.spawns, 1)
+        end)
+
+        test.it("drains a full terminal wake batch before promoting the next valid timer", function()
+            local observed = captures()
+            local scans = 0
+            local cleaned = 0
+            local promoted = activation("valid-after-terminal", 1)
+            promoted.promoted = true
+            wake_process.dataflow_repo = { get = function(id) return workflow(id), nil end }
+            wake_process.activation_repo = {
+                activate_due_tx = function(_tx, id)
+                    if id == "valid-after-terminal" then return promoted, nil end
+                    cleaned = cleaned + 1
+                    return {
+                        terminal = true,
+                        promoted = false,
+                        changed = true,
+                        wake_index_changed = true,
+                    }, nil
+                end,
+                get = function() return promoted, nil end,
+            }
+            wake_process.pending_due = function()
+                scans = scans + 1
+                if scans == 1 then
+                    local rows = {}
+                    for index = 1, 100 do
+                        rows[index] = {
+                            dataflow_id = "terminal-" .. tostring(index),
+                            wake_key = "yield:stale-" .. tostring(index),
+                        }
+                    end
+                    return rows, nil
+                end
+                return { {
+                    dataflow_id = "valid-after-terminal",
+                    wake_key = "yield:valid",
+                } }, nil
+            end
+            wake_process.process = process_mock(observed)
+            local runtime = wake_process.new_runtime()
+
+            local first, first_err = wake_process.promote_due(runtime)
+            local second, second_err = wake_process.promote_due(runtime)
+            test.is_nil(first_err)
+            test.is_nil(second_err)
+            test.eq(first, 0)
+            test.eq(second, 1)
+            test.eq(cleaned, 100)
             test.eq(#observed.spawns, 1)
         end)
 
