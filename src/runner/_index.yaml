@@ -86,20 +86,23 @@ entries:
   - name: wake_process
     kind: process.lua
     meta:
-      name: Dataflow Wake Process
-      comment: Sleeps until the nearest indexed dataflow wake and revives only due flows.
+      name: Dataflow Overseer
+      comment: Reconciles durable activation ownership with exact wake timers and a low-frequency safety scan.
       default_host: app:processes
     source: file://wake_process.lua
-    modules: [time, logger]
+    modules: [time, logger, sql]
     imports:
-      wake_repo: userspace.dataflow.persist:wake_repo
-      client: userspace.dataflow:client
+      activation_repo: userspace.dataflow.persist:activation_repo
+      consts: userspace.dataflow:consts
+      dataflow_repo: userspace.dataflow.persist:dataflow_repo
+      execution_frame: userspace.dataflow:execution_frame
+      overseer_state: userspace.dataflow.runner:overseer_state
     method: run
 
   - name: wake_process.service
     kind: process.service
     meta:
-      comment: Sleeps on the single nearest durable deadline and revives only the exact due dataflow.
+      comment: Owns active Dataflow processes, exact wake promotion, and bounded crash recovery.
     process: userspace.dataflow.runner:wake_process
     host: app:processes
     lifecycle:
@@ -128,7 +131,7 @@ entries:
       type: test
       suite: Workflow
       group: Workflow
-      comment: Proves exact-deadline wake revival without polling or active-process supervision.
+      comment: Proves boot recovery, notification loss, exact wakes, canonical adoption, and crash backoff.
     source: file://wake_process_test.lua
     imports:
       test: wippy.test:test
