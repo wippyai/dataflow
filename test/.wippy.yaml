@@ -117,6 +117,8 @@ override:
   "userspace.dataflow.runner:orchestrator_process_event_test:security.policies": [app:test_policy]
   "userspace.dataflow.runner:orchestrator_test:security.actor.id": dataflow.test
   "userspace.dataflow.runner:orchestrator_test:security.policies": [app:test_policy]
+  "userspace.dataflow.runner:overseer_state_test:security.actor.id": dataflow.test
+  "userspace.dataflow.runner:overseer_state_test:security.policies": [app:test_policy]
   "userspace.dataflow.runner:scheduler_test:security.actor.id": dataflow.test
   "userspace.dataflow.runner:scheduler_test:security.policies": [app:test_policy]
   "userspace.dataflow.runner:wake_process_test:security.actor.id": dataflow.test

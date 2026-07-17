@@ -135,6 +135,28 @@ entries:
       wake_process: userspace.dataflow.runner:wake_process
     method: run_tests
 
+  - name: overseer_state
+    kind: library.lua
+    meta:
+      name: Dataflow Overseer State
+      comment: Pure activation ownership, process observation, and restart decision model.
+      tags: [dataflow, overseer, lifecycle, pure]
+    source: file://overseer_state.lua
+
+  - name: overseer_state_test
+    kind: function.lua
+    meta:
+      name: Dataflow Overseer State Tests
+      type: test
+      group: Workflow
+      comment: Focused lifecycle and ambiguity coverage for the pure overseer ownership model.
+      tags: [dataflow, overseer, lifecycle, tests]
+    source: file://overseer_state_test.lua
+    imports:
+      overseer_state: userspace.dataflow.runner:overseer_state
+      test: wippy.test:test
+    method: run_tests
+
   # userspace.dataflow.runner:scheduler
   - name: scheduler
     kind: library.lua
