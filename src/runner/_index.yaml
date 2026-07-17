@@ -24,12 +24,13 @@ entries:
       - json
       - uuid
       - funcs
-      - security
       - time
       - logger
     imports:
+      activation_repo: userspace.dataflow.persist:activation_repo
       commit: userspace.dataflow.persist:commit
       consts: userspace.dataflow:consts
+      execution_frame: userspace.dataflow:execution_frame
       scheduler: userspace.dataflow.runner:scheduler
       workflow_state: userspace.dataflow.runner:workflow_state
       wake_repo: userspace.dataflow.persist:wake_repo

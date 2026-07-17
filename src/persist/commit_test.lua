@@ -527,6 +527,97 @@ local function define_tests()
                 test.eq(#mock_calls.process_messages, 0)
             end)
 
+            it("should make fenced completion a mutation precondition for terminal details", function()
+                local resources = setup_test_resources()
+                local tx = get_test_transaction()
+                local now_ts = time.now():format(time.RFC3339NANO)
+                local node_id = uuid.v7()
+                local _, activation_err = tx:execute([[
+                    INSERT INTO dataflow_activations(
+                        dataflow_id, generation, desired_active, launch_args, requested_at, updated_at
+                    ) VALUES (?, ?, ?, NULL, ?, ?)
+                ]], { resources.dataflow_id, 2, true, now_ts, now_ts })
+                test.is_nil(activation_err)
+                local _, node_err = tx:execute([[
+                    INSERT INTO dataflow_nodes(
+                        node_id, dataflow_id, type, status, metadata, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ]], {
+                    node_id, resources.dataflow_id, "test_node", consts.STATUS.PENDING,
+                    "{}", now_ts, now_ts,
+                })
+                test.is_nil(node_err)
+
+                local function terminal_batch(generation)
+                    return {
+                        {
+                            type = ops.COMMAND_TYPES.COMPLETE_WORKFLOW,
+                            payload = {
+                                activation_generation = generation,
+                                status = consts.STATUS.COMPLETED_FAILURE,
+                                metadata = { error = "spawn failed" },
+                            },
+                        },
+                        {
+                            type = ops.COMMAND_TYPES.UPDATE_NODE,
+                            payload = {
+                                node_id = node_id,
+                                status = consts.STATUS.COMPLETED_FAILURE,
+                                metadata = { error = "spawn failed" },
+                            },
+                        },
+                    }
+                end
+
+                local stale, stale_err = commit.tx_execute(
+                    tx, resources.dataflow_id, nil, terminal_batch(1), { publish = false })
+                test.is_nil(stale_err)
+                test.is_false((stale.results[1] :: any).completed)
+                test.eq(#stale.results, 1)
+                local stale_nodes, stale_node_err = tx:query(
+                    "SELECT status FROM dataflow_nodes WHERE node_id = ?", { node_id })
+                local stale_flows, stale_flow_err = tx:query(
+                    "SELECT status FROM dataflows WHERE dataflow_id = ?", { resources.dataflow_id })
+                test.is_nil(stale_node_err)
+                test.is_nil(stale_flow_err)
+                test.eq(stale_nodes[1].status, consts.STATUS.PENDING)
+                test.eq(stale_flows[1].status, "active")
+
+                local current, current_err = commit.tx_execute(
+                    tx, resources.dataflow_id, nil, terminal_batch(2), { publish = false })
+                test.is_nil(current_err)
+                test.is_true((current.results[1] :: any).completed)
+                test.eq(#current.results, 2)
+                local current_nodes, current_node_err = tx:query(
+                    "SELECT status FROM dataflow_nodes WHERE node_id = ?", { node_id })
+                local current_flows, current_flow_err = tx:query(
+                    "SELECT status FROM dataflows WHERE dataflow_id = ?", { resources.dataflow_id })
+                test.is_nil(current_node_err)
+                test.is_nil(current_flow_err)
+                test.eq(current_nodes[1].status, consts.STATUS.COMPLETED_FAILURE)
+                test.eq(current_flows[1].status, consts.STATUS.COMPLETED_FAILURE)
+            end)
+
+            it("should reject a completion fence that is not the first batch command", function()
+                local resources = setup_test_resources()
+                local result, err = commit.tx_execute(get_test_transaction(), resources.dataflow_id, nil, {
+                    {
+                        type = ops.COMMAND_TYPES.UPDATE_WORKFLOW,
+                        payload = { metadata = { should_not_apply = true } },
+                    },
+                    {
+                        type = ops.COMMAND_TYPES.COMPLETE_WORKFLOW,
+                        payload = {
+                            activation_generation = 1,
+                            status = consts.STATUS.COMPLETED_FAILURE,
+                        },
+                    },
+                }, { publish = false })
+
+                test.is_nil(result)
+                test.contains(err, "COMPLETE_WORKFLOW must be the first")
+            end)
+
             it("should fail with missing transaction", function()
                 local commands = {
                     {

@@ -8,8 +8,10 @@ type MockWorkflowState = {
     get_dataflow_metadata: () -> { [string]: any },
     get_dataflow_status: () -> string?,
     get_actor_id: () -> string?,
+    get_actor_context: () -> any,
     get_scheduler_snapshot: () -> { [string]: any },
     get_failed_node_errors: () -> string?,
+    discard_queued_commands: (self: MockWorkflowState) -> MockWorkflowState,
     track_process: (self: MockWorkflowState, node_id: string, pid: string) -> MockWorkflowState,
     queue_commands: (self: MockWorkflowState, commands: any) -> MockWorkflowState,
     persist: (self: MockWorkflowState) -> ({ changes_made: boolean }?, string?),
@@ -27,7 +29,12 @@ type MockScheduler = {
 }
 
 type MockProcess = {
-    registry: { register: (name: string) -> nil, unregister: (name: string) -> nil },
+    registry: {
+        lookup: (name: string) -> (string?, any?),
+        register: (name: string) -> (boolean?, any?),
+        unregister: (name: string) -> nil,
+    },
+    pid: () -> string,
     set_options: (options: any) -> nil,
     with_context: (ctx: any) -> any,
     spawn_linked_monitored: (node_type: string, host: string, args: any) -> (string?, string?),
@@ -41,6 +48,13 @@ type MockProcess = {
 type MockCommit = {
     get_pending_commits: (dataflow_id: string) -> ({ string }?, string?)
 }
+
+local function run_active(args)
+    local call_args = {}
+    for key, value in pairs(args or {}) do call_args[key] = value end
+    call_args.activation_generation = call_args.activation_generation or 1
+    return orchestrator.run(call_args)
+end
 
 local function define_tests()
     describe("Orchestrator", function()
@@ -78,10 +92,13 @@ local function define_tests()
                     return { test = "metadata" }
                 end,
                 get_dataflow_status = function(): string?
-                    return nil
+                    return consts.STATUS.PENDING
                 end,
                 get_actor_id = function(): string?
                     return "test-actor-123"
+                end,
+                get_actor_context = function(): any
+                    return { kind = "test" }
                 end,
                 get_scheduler_snapshot = function(): { [string]: any }
                     return {
@@ -109,8 +126,14 @@ local function define_tests()
                 queue_commands = function(self: MockWorkflowState, _commands: any): MockWorkflowState
                     return self
                 end,
+                discard_queued_commands = function(self: MockWorkflowState): MockWorkflowState
+                    return self
+                end,
                 persist = function(_self: MockWorkflowState): ({ changes_made: boolean }?, string?)
-                    return { changes_made = true }, nil
+                    return {
+                        changes_made = true,
+                        results = { { completed = true, released = true } },
+                    }, nil
                 end,
                 get_node = function(_self: MockWorkflowState, _node_id: string): { [string]: any }?
                     return {
@@ -145,16 +168,19 @@ local function define_tests()
                     EXECUTE_NODES = "execute_nodes",
                     SATISFY_YIELD = "satisfy_yield",
                     COMPLETE_WORKFLOW = "complete_workflow",
+                    PASSIVATE = "passivate",
                     NO_WORK = "no_work",
                 },
             }
 
             mock_process = {
                 registry = {
-                    register = function(_name: string) end,
+                    lookup = function(_name: string) return nil, "not_found: name not registered" end,
+                    register = function(_name: string) return true, nil end,
                     unregister = function(_name: string) end,
                 },
                 set_options = function(_options: any) end,
+                pid = function(): string return "orchestrator-pid" end,
                 with_context = function(_ctx: any): any
                     local spawner = {}
                     function spawner:with_actor(actor: any): any
@@ -228,6 +254,19 @@ local function define_tests()
                     return true, nil
                 end,
             }
+            orchestrator.activation_repo = {
+                get = function()
+                    return { generation = 1, desired_active = true }, nil
+                end,
+            }
+            orchestrator.execution_frame = {
+                reconstruct = function(actor_id: string)
+                    if actor_id ~= current_actor:id() then
+                        return nil, nil, "actor mismatch"
+                    end
+                    return current_actor, "test-scope", nil
+                end,
+            }
             orchestrator.funcs = {
                 new = function(): any
                     local executor = {}
@@ -243,14 +282,6 @@ local function define_tests()
                         return { success = true }, nil
                     end
                     return executor
-                end,
-            }
-            orchestrator.security = {
-                actor = function()
-                    return current_actor
-                end,
-                scope = function()
-                    return "test-scope"
                 end,
             }
         end)
@@ -277,8 +308,24 @@ local function define_tests()
                 test.contains(result.error, "Missing required dataflow_id")
             end)
 
+            it("should require a positive activation generation", function()
+                local missing = orchestrator.run({ dataflow_id = "test-workflow" })
+                local invalid = orchestrator.run({
+                    dataflow_id = "test-workflow",
+                    activation_generation = 0,
+                })
+
+                test.is_false(missing.success)
+                test.contains(missing.error, "Missing required activation_generation")
+                test.is_false(invalid.success)
+                test.contains(invalid.error, "Invalid activation_generation")
+            end)
+
             it("claims the registry name before initializing durable state", function()
                 local state_created = false
+                mock_process.registry.lookup = function(_name: string): (string, nil)
+                    return "other-pid", nil
+                end
                 mock_process.registry.register = function(_name: string): (nil, string)
                     return nil, "already registered"
                 end
@@ -287,7 +334,10 @@ local function define_tests()
                     return mock_workflow_state, nil
                 end
 
-                local result = orchestrator.run({ dataflow_id = "duplicate-start" })
+                local result = orchestrator.run({
+                    dataflow_id = "duplicate-start",
+                    activation_generation = 1,
+                })
 
                 test.is_true(result.success)
                 test.is_false(state_created)
@@ -299,7 +349,7 @@ local function define_tests()
                     return nil, "Failed to create workflow state"
                 end
 
-                local result = orchestrator.run({ dataflow_id = "test-workflow" }) :: any
+                local result = run_active({ dataflow_id = "test-workflow" }) :: any
 
                 test.is_false(result.success)
                 test.contains(result.error, "Failed to create workflow state")
@@ -310,7 +360,7 @@ local function define_tests()
                     return nil, "Failed to load state"
                 end
 
-                local result = orchestrator.run({ dataflow_id = "test-workflow" }) :: any
+                local result = run_active({ dataflow_id = "test-workflow" }) :: any
 
                 test.is_false(result.success)
                 test.contains(result.error, "Failed to load workflow state")
@@ -337,7 +387,7 @@ local function define_tests()
                     }
                 end
 
-                local result = orchestrator.run({ dataflow_id = "test-workflow" }) :: any
+                local result = run_active({ dataflow_id = "test-workflow" }) :: any
 
                 test.is_true(result.success)
                 test.is_true(scheduler_called)
@@ -381,7 +431,7 @@ local function define_tests()
                     }
                 end
 
-                local result = orchestrator.run({ dataflow_id = "test-workflow" })
+                local result = run_active({ dataflow_id = "test-workflow" })
 
                 test.is_true(result.success)
                 test.is_true(backlog_applied)
@@ -395,7 +445,7 @@ local function define_tests()
                     return nil, "database unavailable"
                 end
 
-                local result = orchestrator.run({ dataflow_id = "test-workflow" })
+                local result = run_active({ dataflow_id = "test-workflow" })
 
                 test.is_false(result.success)
                 test.contains(result.error, "Failed to load pending commits")
@@ -407,7 +457,7 @@ local function define_tests()
                     return {}
                 end
 
-                local result = orchestrator.run({ dataflow_id = "empty-workflow" })
+                local result = run_active({ dataflow_id = "empty-workflow" })
 
                 test.is_true(result.success)
                 test.not_nil(result.output)
@@ -439,7 +489,7 @@ local function define_tests()
                     end,
                 }
 
-                local result = orchestrator.run({
+                local result = run_active({
                     dataflow_id = "test-workflow",
                     init_func_id = "app:test_init",
                 })
@@ -451,12 +501,8 @@ local function define_tests()
                 test.has_key(init_args.metadata, "test")
             end)
 
-            it("should reuse current actor when restored workflow actor id matches", function()
-                orchestrator.security.new_actor = function(actor_id: string)
-                    error("should not create actor " .. actor_id)
-                end
-
-                local result = orchestrator.run({
+            it("should use the actor and scope reconstructed from the durable execution frame", function()
+                local result = run_active({
                     dataflow_id = "test-workflow",
                     init_func_id = "app:test_init",
                 })
@@ -469,37 +515,61 @@ local function define_tests()
                 test.eq(captured_scopes[1], "test-scope")
             end)
 
-            it("should fail when started under a different actor than the workflow owner", function()
-                current_actor = {
-                    id = function()
-                        return "wrong-actor"
+            it("should fail closed when the durable execution frame cannot be reconstructed", function()
+                local queued: { any } = {}
+                local hook_called = false
+                orchestrator.execution_frame = {
+                    reconstruct = function()
+                        return nil, nil, "persisted policy was removed"
+                    end,
+                }
+                mock_workflow_state.get_dataflow_metadata = function()
+                    return { on_complete = "app:must_not_run" }
+                end
+                mock_workflow_state.queue_commands = function(self: MockWorkflowState, command: any): MockWorkflowState
+                    table.insert(queued, command)
+                    return self
+                end
+                orchestrator.funcs = {
+                    new = function()
+                        hook_called = true
+                        error("user hook must not run without reconstructed identity")
                     end,
                 }
 
-                local result = orchestrator.run({
+                local result = run_active({
                     dataflow_id = "test-workflow",
                 })
 
                 test.is_false(result.success)
-                test.contains(result.error, "started under the wrong actor")
+                test.contains(result.error, "execution frame is unavailable")
+                test.contains(result.error, "persisted policy was removed")
+                test.eq(#queued, 1)
+                local terminal_command = test.not_nil(queued[1]) :: any
+                test.eq(terminal_command.type, consts.COMMAND_TYPES.COMPLETE_WORKFLOW)
+                test.eq(terminal_command.payload.activation_generation, 1)
+                test.eq(terminal_command.payload.status, consts.STATUS.COMPLETED_FAILURE)
+                test.is_false(hook_called)
             end)
 
             it("should fail closed when the persisted workflow has no actor", function()
                 mock_workflow_state.get_actor_id = function(): string? return nil end
 
-                local result = orchestrator.run({ dataflow_id = "test-workflow" })
+                local result = run_active({ dataflow_id = "test-workflow" })
 
                 test.is_false(result.success)
                 test.contains(result.error, "has no execution actor")
             end)
 
-            it("should fail closed when the inherited actor has no scope", function()
-                orchestrator.security.scope = function() return nil end
+            it("should fail closed when reconstruction returns no scope", function()
+                orchestrator.execution_frame = {
+                    reconstruct = function() return current_actor, nil, "scope missing" end,
+                }
 
-                local result = orchestrator.run({ dataflow_id = "test-workflow" })
+                local result = run_active({ dataflow_id = "test-workflow" })
 
                 test.is_false(result.success)
-                test.contains(result.error, "has no execution scope")
+                test.contains(result.error, "scope missing")
             end)
 
             it("should continue if init function fails", function()
@@ -521,7 +591,7 @@ local function define_tests()
                     end,
                 }
 
-                local result = orchestrator.run({
+                local result = run_active({
                     dataflow_id = "test-workflow",
                     init_func_id = "app:failing_init",
                 })
@@ -586,7 +656,7 @@ local function define_tests()
                     table.insert(unregistered, name)
                 end
 
-                local result = orchestrator.run({ dataflow_id = "done-workflow" })
+                local result = run_active({ dataflow_id = "done-workflow" })
 
                 test.is_true(result.success)
                 test.is_false(scheduler_called)
@@ -619,7 +689,7 @@ local function define_tests()
                     end,
                 }
 
-                local result = orchestrator.run({ dataflow_id = "hook-workflow" })
+                local result = run_active({ dataflow_id = "hook-workflow" })
 
                 test.is_true(result.success)
                 test.eq(#hook_calls, 1)
@@ -659,7 +729,7 @@ local function define_tests()
                     end,
                 }
 
-                local result = orchestrator.run({ dataflow_id = "fail-workflow" })
+                local result = run_active({ dataflow_id = "fail-workflow" })
 
                 test.is_false(result.success)
                 test.eq(#hook_calls, 1)
@@ -687,7 +757,7 @@ local function define_tests()
                     end,
                 }
 
-                local result = orchestrator.run({ dataflow_id = "no-hook-workflow" })
+                local result = run_active({ dataflow_id = "no-hook-workflow" })
 
                 test.is_true(result.success)
                 test.eq(#hook_calls, 0)
@@ -718,7 +788,7 @@ local function define_tests()
                     }
                 end
 
-                local result = orchestrator.run({ dataflow_id = "test-workflow" })
+                local result = run_active({ dataflow_id = "test-workflow" })
 
                 test.is_true(result.success)
                 test.eq(#spawn_calls, 1)
@@ -754,7 +824,7 @@ local function define_tests()
                     }
                 end
 
-                local result = orchestrator.run({ dataflow_id = "test-workflow" })
+                local result = run_active({ dataflow_id = "test-workflow" })
 
                 test.is_false(result.success)
                 test.contains(result.error, "Node spawn failures")
@@ -782,7 +852,7 @@ local function define_tests()
                     }
                 end
 
-                local result = orchestrator.run({ dataflow_id = "test-workflow" })
+                local result = run_active({ dataflow_id = "test-workflow" })
 
                 test.is_false(result.success)
                 test.contains(result.error, "Failed to persist RUNNING status")
@@ -825,7 +895,7 @@ local function define_tests()
                     }
                 end
 
-                local result = orchestrator.run({ dataflow_id = "test-workflow" })
+                local result = run_active({ dataflow_id = "test-workflow" })
 
                 test.is_true(result.success)
                 test.eq(#spawn_calls, 2)
@@ -982,7 +1052,7 @@ local function define_tests()
                     }
                 end
 
-                local result = orchestrator.run({ dataflow_id = "test-workflow" })
+                local result = run_active({ dataflow_id = "test-workflow" })
 
                 test.is_true(result.success)
             end)
@@ -1010,7 +1080,7 @@ local function define_tests()
                     }
                 end
 
-                local result = orchestrator.run({ dataflow_id = "test-workflow" })
+                local result = run_active({ dataflow_id = "test-workflow" })
 
                 test.is_true(result.success)
             end)
@@ -1025,7 +1095,7 @@ local function define_tests()
                     }
                 end
 
-                local result = orchestrator.run({ dataflow_id = "test-workflow" })
+                local result = run_active({ dataflow_id = "test-workflow" })
 
                 test.is_true(result.success)
                 test.not_nil(result.output)
@@ -1046,7 +1116,7 @@ local function define_tests()
                     }
                 end
 
-                local result = orchestrator.run({ dataflow_id = "test-workflow" })
+                local result = run_active({ dataflow_id = "test-workflow" })
 
                 test.is_false(result.success)
                 test.contains(result.error, "Node [node-1] failed: Test error")
@@ -1066,10 +1136,124 @@ local function define_tests()
                     }
                 end
 
-                local result = orchestrator.run({ dataflow_id = "test-workflow" })
+                local result = run_active({ dataflow_id = "test-workflow" })
 
                 test.is_false(result.success)
                 test.eq(result.error, "Custom failure message")
+            end)
+
+            it("should immediately reschedule after losing the completion generation fence", function()
+                local scheduler_calls = 0
+                local persisted_generations: { number } = {}
+                local queued_command: any = nil
+
+                mock_scheduler.find_next_work = function(): any
+                    scheduler_calls = scheduler_calls + 1
+                    return {
+                        type = "complete_workflow",
+                        payload = { success = true, message = "done" },
+                    }
+                end
+                mock_workflow_state.queue_commands = function(self: MockWorkflowState, commands: any): MockWorkflowState
+                    queued_command = commands
+                    return self
+                end
+                mock_workflow_state.persist = function(): (any, string?)
+                    local payload = queued_command and queued_command.payload or {}
+                    table.insert(persisted_generations, payload.activation_generation)
+                    if #persisted_generations == 1 then
+                        return {
+                            changes_made = false,
+                            results = { { completed = false, current_generation = 2 } },
+                        }, nil
+                    end
+                    return {
+                        changes_made = true,
+                        results = { { completed = true, generation = 2 } },
+                    }, nil
+                end
+
+                local result = run_active({ dataflow_id = "completion-race" })
+
+                test.is_true(result.success)
+                test.eq(scheduler_calls, 2)
+                test.eq(#persisted_generations, 2)
+                test.eq(persisted_generations[1], 1)
+                test.eq(persisted_generations[2], 2)
+            end)
+
+            it("should not run stale init arguments after empty completion loses its fence", function()
+                local persist_calls = 0
+                local init_calls = 0
+                mock_workflow_state.get_nodes = function() return {} end
+                mock_workflow_state.persist = function(): (any, string?)
+                    persist_calls = persist_calls + 1
+                    if persist_calls == 1 then
+                        return {
+                            results = { { completed = false, current_generation = 2 } },
+                        }, nil
+                    end
+                    return { results = { { completed = true, generation = 2 } } }, nil
+                end
+                orchestrator.funcs = {
+                    new = function()
+                        local executor = {}
+                        function executor:with_actor() return self end
+                        function executor:with_scope() return self end
+                        function executor:call()
+                            init_calls = init_calls + 1
+                            return {}, nil
+                        end
+                        return executor
+                    end,
+                }
+
+                local result = run_active({
+                    dataflow_id = "empty-race",
+                    init_func_id = "app:stale_init",
+                })
+
+                test.is_true(result.success)
+                test.eq(persist_calls, 2)
+                test.eq(init_calls, 0)
+            end)
+
+            it("should immediately reschedule after losing the passivation generation fence", function()
+                local scheduler_calls = 0
+                local persisted_generations: { number } = {}
+                local queued_command: any = nil
+
+                mock_scheduler.find_next_work = function(): any
+                    scheduler_calls = scheduler_calls + 1
+                    return { type = "passivate", payload = {} }
+                end
+                mock_workflow_state.queue_commands = function(self: MockWorkflowState, commands: any): MockWorkflowState
+                    queued_command = commands
+                    return self
+                end
+                mock_workflow_state.persist = function(): (any, string?)
+                    local payload = queued_command and queued_command.payload or {}
+                    table.insert(persisted_generations, payload.activation_generation)
+                    if #persisted_generations == 1 then
+                        return {
+                            changes_made = false,
+                            results = { { released = false, current_generation = 2 } },
+                        }, nil
+                    end
+                    return {
+                        changes_made = true,
+                        results = { { released = true, generation = 2 } },
+                    }, nil
+                end
+
+                local result = run_active({ dataflow_id = "passivation-race" })
+
+                test.is_true(result.success)
+                test.is_true(result.pending)
+                test.is_true(result.passivated)
+                test.eq(scheduler_calls, 2)
+                test.eq(persisted_generations[1], 1)
+                test.eq(persisted_generations[2], 2)
             end)
         end)
 
@@ -1082,7 +1266,7 @@ local function define_tests()
                     }
                 end
 
-                local result = orchestrator.run({ dataflow_id = "test-workflow" })
+                local result = run_active({ dataflow_id = "test-workflow" })
 
                 test.is_true(result.success)
             end)
@@ -1097,7 +1281,7 @@ local function define_tests()
                     }
                 end
 
-                local result = orchestrator.run({ dataflow_id = "test-workflow" })
+                local result = run_active({ dataflow_id = "test-workflow" })
 
                 test.is_true(result.success)
                 test.not_nil(snapshot_received)
@@ -1125,7 +1309,7 @@ local function define_tests()
                         }
                     end
 
-                    local result = orchestrator.run({ dataflow_id = "test-workflow-" .. decision.type }) :: any
+                    local result = run_active({ dataflow_id = "test-workflow-" .. decision.type }) :: any
 
                     test.eq(result.success, decision.expected_success)
                     if decision.payload and decision.payload.message and decision.expected_success then
@@ -1161,7 +1345,7 @@ local function define_tests()
                     }
                 end
 
-                local result = orchestrator.run({ dataflow_id = "test-workflow" }) :: any
+                local result = run_active({ dataflow_id = "test-workflow" }) :: any
 
                 test.is_true(result.success)
                 test.is_true(load_state_called)
@@ -1174,7 +1358,7 @@ local function define_tests()
                     return nil, "Load failed"
                 end
 
-                local result1 = orchestrator.run({ dataflow_id = "test-workflow" })
+                local result1 = run_active({ dataflow_id = "test-workflow" })
                 test.is_false(result1.success)
                 test.contains(result1.error, "Load failed")
 
@@ -1201,7 +1385,7 @@ local function define_tests()
                     }
                 end
 
-                local result2 = orchestrator.run({ dataflow_id = "test-workflow" })
+                local result2 = run_active({ dataflow_id = "test-workflow" })
                 test.is_false(result2.success)
                 test.contains(result2.error, "Persist failed")
             end)
@@ -1214,7 +1398,7 @@ local function define_tests()
                     }
                 end
 
-                local result = orchestrator.run({ dataflow_id = "test-workflow" })
+                local result = run_active({ dataflow_id = "test-workflow" })
 
                 test.is_false(result.success)
                 test.eq(type(result.error), "string")
@@ -1228,15 +1412,16 @@ local function define_tests()
                 local registry_calls: { string } = {}
                 local options_calls: { any } = {}
 
-                mock_process.registry.register = function(name: string)
+                mock_process.registry.register = function(name: string): (boolean?, any?)
                     table.insert(registry_calls, name)
+                    return true, nil
                 end
 
                 mock_process.set_options = function(options: any)
                     table.insert(options_calls, options)
                 end
 
-                local result = orchestrator.run({ dataflow_id = "test-registry" })
+                local result = run_active({ dataflow_id = "test-registry" })
 
                 test.is_true(result.success)
                 test.eq(#registry_calls, 1)
@@ -1247,6 +1432,75 @@ local function define_tests()
                 test.is_true((first_options :: { trap_links: boolean }).trap_links)
             end)
 
+            it("should report an operational registry claim failure accurately", function()
+                local lookups = 0
+                mock_process.registry.lookup = function(): (string?, any?)
+                    lookups = lookups + 1
+                    if lookups == 1 then return nil, "not_found: name not registered" end
+                    return nil, "internal: registry unavailable"
+                end
+                mock_process.registry.register = function(): (boolean?, any?)
+                    return nil, "permission_denied: cannot register"
+                end
+
+                local result = run_active({ dataflow_id = "registry-failure" })
+
+                test.is_false(result.success)
+                test.is_false(result.pending == true)
+                test.contains(result.error, "Failed to claim orchestrator ownership")
+                test.contains(result.error, "permission_denied")
+            end)
+
+            it("should treat a post-register winner as a benign ownership conflict", function()
+                local lookups = 0
+                mock_process.registry.lookup = function(): (string?, any?)
+                    lookups = lookups + 1
+                    if lookups == 1 then return nil, "not_found: name not registered" end
+                    return "other-orchestrator-pid", nil
+                end
+                mock_process.registry.register = function(): (boolean?, any?)
+                    return nil, "internal: name already registered"
+                end
+
+                local result = run_active({ dataflow_id = "registry-race" })
+
+                test.is_true(result.success)
+                test.is_true(result.pending)
+                test.contains(result.message, "Another orchestrator")
+            end)
+
+            it("should recognize the structured NotFound registry error", function()
+                local register_called = false
+                mock_process.registry.lookup = function(): (string?, any?)
+                    return nil, { kind = function() return "NotFound" end }
+                end
+                mock_process.registry.register = function(): (boolean?, any?)
+                    register_called = true
+                    return true, nil
+                end
+
+                local result = run_active({ dataflow_id = "structured-not-found" })
+
+                test.is_true(result.success)
+                test.is_true(register_called)
+            end)
+
+            it("should notify the overseer on its canonical activation topic", function()
+                local sent: any = nil
+                mock_process.send = function(dest: string, topic: string, payload: any)
+                    sent = { dest = dest, topic = topic, payload = payload }
+                end
+
+                local result = run_active({ dataflow_id = "canonical-hint" })
+
+                test.is_true(result.success)
+                local hint = test.not_nil(sent) :: any
+                test.eq(hint.dest, "dataflow.overseer")
+                test.eq(hint.topic, "dataflow.activation.changed")
+                test.eq(hint.payload.dataflow_id, "canonical-hint")
+                test.eq(hint.payload.generation, 1)
+            end)
+
             it("should properly format success and failure results", function()
                 mock_scheduler.find_next_work = function(_snapshot: any): { type: string, payload: any }
                     return {
@@ -1255,7 +1509,7 @@ local function define_tests()
                     }
                 end
 
-                local success_result = orchestrator.run({ dataflow_id = "success-test" })
+                local success_result = run_active({ dataflow_id = "success-test" })
 
                 test.is_true(success_result.success)
                 test.eq(success_result.dataflow_id, "success-test")
@@ -1270,7 +1524,7 @@ local function define_tests()
                     }
                 end
 
-                local failure_result = orchestrator.run({ dataflow_id = "failure-test" }) :: any
+                local failure_result = run_active({ dataflow_id = "failure-test" }) :: any
 
                 test.is_false(failure_result.success)
                 test.eq(failure_result.dataflow_id, "failure-test")

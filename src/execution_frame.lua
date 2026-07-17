@@ -178,7 +178,7 @@ local function validate_policy_ids(value)
     local copy = {}
     local previous = nil
     for index = 1, count do
-        local id, id_err = validate_id(value[index], "execution frame policy_ids[" .. tostring(index) .. "]")
+        local id, id_err = validate_id(value[index] :: string?, "execution frame policy_ids[" .. tostring(index) .. "]")
         if id_err then return nil, id_err end
         if previous ~= nil and id <= previous then
             return fail("execution frame policy_ids must be sorted and unique")
@@ -242,7 +242,7 @@ local function validate_kickside_context(value)
     if value.version ~= 1 then
         return fail("unsupported Kickside identity version " .. tostring(value.version))
     end
-    local scope_id, scope_id_err = validate_id(value.scope_id, "Kickside identity scope_id")
+    local scope_id, scope_id_err = validate_id(value.scope_id :: string?, "Kickside identity scope_id")
     if scope_id_err then return nil, scope_id_err end
     local claims, claims_err = bounded_plain_table(value.claims, "Kickside identity claims")
     if claims_err then return nil, claims_err end
@@ -254,7 +254,7 @@ local function validate_kickside_context(value)
         end
     end
     if value.captured_by ~= nil then
-        local _, captured_by_err = validate_id(value.captured_by, "Kickside identity captured_by")
+        local _, captured_by_err = validate_id(value.captured_by :: string?, "Kickside identity captured_by")
         if captured_by_err then return nil, captured_by_err end
     end
     return {
@@ -312,6 +312,18 @@ local function decode_context(actor_context)
     return validate_context(decoded)
 end
 
+local function plain_equal(left, right)
+    if type(left) ~= type(right) then return false end
+    if type(left) ~= "table" then return left == right end
+    for key, value in pairs(left) do
+        if not plain_equal(value, right[key]) then return false end
+    end
+    for key, _ in pairs(right) do
+        if left[key] == nil then return false end
+    end
+    return true
+end
+
 local function current_actor(deps)
     return call("current actor lookup failed", function()
         return deps.security.actor()
@@ -322,6 +334,37 @@ local function current_scope(deps)
     return call("current scope lookup failed", function()
         return deps.security.scope()
     end)
+end
+
+local function scope_policy_ids(scope, label)
+    local policies, list_err = call(label .. " policy lookup failed", function()
+        return scope:policies()
+    end)
+    if list_err then return nil, list_err end
+    if type(policies) ~= "table" then return fail(label .. " policies must be an array") end
+
+    local policy_ids = {}
+    local seen = {}
+    local count = 0
+    for key, policy in pairs(policies) do
+        if type(key) ~= "number" or key <= 0 or key % 1 ~= 0 then
+            return fail(label .. " policies must be an array")
+        end
+        count = count + 1
+        local policy_id, policy_err = call(label .. " policy id lookup failed", function()
+            return policy:id()
+        end)
+        if policy_err then return nil, policy_err end
+        policy_id, policy_err = validate_id(policy_id, label .. " policy id")
+        if policy_err then return nil, policy_err end
+        if seen[policy_id] then return fail(label .. " contains a duplicate policy") end
+        seen[policy_id] = true
+        policy_ids[#policy_ids + 1] = policy_id
+    end
+    if count ~= #policies then return fail(label .. " policies must be a dense array") end
+    if count > MAX_POLICIES then return fail(label .. " contains too many policies") end
+    table.sort(policy_ids)
+    return policy_ids, nil
 end
 
 function M.capture()
@@ -347,33 +390,8 @@ function M.capture()
     local scope, scope_err = current_scope(deps)
     if scope_err then return nil, scope_err end
     if not scope then return fail("current scope is unavailable") end
-    local policies, list_err = call("current scope policy lookup failed", function()
-        return scope:policies()
-    end)
+    local policy_ids, list_err = scope_policy_ids(scope, "current scope")
     if list_err then return nil, list_err end
-    if type(policies) ~= "table" then return fail("current scope policies must be an array") end
-
-    local policy_ids = {}
-    local seen = {}
-    local count = 0
-    for key, policy in pairs(policies) do
-        if type(key) ~= "number" or key <= 0 or key % 1 ~= 0 then
-            return fail("current scope policies must be an array")
-        end
-        count = count + 1
-        local policy_id, policy_err = call("current policy id lookup failed", function()
-            return policy:id()
-        end)
-        if policy_err then return nil, policy_err end
-        policy_id, policy_err = validate_id(policy_id, "current policy id")
-        if policy_err then return nil, policy_err end
-        if seen[policy_id] then return fail("current scope contains a duplicate policy") end
-        seen[policy_id] = true
-        policy_ids[#policy_ids + 1] = policy_id
-    end
-    if count ~= #policies then return fail("current scope policies must be a dense array") end
-    if count > MAX_POLICIES then return fail("current scope contains too many policies") end
-    table.sort(policy_ids)
 
     local context, context_err = validate_dataflow_context({
         kind = M.KIND,
@@ -443,6 +461,65 @@ function M.reconstruct(actor_id, actor_context)
         return nil, nil, actor_err or "actor reconstruction failed: no actor returned"
     end
     return actor, scope, nil
+end
+
+-- Resolve a frozen frame without requiring reconstruction capabilities when a
+-- synchronous caller already runs under that exact actor and scope. Actor ID
+-- alone is insufficient: metadata and canonical policy IDs are part of the
+-- frozen execution identity and must match byte-for-structure semantics.
+function M.resolve(actor_id, actor_context)
+    local valid_actor_id, actor_id_err = validate_id(actor_id, "persisted actor id")
+    if actor_id_err then return nil, nil, actor_id_err end
+    local persisted_raw, context_err = decode_context(actor_context)
+    if context_err then return nil, nil, context_err end
+    local persisted = persisted_raw :: any
+
+    local deps = M._deps
+    local actor, actor_err = current_actor(deps)
+    local scope, scope_err = current_scope(deps)
+    if not actor_err and actor and not scope_err and scope then
+        local current_id, current_id_err = call("current actor id lookup failed", function()
+            return actor:id()
+        end)
+        if not current_id_err and current_id == valid_actor_id then
+            local captured, capture_err = M.capture()
+            if not capture_err and captured then
+                local current_raw, decode_err = decode_context(captured.actor_context)
+                local current = current_raw :: any
+                if not decode_err and current and current.format == "policy_ids" and
+                    plain_equal(current.actor_meta, persisted.actor_meta) then
+                    if persisted.format == "policy_ids" and
+                        plain_equal(current.policy_ids, persisted.policy_ids) then
+                        return actor, scope, nil
+                    end
+                    if persisted.format == "named_scope" then
+                        local status = persisted.actor_meta.status
+                        local disabled = type(status) == "string" and ({
+                            disabled = true,
+                            suspended = true,
+                            deleted = true,
+                            inactive = true,
+                        })[string.lower(status)] == true
+                        if not disabled then
+                            local named_scope = select(1, call("named scope comparison failed", function()
+                                return deps.security.named_scope(persisted.scope_id :: string)
+                            end))
+                            if named_scope then
+                                local named_policy_ids = select(1, scope_policy_ids(
+                                    named_scope, "named scope comparison"))
+                                if named_policy_ids and plain_equal(
+                                    current.policy_ids, named_policy_ids) then
+                                    return actor, scope, nil
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    return M.reconstruct(valid_actor_id, actor_context)
 end
 
 return M

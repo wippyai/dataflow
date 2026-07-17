@@ -324,19 +324,60 @@ function commit.tx_execute(tx, dataflow_id, op_id, commands, options)
         })
     end
 
+    -- COMPLETE_WORKFLOW is a generation-fenced batch precondition. It must run
+    -- first so a stale orchestrator cannot mutate node details before learning
+    -- that a newer activation owns the workflow.
+    local completion_count = 0
+    local completion_index = nil
+    for index, command in ipairs(processed_commands) do
+        if command.type == ops.COMMAND_TYPES.COMPLETE_WORKFLOW then
+            completion_count = completion_count + 1
+            completion_index = index
+        end
+    end
+    if completion_count > 1 then
+        return nil, "COMPLETE_WORKFLOW may appear at most once in a command batch"
+    end
+    if completion_index ~= nil and completion_index ~= 1 then
+        return nil, "COMPLETE_WORKFLOW must be the first command in a command batch"
+    end
+
     -- Execute the processed operations within the provided transaction
-    local result, err = ops.execute(tx, dataflow_id, op_id, processed_commands)
+    local result, err
+    local completion_blocked = false
+    if completion_index == 1 then
+        result, err = ops.execute(tx, dataflow_id, op_id, { processed_commands[1] })
+        local projection = result and result.results and result.results[1] or nil
+        completion_blocked = not err and projection and projection.completed == false
+        if not err and not completion_blocked and #processed_commands > 1 then
+            local remaining = {}
+            for index = 2, #processed_commands do remaining[#remaining + 1] = processed_commands[index] end
+            local detail_result, detail_err = ops.execute(tx, dataflow_id, op_id, remaining)
+            if detail_err then
+                err = detail_err
+            else
+                for _, command_result in ipairs(detail_result.results or {}) do
+                    table.insert(result.results, command_result)
+                end
+                result.changes_made = result.changes_made == true or detail_result.changes_made == true
+            end
+        end
+    else
+        result, err = ops.execute(tx, dataflow_id, op_id, processed_commands)
+    end
     if err then
         return nil, err
     end
 
     -- Mark applied commits as processed
-    for _, commit_id in ipairs(commit_ids) do
-        local update_q = sql.builder.update("dataflow_commits")
-            :set("op_id", op_id or commit_id)
-            :where("commit_id = ?", commit_id)
-        local update_exec = update_q:run_with(tx)
-        update_exec:exec()
+    if not completion_blocked then
+        for _, commit_id in ipairs(commit_ids) do
+            local update_q = sql.builder.update("dataflow_commits")
+                :set("op_id", op_id or commit_id)
+                :where("commit_id = ?", commit_id)
+            local update_exec = update_q:run_with(tx)
+            update_exec:exec()
+        end
     end
 
     -- Add commit_ids to result for reference

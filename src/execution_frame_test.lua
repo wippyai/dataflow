@@ -96,6 +96,66 @@ local function define_tests()
             test.eq(looked_up[2], "policy:b")
         end)
 
+        it("reuses the current actor and scope only when the frozen frame matches exactly", function()
+            local actor_value = {
+                id = function() return "actor:one" end,
+                meta = function() return { tenant = "acme", nested = { enabled = true } } end,
+            }
+            local scope_value = {
+                policies = function()
+                    return { policy("policy:b"), policy("policy:a") }
+                end,
+            }
+            execution_frame._deps.security = {
+                actor = function() return actor_value end,
+                scope = function() return scope_value end,
+                policy = function() error("exact current frame must not reconstruct policies") end,
+                new_scope = function() error("exact current frame must not reconstruct scope") end,
+                new_actor = function() error("exact current frame must not reconstruct actor") end,
+            }
+
+            local actor, scope, resolve_err = execution_frame.resolve("actor:one", valid_context())
+
+            test.is_nil(resolve_err)
+            test.eq(actor, actor_value)
+            test.eq(scope, scope_value)
+        end)
+
+        it("does not reuse current identity when frozen metadata or policies differ", function()
+            local reconstructed_actor = { kind = "reconstructed_actor" }
+            local reconstructed_scope = { kind = "reconstructed_scope" }
+            local reconstruction_calls = 0
+            execution_frame._deps.security = {
+                actor = function()
+                    return {
+                        id = function() return "actor:one" end,
+                        meta = function() return { tenant = "different", nested = { enabled = true } } end,
+                    }
+                end,
+                scope = function()
+                    return {
+                        policies = function() return { policy("policy:a"), policy("policy:b") } end,
+                    }
+                end,
+                policy = function(id) return policy(id) end,
+                new_scope = function()
+                    reconstruction_calls = reconstruction_calls + 1
+                    return reconstructed_scope
+                end,
+                new_actor = function()
+                    reconstruction_calls = reconstruction_calls + 1
+                    return reconstructed_actor
+                end,
+            }
+
+            local actor, scope, resolve_err = execution_frame.resolve("actor:one", valid_context())
+
+            test.is_nil(resolve_err)
+            test.eq(actor, reconstructed_actor)
+            test.eq(scope, reconstructed_scope)
+            test.eq(reconstruction_calls, 2)
+        end)
+
         it("fails closed before actor or scope construction when a policy is unavailable", function()
             local actor_calls = 0
             local scope_calls = 0
@@ -175,6 +235,65 @@ local function define_tests()
             test.eq(actor, actor_value)
             test.eq(scope, scope_value)
             test.eq(actor_calls, 1)
+        end)
+
+        it("reuses an exact current Kickside named scope without actor reconstruction", function()
+            local claims = { email = "one@example.test", status = "active" }
+            local actor_value = {
+                id = function() return "user:one" end,
+                meta = function() return claims end,
+            }
+            local current_scope = {
+                policies = function() return { policy("policy:b"), policy("policy:a") } end,
+            }
+            execution_frame._deps.security = {
+                actor = function() return actor_value end,
+                scope = function() return current_scope end,
+                named_scope = function()
+                    return {
+                        policies = function() return { policy("policy:a"), policy("policy:b") } end,
+                    }
+                end,
+                new_actor = function() error("exact named frame must not reconstruct actor") end,
+            }
+
+            local actor, scope, resolve_err = execution_frame.resolve("user:one", {
+                version = 1,
+                scope_id = "app.security:user",
+                claims = claims,
+            })
+
+            test.is_nil(resolve_err)
+            test.eq(actor, actor_value)
+            test.eq(scope, current_scope)
+        end)
+
+        it("fails closed when a current named-scope policy set differs and reconstruction is denied", function()
+            execution_frame._deps.security = {
+                actor = function()
+                    return {
+                        id = function() return "user:one" end,
+                        meta = function() return { email = "one@example.test", status = "active" } end,
+                    }
+                end,
+                scope = function()
+                    return { policies = function() return { policy("policy:other") } end }
+                end,
+                named_scope = function()
+                    return { policies = function() return { policy("policy:a") } end }
+                end,
+                new_actor = function() return nil, "actor creation denied" end,
+            }
+
+            local actor, scope, resolve_err = execution_frame.resolve("user:one", {
+                version = 1,
+                scope_id = "app.security:user",
+                claims = { email = "one@example.test", status = "active" },
+            })
+
+            test.is_nil(actor)
+            test.is_nil(scope)
+            test.contains(resolve_err, "actor creation denied")
         end)
 
         it("fails closed when a canonical Kickside named scope is unavailable", function()
