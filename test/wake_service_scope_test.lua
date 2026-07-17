@@ -1,6 +1,11 @@
 local registry = require("registry")
 local test = require("test")
 
+local function assert_missing(id)
+    local entry = registry.get(id)
+    test.is_nil(entry)
+end
+
 local function run()
     local entry, err = registry.get("userspace.dataflow.runner:wake_process.service")
     test.is_nil(err)
@@ -17,6 +22,9 @@ local function run()
     test.eq(#dependencies, 2)
     test.eq(tostring(dependencies[1]), "app:processes")
     test.eq(tostring(dependencies[2]), "app:db")
+
+    assert_missing("userspace.dataflow.security:runtime_process_spawn")
+    assert_missing("userspace.dataflow.security:runtime_process_registry")
     return true
 end
 

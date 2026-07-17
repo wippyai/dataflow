@@ -19,13 +19,15 @@ test-static:
 		echo "dataflow state view must not link to keeper-owned UI"; \
 		exit 1; \
 	fi
-	@awk '''BEGIN { in_user=0; user_has_wake=0; wake_has_root_scope=0 } \
-		/^  - name: user_security_scope$$/ { in_user=1; next } \
-		/^  - name: / { in_user=0 } \
-		in_user && /userspace\.dataflow\.runner:wake_process\.service/ { user_has_wake=1 } \
-		END { \
-			if (user_has_wake) { print "user_security_scope must not grant the wake service"; exit 1 } \
-		}''' src/_index.yaml
+	@if rg -n "user_security_scope|runtime_process_(spawn|registry)" src test/_index.yaml; then \
+		echo "dataflow execution must inherit the exact caller actor and scope"; \
+		exit 1; \
+	fi
+	@if rg --files-without-match "test\.run_cases\(" src --glob '*_test.lua' | rg -q .; then \
+		echo "every source test must execute through test.run_cases"; \
+		rg --files-without-match "test\.run_cases\(" src --glob '*_test.lua'; \
+		exit 1; \
+	fi
 	@if rg -n "name: (wake|sweeper)_security_scope" src/_index.yaml; then \
 		echo "wake service authority must be module-owned, not consumer-injected"; \
 		exit 1; \

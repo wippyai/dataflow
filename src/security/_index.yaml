@@ -17,36 +17,3 @@ entries:
       resources: '*'
       actions: '*'
       effect: allow
-
-  - name: runtime_process_spawn
-    kind: security.policy
-    meta:
-      comment: User-scoped dataflow runtimes may start only the declared dataflow orchestrator and node process types.
-    groups: []
-    policy:
-      resources:
-        - userspace.dataflow.runner:orchestrator
-        - userspace.dataflow.node.agent:node
-        - userspace.dataflow.node.cycle:cycle
-        - userspace.dataflow.node.func:node
-        - userspace.dataflow.node.parallel:parallel
-        - userspace.dataflow.node.signal:node
-        - userspace.dataflow.node.state:state
-      actions:
-        - process.spawn
-        - process.spawn.linked
-        - process.spawn.monitored
-      effect: allow
-
-  - name: runtime_process_registry
-    kind: security.policy
-    meta:
-      comment: Dataflow orchestrators own only their durable workflow process names.
-    groups: []
-    policy:
-      resources:
-        - dataflow.*
-      actions:
-        - process.registry.register
-        - process.registry.unregister
-      effect: allow

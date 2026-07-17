@@ -240,25 +240,36 @@ local function define_tests()
                 test.eq(instance._actor_id, "test-actor-123")
             end)
 
-            it("should synthesize a system actor when no security actor is available", function()
+            it("should fail closed when no security actor is available", function()
                 local no_actor_deps: { [string]: any } = {}
                 for k, v in pairs(mock_deps) do
                     no_actor_deps[k] = v
                 end
                 no_actor_deps.security = {
                     actor = function() return nil end,
-                    new_actor = function(actor_id: string)
-                        return {
-                            id = function() return actor_id end
-                        }
-                    end
+                    scope = function() return "test-scope" end,
                 }
 
                 local instance, err = client.new(no_actor_deps)
 
-                test.is_nil(err)
-                test.not_nil(instance)
-                test.eq(instance._actor_id, "system.dataflow")
+                test.is_nil(instance)
+                test.contains(err, "No current security actor")
+            end)
+
+            it("should fail closed when no security scope is available", function()
+                local no_scope_deps: { [string]: any } = {}
+                for k, v in pairs(mock_deps) do
+                    no_scope_deps[k] = v
+                end
+                no_scope_deps.security = {
+                    actor = function() return mock_security_actor end,
+                    scope = function() return nil end,
+                }
+
+                local instance, err = client.new(no_scope_deps)
+
+                test.is_nil(instance)
+                test.contains(err, "No current security scope")
             end)
 
             it("should fail when security actor id() returns empty string", function()
@@ -271,7 +282,8 @@ local function define_tests()
                         return {
                             id = function() return "" end
                         }
-                    end
+                    end,
+                    scope = function() return "test-scope" end,
                 }
 
                 local instance, err = client.new(empty_id_deps)
@@ -487,6 +499,8 @@ local function define_tests()
                 test.eq(call.func_name, consts.ORCHESTRATOR)
                 test.eq(call.args.dataflow_id, "existing-workflow-123")
                 test.is_nil(call.args.init_func_id)
+                test.eq(#captured_calls.funcs_with_scope, 1)
+                test.eq(captured_calls.funcs_with_scope[1], "test-scope")
             end)
 
             it("should execute workflow with init function", function()
@@ -505,6 +519,7 @@ local function define_tests()
                 mock_deps.funcs.new = function()
                     local executor = {}
                     function executor:with_actor(_actor: any) return self end
+                    function executor:with_scope(_scope: any) return self end
                     function executor:call(_ref: string, args: any)
                         return {
                             success = true,
@@ -554,6 +569,7 @@ local function define_tests()
                     function executor:with_actor(actor: any)
                         return self
                     end
+                    function executor:with_scope(_scope: any) return self end
                     function executor:call()
                             return nil, "Orchestrator failed"
                     end
@@ -572,6 +588,7 @@ local function define_tests()
                     function executor:with_actor(actor: any)
                         return self
                     end
+                    function executor:with_scope(_scope: any) return self end
                     function executor:call()
                             return {
                                 success = false,
@@ -697,6 +714,24 @@ local function define_tests()
                 test.eq(#captured_calls.process_with_actor, 1)
                 test.is_true(captured_calls.process_with_actor[1] == mock_security_actor)
                 test.eq(captured_calls.process_with_actor[1]:id(), "test-actor-123")
+                test.eq(#captured_calls.process_with_scope, 1)
+                test.eq(captured_calls.process_with_scope[1], "test-scope")
+            end)
+
+            it("keeps the scope captured at client creation", function()
+                local captured_scope = { grants = { "agent:narrow" } }
+                local replacement_scope = { grants = { "application:wide" } }
+                mock_deps.security.scope = function() return captured_scope end
+                test_client, _ = client.new(mock_deps)
+                mock_deps.security.scope = function() return replacement_scope end
+
+                local dataflow_id, err = test_client:start("existing-workflow-456")
+
+                test.is_nil(err)
+                test.eq(dataflow_id, "existing-workflow-456")
+                test.eq(#captured_calls.process_with_scope, 1)
+                test.is_true(captured_calls.process_with_scope[1] == captured_scope)
+                test.is_false(captured_calls.process_with_scope[1] == replacement_scope)
             end)
 
             it("does not depend on a separate wake supervisor during first launch", function()
@@ -1266,6 +1301,7 @@ local function define_tests()
                     function executor:with_actor(actor: any)
                         return self
                     end
+                    function executor:with_scope(_scope: any) return self end
                     function executor:call()
                             return {
                                 success = true,
@@ -1318,9 +1354,7 @@ local function define_tests()
                         payload = {
                             data_id = input_data_id,
                             data_type = consts.DATA_TYPE.WORKFLOW_INPUT,
-                            content = {
-                                message = "bc regression"
-                            },
+                            content = { message = "bc regression" },
                             content_type = consts.CONTENT_TYPE.JSON
                         }
                     },
@@ -1336,11 +1370,7 @@ local function define_tests()
                             content_type = consts.CONTENT_TYPE.REFERENCE
                         }
                     }
-                }, {
-                    metadata = {
-                        title = "BC C1 execute failure contract"
-                    }
-                })
+                }, { metadata = { title = "BC C1 execute failure contract" } })
                 test.is_nil(create_err)
                 test.not_nil(dataflow_id)
 
