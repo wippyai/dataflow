@@ -3,33 +3,29 @@ directories:
     src: .
 modules:
     - name: wippy/agent
-      version: 0.4.11
-      hash: a0b5b6d5b9cc75dce9f963303aefaa222b5314d7ac09b25c69cfd19a3cfbaf42
+      version: 0.4.14
+      hash: ff47bf040857d520fbf9e576f1b2d8653516d36d340b82e7ecfa8ce1ed2fe9b4
     - name: wippy/bootloader
-      version: 0.3.12
-      hash: 2b6d8eba7b46ef900024d3a7dbf06bd560fad645b8b2ac6296e2a8bad42f60b9
-    - name: wippy/dataflow
-      version: 0.4.0
+      version: 0.3.13
+      hash: 4f32d32b8a37a7c55b65e72242252eab2d53500591a83dca9787d742a65ff421
     - name: wippy/llm
-      version: 0.4.33
-      hash: 216939d0427de694e4a07d72cc1e71e909ec6c195666a73766467a6e4d1d7e97
+      version: 0.4.35
+      hash: 0fe840b50d9ec7d1f4082dca0027f6009cd539aff5f0fd9234c70673232f6905
     - name: wippy/migration
-      version: 0.3.16
-      hash: 8a8e9e087f40ce6c1d84b579db08855f3f227cedd9cf48272ebc3f7cb7cbd9c9
+      version: 0.3.17
+      hash: 55834821cd2832f8582a52e98772810ba3bdfe91d4967262d3d69e6e9c2b2879
     - name: wippy/session
-      version: 0.1.27
-      hash: f542b1f9720e46909434d66c7e37d82f01edc0303bab011c6ed602fafe495faf
+      version: 0.1.31
+      hash: 9d9b2aca94b6857fea5e47bae014ff582a558a283dae1df5e997fe4fa948e671
     - name: wippy/terminal
-      version: 0.4.3
-      hash: 56141fae39a0e7a996dee6a9e8d7d45beb1a6c62bf7aeb79dd27ce8b72694a49
+      version: 0.4.4
+      hash: 11fcb6a64895364fa603000afd66e9889b5a711bc881f2b4fe5723cd9772df2a
     - name: wippy/test
-      version: 0.4.12
-      hash: 23ccac1d11dbaf13d05ec0400e19189b435b892a4a18e95e69f49a22f1ceb99b
+      version: 0.4.13
+      hash: cfdbfc0a7cf05fa825d203b80ce92fbd24e03da00e2083efe21ff4266cb44608
     - name: wippy/views
-      version: 0.5.4
-      hash: f55a412c52f900540e7b19430d768d141b58ae5e4066cb78fc4fb2a14ea7869b
+      version: 0.5.6
+      hash: 334151b0a36d1f26482e05c4076aa8f39187871376ac5c86120a5eaf51e91fc3
 replacements:
-    - from: wippy/agent
-      to: ../../framework/src/agent/src
     - from: wippy/dataflow
       to: ../src

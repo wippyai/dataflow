@@ -1147,11 +1147,53 @@ local function append_control_delegations(delegate_calls: any, control_delegatio
     end
 end
 
+local function collect_control_outputs(n, child_node_ids, yield_results)
+    local output_data, output_err = child_output.collect_outputs(n, child_node_ids, yield_results)
+    if output_err then return nil, output_err end
+    if (type(yield_results) ~= "table" or next(yield_results) == nil)
+        and (not output_data or #output_data == 0) then
+        return nil, nil
+    end
+    return output_data or {}, nil
+end
+
+local function resume_control_commands(n, child_node_ids, iteration)
+    local output_data, output_err = child_output.resume_children(
+        n,
+        child_node_ids,
+        collect_control_outputs
+    )
+    if output_err then return output_err end
+
+    if output_data and #output_data > 0 then
+        local output_content = output_data[1].content
+        if #output_data > 1 then
+            local all_outputs = {}
+            for _, output in ipairs(output_data) do
+                table.insert(all_outputs, output.content)
+            end
+            output_content = all_outputs
+        end
+
+        n:data(agent_consts.DATA_TYPE.AGENT_OBSERVATION, output_content, {
+            key = iteration .. "_commands_output",
+            content_type = type(output_content) == "table" and consts.CONTENT_TYPE.JSON or consts.CONTENT_TYPE.TEXT,
+            node_id = n.node_id,
+            metadata = {
+                iteration = iteration,
+                created_nodes = child_node_ids
+            }
+        })
+    end
+
+    n:update_metadata({ agent_pending = false })
+    local _, flush_err = n:yield()
+    return flush_err
+end
+
 local function run_control_response_commands(control_responses, agent_ctx, n, iteration)
     local _changes_summary, changes_err = control_handler.apply_control_responses(control_responses, agent_ctx, n)
-    if changes_err then
-        return changes_err
-    end
+    if changes_err then return changes_err end
 
     local created_node_ids = {}
     for _, response in ipairs(control_responses) do
@@ -1162,54 +1204,28 @@ local function run_control_response_commands(control_responses, agent_ctx, n, it
         end
     end
 
-    if #created_node_ids == 0 then
-        return nil
-    end
+    if #created_node_ids == 0 then return nil end
 
-    local yield_result, yield_err = n:yield({ run_nodes = created_node_ids })
-    if yield_result then
-        local output_data, output_err = child_output.collect_outputs(n, created_node_ids, yield_result)
-        if output_err then
-            if type(output_err) == "table" then
-                return output_err
-            end
-            return output_err
-        end
+    -- Persist the exact child set in the same commit that creates it. A restarted
+    -- Agent must resume this DAG, not ask the model to compose a replacement.
+    n:update_metadata({
+        agent_pending = {
+            iteration = iteration,
+            child_node_ids = created_node_ids
+        }
+    })
 
-        if output_data and #output_data > 0 then
-            local output_content = output_data[1].content
-            if #output_data > 1 then
-                local all_outputs = {}
-                for _, output in ipairs(output_data) do
-                    table.insert(all_outputs, output.content)
-                end
-                output_content = all_outputs
-            end
-
-            n:data(agent_consts.DATA_TYPE.AGENT_OBSERVATION, output_content, {
-                key = iteration .. "_commands_output",
-                content_type = type(output_content) == "table" and consts.CONTENT_TYPE.JSON or
-                    consts.CONTENT_TYPE.TEXT,
-                node_id = n.node_id,
-                metadata = {
-                    iteration = iteration,
-                    created_nodes = created_node_ids
-                }
-            })
-        end
-    elseif yield_err then
-        n:data(agent_consts.DATA_TYPE.AGENT_OBSERVATION, "Command execution failed: " .. yield_err, {
+    local resume_err = resume_control_commands(n, created_node_ids, iteration)
+    if resume_err then
+        n:data(agent_consts.DATA_TYPE.AGENT_OBSERVATION,
+            "Command execution failed: " .. error_message(resume_err, "unknown"), {
             key = iteration .. "_commands_error",
             content_type = consts.CONTENT_TYPE.TEXT,
             node_id = n.node_id,
-            metadata = {
-                iteration = iteration,
-                is_error = true
-            }
+            metadata = { iteration = iteration, is_error = true }
         })
     end
-
-    return nil
+    return resume_err
 end
 
 local function get_tool_title_by_registry_id(registry_id, tool_name)
@@ -1629,6 +1645,18 @@ local function recover_persisted_action(n, agent_ctx, agent_instance, caller, se
     local finish_reason = action_payload.metadata and action_payload.metadata.finish_reason
     if finish_reason == "length" then
         return false, nil, action_iteration, nil
+    end
+
+    local pending = (n:metadata() or {}).agent_pending
+    if type(pending) == "table"
+        and type(pending.child_node_ids) == "table"
+        and #pending.child_node_ids > 0 then
+        local pending_iteration = tonumber(pending.iteration) or action_iteration
+        local resume_err = resume_control_commands(n, pending.child_node_ids, pending_iteration)
+        if resume_err then
+            return false, nil, action_iteration,
+                "Failed to resume control commands: " .. error_message(resume_err, "unknown")
+        end
     end
 
     local observed_tool_call_ids = load_observed_tool_call_ids(n)
