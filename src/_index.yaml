@@ -278,6 +278,8 @@ entries:
         path: ".meta.target_db"
       - entry: userspace.dataflow.runner:wake_process.service
         path: ".lifecycle.depends_on +="
+      - entry: userspace.dataflow.security:root.database
+        path: .policy.resources
 
   - name: web_host_origin_env
     kind: ns.requirement
@@ -307,6 +309,8 @@ entries:
         path: .host
       - entry: userspace.dataflow.runner:wake_process.service
         path: ".lifecycle.depends_on +="
+      - entry: userspace.dataflow.security:root.process_host
+        path: .policy.resources
 
   # Dependencies
   - name: dep.wippy.test
