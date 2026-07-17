@@ -131,6 +131,8 @@ override:
   "userspace.dataflow:agent_ref_test:security.policies": [app:test_policy]
   "userspace.dataflow:client_test:security.actor.id": dataflow.test
   "userspace.dataflow:client_test:security.policies": [app:test_policy]
+  "userspace.dataflow:execution_frame_test:security.actor.id": dataflow.test
+  "userspace.dataflow:execution_frame_test:security.policies": [app:test_policy]
   "userspace.dataflow:integration_test:security.actor.id": dataflow.test
   "userspace.dataflow:integration_test:security.policies": [app:test_policy]
   "userspace.dataflow:node_test:security.actor.id": dataflow.test

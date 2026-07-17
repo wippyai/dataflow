@@ -140,6 +140,30 @@ entries:
               { "type": "object", "properties": { "success": { "type": "boolean" }, "pid": { "type": "string" }, "error": { "type": "string" } }, "required": ["success"] }
             format: application/schema+json
 
+  - name: execution_frame
+    kind: library.lua
+    meta:
+      name: Dataflow Execution Frame
+      comment: Captures and reconstructs versioned durable execution identity with bounded plain-data validation.
+    source: file://execution_frame.lua
+    modules:
+      - json
+      - security
+
+  - name: execution_frame_test
+    kind: function.lua
+    meta:
+      type: test
+      suite: dataflow
+      comment: Tests bounded execution-frame capture and fail-closed reconstruction.
+    source: file://execution_frame_test.lua
+    modules:
+      - json
+    imports:
+      execution_frame: userspace.dataflow:execution_frame
+      test: wippy.test:test
+    method: run_tests
+
   # userspace.dataflow:integration_test
   - name: integration_test
     kind: function.lua
