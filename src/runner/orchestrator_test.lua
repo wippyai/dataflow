@@ -457,6 +457,24 @@ local function define_tests()
                 test.contains(result.error, "started under the wrong actor")
             end)
 
+            it("should fail closed when the persisted workflow has no actor", function()
+                mock_workflow_state.get_actor_id = function(): string? return nil end
+
+                local result = orchestrator.run({ dataflow_id = "test-workflow" })
+
+                test.is_false(result.success)
+                test.contains(result.error, "has no execution actor")
+            end)
+
+            it("should fail closed when the inherited actor has no scope", function()
+                orchestrator.security.scope = function() return nil end
+
+                local result = orchestrator.run({ dataflow_id = "test-workflow" })
+
+                test.is_false(result.success)
+                test.contains(result.error, "has no execution scope")
+            end)
+
             it("should continue if init function fails", function()
                 orchestrator.funcs = {
                     new = function(): any
@@ -647,6 +665,8 @@ local function define_tests()
                 test.eq(#captured_actors, 1)
                 test.is_true(captured_actors[1] == current_actor)
                 test.eq(captured_actors[1]:id(), "test-actor-123")
+                test.eq(#captured_scopes, 1)
+                test.eq(captured_scopes[1], "test-scope")
             end)
 
             it("should handle spawn failures", function()

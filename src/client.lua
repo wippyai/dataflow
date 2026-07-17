@@ -5,7 +5,6 @@ local funcs = require("funcs")
 local contract = require("contract")
 local consts = require("dataflow_consts")
 
-local SYSTEM_ACTOR_ID = "system.dataflow"
 local EXECUTION_IDENTITY_CONTRACT = "userspace.dataflow:execution_identity"
 
 -- Get default dependencies (lazy loaded)
@@ -32,13 +31,6 @@ local TERMINAL_STATUS = {
     [consts.STATUS.TERMINATED] = true
 }
 
-local function current_scope(deps)
-    if deps.security and type(deps.security.scope) == "function" then
-        return deps.security.scope()
-    end
-    return nil
-end
-
 function methods:_identity_contract()
     if self._deps.identity_contract ~= nil then
         return self._deps.identity_contract
@@ -51,7 +43,7 @@ function methods:_identity_contract()
     end
 
     local actor = self._actor
-    local scope = current_scope(self._deps)
+    local scope = self._scope
     if not actor or not scope then
         return nil
     end
@@ -114,17 +106,13 @@ function client.new(deps)
     -- Get current security actor
     local actor = deps.security.actor()
 
-    -- In non-authenticated contexts (tests/system workflows), synthesize a stable actor.
-    if not actor then
-        actor = deps.security.new_actor(SYSTEM_ACTOR_ID, {
-            kind = "system",
-            source = "userspace.dataflow:client"
-        })
-    end
-
-    -- Validate security actor exists
     if not actor then
         return nil, "No current security actor available"
+    end
+
+    local scope = deps.security.scope()
+    if not scope then
+        return nil, "No current security scope available"
     end
 
     -- Get actor ID
@@ -138,6 +126,7 @@ function client.new(deps)
     local instance = {
         _actor = actor,
         _actor_id = actor_id,
+        _scope = scope,
         _deps = deps
     }
 
@@ -181,14 +170,10 @@ function methods:_spawn_orchestrator(dataflow_id, args)
 
     if workflow.actor_id == self._actor_id then
         local actor = self._actor
-        if self._deps.process.with_context and actor then
-            local spawner = self._deps.process.with_context({}):with_actor(actor)
-            local scope = current_scope(self._deps)
-            if scope then spawner = spawner:with_scope(scope) end
-            local pid, spawn_err = spawner:spawn(consts.ORCHESTRATOR, consts.HOST_ID, args)
-            return pid, spawn_err
-        end
-        local pid, spawn_err = self._deps.process.spawn(consts.ORCHESTRATOR, consts.HOST_ID, args)
+        local spawner = self._deps.process.with_context({})
+            :with_actor(actor)
+            :with_scope(self._scope)
+        local pid, spawn_err = spawner:spawn(consts.ORCHESTRATOR, consts.HOST_ID, args)
         return pid, spawn_err
     end
 
@@ -294,6 +279,7 @@ function methods:execute(dataflow_id, options)
     if actor then
         executor = executor:with_actor(actor)
     end
+    executor = executor:with_scope(self._scope)
     local orch_result, err = executor:call(consts.ORCHESTRATOR, orchestrator_args)
 
     if err then

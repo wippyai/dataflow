@@ -22,7 +22,7 @@ local function define_tests()
                 end,
                 get_dataflow_metadata = function(): { [string]: any } return {} end,
                 get_dataflow_status = function(): string? return nil end,
-                get_actor_id = function(): string? return nil end,
+                get_actor_id = function(): string? return "dataflow.test" end,
                 get_scheduler_snapshot = function(): { [string]: any }
                     return {
                         nodes = { ["node-1"] = { type = "test_node", status = consts.STATUS.PENDING } },
@@ -104,12 +104,15 @@ local function define_tests()
                 registry = { register = function(_name: string) end, unregister = function(_name: string) end },
                 set_options = function(_options: any) end,
                 with_context = function(_context: any): any
-                    return {
+                    local spawner = {
                         spawn_linked_monitored = function(_self: any, _node_type: string, _host: string, _args: any): (string?, string?)
                             process_spawned = true
                             return "mock-pid-123", nil
                         end,
                     }
+                    function spawner:with_actor(_actor: any): any return self end
+                    function spawner:with_scope(_scope: any): any return self end
+                    return spawner
                 end,
                 inbox = function(): any
                     return inbox_channel

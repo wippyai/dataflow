@@ -144,6 +144,7 @@ local function define_tests()
             }
             local mock_security = {
                 actor = function() return security.new_actor("test-user", {}) end,
+                scope = security.scope,
                 new_actor = security.new_actor,
             }
             return client_mod.new({

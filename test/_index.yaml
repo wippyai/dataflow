@@ -57,6 +57,42 @@ entries:
       actions: '*'
       effect: allow
 
+  - name: execution_identity.capture
+    kind: function.lua
+    meta:
+      environment: test
+      test_only: true
+      comment: Captures the explicit test actor and policy used by the test runner.
+    source: file://execution_identity.lua
+    method: capture
+    modules: &execution_identity_modules [json, process, security]
+    imports: &execution_identity_imports
+      dataflow_repo: userspace.dataflow.persist:dataflow_repo
+
+  - name: execution_identity.spawn_orchestrator
+    kind: function.lua
+    meta:
+      environment: test
+      test_only: true
+      comment: Reconstructs the persisted test identity for durable wake delivery.
+    source: file://execution_identity.lua
+    method: spawn_orchestrator
+    modules: *execution_identity_modules
+    imports: *execution_identity_imports
+
+  - name: execution_identity.binding
+    kind: contract.binding
+    meta:
+      environment: test
+      test_only: true
+      comment: Test-only implementation of Dataflow's application-owned identity bridge.
+    contracts:
+      - contract: userspace.dataflow:execution_identity
+        default: true
+        methods:
+          capture: app:execution_identity.capture
+          spawn_orchestrator: app:execution_identity.spawn_orchestrator
+
   - name: gateway
     kind: http.service
     addr: :19097
@@ -86,8 +122,6 @@ entries:
         value: app:db
       - name: userspace.dataflow:process_host
         value: app:processes
-      - name: userspace.dataflow:user_security_scope
-        value: dataflow_test_runtime
       - name: wippy.migration:app_db
         value: app:db
 

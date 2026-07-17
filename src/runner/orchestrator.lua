@@ -54,12 +54,8 @@ local function fire_completion_hook(state, result)
     end
 
     local executor = orchestrator.funcs.new()
-    if state.actor then
-        executor = executor:with_actor(state.actor)
-    end
-    if state.scope then
-        executor = executor:with_scope(state.scope)
-    end
+        :with_actor(state.actor)
+        :with_scope(state.scope)
 
     local ok, call_err = pcall(function()
         local _, err = executor:call(hook_id, hook_args)
@@ -87,13 +83,17 @@ end
 
 local function workflow_identity(actor_id: string?, dataflow_id: string): (any?, any?, string?)
     if type(actor_id) ~= "string" or actor_id == "" then
-        return nil, nil, nil
+        return nil, nil, "workflow " .. dataflow_id .. " has no execution actor"
     end
     local current_actor = orchestrator.security.actor()
-    if current_actor and current_actor:id() == actor_id then
-        return current_actor, orchestrator.security.scope(), nil
+    if not current_actor or current_actor:id() ~= actor_id then
+        return nil, nil, "workflow " .. dataflow_id .. " started under the wrong actor"
     end
-    return nil, nil, "workflow " .. dataflow_id .. " started under the wrong actor"
+    local current_scope = orchestrator.security.scope()
+    if not current_scope then
+        return nil, nil, "workflow " .. dataflow_id .. " has no execution scope"
+    end
+    return current_actor, current_scope, nil
 end
 
 ---Execute a single node
@@ -119,12 +119,8 @@ local function execute_single_node(state, node_info)
     end
 
     local spawner = orchestrator.process.with_context({})
-    if state.actor then
-        spawner = spawner:with_actor(state.actor)
-    end
-    if state.scope then
-        spawner = spawner:with_scope(state.scope)
-    end
+        :with_actor(state.actor)
+        :with_scope(state.scope)
 
     local pid, err_spawn = spawner:spawn_linked_monitored(node_type, consts.HOST_ID, {
         dataflow_id = state.dataflow_id,
@@ -560,8 +556,8 @@ function orchestrator.arm_parked_yield(state: any, arm: any, idempotency_key: st
     end
 
     local executor = orchestrator.funcs.new()
-    if state.actor then executor = executor:with_actor(state.actor) end
-    if state.scope then executor = executor:with_scope(state.scope) end
+        :with_actor(state.actor)
+        :with_scope(state.scope)
     local arm_args = {}
     for key, value in pairs(type(declaration.args) == "table" and declaration.args or {}) do arm_args[key] = value end
     -- Reserved by Dataflow: retries across any number of process crashes must
@@ -1078,12 +1074,8 @@ local function run(args)
     -- Call init function if provided
     if type(init_func_id) == "string" and init_func_id ~= "" then
         local executor = orchestrator.funcs.new()
-        if state.actor then
-            executor = executor:with_actor(state.actor)
-        end
-        if state.scope then
-            executor = executor:with_scope(state.scope)
-        end
+            :with_actor(state.actor)
+            :with_scope(state.scope)
         local _, _ = executor:call(init_func_id, {
             dataflow_id = dataflow_id,
             metadata = workflow_state:get_dataflow_metadata()
