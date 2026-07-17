@@ -155,3 +155,17 @@ entries:
     imports:
       migration: wippy.migration:migration
     method: migrate
+
+  - name: 08_create_dataflow_activations
+    kind: function.lua
+    meta:
+      type: migration
+      tags: [dataflows, activation, durability]
+      description: Create generation-fenced desired activation state and wake promotion fences
+      depends_on: [ns:wippy.migration]
+      target_db: app:db
+      timestamp: "2026-07-17T17:00:00Z"
+    source: file://08_create_dataflow_activations.lua
+    imports:
+      migration: wippy.migration:migration
+    method: migrate
