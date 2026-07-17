@@ -276,6 +276,8 @@ entries:
         path: ".meta.target_db"
       - entry: userspace.dataflow.migrations:07_create_dataflow_wakes
         path: ".meta.target_db"
+      - entry: userspace.dataflow.migrations:08_create_dataflow_activations
+        path: ".meta.target_db"
       - entry: userspace.dataflow.runner:wake_process.service
         path: ".lifecycle.depends_on +="
       - entry: userspace.dataflow.security:root.database
