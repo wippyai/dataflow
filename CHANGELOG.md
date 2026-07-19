@@ -8,10 +8,14 @@
 ### Bug Fixes
 
 * claim orchestrator before state load ([27ac93d](https://github.com/wippyai/dataflow/commit/27ac93d97dd85268117023b15a118ebe6763947e))
+* centralize durable signal wake recovery ([3425ee9](https://github.com/wippyai/dataflow/commit/3425ee9d1ba10cb059df7bffc0d43f1792001458))
 * make dataflow PostgreSQL-safe ([c2435d3](https://github.com/wippyai/dataflow/commit/c2435d3fe31bb36b65b4e4af1212c9185d90ca7a))
 * make dataflow PostgreSQL-safe ([2cb54fe](https://github.com/wippyai/dataflow/commit/2cb54fee2788146866b608a7b1c0e70d10aa0513))
 * prevent terminal yield recovery loops ([38d8c6d](https://github.com/wippyai/dataflow/commit/38d8c6d3641c03f01ebd55f6162f15a065050cf8))
+* preserve exact wake delivery acknowledgement ([f5c5d07](https://github.com/wippyai/dataflow/commit/f5c5d07a242da2bfea47ebf919affad2f520153b))
 * reconcile idempotent recovery results ([43b0eaa](https://github.com/wippyai/dataflow/commit/43b0eaad7d227d88a455acf286a6ae7da92d8278))
+* replay consumed signals to replacement yields ([bbf15e0](https://github.com/wippyai/dataflow/commit/bbf15e05306c5292a1a3b9cdb2a12d40847ff239))
+* retry durable wakes until consumption ([0652173](https://github.com/wippyai/dataflow/commit/06521737739698c81666f904300fdb383cefc10d))
 
 ## [0.5.4](https://github.com/wippyai/dataflow/compare/v0.5.3...v0.5.4) (2026-07-17)
 
