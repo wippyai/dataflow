@@ -17,13 +17,29 @@ local function define_tests()
 
         local function kill_orchestrator(df_id)
             local registry_name = "dataflow." .. df_id
-            local pid = process.registry.lookup(registry_name)
-            if not pid then return false end
+            local pid
+            for _ = 1, 30 do
+                pid = process.registry.lookup(registry_name)
+                if pid then break end
+
+                local status = c:get_status(df_id)
+                if status == consts.STATUS.WAITING or
+                    status == consts.STATUS.COMPLETED_SUCCESS or
+                    status == consts.STATUS.COMPLETED_FAILURE or
+                    status == consts.STATUS.CANCELLED or
+                    status == consts.STATUS.TERMINATED then
+                    return false
+                end
+                time.sleep("100ms")
+            end
+            if not pid then
+                error("active orchestrator did not register before recovery kill: " .. df_id)
+            end
 
             process.terminate(pid)
             for _ = 1, 30 do
                 local registered = process.registry.lookup(registry_name)
-                if not registered or registered ~= pid then
+                if not registered then
                     return true
                 end
                 time.sleep("100ms")

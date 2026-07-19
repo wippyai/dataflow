@@ -728,7 +728,7 @@ local function define_tests()
                 test.is_true(wait_complete(df_id, 8000), "completed after double kill at each signal")
             end)
 
-            it("pre-queues signal before starting pipeline", function()
+            it("signal auto-starts a pending pipeline", function()
                 local f1 = uuid.v7()
                 local sig = uuid.v7()
                 local f2 = uuid.v7()
@@ -749,10 +749,8 @@ local function define_tests()
                     make_input(uuid.v7(), f1, { message = "prequeue", delay_ms = 10, should_fail = false }),
                 })
 
-                -- signal BEFORE start
+                -- signal() durably queues the signal and auto-starts the workflow
                 c:signal(df_id, sid, { message = "early", delay_ms = 10, should_fail = false })
-                time.sleep("100ms")
-                c:start(df_id)
 
                 test.is_true(wait_complete(df_id, 8000), "pre-queued signal processed in pipeline")
             end)

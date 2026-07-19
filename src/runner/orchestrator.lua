@@ -939,6 +939,21 @@ local function run(args)
     end
     local dataflow_id = dataflow_id_raw
 
+    -- Claim the single-instance name before any database-backed state setup.
+    -- On PostgreSQL that setup can be slow enough for two freshly spawned
+    -- orchestrators to both initialize and then run sequentially, replaying the
+    -- same durable work. The registry claim must be the first side effect.
+    local _, reg_err = orchestrator.process.registry.register("dataflow." .. dataflow_id)
+    if reg_err then
+        return {
+            success = true,
+            dataflow_id = dataflow_id,
+            error = nil,
+            message = "Another orchestrator is already running for this workflow"
+        }
+    end
+    orchestrator.process.set_options({ trap_links = true, upgradable = false })
+
     local ws, ws_err = orchestrator.workflow_state.new(dataflow_id)
     if ws_err then
         return { success = false, error = "Failed to create workflow state: " .. ws_err }
@@ -962,18 +977,6 @@ local function run(args)
         running = true,
         exit_result = nil
     } :: any)
-
-    -- Register process — if another orchestrator is already running, exit
-    local _, reg_err = orchestrator.process.registry.register("dataflow." .. dataflow_id)
-    if reg_err then
-        return {
-            success = true,
-            dataflow_id = dataflow_id,
-            error = nil,
-            message = "Another orchestrator is already running for this workflow"
-        }
-    end
-    orchestrator.process.set_options({ trap_links = true, upgradable = false })
 
     -- Load workflow state
     local result, load_err = workflow_state:load_state()

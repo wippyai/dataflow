@@ -258,14 +258,12 @@ local function define_tests()
         -- ==========================================
 
         describe("signal timing", function()
-            it("signal sent before workflow reaches signal node (pre-queued)", function()
+            it("signal auto-starts before workflow reaches signal node", function()
                 local sid = "preq-" .. uuid.v7()
                 local df_id = make_signal_wf(sid)
 
-                -- signal before start
+                -- signal() durably queues the signal and auto-starts the workflow
                 c:signal(df_id, sid, { early = true })
-                time.sleep("100ms")
-                c:start(df_id)
 
                 test.is_true(wait_complete(df_id), "pre-queued signal processed")
             end)

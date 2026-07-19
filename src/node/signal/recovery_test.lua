@@ -6,8 +6,6 @@ local client = require("client")
 local consts = require("consts")
 local data_reader = require("data_reader")
 
-local WAIT = "2s"
-
 local function define_tests()
     describe("Signal Recovery Tests", function()
         local c
@@ -100,12 +98,35 @@ local function define_tests()
         end
 
         local function kill_orchestrator(df_id)
-            local pid = process.registry.lookup("dataflow." .. df_id)
-            if pid then
-                process.terminate(pid)
-                time.sleep("200ms")
+            local registry_name = "dataflow." .. df_id
+            local pid = process.registry.lookup(registry_name)
+            if not pid then return false end
+
+            process.terminate(pid)
+            for _ = 1, 30 do
+                local registered = process.registry.lookup(registry_name)
+                if not registered then
+                    return true
+                end
+                time.sleep("100ms")
             end
-            return pid
+            error("orchestrator remained registered after recovery kill: " .. df_id)
+        end
+
+        local function wait_status(df_id, expected, timeout_ms)
+            local iterations = math.ceil((timeout_ms or 10000) / 100)
+            local status
+            for _ = 1, iterations do
+                status = c:get_status(df_id)
+                if status == expected then return status end
+                if status == consts.STATUS.COMPLETED_FAILURE or
+                    status == consts.STATUS.CANCELLED or
+                    status == consts.STATUS.TERMINATED then
+                    return status
+                end
+                time.sleep("100ms")
+            end
+            return status
         end
 
         -- ==========================================
@@ -118,45 +139,40 @@ local function define_tests()
                 local df_id, err = create_signal_wf(sid)
                 test.is_nil(err, "create")
                 c:start(df_id)
-                time.sleep("300ms")
-                test.eq(c:get_status(df_id), consts.STATUS.WAITING, "waiting for signal")
+                test.eq(wait_status(df_id, consts.STATUS.WAITING), consts.STATUS.WAITING, "waiting for signal")
                 c:signal(df_id, sid, { approved = true })
-                time.sleep("500ms")
-                test.eq(c:get_status(df_id), consts.STATUS.COMPLETED_SUCCESS, "completed after signal")
+                test.eq(wait_status(df_id, consts.STATUS.COMPLETED_SUCCESS), consts.STATUS.COMPLETED_SUCCESS, "completed after signal")
             end)
 
             it("signal with data passes through to output", function()
                 local sid = "data-" .. uuid.v7()
                 local df_id = create_signal_wf(sid)
                 c:start(df_id)
-                time.sleep("300ms")
+                test.eq(wait_status(df_id, consts.STATUS.WAITING), consts.STATUS.WAITING, "waiting for signal")
                 c:signal(df_id, sid, { key = "value", num = 42 })
-                time.sleep("500ms")
-                test.eq(c:get_status(df_id), consts.STATUS.COMPLETED_SUCCESS, "completed")
+                test.eq(wait_status(df_id, consts.STATUS.COMPLETED_SUCCESS), consts.STATUS.COMPLETED_SUCCESS, "completed")
             end)
 
             it("wrong signal_id does not satisfy", function()
                 local sid = "correct-" .. uuid.v7()
                 local df_id = create_signal_wf(sid)
                 c:start(df_id)
-                time.sleep("300ms")
+                test.eq(wait_status(df_id, consts.STATUS.WAITING), consts.STATUS.WAITING, "waiting for signal")
                 c:signal(df_id, "wrong-" .. uuid.v7(), { data = "nope" })
                 time.sleep("500ms")
                 test.eq(c:get_status(df_id), consts.STATUS.WAITING, "still waiting")
                 -- now send correct signal
                 c:signal(df_id, sid, { data = "yes" })
-                time.sleep("500ms")
-                test.eq(c:get_status(df_id), consts.STATUS.COMPLETED_SUCCESS, "completed with correct signal")
+                test.eq(wait_status(df_id, consts.STATUS.COMPLETED_SUCCESS), consts.STATUS.COMPLETED_SUCCESS, "completed with correct signal")
             end)
 
             it("empty signal data works", function()
                 local sid = "empty-" .. uuid.v7()
                 local df_id = create_signal_wf(sid)
                 c:start(df_id)
-                time.sleep("300ms")
+                test.eq(wait_status(df_id, consts.STATUS.WAITING), consts.STATUS.WAITING, "waiting for signal")
                 c:signal(df_id, sid, {})
-                time.sleep("500ms")
-                test.eq(c:get_status(df_id), consts.STATUS.COMPLETED_SUCCESS, "completed with empty data")
+                test.eq(wait_status(df_id, consts.STATUS.COMPLETED_SUCCESS), consts.STATUS.COMPLETED_SUCCESS, "completed with empty data")
             end)
         end)
 
@@ -173,8 +189,7 @@ local function define_tests()
                 test.eq(c:get_status(df_id), consts.STATUS.WAITING, "running")
                 kill_orchestrator(df_id)
                 c:signal(df_id, sid, { recovered = true })
-                time.sleep(WAIT)
-                test.eq(c:get_status(df_id), consts.STATUS.COMPLETED_SUCCESS, "recovered")
+                test.eq(wait_status(df_id, consts.STATUS.COMPLETED_SUCCESS), consts.STATUS.COMPLETED_SUCCESS, "recovered")
             end)
 
             it("recovers func node after kill", function()
@@ -184,8 +199,7 @@ local function define_tests()
                 kill_orchestrator(df_id)
                 -- respawn by starting again
                 c:start(df_id)
-                time.sleep(WAIT)
-                test.eq(c:get_status(df_id), consts.STATUS.COMPLETED_SUCCESS, "func recovered")
+                test.eq(wait_status(df_id, consts.STATUS.COMPLETED_SUCCESS), consts.STATUS.COMPLETED_SUCCESS, "func recovered")
             end)
 
             it("recovers pipeline func->signal->func after kill at signal", function()
@@ -196,8 +210,7 @@ local function define_tests()
                 test.eq(c:get_status(df_id), consts.STATUS.WAITING, "pipeline running at signal")
                 kill_orchestrator(df_id)
                 c:signal(df_id, sid, { approved = true })
-                time.sleep(WAIT)
-                test.eq(c:get_status(df_id), consts.STATUS.COMPLETED_SUCCESS, "pipeline recovered")
+                test.eq(wait_status(df_id, consts.STATUS.COMPLETED_SUCCESS), consts.STATUS.COMPLETED_SUCCESS, "pipeline recovered")
             end)
 
             it("double kill and recover", function()
@@ -215,8 +228,7 @@ local function define_tests()
                 kill_orchestrator(df_id)
                 -- now send signal (auto-respawns)
                 c:signal(df_id, sid, { ok = true })
-                time.sleep(WAIT)
-                test.eq(c:get_status(df_id), consts.STATUS.COMPLETED_SUCCESS, "completed after double kill")
+                test.eq(wait_status(df_id, consts.STATUS.COMPLETED_SUCCESS), consts.STATUS.COMPLETED_SUCCESS, "completed after double kill")
             end)
         end)
 
@@ -232,19 +244,15 @@ local function define_tests()
                 time.sleep("300ms")
                 kill_orchestrator(df_id)
                 c:signal(df_id, sid, { from = "backlog" })
-                time.sleep(WAIT)
-                test.eq(c:get_status(df_id), consts.STATUS.COMPLETED_SUCCESS, "backlog processed")
+                test.eq(wait_status(df_id, consts.STATUS.COMPLETED_SUCCESS), consts.STATUS.COMPLETED_SUCCESS, "backlog processed")
             end)
 
-            it("signal before start (pre-queued)", function()
+            it("signal auto-starts a pending workflow", function()
                 local sid = "prequeue-" .. uuid.v7()
                 local df_id = create_signal_wf(sid)
-                -- send signal BEFORE starting workflow
+                -- signal() durably queues the signal and auto-starts the workflow
                 c:signal(df_id, sid, { early = true })
-                time.sleep("100ms")
-                c:start(df_id)
-                time.sleep(WAIT)
-                test.eq(c:get_status(df_id), consts.STATUS.COMPLETED_SUCCESS, "pre-queued signal works")
+                test.eq(wait_status(df_id, consts.STATUS.COMPLETED_SUCCESS), consts.STATUS.COMPLETED_SUCCESS, "queued signal works")
             end)
         end)
 
@@ -272,8 +280,7 @@ local function define_tests()
                 kill_orchestrator(df_id)
                 c:signal(df_id, sid, { a = 1 })
                 c:signal(df_id, sid, { b = 2 })
-                time.sleep(WAIT)
-                test.eq(c:get_status(df_id), consts.STATUS.COMPLETED_SUCCESS, "concurrent race OK")
+                test.eq(wait_status(df_id, consts.STATUS.COMPLETED_SUCCESS), consts.STATUS.COMPLETED_SUCCESS, "concurrent race OK")
             end)
         end)
 
@@ -331,11 +338,9 @@ local function define_tests()
                 local sid = "pipe-normal-" .. uuid.v7()
                 local df_id = create_pipeline_wf(sid)
                 c:start(df_id)
-                time.sleep("500ms")
-                test.eq(c:get_status(df_id), consts.STATUS.WAITING, "waiting at signal")
+                test.eq(wait_status(df_id, consts.STATUS.WAITING), consts.STATUS.WAITING, "waiting at signal")
                 c:signal(df_id, sid, { go = true })
-                time.sleep("1s")
-                test.eq(c:get_status(df_id), consts.STATUS.COMPLETED_SUCCESS, "pipeline done")
+                test.eq(wait_status(df_id, consts.STATUS.COMPLETED_SUCCESS), consts.STATUS.COMPLETED_SUCCESS, "pipeline done")
                 local out = c:output(df_id)
                 test.not_nil(out, "has output")
             end)
