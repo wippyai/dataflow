@@ -106,7 +106,10 @@ local function define_tests()
                         table.insert(captured_calls.process_listen, { topic = topic })
                         return {
                             receive = function()
+                                local sent = captured_calls.process_send[#captured_calls.process_send]
                                 return {
+                                    yield_id = sent and sent.payload and sent.payload.request_context and
+                                        sent.payload.request_context.yield_id,
                                     response_data = {
                                         run_node_results = {
                                             ["child-1"] = { status = "completed", output = "result1" }
@@ -1432,6 +1435,51 @@ local function define_tests()
                 test.is_nil(err)
                 test.eq((result :: any).outcome, "reject")
                 test.eq((result :: any).timed_out, true)
+            end)
+
+            it("ignores a stale signal reply and waits for the replacement yield id", function()
+                local current_yield_id = ""
+                local receives = 0
+                local deps: any = {
+                    commit = { submit = function() return { commit_id = uuid.v7() }, nil end },
+                    data_reader = mock_deps.data_reader,
+                    process = {
+                        send = function(_target: string, _topic: string, payload: any)
+                            current_yield_id = payload.request_context.yield_id
+                            return true
+                        end,
+                        listen = function()
+                            return {
+                                receive = function()
+                                    receives = receives + 1
+                                    if receives == 1 then
+                                        return {
+                                            yield_id = "old-yield",
+                                            parked = true,
+                                            response_data = { run_node_results = { decision = "stale" } },
+                                        }, true
+                                    end
+                                    return {
+                                        yield_id = current_yield_id,
+                                        parked = true,
+                                        response_data = { run_node_results = { decision = "approve" } },
+                                    }, true
+                                end,
+                            }
+                        end,
+                    },
+                }
+                local parked_node = select(1, node.new({
+                    node_id = "park-node",
+                    dataflow_id = "park-flow",
+                }, deps))
+                local result, err = parked_node:yield({
+                    wait_for_signal = true,
+                    signal_id = "approval",
+                })
+                test.is_nil(err)
+                test.eq((result :: any).decision, "approve")
+                test.eq(receives, 2)
             end)
 
             it("never requests an arm when the durable yield commit fails", function()

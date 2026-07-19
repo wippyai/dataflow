@@ -1018,6 +1018,44 @@ local function define_tests()
                     "only an applied, unmatched signal can become a cleanup candidate")
             end)
 
+            it("replays a consumed signal when its replacement re-yields in the same owner", function()
+                local ws = workflow_state.new(test_ctx.dataflow_id) :: any
+                ws:track_yield("signal-node", {
+                    yield_id = "old-yield",
+                    wait_for_signal = true,
+                    signal_id = "approval",
+                    signal_data = { decision = "approve" },
+                    signal_wake_key = "signal:signal-data",
+                })
+                ws:satisfy_yield("signal-node", { decision = "approve" })
+
+                ws:track_yield("signal-node", {
+                    yield_id = "replacement-yield",
+                    wait_for_signal = true,
+                    signal_id = "approval",
+                })
+                local replacement = test.not_nil(ws.active_yields["signal-node"]) :: any
+                test.eq(replacement.signal_data.decision, "approve")
+                test.is_nil(replacement.signal_wake_key,
+                    "already-consumed signal must not be consumed a second time")
+
+                ws:satisfy_yield("signal-node", replacement.signal_data)
+                local replacement_results = 0
+                local consumed_markers = 0
+                for _, command in ipairs(ws.queued_commands) do
+                    local payload = command.payload or {}
+                    if payload.data_type == consts.DATA_TYPE.NODE_YIELD_RESULT and
+                        payload.key == "replacement-yield" then
+                        replacement_results = replacement_results + 1
+                    elseif payload.data_type == consts.DATA_TYPE.NODE_SIGNAL_CONSUMED then
+                        consumed_markers = consumed_markers + 1
+                    end
+                end
+                test.eq(replacement_results, 1)
+                test.eq(consumed_markers, 1,
+                    "only the original satisfaction consumes the signal wake")
+            end)
+
             it("should update node state from CREATE_NODE results", function()
                 local ws = workflow_state.new(test_ctx.dataflow_id) :: any
                 test.not_nil(ws)

@@ -128,6 +128,7 @@ function workflow_state.new(dataflow_id, options)
 
         active_processes = {},
         active_yields = {},
+        satisfied_signal_yields = {},
         pending_signal_wake_keys = {},
 
         input_tracker = {
@@ -1088,6 +1089,7 @@ function methods:handle_process_exit(pid, success, result)
     end
 
     self.active_processes[exited_node_id] = nil
+    self.satisfied_signal_yields[exited_node_id] = nil
 
     local new_status = success and consts.STATUS.COMPLETED_SUCCESS or consts.STATUS.COMPLETED_FAILURE
     if self.nodes[exited_node_id] then
@@ -1171,9 +1173,20 @@ end
 
 function methods:track_yield(node_id, yield_info)
     if yield_info.wait_for_signal and yield_info.signal_id and not yield_info.signal_data then
-        -- 1. inherit from detached yield (restart recovery: signal arrived while node restarting)
+        -- 1. Replay a result durably consumed by this orchestrator life. The
+        -- reply can race process replacement: the old yield result is durable,
+        -- but the replacement may re-yield before its predecessor's EXIT is
+        -- observed. Reconstruction covers process restarts; this cache covers
+        -- the same-owner handoff without requiring another external wake.
+        local satisfied = self.satisfied_signal_yields[node_id]
+        if satisfied and satisfied.signal_id == yield_info.signal_id then
+            yield_info.signal_data = satisfied.signal_data
+        end
+
+        -- 2. inherit from detached yield (restart recovery: signal arrived while node restarting)
         local existing = self.active_yields[node_id]
-        if existing and existing.detached and existing.signal_data ~= nil then
+        if yield_info.signal_data == nil and existing and existing.detached and
+            existing.signal_id == yield_info.signal_id and existing.signal_data ~= nil then
             yield_info.signal_data = existing.signal_data
             yield_info.signal_wake_key = existing.signal_wake_key
             yield_info.signal_wake_keys = existing.signal_wake_keys
@@ -1182,7 +1195,7 @@ function methods:track_yield(node_id, yield_info)
                 self.pending_signal_wake_keys[wake_key] = nil
             end
         else
-            -- 2. check DB (pre-queued: signal arrived before node ever yielded)
+            -- 3. check DB (pre-queued: signal arrived before node ever yielded)
             local consumed_records = data_reader.with_dataflow(self.dataflow_id)
                 :with_data_types(consts.DATA_TYPE.NODE_SIGNAL_CONSUMED)
                 :fetch_options({ content = false, metadata = false, resolve_references = false })
@@ -1276,6 +1289,12 @@ function methods:satisfy_yield(node_id, results)
             end
         end
 
+        if yield_info.wait_for_signal then
+            self.satisfied_signal_yields[node_id] = {
+                signal_id = yield_info.signal_id,
+                signal_data = results,
+            }
+        end
         self.active_yields[node_id] = nil
     end
 

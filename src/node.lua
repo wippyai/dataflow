@@ -606,9 +606,16 @@ local function durable_yield(self: table, options: any, park: boolean)
     end
 
     local received, ok = self._yield_channel:receive()
-    if not ok then
-        return nil, "Yield channel closed"
+    if options.wait_for_signal == true then
+        -- The reply topic is stable for the node, so a replacement process can
+        -- inherit a queued reply for an earlier yield in the same signal wait.
+        -- Ignore stale episodes; the orchestrator replays the durable result to
+        -- this yield id after it tracks the replacement request.
+        while ok and (type(received) ~= "table" or received.yield_id ~= yield_id) do
+            received, ok = self._yield_channel:receive()
+        end
     end
+    if not ok then return nil, "Yield channel closed" end
 
     if options.wait_for_signal == true then
         -- Prequeued signal compatibility: the orchestrator may satisfy the
