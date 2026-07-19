@@ -1183,46 +1183,48 @@ function methods:track_yield(node_id, yield_info)
             yield_info.signal_data = satisfied.signal_data
         end
 
-        -- 2. inherit from detached yield (restart recovery: signal arrived while node restarting)
-        local existing = self.active_yields[node_id]
-        if yield_info.signal_data == nil and existing and existing.detached and
-            existing.signal_id == yield_info.signal_id and existing.signal_data ~= nil then
-            yield_info.signal_data = existing.signal_data
-            yield_info.signal_wake_key = existing.signal_wake_key
-            yield_info.signal_wake_keys = existing.signal_wake_keys
-            for _, wake_key in ipairs(type(yield_info.signal_wake_keys) == "table" and
-                yield_info.signal_wake_keys or {}) do
-                self.pending_signal_wake_keys[wake_key] = nil
-            end
-        else
-            -- 3. check DB (pre-queued: signal arrived before node ever yielded)
-            local consumed_records = data_reader.with_dataflow(self.dataflow_id)
-                :with_data_types(consts.DATA_TYPE.NODE_SIGNAL_CONSUMED)
-                :fetch_options({ content = false, metadata = false, resolve_references = false })
-                :all()
-            local consumed_signal_ids = {}
-            for _, consumed in ipairs(consumed_records or {}) do
-                local consumed_id = consumed.key or consumed.discriminator
-                if type(consumed_id) == "string" then consumed_signal_ids[consumed_id] = true end
-            end
-            local signal_records = data_reader.with_dataflow(self.dataflow_id)
-                :with_data_types(consts.DATA_TYPE.NODE_SIGNAL)
-                :all()
-            for _, sig in ipairs(signal_records) do
-                local sig_key = sig.key or sig.discriminator
-                if sig_key == yield_info.signal_id and not consumed_signal_ids[tostring(sig.data_id)] then
-                    -- DB content is raw bytes (string); parse JSON so scheduler
-                    -- and handle_satisfy_yield see a table instead of coercing to {}
-                    local content = sig.content
-                    if type(content) == "string" then
-                        local parsed, parse_err = json.decode(content)
-                        if not parse_err then content = parsed end
+        if yield_info.signal_data == nil then
+            -- 2. inherit from detached yield (restart recovery: signal arrived while node restarting)
+            local existing = self.active_yields[node_id]
+            if existing and existing.detached and existing.signal_id == yield_info.signal_id and
+                existing.signal_data ~= nil then
+                yield_info.signal_data = existing.signal_data
+                yield_info.signal_wake_key = existing.signal_wake_key
+                yield_info.signal_wake_keys = existing.signal_wake_keys
+                for _, wake_key in ipairs(type(yield_info.signal_wake_keys) == "table" and
+                    yield_info.signal_wake_keys or {}) do
+                    self.pending_signal_wake_keys[wake_key] = nil
+                end
+            else
+                -- 3. check DB (pre-queued: signal arrived before node ever yielded)
+                local consumed_records = data_reader.with_dataflow(self.dataflow_id)
+                    :with_data_types(consts.DATA_TYPE.NODE_SIGNAL_CONSUMED)
+                    :fetch_options({ content = false, metadata = false, resolve_references = false })
+                    :all()
+                local consumed_signal_ids = {}
+                for _, consumed in ipairs(consumed_records or {}) do
+                    local consumed_id = consumed.key or consumed.discriminator
+                    if type(consumed_id) == "string" then consumed_signal_ids[consumed_id] = true end
+                end
+                local signal_records = data_reader.with_dataflow(self.dataflow_id)
+                    :with_data_types(consts.DATA_TYPE.NODE_SIGNAL)
+                    :all()
+                for _, sig in ipairs(signal_records) do
+                    local sig_key = sig.key or sig.discriminator
+                    if sig_key == yield_info.signal_id and not consumed_signal_ids[tostring(sig.data_id)] then
+                        -- DB content is raw bytes (string); parse JSON so scheduler
+                        -- and handle_satisfy_yield see a table instead of coercing to {}
+                        local content = sig.content
+                        if type(content) == "string" then
+                            local parsed, parse_err = json.decode(content)
+                            if not parse_err then content = parsed end
+                        end
+                        yield_info.signal_data = content
+                        yield_info.signal_wake_key = "signal:" .. tostring(sig.data_id)
+                        yield_info.signal_wake_keys = yield_info.signal_wake_keys or {}
+                        table.insert(yield_info.signal_wake_keys, yield_info.signal_wake_key)
+                        self.pending_signal_wake_keys[yield_info.signal_wake_key] = nil
                     end
-                    yield_info.signal_data = content
-                    yield_info.signal_wake_key = "signal:" .. tostring(sig.data_id)
-                    yield_info.signal_wake_keys = yield_info.signal_wake_keys or {}
-                    table.insert(yield_info.signal_wake_keys, yield_info.signal_wake_key)
-                    self.pending_signal_wake_keys[yield_info.signal_wake_key] = nil
                 end
             end
         end

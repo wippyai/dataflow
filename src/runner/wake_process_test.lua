@@ -106,12 +106,11 @@ local function run_tests()
                 new = function() return { revive = function() error("live owner must not be revived") end }, nil end,
             }
 
-            local count, err, _, retry_needed = wake_process.run_due({})
+            local count, err = wake_process.run_due({})
             test.is_nil(err)
             test.eq(count, 1)
             test.eq(monitored[1], "pid-live")
             test.eq(sent_to, "pid-live")
-            test.is_true(retry_needed, "mailbox enqueue is not durable wake acknowledgement")
         end)
 
         test.it("keeps the exact owner monitor across generic row-change notifications", function()

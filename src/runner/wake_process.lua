@@ -72,10 +72,10 @@ function M.run_due(monitored)
         return 0, nil, monitored, true
     end
     local delivered = 0
-    -- A successful spawn/send is only a delivery attempt. The durable wake row
-    -- disappearing is the acknowledgement, so every observed due row keeps a
-    -- bounded retry armed until the orchestrator consumes it.
-    local retry_needed = true
+    -- A successful spawn/send remains covered by its exact PID monitor until
+    -- the durable row changes or that owner exits. Only failed delivery needs
+    -- a timer; successful delivery must not poll an intentionally pending wake.
+    local retry_needed = false
     for _, row in ipairs(rows) do
         local live = M.process.registry.lookup("dataflow." .. row.dataflow_id)
         local wake_err = nil
