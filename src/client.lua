@@ -589,8 +589,10 @@ function methods:get_status(dataflow_id)
     return workflow.status, nil
 end
 
--- Send a signal to a waiting signal node in a workflow.
--- If the orchestrator is dead, respawns it to process the signal from the outbox.
+-- Send a signal to a waiting signal node in a workflow. The signal commit
+-- projects an immediate durable wake in the same database transaction. The
+-- central wake process owns delivery and restart; callers never race workflow
+-- shutdown by inspecting the registry or spawning an orchestrator themselves.
 function methods:signal(dataflow_id, signal_id, data)
     if not dataflow_id or dataflow_id == "" then
         return nil, "Workflow ID is required"
@@ -642,21 +644,6 @@ function methods:signal(dataflow_id, signal_id, data)
     -- single wake process for latency; durability does not depend on this send.
     if type(self._deps.process.send) == "function" then
         self._deps.process.send("dataflow.wakes", "dataflow.wake.changed", { dataflow_id = dataflow_id })
-    end
-
-    -- 2. Check if orchestrator is alive
-    local pid = self._deps.process.registry.lookup("dataflow." .. dataflow_id)
-    if not pid then
-        -- Orchestrator is dead — respawn it.
-        -- It will load state from DB + pending commits (including our signal).
-        -- If another caller also respawns, the duplicate orchestrator detects
-        -- the name conflict on registry.register and exits gracefully.
-        local _pid, spawn_err = self:_spawn_orchestrator(dataflow_id, {
-            dataflow_id = dataflow_id
-        })
-        if spawn_err then
-            return nil, "Failed to respawn workflow process: " .. tostring(spawn_err)
-        end
     end
 
     return result, nil

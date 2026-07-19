@@ -128,6 +128,7 @@ function workflow_state.new(dataflow_id, options)
 
         active_processes = {},
         active_yields = {},
+        satisfied_signal_yields = {},
         pending_signal_wake_keys = {},
 
         input_tracker = {
@@ -723,7 +724,6 @@ function methods:_reconstruct_active_yields()
                 -- the same public signal id and carries no signal wake key: the
                 -- original signal was already consumed atomically.
                 yield_info.signal_data = decode_json_content(episode_result.content)
-                yield_info.signal_wake_key = nil
                 yield_info.signal_wake_keys = nil
             else
                 for _, signal_record in ipairs(signal_records or {}) do
@@ -732,7 +732,6 @@ function methods:_reconstruct_active_yields()
                         local content = decode_json_content(signal_record.content)
                         if content ~= nil then yield_info.signal_data = content end
                         local signal_wake_key = "signal:" .. tostring(signal_record.data_id)
-                        yield_info.signal_wake_key = signal_wake_key
                         yield_info.signal_wake_keys = yield_info.signal_wake_keys or {}
                         table.insert(yield_info.signal_wake_keys, signal_wake_key)
                         self.pending_signal_wake_keys[signal_wake_key] = nil
@@ -884,10 +883,10 @@ function methods:_update_state_from_results(results)
                         if yield_info.wait_for_signal and yield_info.signal_id == signal_id then
                             yield_info.signal_data = payload.content
                             if type(payload.data_id) == "string" then
-                                yield_info.signal_wake_key = "signal:" .. payload.data_id
+                                local matched_wake_key = "signal:" .. payload.data_id
                                 yield_info.signal_wake_keys = yield_info.signal_wake_keys or {}
-                                table.insert(yield_info.signal_wake_keys, yield_info.signal_wake_key)
-                                self.pending_signal_wake_keys[yield_info.signal_wake_key] = nil
+                                table.insert(yield_info.signal_wake_keys, matched_wake_key)
+                                self.pending_signal_wake_keys[matched_wake_key] = nil
                             end
                             break
                         end
@@ -1088,6 +1087,7 @@ function methods:handle_process_exit(pid, success, result)
     end
 
     self.active_processes[exited_node_id] = nil
+    self.satisfied_signal_yields[exited_node_id] = nil
 
     local new_status = success and consts.STATUS.COMPLETED_SUCCESS or consts.STATUS.COMPLETED_FAILURE
     if self.nodes[exited_node_id] then
@@ -1171,45 +1171,59 @@ end
 
 function methods:track_yield(node_id, yield_info)
     if yield_info.wait_for_signal and yield_info.signal_id and not yield_info.signal_data then
-        -- 1. inherit from detached yield (restart recovery: signal arrived while node restarting)
-        local existing = self.active_yields[node_id]
-        if existing and existing.detached and existing.signal_data ~= nil then
-            yield_info.signal_data = existing.signal_data
-            yield_info.signal_wake_key = existing.signal_wake_key
-            yield_info.signal_wake_keys = existing.signal_wake_keys
-            for _, wake_key in ipairs(type(yield_info.signal_wake_keys) == "table" and
-                yield_info.signal_wake_keys or {}) do
-                self.pending_signal_wake_keys[wake_key] = nil
-            end
-        else
-            -- 2. check DB (pre-queued: signal arrived before node ever yielded)
-            local consumed_records = data_reader.with_dataflow(self.dataflow_id)
-                :with_data_types(consts.DATA_TYPE.NODE_SIGNAL_CONSUMED)
-                :fetch_options({ content = false, metadata = false, resolve_references = false })
-                :all()
-            local consumed_signal_ids = {}
-            for _, consumed in ipairs(consumed_records or {}) do
-                local consumed_id = consumed.key or consumed.discriminator
-                if type(consumed_id) == "string" then consumed_signal_ids[consumed_id] = true end
-            end
-            local signal_records = data_reader.with_dataflow(self.dataflow_id)
-                :with_data_types(consts.DATA_TYPE.NODE_SIGNAL)
-                :all()
-            for _, sig in ipairs(signal_records) do
-                local sig_key = sig.key or sig.discriminator
-                if sig_key == yield_info.signal_id and not consumed_signal_ids[tostring(sig.data_id)] then
-                    -- DB content is raw bytes (string); parse JSON so scheduler
-                    -- and handle_satisfy_yield see a table instead of coercing to {}
-                    local content = sig.content
-                    if type(content) == "string" then
-                        local parsed, parse_err = json.decode(content)
-                        if not parse_err then content = parsed end
+        -- 1. Replay a result durably consumed by this orchestrator life. The
+        -- reply can race process replacement: the old yield result is durable,
+        -- but the replacement may re-yield before its predecessor's EXIT is
+        -- observed. Reconstruction covers process restarts; this cache covers
+        -- the same-owner handoff without requiring another external wake.
+        local satisfied = self.satisfied_signal_yields[node_id]
+        if satisfied and satisfied.signal_id == yield_info.signal_id then
+            yield_info.signal_data = satisfied.signal_data
+        end
+
+        if yield_info.signal_data == nil then
+            -- 2. inherit from detached yield (restart recovery: signal arrived while node restarting)
+            local existing = self.active_yields[node_id]
+            if existing and existing.detached and existing.signal_id == yield_info.signal_id and
+                existing.signal_data ~= nil then
+                yield_info.signal_data = existing.signal_data
+                if type(existing.signal_wake_keys) == "table" then
+                    yield_info.signal_wake_keys = {}
+                    for _, wake_key in ipairs(existing.signal_wake_keys) do
+                        table.insert(yield_info.signal_wake_keys, wake_key)
+                        self.pending_signal_wake_keys[wake_key] = nil
                     end
-                    yield_info.signal_data = content
-                    yield_info.signal_wake_key = "signal:" .. tostring(sig.data_id)
-                    yield_info.signal_wake_keys = yield_info.signal_wake_keys or {}
-                    table.insert(yield_info.signal_wake_keys, yield_info.signal_wake_key)
-                    self.pending_signal_wake_keys[yield_info.signal_wake_key] = nil
+                end
+            else
+                -- 3. check DB (pre-queued: signal arrived before node ever yielded)
+                local consumed_records = data_reader.with_dataflow(self.dataflow_id)
+                    :with_data_types(consts.DATA_TYPE.NODE_SIGNAL_CONSUMED)
+                    :fetch_options({ content = false, metadata = false, resolve_references = false })
+                    :all()
+                local consumed_signal_ids = {}
+                for _, consumed in ipairs(consumed_records or {}) do
+                    local consumed_id = consumed.key or consumed.discriminator
+                    if type(consumed_id) == "string" then consumed_signal_ids[consumed_id] = true end
+                end
+                local signal_records = data_reader.with_dataflow(self.dataflow_id)
+                    :with_data_types(consts.DATA_TYPE.NODE_SIGNAL)
+                    :all()
+                for _, sig in ipairs(signal_records) do
+                    local sig_key = sig.key or sig.discriminator
+                    if sig_key == yield_info.signal_id and not consumed_signal_ids[tostring(sig.data_id)] then
+                        -- DB content is raw bytes (string); parse JSON so scheduler
+                        -- and handle_satisfy_yield see a table instead of coercing to {}
+                        local content = sig.content
+                        if type(content) == "string" then
+                            local parsed, parse_err = json.decode(content)
+                            if not parse_err then content = parsed end
+                        end
+                        yield_info.signal_data = content
+                        local matched_wake_key = "signal:" .. tostring(sig.data_id)
+                        yield_info.signal_wake_keys = yield_info.signal_wake_keys or {}
+                        table.insert(yield_info.signal_wake_keys, matched_wake_key)
+                        self.pending_signal_wake_keys[matched_wake_key] = nil
+                    end
                 end
             end
         end
@@ -1232,8 +1246,6 @@ function methods:satisfy_yield(node_id, results)
             for _, wake_key in ipairs(yield_info.signal_wake_keys) do
                 table.insert(consume_wake_keys, wake_key)
             end
-        elseif type(yield_info.signal_wake_key) == "string" then
-            table.insert(consume_wake_keys, yield_info.signal_wake_key)
         end
         table.insert(self.queued_commands, {
             type = consts.COMMAND_TYPES.CREATE_DATA,
@@ -1276,6 +1288,12 @@ function methods:satisfy_yield(node_id, results)
             end
         end
 
+        if yield_info.wait_for_signal then
+            self.satisfied_signal_yields[node_id] = {
+                signal_id = yield_info.signal_id,
+                signal_data = results,
+            }
+        end
         self.active_yields[node_id] = nil
     end
 
@@ -1290,10 +1308,11 @@ function methods:abandon_yield(node_id)
     return self
 end
 
-function methods:observe_signal_wake(wake_key)
-    if type(wake_key) == "string" and string.match(wake_key, "^signal:") then
-        self.pending_signal_wake_keys[wake_key] = true
-    end
+function methods:observe_signal_wake(_wake_key)
+    -- A wake message is only a hint that the durable commit may now be visible.
+    -- Do not make its row eligible for unclaimed-signal cleanup until applying
+    -- the corresponding NODE_SIGNAL record proves that the commit is durable.
+    return self
 end
 
 function methods:take_unclaimed_signal_wake_keys()

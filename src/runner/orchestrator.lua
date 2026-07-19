@@ -596,8 +596,12 @@ function orchestrator.track_signal_yield(state: any, node_id: string, yield_info
         end
         table.insert(yield_info.wake_keys, "yield:" .. tostring(yield_info.yield_id))
         yield_info.signal_data = before.signal_data
-        yield_info.signal_wake_key = before.signal_wake_key
-        yield_info.signal_wake_keys = before.signal_wake_keys
+        if type(before.signal_wake_keys) == "table" then
+            yield_info.signal_wake_keys = {}
+            for _, wake_key in ipairs(before.signal_wake_keys) do
+                table.insert(yield_info.signal_wake_keys, wake_key)
+            end
+        end
     end
     local has_arm = type(yield_info.arm) == "table" and type(yield_info.arm.ref) == "string"
     local already_armed = not has_arm or (before and before.arm_completed == true)

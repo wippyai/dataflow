@@ -2,6 +2,7 @@ local test = require("test")
 local uuid = require("uuid")
 local json = require("json")
 local time = require("time")
+local sql = require("sql")
 local client = require("client")
 local consts = require("consts")
 local data_reader = require("data_reader")
@@ -129,6 +130,51 @@ local function define_tests()
                 time.sleep("100ms")
             end
             return false
+        end
+
+        local function failure_diagnostics(df_id)
+            local diagnostics = {
+                dataflow_id = df_id,
+                status = select(1, c:get_status(df_id)),
+                owner = tostring(process.registry.lookup("dataflow." .. df_id)),
+            }
+            local db, db_err = sql.get(consts.APP_DB)
+            if not db then
+                diagnostics.database_error = tostring(db_err)
+            else
+                local function rows(fields, table_name, order_by)
+                    local query = sql.builder.select(table.unpack(fields))
+                        :from(table_name)
+                        :where("dataflow_id = ?", df_id)
+                    if order_by then query = query:order_by(order_by) end
+                    local result, query_err = query:run_with(db):query()
+                    if query_err then return { error = tostring(query_err) } end
+                    return result or {}
+                end
+                diagnostics.nodes = rows(
+                    { "node_id", "type", "status", "updated_at" },
+                    "dataflow_nodes",
+                    "created_at ASC"
+                )
+                diagnostics.wakes = rows(
+                    { "wake_key", "wake_at" },
+                    "dataflow_wakes",
+                    "wake_at ASC"
+                )
+                diagnostics.commits = rows(
+                    { "commit_id", "op_id", "created_at" },
+                    "dataflow_commits",
+                    "created_at ASC"
+                )
+                diagnostics.data = rows(
+                    { "data_id", "node_id", "type", "key", "discriminator", "created_at" },
+                    "dataflow_data",
+                    "created_at ASC"
+                )
+                db:release()
+            end
+            local encoded, encode_err = json.encode(diagnostics)
+            return encoded or ("diagnostics encoding failed: " .. tostring(encode_err))
         end
 
         -- ==========================================
@@ -581,19 +627,32 @@ local function define_tests()
         -- ==========================================
 
         describe("compound signal+func recovery", function()
-            it("kill pipeline at func before signal, recover, signal", function()
-                local sid = "cf1-" .. uuid.v7()
-                local df_id = make_func_signal_func_wf(sid)
-                c:start(df_id)
-                -- kill early while func might still be running
-                time.sleep("50ms")
-                kill_orchestrator(df_id)
+            it("central wakes recover repeated shutdown-to-signal handoffs", function()
+                for iteration = 1, 10 do
+                    local sid = "cf1-" .. uuid.v7()
+                    local df_id = make_func_signal_func_wf(sid)
+                    c:start(df_id)
+                    -- kill early while func might still be running
+                    time.sleep("50ms")
+                    kill_orchestrator(df_id)
 
-                c:start(df_id)
-                test.is_true(wait_running(df_id), "recovered, waiting at signal")
+                    c:start(df_id)
+                    test.is_true(wait_running(df_id), "recovered, waiting at signal: " .. iteration)
 
-                c:signal(df_id, sid, { message = "go", delay_ms = 10, should_fail = false })
-                test.is_true(wait_complete(df_id, 20000), "completed")
+                    local signal_result, signal_err = c:signal(
+                        df_id,
+                        sid,
+                        { message = "go", delay_ms = 10, should_fail = false }
+                    )
+                    test.is_nil(signal_err, "central wake signal accepted: " .. iteration)
+                    test.not_nil(signal_result, "signal commit persisted: " .. iteration)
+                    local completed = wait_complete(df_id, 5000)
+                    test.is_true(
+                        completed,
+                        "central wake completed: " .. iteration .. "; " ..
+                        (completed and "ok" or failure_diagnostics(df_id))
+                    )
+                end
             end)
 
             it("pre-queue signal, kill, restart pipeline", function()

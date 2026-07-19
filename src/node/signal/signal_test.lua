@@ -147,6 +147,24 @@ local function define_tests()
                 scope = security.scope,
                 new_actor = security.new_actor,
             }
+            local mock_process = {
+                send = function(target, topic, payload)
+                    captured.notify_target = target
+                    captured.notify_topic = topic
+                    captured.notify_payload = payload
+                    return true, nil
+                end,
+                registry = {
+                    lookup = function()
+                        captured.registry_lookups = (captured.registry_lookups or 0) + 1
+                        return nil
+                    end,
+                },
+                with_context = function()
+                    captured.spawn_attempts = (captured.spawn_attempts or 0) + 1
+                    error("signal client must not spawn an orchestrator")
+                end,
+            }
             return client_mod.new({
                 dataflow_repo = {
                     get = function(dataflow_id)
@@ -159,7 +177,7 @@ local function define_tests()
                 },
                 commit = mock_commit,
                 data_reader = {},
-                process = process,
+                process = mock_process,
                 funcs = require("funcs"),
                 security = mock_security,
             })
@@ -182,6 +200,10 @@ local function define_tests()
             test.eq(first_command(captured).payload.data_type, consts.DATA_TYPE.NODE_SIGNAL, "NODE_SIGNAL type")
             test.eq(first_command(captured).payload.key, "approval", "signal_id as key")
             test.eq(first_command(captured).payload.content.ok, true, "signal data passed")
+            test.eq(captured.notify_target, "dataflow.wakes", "central wake service notified")
+            test.eq(captured.notify_topic, "dataflow.wake.changed", "wake index change notified")
+            test.eq(captured.registry_lookups or 0, 0, "signal client does not inspect workflow ownership")
+            test.eq(captured.spawn_attempts or 0, 0, "signal client does not restart workflows")
         end)
 
         test.it("rejects empty dataflow_id", function()

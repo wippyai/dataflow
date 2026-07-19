@@ -6,17 +6,20 @@ local function run_tests()
         local original_wake_repo
         local original_client
         local original_process
+        local original_channel
 
         test.before_each(function()
             original_wake_repo = wake_process.wake_repo
             original_client = wake_process.client
             original_process = wake_process.process
+            original_channel = wake_process.channel
         end)
 
         test.after_each(function()
             wake_process.wake_repo = original_wake_repo
             wake_process.client = original_client
             wake_process.process = original_process
+            wake_process.channel = original_channel
         end)
 
         test.it("revives only due wake rows and leaves durable advancement to the orchestrator", function()
@@ -80,7 +83,85 @@ local function run_tests()
             test.eq(exact_deliveries["pid-exact"], "df-exact")
         end)
 
-        test.it("fails the service cycle when exact revival fails", function()
+        test.it("sends a wake to the exact monitored owner rather than a rebindable name", function()
+            local monitored = {}
+            local sent_to = nil
+            wake_process.wake_repo = {
+                due = function()
+                    return { { dataflow_id = "df-live", wake_key = "signal:one", wake_at = "2026-07-12T20:00:00Z" } }, nil
+                end,
+            }
+            wake_process.process = {
+                registry = { lookup = function() return "pid-live" end },
+                monitor = function(pid)
+                    table.insert(monitored, pid)
+                    return true, nil
+                end,
+                send = function(target)
+                    sent_to = target
+                    return true, nil
+                end,
+            }
+            wake_process.client = {
+                new = function() return { revive = function() error("live owner must not be revived") end }, nil end,
+            }
+
+            local count, err = wake_process.run_due({})
+            test.is_nil(err)
+            test.eq(count, 1)
+            test.eq(monitored[1], "pid-live")
+            test.eq(sent_to, "pid-live")
+        end)
+
+        test.it("keeps the exact owner monitor across generic row-change notifications", function()
+            local monitor_calls = 0
+            local select_calls = 0
+            local inbox = { case_receive = function(self) return self end }
+            local events = { case_receive = function(self) return self end }
+            wake_process.wake_repo = {
+                due = function()
+                    return { {
+                        dataflow_id = "df-draining",
+                        wake_key = "signal:one",
+                        wake_at = "2026-07-12T20:00:00Z",
+                    } }, nil
+                end,
+            }
+            wake_process.process = {
+                event = { CANCEL = "cancel", EXIT = "exit" },
+                registry = {
+                    register = function() return true, nil end,
+                    lookup = function() return "pid-draining" end,
+                },
+                inbox = function() return inbox end,
+                events = function() return events end,
+                monitor = function()
+                    monitor_calls = monitor_calls + 1
+                    return true, nil
+                end,
+                unmonitor = function() return true, nil end,
+                send = function() return true, nil end,
+            }
+            wake_process.client = {
+                new = function() return { revive = function() error("owner is live") end }, nil end,
+            }
+            wake_process.channel = {
+                select = function()
+                    select_calls = select_calls + 1
+                    if select_calls == 1 then
+                        return { ok = true, channel = inbox, value = { topic = "dataflow.wake.changed" } }
+                    end
+                    return { ok = false }
+                end,
+            }
+
+            local result = wake_process.run({})
+            test.eq(result.status, "shutdown")
+            test.eq(monitor_calls, 1,
+                "generic notification must not acknowledge delivery or discard the EXIT monitor")
+        end)
+
+        test.it("keeps the durable row pending when exact revival fails", function()
             wake_process.wake_repo = {
                 due = function()
                     return { { dataflow_id = "df-broken", wake_key = "yield:one", wake_at = "2026-07-12T20:00:00Z" } }, nil
@@ -96,13 +177,13 @@ local function run_tests()
                 end,
             }
 
-            local count, err = wake_process.run_due()
-            test.is_nil(count)
-            test.contains(err, "df-broken")
-            test.contains(err, "spawn denied")
+            local count, err, _, retry_needed = wake_process.run_due()
+            test.is_nil(err)
+            test.eq(count, 0)
+            test.is_true(retry_needed)
         end)
 
-        test.it("fails immediately when an exact delivery cannot be monitored", function()
+        test.it("retries when an owner exits between spawn and exact monitoring", function()
             wake_process.wake_repo = {
                 due = function()
                     return { { dataflow_id = "df-gone", wake_key = "yield:one", wake_at = "2026-07-12T20:00:00Z" } }, nil
@@ -118,10 +199,10 @@ local function run_tests()
                 end,
             }
 
-            local count, err = wake_process.run_due({})
-            test.is_nil(count)
-            test.contains(err, "df-gone")
-            test.contains(err, "pid not registered")
+            local count, err, _, retry_needed = wake_process.run_due({})
+            test.is_nil(err)
+            test.eq(count, 0)
+            test.is_true(retry_needed)
         end)
 
         test.it("rejects malformed durable deadlines instead of polling", function()

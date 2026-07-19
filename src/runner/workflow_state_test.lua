@@ -886,6 +886,35 @@ local function define_tests()
                 test.not_nil(exit_info.yield_complete)
                 test.eq(exit_info.yield_complete.parent_id, "parent-1")
             end)
+
+            it("copies detached signal wake keys when a replacement yield attaches", function()
+                local ws = workflow_state.new(test_ctx.dataflow_id) :: any
+                local detached_wake_keys = { "signal:first", "signal:second" }
+                ws.pending_signal_wake_keys["signal:first"] = true
+                ws.pending_signal_wake_keys["signal:second"] = true
+                ws.active_yields["signal-node"] = {
+                    yield_id = "detached-yield",
+                    detached = true,
+                    wait_for_signal = true,
+                    signal_id = "approval",
+                    signal_data = { decision = "approve" },
+                    signal_wake_keys = detached_wake_keys,
+                }
+
+                ws:track_yield("signal-node", {
+                    yield_id = "replacement-yield",
+                    wait_for_signal = true,
+                    signal_id = "approval",
+                })
+
+                local replacement = test.not_nil(ws.active_yields["signal-node"]) :: any
+                test.eq(#replacement.signal_wake_keys, 2)
+                table.insert(replacement.signal_wake_keys, "signal:replacement-only")
+                test.eq(#detached_wake_keys, 2,
+                    "replacement yield must own its signal wake-key list")
+                test.is_nil(ws.pending_signal_wake_keys["signal:first"])
+                test.is_nil(ws.pending_signal_wake_keys["signal:second"])
+            end)
         end)
 
         describe("Input Tracking", function()
@@ -990,6 +1019,72 @@ local function define_tests()
         end)
 
         describe("State Updates from Results", function()
+            it("does not clean a signal wake before its durable commit is applied", function()
+                local ws = workflow_state.new(test_ctx.dataflow_id) :: any
+                local signal_data_id = uuid.v7()
+                local wake_key = "signal:" .. signal_data_id
+
+                ws:observe_signal_wake(wake_key)
+                test.eq(#ws:take_unclaimed_signal_wake_keys(), 0,
+                    "mailbox observation alone cannot acknowledge the durable wake")
+
+                ws:_update_state_from_results({
+                    results = { {
+                        input = {
+                            type = consts.COMMAND_TYPES.CREATE_DATA,
+                            payload = {
+                                data_id = signal_data_id,
+                                data_type = consts.DATA_TYPE.NODE_SIGNAL,
+                                key = "unmatched-signal",
+                                content = { decision = "approve" },
+                            },
+                        },
+                    } },
+                })
+                local applied = ws:take_unclaimed_signal_wake_keys()
+                test.eq(#applied, 1)
+                test.eq(applied[1], wake_key,
+                    "only an applied, unmatched signal can become a cleanup candidate")
+            end)
+
+            it("replays a consumed signal when its replacement re-yields in the same owner", function()
+                local ws = workflow_state.new(test_ctx.dataflow_id) :: any
+                ws:track_yield("signal-node", {
+                    yield_id = "old-yield",
+                    wait_for_signal = true,
+                    signal_id = "approval",
+                    signal_data = { decision = "approve" },
+                    signal_wake_keys = { "signal:signal-data" },
+                })
+                ws:satisfy_yield("signal-node", { decision = "approve" })
+
+                ws:track_yield("signal-node", {
+                    yield_id = "replacement-yield",
+                    wait_for_signal = true,
+                    signal_id = "approval",
+                })
+                local replacement = test.not_nil(ws.active_yields["signal-node"]) :: any
+                test.eq(replacement.signal_data.decision, "approve")
+                test.is_nil(replacement.signal_wake_keys,
+                    "already-consumed signal must not be consumed a second time")
+
+                ws:satisfy_yield("signal-node", replacement.signal_data)
+                local replacement_results = 0
+                local consumed_markers = 0
+                for _, command in ipairs(ws.queued_commands) do
+                    local payload = command.payload or {}
+                    if payload.data_type == consts.DATA_TYPE.NODE_YIELD_RESULT and
+                        payload.key == "replacement-yield" then
+                        replacement_results = replacement_results + 1
+                    elseif payload.data_type == consts.DATA_TYPE.NODE_SIGNAL_CONSUMED then
+                        consumed_markers = consumed_markers + 1
+                    end
+                end
+                test.eq(replacement_results, 1)
+                test.eq(consumed_markers, 1,
+                    "only the original satisfaction consumes the signal wake")
+            end)
+
             it("should update node state from CREATE_NODE results", function()
                 local ws = workflow_state.new(test_ctx.dataflow_id) :: any
                 test.not_nil(ws)
@@ -1289,7 +1384,7 @@ local function define_tests()
                 test.eq(recovered.signal_data.decision, "approve")
                 test.eq(#recovered.wake_keys, 1)
                 test.eq(recovered.wake_keys[1], "yield:" .. persisted_retry_yield_id)
-                test.is_nil(recovered.signal_wake_key, "consumed signal wake is not re-armed")
+                test.is_nil(recovered.signal_wake_keys, "consumed signal wake is not re-armed")
 
                 local fresh_yield_id = uuid.v7()
                 ws:track_yield(parent_id, {
