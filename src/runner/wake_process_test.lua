@@ -6,17 +6,20 @@ local function run_tests()
         local original_wake_repo
         local original_client
         local original_process
+        local original_channel
 
         test.before_each(function()
             original_wake_repo = wake_process.wake_repo
             original_client = wake_process.client
             original_process = wake_process.process
+            original_channel = wake_process.channel
         end)
 
         test.after_each(function()
             wake_process.wake_repo = original_wake_repo
             wake_process.client = original_client
             wake_process.process = original_process
+            wake_process.channel = original_channel
         end)
 
         test.it("revives only due wake rows and leaves durable advancement to the orchestrator", function()
@@ -103,11 +106,60 @@ local function run_tests()
                 new = function() return { revive = function() error("live owner must not be revived") end }, nil end,
             }
 
-            local count, err = wake_process.run_due({})
+            local count, err, _, retry_needed = wake_process.run_due({})
             test.is_nil(err)
             test.eq(count, 1)
             test.eq(monitored[1], "pid-live")
             test.eq(sent_to, "pid-live")
+            test.is_true(retry_needed, "mailbox enqueue is not durable wake acknowledgement")
+        end)
+
+        test.it("keeps the exact owner monitor across generic row-change notifications", function()
+            local monitor_calls = 0
+            local select_calls = 0
+            local inbox = { case_receive = function(self) return self end }
+            local events = { case_receive = function(self) return self end }
+            wake_process.wake_repo = {
+                due = function()
+                    return { {
+                        dataflow_id = "df-draining",
+                        wake_key = "signal:one",
+                        wake_at = "2026-07-12T20:00:00Z",
+                    } }, nil
+                end,
+            }
+            wake_process.process = {
+                event = { CANCEL = "cancel", EXIT = "exit" },
+                registry = {
+                    register = function() return true, nil end,
+                    lookup = function() return "pid-draining" end,
+                },
+                inbox = function() return inbox end,
+                events = function() return events end,
+                monitor = function()
+                    monitor_calls = monitor_calls + 1
+                    return true, nil
+                end,
+                unmonitor = function() return true, nil end,
+                send = function() return true, nil end,
+            }
+            wake_process.client = {
+                new = function() return { revive = function() error("owner is live") end }, nil end,
+            }
+            wake_process.channel = {
+                select = function()
+                    select_calls = select_calls + 1
+                    if select_calls == 1 then
+                        return { ok = true, channel = inbox, value = { topic = "dataflow.wake.changed" } }
+                    end
+                    return { ok = false }
+                end,
+            }
+
+            local result = wake_process.run({})
+            test.eq(result.status, "shutdown")
+            test.eq(monitor_calls, 1,
+                "generic notification must not acknowledge delivery or discard the EXIT monitor")
         end)
 
         test.it("keeps the durable row pending when exact revival fails", function()

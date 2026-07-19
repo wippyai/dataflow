@@ -990,6 +990,34 @@ local function define_tests()
         end)
 
         describe("State Updates from Results", function()
+            it("does not clean a signal wake before its durable commit is applied", function()
+                local ws = workflow_state.new(test_ctx.dataflow_id) :: any
+                local signal_data_id = uuid.v7()
+                local wake_key = "signal:" .. signal_data_id
+
+                ws:observe_signal_wake(wake_key)
+                test.eq(#ws:take_unclaimed_signal_wake_keys(), 0,
+                    "mailbox observation alone cannot acknowledge the durable wake")
+
+                ws:_update_state_from_results({
+                    results = { {
+                        input = {
+                            type = consts.COMMAND_TYPES.CREATE_DATA,
+                            payload = {
+                                data_id = signal_data_id,
+                                data_type = consts.DATA_TYPE.NODE_SIGNAL,
+                                key = "unmatched-signal",
+                                content = { decision = "approve" },
+                            },
+                        },
+                    } },
+                })
+                local applied = ws:take_unclaimed_signal_wake_keys()
+                test.eq(#applied, 1)
+                test.eq(applied[1], wake_key,
+                    "only an applied, unmatched signal can become a cleanup candidate")
+            end)
+
             it("should update node state from CREATE_NODE results", function()
                 local ws = workflow_state.new(test_ctx.dataflow_id) :: any
                 test.not_nil(ws)

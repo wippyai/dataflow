@@ -1290,10 +1290,11 @@ function methods:abandon_yield(node_id)
     return self
 end
 
-function methods:observe_signal_wake(wake_key)
-    if type(wake_key) == "string" and string.match(wake_key, "^signal:") then
-        self.pending_signal_wake_keys[wake_key] = true
-    end
+function methods:observe_signal_wake(_wake_key)
+    -- A wake message is only a hint that the durable commit may now be visible.
+    -- Do not make its row eligible for unclaimed-signal cleanup until applying
+    -- the corresponding NODE_SIGNAL record proves that the commit is durable.
+    return self
 end
 
 function methods:take_unclaimed_signal_wake_keys()

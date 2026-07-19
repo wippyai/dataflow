@@ -72,7 +72,10 @@ function M.run_due(monitored)
         return 0, nil, monitored, true
     end
     local delivered = 0
-    local retry_needed = false
+    -- A successful spawn/send is only a delivery attempt. The durable wake row
+    -- disappearing is the acknowledgement, so every observed due row keeps a
+    -- bounded retry armed until the orchestrator consumes it.
+    local retry_needed = true
     for _, row in ipairs(rows) do
         local live = M.process.registry.lookup("dataflow." .. row.dataflow_id)
         local wake_err = nil
@@ -142,8 +145,10 @@ function M.run(_args)
 
         local cases = { inbox:case_receive(), events:case_receive() }
         if ready and retry_needed then
-            -- Avoid a hot loop when delivery repeatedly races owner shutdown or
-            -- the execution identity provider is temporarily unavailable.
+            -- Avoid a hot loop while retaining liveness when delivery succeeds
+            -- to an owner that is already committed to shutdown. Mailbox enqueue
+            -- is not a processing acknowledgement; only removal of the durable
+            -- row stops this retry path.
             table.insert(cases, time.after("100ms"):case_receive())
         elseif ready and revived == 0 then
             local next_row, next_err = M.wake_repo.next()
@@ -155,23 +160,19 @@ function M.run(_args)
             end
         end
 
-        -- After a due revival, wait for the orchestrator's durable transition
-        -- notification. With no due row, wait only for a row-change message or
-        -- the exact indexed deadline. There is no periodic requery path.
+        -- A due row gets a bounded retry timer until durable consumption. With
+        -- no due row, wait only for a row-change message or the exact indexed
+        -- deadline; there is no idle polling path.
         local result = M.channel.select(cases)
         if not result.ok then break end
-        if result.channel == inbox then
-            -- Wake consumption notifies only after the durable transition
-            -- commits. Release exact-child monitors before recalculating the
-            -- indexed head; a still-due row is monitored again immediately.
-            clear_delivery_monitors(monitored)
-        elseif result.channel == events then
+        if result.channel == events then
             if result.value.kind == M.process.event.CANCEL then break end
             if result.value.kind == M.process.event.EXIT then
                 monitored[tostring(result.value.from)] = nil
             end
         end
     end
+    clear_delivery_monitors(monitored)
     return { status = "shutdown" }
 end
 
