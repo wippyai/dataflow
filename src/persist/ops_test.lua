@@ -421,6 +421,7 @@ local function define_tests()
                 test.is_false(duplicate_result.changes_made)
                 test.eq(duplicate_result.results[1].data_id, first_result.results[1].data_id)
                 test.is_true(duplicate_result.results[1].deduplicated)
+                test.eq(duplicate_result.results[1].input, duplicate_command)
             end)
         end)
 

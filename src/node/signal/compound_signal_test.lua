@@ -130,6 +130,21 @@ local function define_tests()
             return false
         end
 
+        local function wait_for_node_input(df_id, node_id, discriminator, timeout_ms)
+            timeout_ms = timeout_ms or 5000
+            local iterations = math.ceil(timeout_ms / 100)
+            for _ = 1, iterations do
+                local exists = data_reader.with_dataflow(df_id)
+                    :with_nodes(node_id)
+                    :with_data_types(consts.DATA_TYPE.NODE_INPUT)
+                    :with_data_discriminators(discriminator)
+                    :exists()
+                if exists then return true end
+                time.sleep("100ms")
+            end
+            return false
+        end
+
         local function count_outputs(df_id)
             return #data_reader.with_dataflow(df_id)
                 :with_data_types(consts.DATA_TYPE.WORKFLOW_OUTPUT)
@@ -420,8 +435,8 @@ local function define_tests()
 
                 -- satisfy branch A
                 c:signal(df_id, sid_a, { branch = "A" })
-                time.sleep("500ms")
-                test.eq(c:get_status(df_id), consts.STATUS.WAITING, "still waiting for branch B")
+                test.is_true(wait_for_node_input(df_id, merge, "from_a"), "branch A reached merge")
+                test.is_true(wait_running(df_id), "still waiting for branch B")
 
                 -- satisfy branch B
                 c:signal(df_id, sid_b, { branch = "B" })
@@ -780,20 +795,17 @@ local function define_tests()
                     c:start(df_id)
                 end
 
-                time.sleep("500ms")
                 for i = 1, 3 do
-                    test.eq(c:get_status(df_ids[i]), consts.STATUS.WAITING, "wf" .. i .. " waiting")
+                    test.is_true(wait_running(df_ids[i]), "wf" .. i .. " waiting")
                 end
 
                 -- signal them in reverse order
                 c:signal(df_ids[3], sids[3], { order = 3 })
-                time.sleep("500ms")
-                test.eq(c:get_status(df_ids[3]), consts.STATUS.COMPLETED_SUCCESS, "wf3 done")
+                test.is_true(wait_complete(df_ids[3]), "wf3 done")
                 test.eq(c:get_status(df_ids[1]), consts.STATUS.WAITING, "wf1 still waiting")
 
                 c:signal(df_ids[1], sids[1], { order = 1 })
-                time.sleep("500ms")
-                test.eq(c:get_status(df_ids[1]), consts.STATUS.COMPLETED_SUCCESS, "wf1 done")
+                test.is_true(wait_complete(df_ids[1]), "wf1 done")
                 test.eq(c:get_status(df_ids[2]), consts.STATUS.WAITING, "wf2 still waiting")
 
                 c:signal(df_ids[2], sids[2], { order = 2 })

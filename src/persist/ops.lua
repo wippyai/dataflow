@@ -933,10 +933,17 @@ function ops.execute(tx, dataflow_id, op_id, commands)
             return nil, "Error executing command at index " .. i .. ": " .. err_handler
         end
 
+        -- Keep the processed command on every successful result, including an
+        -- idempotent duplicate. Recovery still needs to reconcile the durable
+        -- row with its in-memory state even when this transaction made no
+        -- database change.
+        if result then
+            result.input = command
+        end
+
         -- Track if any command made changes
         if result and result.changes_made then
             changes_made = true
-            result.input = command
         end
 
         -- Store command result

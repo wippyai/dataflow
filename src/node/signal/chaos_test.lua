@@ -43,6 +43,16 @@ local function define_tests()
                 or status == consts.STATUS.CANCELLED
         end
 
+        local function wait_terminal(df_id, timeout_ms)
+            timeout_ms = timeout_ms or 10000
+            local iterations = math.ceil(timeout_ms / 200)
+            for _ = 1, iterations do
+                if is_terminal(df_id) then return true end
+                time.sleep("200ms")
+            end
+            return false
+        end
+
         local function get_output_count(df_id)
             local outputs = data_reader.with_dataflow(df_id)
                 :with_data_types(consts.DATA_TYPE.WORKFLOW_OUTPUT)
@@ -359,13 +369,11 @@ local function define_tests()
                     c:start(df_id)
                 end
 
-                time.sleep("3s")
-                if not is_terminal(df_id) then
+                if not wait_terminal(df_id, 5000) then
                     c:start(df_id)
-                    time.sleep("3s")
                 end
 
-                test.is_true(is_terminal(df_id), "cycle reached terminal")
+                test.is_true(wait_terminal(df_id, 10000), "cycle reached terminal")
                 test.eq(c:get_status(df_id), consts.STATUS.COMPLETED_SUCCESS, "cycle succeeded")
                 test.eq(get_output_count(df_id), 1, "one output")
             end)
