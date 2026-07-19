@@ -80,7 +80,37 @@ local function run_tests()
             test.eq(exact_deliveries["pid-exact"], "df-exact")
         end)
 
-        test.it("fails the service cycle when exact revival fails", function()
+        test.it("sends a wake to the exact monitored owner rather than a rebindable name", function()
+            local monitored = {}
+            local sent_to = nil
+            wake_process.wake_repo = {
+                due = function()
+                    return { { dataflow_id = "df-live", wake_key = "signal:one", wake_at = "2026-07-12T20:00:00Z" } }, nil
+                end,
+            }
+            wake_process.process = {
+                registry = { lookup = function() return "pid-live" end },
+                monitor = function(pid)
+                    table.insert(monitored, pid)
+                    return true, nil
+                end,
+                send = function(target)
+                    sent_to = target
+                    return true, nil
+                end,
+            }
+            wake_process.client = {
+                new = function() return { revive = function() error("live owner must not be revived") end }, nil end,
+            }
+
+            local count, err = wake_process.run_due({})
+            test.is_nil(err)
+            test.eq(count, 1)
+            test.eq(monitored[1], "pid-live")
+            test.eq(sent_to, "pid-live")
+        end)
+
+        test.it("keeps the durable row pending when exact revival fails", function()
             wake_process.wake_repo = {
                 due = function()
                     return { { dataflow_id = "df-broken", wake_key = "yield:one", wake_at = "2026-07-12T20:00:00Z" } }, nil
@@ -96,13 +126,13 @@ local function run_tests()
                 end,
             }
 
-            local count, err = wake_process.run_due()
-            test.is_nil(count)
-            test.contains(err, "df-broken")
-            test.contains(err, "spawn denied")
+            local count, err, _, retry_needed = wake_process.run_due()
+            test.is_nil(err)
+            test.eq(count, 0)
+            test.is_true(retry_needed)
         end)
 
-        test.it("fails immediately when an exact delivery cannot be monitored", function()
+        test.it("retries when an owner exits between spawn and exact monitoring", function()
             wake_process.wake_repo = {
                 due = function()
                     return { { dataflow_id = "df-gone", wake_key = "yield:one", wake_at = "2026-07-12T20:00:00Z" } }, nil
@@ -118,10 +148,10 @@ local function run_tests()
                 end,
             }
 
-            local count, err = wake_process.run_due({})
-            test.is_nil(count)
-            test.contains(err, "df-gone")
-            test.contains(err, "pid not registered")
+            local count, err, _, retry_needed = wake_process.run_due({})
+            test.is_nil(err)
+            test.eq(count, 0)
+            test.is_true(retry_needed)
         end)
 
         test.it("rejects malformed durable deadlines instead of polling", function()

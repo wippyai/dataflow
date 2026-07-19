@@ -581,19 +581,27 @@ local function define_tests()
         -- ==========================================
 
         describe("compound signal+func recovery", function()
-            it("kill pipeline at func before signal, recover, signal", function()
-                local sid = "cf1-" .. uuid.v7()
-                local df_id = make_func_signal_func_wf(sid)
-                c:start(df_id)
-                -- kill early while func might still be running
-                time.sleep("50ms")
-                kill_orchestrator(df_id)
+            it("central wakes recover repeated shutdown-to-signal handoffs", function()
+                for iteration = 1, 10 do
+                    local sid = "cf1-" .. uuid.v7()
+                    local df_id = make_func_signal_func_wf(sid)
+                    c:start(df_id)
+                    -- kill early while func might still be running
+                    time.sleep("50ms")
+                    kill_orchestrator(df_id)
 
-                c:start(df_id)
-                test.is_true(wait_running(df_id), "recovered, waiting at signal")
+                    c:start(df_id)
+                    test.is_true(wait_running(df_id), "recovered, waiting at signal: " .. iteration)
 
-                c:signal(df_id, sid, { message = "go", delay_ms = 10, should_fail = false })
-                test.is_true(wait_complete(df_id, 20000), "completed")
+                    local signal_result, signal_err = c:signal(
+                        df_id,
+                        sid,
+                        { message = "go", delay_ms = 10, should_fail = false }
+                    )
+                    test.is_nil(signal_err, "central wake signal accepted: " .. iteration)
+                    test.not_nil(signal_result, "signal commit persisted: " .. iteration)
+                    test.is_true(wait_complete(df_id, 5000), "central wake completed: " .. iteration)
+                end
             end)
 
             it("pre-queue signal, kill, restart pipeline", function()

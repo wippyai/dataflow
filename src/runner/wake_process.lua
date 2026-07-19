@@ -67,7 +67,12 @@ function M.run_due(monitored)
     if #rows == 0 then return 0, nil, monitored end
 
     local c, client_err = M.client.new()
-    if client_err then return nil, client_err end
+    if client_err then
+        logger:warn("due dataflow wakes remain pending", { error = tostring(client_err) })
+        return 0, nil, monitored, true
+    end
+    local delivered = 0
+    local retry_needed = false
     for _, row in ipairs(rows) do
         local live = M.process.registry.lookup("dataflow." .. row.dataflow_id)
         local wake_err = nil
@@ -76,7 +81,11 @@ function M.run_due(monitored)
             if not monitored_ok then
                 wake_err = monitor_err
             else
-                local sent, send_err = M.process.send("dataflow." .. row.dataflow_id, "dataflow.wake", {
+                -- Address the monitored PID, not its registry name. The name can
+                -- be rebound between lookup and send while a passivated owner
+                -- exits; durable consumption, not mailbox enqueue, acknowledges
+                -- this delivery.
+                local sent, send_err = M.process.send(tostring(live), "dataflow.wake", {
                     wake_key = tostring(row.wake_key),
                     wake_at = tostring(row.wake_at),
                 })
@@ -96,10 +105,20 @@ function M.run_due(monitored)
             end
         end
         if wake_err then
-            return nil, "due dataflow wake failed for " .. tostring(row.dataflow_id) .. ": " .. tostring(wake_err)
+            -- Registry lookup, monitor and send are separate runtime operations.
+            -- The owner may exit between any two of them. Keep the durable row
+            -- pending and retry instead of crashing the central restarter.
+            retry_needed = true
+            logger:warn("due dataflow wake delivery will retry", {
+                dataflow_id = tostring(row.dataflow_id),
+                wake_key = tostring(row.wake_key),
+                error = tostring(wake_err),
+            })
+        else
+            delivered = delivered + 1
         end
     end
-    return #rows, nil, monitored
+    return delivered, nil, monitored, retry_needed
 end
 
 function M.run(_args)
@@ -110,7 +129,7 @@ function M.run(_args)
     local events = M.process.events()
     local monitored = {}
     while true do
-        local revived, due_err = M.run_due(monitored)
+        local revived, due_err, _, retry_needed = M.run_due(monitored)
         local ready = true
         if due_err then
             if schema_not_ready(due_err) then
@@ -122,7 +141,11 @@ function M.run(_args)
         end
 
         local cases = { inbox:case_receive(), events:case_receive() }
-        if ready and revived == 0 then
+        if ready and retry_needed then
+            -- Avoid a hot loop when delivery repeatedly races owner shutdown or
+            -- the execution identity provider is temporarily unavailable.
+            table.insert(cases, time.after("100ms"):case_receive())
+        elseif ready and revived == 0 then
             local next_row, next_err = M.wake_repo.next()
             if next_err then error("next wake query failed: " .. tostring(next_err)) end
             if next_row then

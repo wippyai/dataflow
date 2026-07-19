@@ -22,6 +22,7 @@ local function define_tests()
                 process_cancel = {},
                 process_terminate = {},
                 process_lookup = {},
+                process_send = {},
                 dataflow_repo_get = {},
                 dataflow_repo_get_direct = {},
                 funcs_with_actor = {},
@@ -170,6 +171,14 @@ local function define_tests()
                             return "mock-registry-pid-789"
                         end
                     },
+                    send = function(target: string, topic: string, payload: any)
+                        table.insert(captured_calls.process_send, {
+                            target = target,
+                            topic = topic,
+                            payload = payload,
+                        })
+                        return true, nil
+                    end,
                     cancel = function(pid: string, timeout: string)
                         table.insert(captured_calls.process_cancel, { pid = pid, timeout = timeout })
                         return true, nil
@@ -1047,22 +1056,31 @@ local function define_tests()
                 test.eq(submit_call.commands[1].payload.key, "approve")
             end)
 
-            it("should not respawn when the orchestrator is alive", function()
+            it("should only notify central wakes when the orchestrator is alive", function()
                 local _, err = test_client:signal("workflow-123", "approve", {})
 
                 test.is_nil(err)
                 test.eq(#captured_calls.process_spawn, 0)
+                test.eq(#captured_calls.process_lookup, 0)
+                test.eq(#captured_calls.process_send, 1)
+                test.eq(captured_calls.process_send[1].target, "dataflow.wakes")
+                test.eq(captured_calls.process_send[1].topic, "dataflow.wake.changed")
             end)
 
-            it("should respawn the orchestrator when it is dead", function()
-                mock_deps.process.registry.lookup = function() return nil end
+            it("should leave dead-workflow restart ownership to central wakes", function()
+                mock_deps.process.registry.lookup = function(process_name: string)
+                    table.insert(captured_calls.process_lookup, { process_name = process_name })
+                    return nil
+                end
 
                 local _, err = test_client:signal("workflow-123", "approve", {})
 
                 test.is_nil(err)
                 test.eq(#captured_calls.commit_submit, 1)
-                test.eq(#captured_calls.process_spawn, 1)
-                test.eq(captured_calls.process_spawn[1].args.dataflow_id, "workflow-123")
+                test.eq(#captured_calls.process_lookup, 0)
+                test.eq(#captured_calls.process_spawn, 0)
+                test.eq(#captured_calls.process_send, 1)
+                test.eq(captured_calls.process_send[1].target, "dataflow.wakes")
             end)
 
             it("should refuse to signal a terminal workflow", function()
