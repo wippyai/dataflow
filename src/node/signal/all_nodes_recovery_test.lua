@@ -16,11 +16,26 @@ local function define_tests()
         end)
 
         local function kill_orchestrator(df_id)
-            local pid = process.registry.lookup("dataflow." .. df_id)
-            if pid then
-                process.terminate(pid)
-                time.sleep("200ms")
+            local registry_name = "dataflow." .. df_id
+            local pid
+            for _ = 1, 30 do
+                pid = process.registry.lookup(registry_name)
+                if pid then break end
+                time.sleep("100ms")
             end
+            if not pid then
+                error("orchestrator did not register before recovery kill: " .. df_id)
+            end
+
+            process.terminate(pid)
+            for _ = 1, 30 do
+                local registered = process.registry.lookup(registry_name)
+                if not registered or registered ~= pid then
+                    return pid
+                end
+                time.sleep("100ms")
+            end
+            error("orchestrator remained registered after recovery kill: " .. df_id)
         end
 
         local function wait_complete(df_id, timeout_ms)
