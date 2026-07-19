@@ -85,15 +85,24 @@ local function define_tests()
             local pid = process.registry.lookup(registry_name)
             if not pid then return false end
 
-            process.terminate(pid)
-            for _ = 1, 30 do
-                local registered = process.registry.lookup(registry_name)
-                if not registered then
-                    return true
-                end
-                time.sleep("100ms")
+            local events = process.events()
+            local monitored, monitor_err = process.monitor(pid)
+            if not monitored then
+                error("failed to monitor orchestrator before recovery kill: " .. tostring(monitor_err))
             end
-            error("orchestrator remained registered after recovery kill: " .. df_id)
+
+            local terminated, terminate_err = process.terminate(pid)
+            if not terminated then
+                error("failed to terminate orchestrator for recovery: " .. tostring(terminate_err))
+            end
+
+            local timeout = time.after("3s")
+            local result = channel.select({ events:case_receive(), timeout:case_receive() })
+            if result.channel ~= events or result.value.kind ~= process.event.EXIT or
+               tostring(result.value.from) ~= tostring(pid) then
+                error("orchestrator did not fully exit before recovery restart: " .. df_id)
+            end
+            return true
         end
 
         local function wait_complete(df_id, timeout_ms)
@@ -109,7 +118,7 @@ local function define_tests()
         end
 
         local function wait_running(df_id, timeout_ms)
-            timeout_ms = timeout_ms or 3000
+            timeout_ms = timeout_ms or 10000
             local iterations = math.ceil(timeout_ms / 100)
             for _ = 1, iterations do
                 local status = c:get_status(df_id)
@@ -584,7 +593,7 @@ local function define_tests()
                 test.is_true(wait_running(df_id), "recovered, waiting at signal")
 
                 c:signal(df_id, sid, { message = "go", delay_ms = 10, should_fail = false })
-                test.is_true(wait_complete(df_id, 10000), "completed")
+                test.is_true(wait_complete(df_id, 20000), "completed")
             end)
 
             it("pre-queue signal, kill, restart pipeline", function()

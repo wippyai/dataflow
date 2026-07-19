@@ -920,7 +920,7 @@ local function define_tests()
             test.is_nil(ws.active_processes["sig-node"], "process removed")
         end)
 
-        test.it("handle_process_exit preserves non-signal yields on exit", function()
+        test.it("handle_process_exit preserves attached non-signal yields on exit", function()
             local ws: any = workflow_state.new(uuid.v7())
             local pid = "pid-" .. uuid.v7()
 
@@ -936,8 +936,7 @@ local function define_tests()
             -- simulate func node process exit (success)
             ws:handle_process_exit(pid, true, { ok = true })
 
-            -- non-signal yield should NOT be cleaned up
-            test.not_nil(ws.active_yields["func-node"], "normal yield preserved")
+            test.not_nil(ws.active_yields["func-node"], "attached normal yield preserved")
         end)
 
         test.it("satisfy_yield queues NODE_YIELD_RESULT command", function()

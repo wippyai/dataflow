@@ -83,6 +83,30 @@ local function define_tests()
                 test.eq(decision.payload.nodes[1].trigger_reason, "yield_driven")
             end)
 
+            it("ignores stale detached yields owned by terminal parents", function()
+                for _, terminal_status in ipairs({
+                    consts.STATUS.COMPLETED_SUCCESS,
+                    consts.STATUS.COMPLETED_FAILURE,
+                    consts.STATUS.CANCELLED,
+                    consts.STATUS.TERMINATED,
+                    consts.STATUS.SKIPPED,
+                }) do
+                    local state = scheduler.create_empty_state()
+                    state.nodes.parent = { status = terminal_status, type = "cycle" }
+                    state.nodes.child = { status = consts.STATUS.COMPLETED_SUCCESS, type = "func" }
+                    state.active_yields.parent = {
+                        detached = true,
+                        pending_children = { child = consts.STATUS.COMPLETED_SUCCESS },
+                        results = { child = "result-1" },
+                    }
+                    state.has_workflow_output = true
+
+                    local decision = scheduler.find_next_work(state)
+                    test.eq(decision.type, scheduler.DECISION_TYPE.COMPLETE_WORKFLOW,
+                        "terminal owner does not relaunch or block completion: " .. terminal_status)
+                end
+            end)
+
             it("runs pending children before a detached parent and never schedules the owner generically", function()
                 local state = scheduler.create_empty_state()
                 state.nodes.parent = { status = consts.STATUS.PENDING, type = "parallel" }

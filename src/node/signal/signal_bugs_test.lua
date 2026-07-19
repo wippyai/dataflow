@@ -155,7 +155,7 @@ local function define_tests()
             test.is_nil(ws.active_yields["sig"], "signal yield cleaned on success too")
         end)
 
-        it("handle_process_exit does NOT remove non-signal yields", function()
+        it("handle_process_exit preserves attached non-signal child barriers", function()
             local ws: any = workflow_state.new(uuid.v7())
             local pid = "pid-789"
 
@@ -168,7 +168,31 @@ local function define_tests()
             }
 
             ws:handle_process_exit(pid, true, { ok = true })
-            test.not_nil(ws.active_yields["func"], "non-signal yield preserved")
+            test.not_nil(ws.active_yields["func"], "attached child barrier preserved")
+        end)
+
+        it("handle_process_exit removes a detached recovered child barrier", function()
+            local ws: any = workflow_state.new(uuid.v7())
+            local pid = "pid-detached"
+
+            ws.nodes["cycle"] = { status = consts.STATUS.RUNNING, type = "cycle" }
+            ws.nodes["child"] = { status = consts.STATUS.COMPLETED_SUCCESS, type = "func" }
+            ws.active_processes["cycle"] = pid
+            ws.active_yields["cycle"] = {
+                yield_id = "y-detached",
+                detached = true,
+                pending_children = { child = consts.STATUS.COMPLETED_SUCCESS },
+                results = { child = "result-child" },
+            }
+            ws.has_workflow_output = true
+
+            local info = ws:handle_process_exit(pid, false, "resumed process failed terminally")
+            test.not_nil(info, "exit info")
+            test.is_nil(ws.active_yields["cycle"], "detached recovery barrier removed")
+
+            local decision = scheduler.find_next_work(ws:get_scheduler_snapshot())
+            test.eq(decision.type, scheduler.DECISION_TYPE.COMPLETE_WORKFLOW,
+                "terminal recovered parent is not relaunched or wedged")
         end)
 
         it("after orphan cleanup, workflow can complete", function()
