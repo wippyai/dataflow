@@ -549,8 +549,9 @@ local function define_tests()
                 function_call = {},
                 function_result = {}
             }
-            local original_prompt_new = prompt.new
-            prompt.new = function(...)
+            local dynamic_prompt = prompt :: any
+            local original_prompt_new = dynamic_prompt.new
+            dynamic_prompt.new = function(...)
                 local prompt_instance = original_prompt_new(...)
                 local original_add_assistant = prompt_instance.add_assistant
                 local original_add_function_call = prompt_instance.add_function_call
@@ -666,7 +667,7 @@ local function define_tests()
             local ok, rebuilt_prompt, prompt_err = pcall(function()
                 return (builder :: any):build_prompt("System prompt", "Input")
             end)
-            prompt.new = original_prompt_new
+            dynamic_prompt.new = original_prompt_new
 
             if not ok then
                 error(rebuilt_prompt)

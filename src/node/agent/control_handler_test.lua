@@ -7,6 +7,19 @@ local consts = require("consts")
 local agent_consts = require("agent_consts")
 local control_handler = require("control_handler")
 
+type TestYieldChannel = Channel<any>
+
+type TestProcessDeps = {
+    listen: (topic: string, options: any?) -> (TestYieldChannel, any?),
+    send: (pid: string, topic: string, payload: any) -> (boolean, any?),
+}
+
+type TestNodeDeps = {
+    commit: any,
+    data_reader: any,
+    process: TestProcessDeps,
+}
+
 -- Builds a node_sdk instance backed by mock deps so handler behavior is observed
 -- through real SDK methods (metadata merge, queued commands, find_data).
 local function make_node(initial_metadata, find_rows)
@@ -51,7 +64,7 @@ local function make_node(initial_metadata, find_rows)
         node_id = uuid.v7(),
         dataflow_id = uuid.v7(),
         node = { metadata = initial_metadata or {} }
-    }, deps)
+    }, deps :: TestNodeDeps)
 
     return n, captured, err
 end

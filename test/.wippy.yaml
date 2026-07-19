@@ -1,9 +1,34 @@
 version: "1.0"
+vars:
+  sqlite_file: ./.wippy/test.db
+  postgres_host: 127.0.0.1
+  postgres_port: "5432"
+  postgres_database: dataflow_test
+  postgres_username: dataflow
+  postgres_password: dataflow
+profiles:
+  sqlite:
+    override:
+      "app:db:kind": db.sql.sqlite
+      "app:db:file": "${sqlite_file}"
+  postgres:
+    override:
+      "app:db:kind": db.sql.postgres
+      "app:db:host": "${postgres_host}"
+      "app:db:port": "${postgres_port}"
+      "app:db:database": "${postgres_database}"
+      "app:db:username": "${postgres_username}"
+      "app:db:password": "${postgres_password}"
+      "app:db:pool.max_open": 32
+      "app:db:pool.max_idle": 8
+      "app:db:options.sslmode": disable
 # Tests execute through the framework runner rather than a production caller.
 # Give every test entry an explicit, narrow identity; production Dataflow has no fallback.
 override:
   "app:wait_for_boot:security.actor.id": dataflow.test
   "app:wait_for_boot:security.policies": [app:test_policy]
+  "app:database_profile_test:security.actor.id": dataflow.test
+  "app:database_profile_test:security.policies": [app:test_policy]
   "app:wake_service_scope_test:security.actor.id": dataflow.test
   "app:wake_service_scope_test:security.policies": [app:test_policy]
   "userspace.dataflow.migrations:migration_04_test:security.actor.id": dataflow.test

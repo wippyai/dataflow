@@ -30,6 +30,19 @@ entries:
       test: wippy.test:test
     method: run
 
+  - name: database_profile_test
+    kind: function.lua
+    meta:
+      type: test
+      suite: "00_setup"
+      comment: Proves the selected test profile is backed by a live supported SQL dialect.
+    source: file://database_profile_test.lua
+    modules:
+      - sql
+    imports:
+      test: wippy.test:test
+    method: run
+
   - name: db
     kind: db.sql.sqlite
     meta:

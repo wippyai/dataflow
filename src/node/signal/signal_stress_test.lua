@@ -531,10 +531,9 @@ local function define_tests()
                     make_input(uuid.v7(), root, { message = "diamond", delay_ms = 10, should_fail = false }),
                 })
                 c:start(df_id)
-                time.sleep("500ms")
 
                 -- func branch should be done, signal still waiting
-                test.eq(c:get_status(df_id), consts.STATUS.WAITING, "waiting for signal")
+                test.is_true(wait_running(df_id, 5000), "waiting for signal")
 
                 -- kill and recover with signal
                 kill_orchestrator(df_id)

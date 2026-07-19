@@ -10,22 +10,33 @@ local function run_tests()
             local db = test.not_nil(select(1, sql.get("app:db"))) :: any
             local id = uuid.v7()
             local now = time.now():format(time.RFC3339NANO)
-            local _, insert_err = db:execute([[
-                INSERT INTO dataflows(dataflow_id, actor_id, type, status, metadata, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            ]], { id, "wake-test", "test", "running", "{}", now, now })
+            local db_type, type_err = db:type()
+            test.is_nil(type_err)
+            test.is_true(db_type == "sqlite" or db_type == "postgres")
+            local _, insert_err = sql.builder.insert("dataflows"):set_map({
+                dataflow_id = id,
+                actor_id = "wake-test",
+                type = "test",
+                status = "running",
+                metadata = "{}",
+                created_at = now,
+                updated_at = now,
+            }):run_with(db):exec()
             test.is_nil(insert_err)
             db:release()
 
             local insert_db = test.not_nil(select(1, sql.get("app:db"))) :: any
-            test.is_nil(select(2, insert_db:execute([[
-                INSERT INTO dataflow_wakes(dataflow_id, wake_key, wake_at) VALUES
-                    (?, ?, ?), (?, ?, ?), (?, ?, ?)
-            ]], {
-                id, "yield:a", "2026-07-12T20:02:00Z",
-                id, "yield:b", "2026-07-12T20:01:00Z",
-                id, "commit:c", "2026-07-12T20:03:00Z",
-            })))
+            for _, wake in ipairs({
+                { key = "yield:a", at = "2026-07-12T20:02:00Z" },
+                { key = "yield:b", at = "2026-07-12T20:01:00Z" },
+                { key = "commit:c", at = "2026-07-12T20:03:00Z" },
+            }) do
+                test.is_nil(select(2, sql.builder.insert("dataflow_wakes"):set_map({
+                    dataflow_id = id,
+                    wake_key = wake.key,
+                    wake_at = wake.at,
+                }):run_with(insert_db):exec()))
+            end
             insert_db:release()
             local row = test.not_nil(select(1, wake_repo.next())) :: any
             test.eq(row.dataflow_id, id)

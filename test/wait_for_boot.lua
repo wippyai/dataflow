@@ -5,6 +5,47 @@ local migration_bootloader = require("migration_bootloader")
 
 local bootloaders_started = false
 
+-- wippy/session owns foreign keys into the application's user/context tables.
+-- SQLite permits those referenced tables to be absent during CREATE TABLE,
+-- while PostgreSQL correctly rejects the migration. Dataflow's isolated test
+-- app does not install an identity module, so provide only the two referenced
+-- keys before running dependency migrations; the session constraints are
+-- removed below once all migrations have completed.
+local function prepare_postgres_session_dependencies()
+    local db, db_err = sql.get("app:db")
+    if db_err then error("Failed to acquire setup database: " .. tostring(db_err)) end
+
+    local db_type, type_err = db:type()
+    if type_err then
+        db:release()
+        error("Failed to identify setup database: " .. tostring(type_err))
+    end
+
+    if db_type == "postgres" then
+        local _, users_err = db:execute([[
+            CREATE TABLE IF NOT EXISTS app_users (
+                user_id TEXT PRIMARY KEY
+            )
+        ]])
+        if users_err then
+            db:release()
+            error("Failed to create PostgreSQL app_users test stub: " .. tostring(users_err))
+        end
+
+        local _, contexts_err = db:execute([[
+            CREATE TABLE IF NOT EXISTS contexts (
+                context_id TEXT PRIMARY KEY
+            )
+        ]])
+        if contexts_err then
+            db:release()
+            error("Failed to create PostgreSQL contexts test stub: " .. tostring(contexts_err))
+        end
+    end
+
+    db:release()
+end
+
 local function call_bootloader(module, options)
     if type(module) == "function" then
         return module(options)
@@ -20,6 +61,8 @@ local function run_setup_bootloaders()
         return
     end
     bootloaders_started = true
+
+    prepare_postgres_session_dependencies()
 
     local key_result = call_bootloader(encryption_key_bootloader, {})
     if type(key_result) ~= "table" or key_result.status == "error" then

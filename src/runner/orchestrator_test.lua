@@ -218,6 +218,16 @@ local function define_tests()
             orchestrator.scheduler = mock_scheduler
             orchestrator.process = mock_process
             orchestrator.commit = mock_commit
+            orchestrator.wake_repo = {
+                clear = function(_dataflow_id: string): (boolean, string?)
+                    return true, nil
+                end,
+            }
+            orchestrator.wake_process = {
+                notify = function(): (boolean, string?)
+                    return true, nil
+                end,
+            }
             orchestrator.funcs = {
                 new = function(): any
                     local executor = {}

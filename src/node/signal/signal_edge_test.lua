@@ -340,9 +340,12 @@ local function define_tests()
 
                 test.eq(c:get_status(df_id), consts.STATUS.WAITING, "wrong signal leaves wait parked")
                 local db = test.not_nil(select(1, sql.get("app:db"))) :: any
-                local rows, query_err = db:query(
-                    "SELECT wake_key FROM dataflow_wakes WHERE dataflow_id = ? AND wake_key LIKE 'signal:%'",
-                    { df_id })
+                local rows, query_err = sql.builder.select("wake_key")
+                    :from("dataflow_wakes")
+                    :where("dataflow_id = ?", df_id)
+                    :where("wake_key LIKE ?", "signal:%")
+                    :run_with(db)
+                    :query()
                 db:release()
                 test.is_nil(query_err)
                 test.eq(#(rows or {}), 0, "applied wrong signal has no retry wake")
