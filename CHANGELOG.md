@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## [0.5.5](https://github.com/wippyai/dataflow/compare/v0.5.4...v0.5.5) (2026-07-19)
+
+
+### Bug Fixes
+
+* claim orchestrator before state load ([27ac93d](https://github.com/wippyai/dataflow/commit/27ac93d97dd85268117023b15a118ebe6763947e))
+* make dataflow PostgreSQL-safe ([c2435d3](https://github.com/wippyai/dataflow/commit/c2435d3fe31bb36b65b4e4af1212c9185d90ca7a))
+* make dataflow PostgreSQL-safe ([2cb54fe](https://github.com/wippyai/dataflow/commit/2cb54fee2788146866b608a7b1c0e70d10aa0513))
+* prevent terminal yield recovery loops ([38d8c6d](https://github.com/wippyai/dataflow/commit/38d8c6d3641c03f01ebd55f6162f15a065050cf8))
+* reconcile idempotent recovery results ([43b0eaa](https://github.com/wippyai/dataflow/commit/43b0eaad7d227d88a455acf286a6ae7da92d8278))
+
 ## [0.5.4](https://github.com/wippyai/dataflow/compare/v0.5.3...v0.5.4) (2026-07-17)
 
 
