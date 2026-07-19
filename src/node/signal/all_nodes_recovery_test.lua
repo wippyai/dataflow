@@ -36,15 +36,24 @@ local function define_tests()
                 error("active orchestrator did not register before recovery kill: " .. df_id)
             end
 
-            process.terminate(pid)
-            for _ = 1, 30 do
-                local registered = process.registry.lookup(registry_name)
-                if not registered then
-                    return true
-                end
-                time.sleep("100ms")
+            local events = process.events()
+            local monitored, monitor_err = process.monitor(pid)
+            if not monitored then
+                error("failed to monitor orchestrator before recovery kill: " .. tostring(monitor_err))
             end
-            error("orchestrator remained registered after recovery kill: " .. df_id)
+
+            local terminated, terminate_err = process.terminate(pid)
+            if not terminated then
+                error("failed to terminate orchestrator for recovery: " .. tostring(terminate_err))
+            end
+
+            local timeout = time.after("3s")
+            local result = channel.select({ events:case_receive(), timeout:case_receive() })
+            if result.channel ~= events or result.value.kind ~= process.event.EXIT or
+               tostring(result.value.from) ~= tostring(pid) then
+                error("orchestrator did not fully exit before recovery restart: " .. df_id)
+            end
+            return true
         end
 
         local function wait_complete(df_id, timeout_ms)
