@@ -30,6 +30,7 @@ test-postgres: test-static
 		--set "vars.postgres_password=$(DATAFLOW_PG_PASSWORD)"
 
 test-static:
+	@command -v rg >/dev/null 2>&1 || { echo "test-static requires ripgrep (rg)"; exit 1; }
 	@if rg -n "keeper\\.views\\.dataflow|dataflow-link|Open full view" src/session/views/state.jet; then \
 		echo "dataflow state view must not link to keeper-owned UI"; \
 		exit 1; \

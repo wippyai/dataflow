@@ -47,6 +47,8 @@ jobs:
           --health-retries 12
     steps:
       - uses: actions/checkout@v5
+      - name: Install static-check dependency
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
       - name: Install Wippy
         run: |
           curl -fsSL https://hub.wippy.ai/install.sh -o /tmp/wippy-install.sh
