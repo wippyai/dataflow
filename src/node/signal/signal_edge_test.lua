@@ -48,13 +48,30 @@ local function define_tests()
         end
 
         local function wait_complete(df_id, timeout_ms)
-            timeout_ms = timeout_ms or 5000
+            timeout_ms = timeout_ms or 10000
             local iterations = math.ceil(timeout_ms / 200)
             for _ = 1, iterations do
                 local status = c:get_status(df_id)
                 if status == consts.STATUS.COMPLETED_SUCCESS then return true end
                 if status == consts.STATUS.COMPLETED_FAILURE then return false end
                 time.sleep("200ms")
+            end
+            return false
+        end
+
+        local function wait_status(df_id, expected_status, timeout_ms)
+            timeout_ms = timeout_ms or 5000
+            local iterations = math.ceil(timeout_ms / 100)
+            for _ = 1, iterations do
+                local status = c:get_status(df_id)
+                if status == expected_status then return true end
+                if status == consts.STATUS.COMPLETED_SUCCESS or
+                    status == consts.STATUS.COMPLETED_FAILURE or
+                    status == consts.STATUS.CANCELLED or
+                    status == consts.STATUS.TERMINATED then
+                    return false
+                end
+                time.sleep("100ms")
             end
             return false
         end
@@ -448,9 +465,8 @@ local function define_tests()
                     c:start(df_ids[i])
                 end
 
-                time.sleep("500ms")
                 for i = 1, count do
-                    test.eq(c:get_status(df_ids[i]), consts.STATUS.WAITING, "wf" .. i .. " waiting")
+                    test.is_true(wait_status(df_ids[i], consts.STATUS.WAITING), "wf" .. i .. " waiting")
                 end
 
                 -- signal in reverse

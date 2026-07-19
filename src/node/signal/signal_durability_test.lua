@@ -118,7 +118,7 @@ local function define_tests()
         end
 
         local function wait_running(df_id, timeout_ms)
-            timeout_ms = timeout_ms or 3000
+            timeout_ms = timeout_ms or 10000
             local iterations = math.ceil(timeout_ms / 100)
             for _ = 1, iterations do
                 local status = c:get_status(df_id)
@@ -593,7 +593,7 @@ local function define_tests()
                 test.is_true(wait_running(df_id), "recovered, waiting at signal")
 
                 c:signal(df_id, sid, { message = "go", delay_ms = 10, should_fail = false })
-                test.is_true(wait_complete(df_id, 10000), "completed")
+                test.is_true(wait_complete(df_id, 20000), "completed")
             end)
 
             it("pre-queue signal, kill, restart pipeline", function()

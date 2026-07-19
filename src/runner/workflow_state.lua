@@ -1123,9 +1123,13 @@ function methods:handle_process_exit(pid, success, result)
         result_data_id = result_data_id
     }
 
-    -- clean up orphaned signal yield if this node was yielding with wait_for_signal
+    -- Signal waits never have runnable child ownership, and a detached yield
+    -- belongs to the pre-recovery process. If the resumed process exits before
+    -- replacing that detached barrier, retaining it can relaunch the now-
+    -- terminal parent forever. Attached child barriers remain until their live
+    -- descendants drain through the normal parent/child exit path.
     local own_yield = self.active_yields[exited_node_id]
-    if own_yield and own_yield.wait_for_signal then
+    if own_yield and (own_yield.wait_for_signal or own_yield.detached) then
         self.active_yields[exited_node_id] = nil
     end
 

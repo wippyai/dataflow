@@ -115,10 +115,22 @@ local function yield_children_complete(yield_info)
     return true
 end
 
+local function node_is_terminal(node)
+    if not node then return false end
+    return node.status == consts.STATUS.COMPLETED_SUCCESS or
+        node.status == consts.STATUS.COMPLETED_FAILURE or
+        node.status == consts.STATUS.CANCELLED or
+        node.status == consts.STATUS.TERMINATED or
+        node.status == consts.STATUS.SKIPPED
+end
+
 local function find_yield_driven_work(state)
     local now = time.now()
 
     for parent_id, yield_info in pairs(state.active_yields) do
+        local parent = state.nodes[parent_id]
+        if node_is_terminal(parent) then goto continue end
+
         -- detached yields belong to a dead process (parent was reset on recovery).
         -- satisfying them would send the reply into a void AND trick find_yield_driven_work
         -- into thinking this iteration's work is progressing, blocking re-execution.
@@ -128,8 +140,9 @@ local function find_yield_driven_work(state)
             local ready = yield_info.wait_for_signal and
                 (yield_info.signal_data ~= nil or signal_timeout_expired(yield_info, now)) or
                 (not yield_info.wait_for_signal and yield_children_complete(yield_info))
-            local parent = state.nodes[parent_id]
-            if ready and parent and not state.active_processes[parent_id] then
+            if ready and parent and
+               (parent.status == consts.STATUS.PENDING or parent.status == consts.STATUS.WAITING) and
+               not state.active_processes[parent_id] then
                 return create_nodes_execution({ {
                     node_id = parent_id,
                     node_type = parent.type,
@@ -174,6 +187,8 @@ local function find_yield_driven_work(state)
     local ready_yield_children = {}
 
     for parent_id, yield_info in pairs(state.active_yields) do
+        if node_is_terminal(state.nodes[parent_id]) then goto continue end
+
         if yield_info.pending_children then
             local has_any_pending = false
             local has_any_runnable = false
@@ -206,6 +221,8 @@ local function find_yield_driven_work(state)
                 })
             end
         end
+
+        ::continue::
     end
 
     if #ready_yield_children > 0 then
@@ -310,8 +327,12 @@ function decide_execution_strategy(ready_nodes, allow_concurrent)
 end
 
 local function check_workflow_completion(state)
-    if next(state.active_processes) or next(state.active_yields) then
+    if next(state.active_processes) then
         return nil
+    end
+
+    for parent_id in pairs(state.active_yields) do
+        if not node_is_terminal(state.nodes[parent_id]) then return nil end
     end
 
     local has_nodes = false
@@ -392,7 +413,8 @@ local function passivation_wake(state)
     if next(state.active_processes) then return false end
     local found = false
     local wake_at = nil
-    for _, yield_info in pairs(state.active_yields or {}) do
+    for parent_id, yield_info in pairs(state.active_yields or {}) do
+        if node_is_terminal(state.nodes[parent_id]) then goto continue end
         found = true
         if not yield_info.wait_for_signal or yield_info.signal_data ~= nil then
             return false, nil
@@ -402,6 +424,7 @@ local function passivation_wake(state)
            (wake_at == nil or candidate < wake_at) then
             wake_at = candidate
         end
+        ::continue::
     end
     return found, wake_at
 end

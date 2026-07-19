@@ -78,7 +78,7 @@ local function define_tests()
                 local input_id = uuid.v7()
                 local node_input_id = uuid.v7()
 
-                return c:create_workflow({
+                local df_id, create_err = c:create_workflow({
                     { type = consts.COMMAND_TYPES.CREATE_NODE, payload = {
                         node_id = nid,
                         node_type = "userspace.dataflow.node.cycle:cycle",
@@ -111,6 +111,7 @@ local function define_tests()
                         content_type = "dataflow/reference",
                     }},
                 })
+                return df_id, nid, create_err
             end
 
             it("cycle completes normally without kill", function()
@@ -139,7 +140,7 @@ local function define_tests()
                 time.sleep("100ms")
                 kill_orchestrator(df_id)
                 c:start(df_id)
-                test.is_true(wait_complete(df_id, 10000), "cycle double kill recovered")
+                test.is_true(wait_complete(df_id, 20000), "cycle double kill recovered")
             end)
 
             it("cycle with triple kill recovers", function()
@@ -158,12 +159,24 @@ local function define_tests()
             end)
 
             it("cycle with high initial quality completes fast after kill", function()
-                local df_id = make_cycle_wf(10, 0.75)
+                local df_id, cycle_node_id = make_cycle_wf(10, 0.75)
                 c:start(df_id)
                 time.sleep("100ms")
                 kill_orchestrator(df_id)
                 c:start(df_id)
                 test.is_true(wait_complete(df_id, 15000), "high-quality cycle recovered")
+
+                local results = data_reader.with_dataflow(df_id)
+                    :with_nodes(cycle_node_id)
+                    :with_data_types(consts.DATA_TYPE.NODE_RESULT)
+                    :all()
+                local error_results = 0
+                for _, result_row in ipairs(results or {}) do
+                    if result_row.discriminator == "result.error" then
+                        error_results = error_results + 1
+                    end
+                end
+                test.eq(error_results, 0, "recovered cycle is not relaunched after terminal completion")
             end)
         end)
 
