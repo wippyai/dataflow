@@ -81,12 +81,19 @@ local function define_tests()
         end
 
         local function kill_orchestrator(df_id)
-            local pid = process.registry.lookup("dataflow." .. df_id)
-            if pid then
-                process.terminate(pid)
-                time.sleep("200ms")
+            local registry_name = "dataflow." .. df_id
+            local pid = process.registry.lookup(registry_name)
+            if not pid then return false end
+
+            process.terminate(pid)
+            for _ = 1, 30 do
+                local registered = process.registry.lookup(registry_name)
+                if not registered then
+                    return true
+                end
+                time.sleep("100ms")
             end
-            return pid
+            error("orchestrator remained registered after recovery kill: " .. df_id)
         end
 
         local function wait_complete(df_id, timeout_ms)
@@ -244,13 +251,11 @@ local function define_tests()
                 test.is_true(wait_complete(df_id, 8000), "correct backlog signal satisfies")
             end)
 
-            it("signal before create, before start", function()
+            it("signal auto-starts a pending workflow", function()
                 local sid = "pre-create-" .. uuid.v7()
                 local df_id = make_signal_wf(sid)
-                -- signal BEFORE start
+                -- signal() durably queues the signal and auto-starts the workflow
                 c:signal(df_id, sid, { ultra_early = true })
-                time.sleep("100ms")
-                c:start(df_id)
                 test.is_true(wait_complete(df_id, 8000), "pre-start signal works")
             end)
         end)

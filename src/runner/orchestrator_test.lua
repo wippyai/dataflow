@@ -277,6 +277,23 @@ local function define_tests()
                 test.contains(result.error, "Missing required dataflow_id")
             end)
 
+            it("claims the registry name before initializing durable state", function()
+                local state_created = false
+                mock_process.registry.register = function(_name: string): (nil, string)
+                    return nil, "already registered"
+                end
+                orchestrator.workflow_state.new = function(_dataflow_id: string): (MockWorkflowState?, string?)
+                    state_created = true
+                    return mock_workflow_state, nil
+                end
+
+                local result = orchestrator.run({ dataflow_id = "duplicate-start" })
+
+                test.is_true(result.success)
+                test.is_false(state_created)
+                test.contains(result.message, "already running")
+            end)
+
             it("should handle workflow state creation failure", function()
                 orchestrator.workflow_state.new = function(_dataflow_id: string): (MockWorkflowState?, string?)
                     return nil, "Failed to create workflow state"
