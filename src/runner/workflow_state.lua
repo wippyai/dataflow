@@ -724,7 +724,6 @@ function methods:_reconstruct_active_yields()
                 -- the same public signal id and carries no signal wake key: the
                 -- original signal was already consumed atomically.
                 yield_info.signal_data = decode_json_content(episode_result.content)
-                yield_info.signal_wake_key = nil
                 yield_info.signal_wake_keys = nil
             else
                 for _, signal_record in ipairs(signal_records or {}) do
@@ -733,7 +732,6 @@ function methods:_reconstruct_active_yields()
                         local content = decode_json_content(signal_record.content)
                         if content ~= nil then yield_info.signal_data = content end
                         local signal_wake_key = "signal:" .. tostring(signal_record.data_id)
-                        yield_info.signal_wake_key = signal_wake_key
                         yield_info.signal_wake_keys = yield_info.signal_wake_keys or {}
                         table.insert(yield_info.signal_wake_keys, signal_wake_key)
                         self.pending_signal_wake_keys[signal_wake_key] = nil
@@ -885,10 +883,10 @@ function methods:_update_state_from_results(results)
                         if yield_info.wait_for_signal and yield_info.signal_id == signal_id then
                             yield_info.signal_data = payload.content
                             if type(payload.data_id) == "string" then
-                                yield_info.signal_wake_key = "signal:" .. payload.data_id
+                                local matched_wake_key = "signal:" .. payload.data_id
                                 yield_info.signal_wake_keys = yield_info.signal_wake_keys or {}
-                                table.insert(yield_info.signal_wake_keys, yield_info.signal_wake_key)
-                                self.pending_signal_wake_keys[yield_info.signal_wake_key] = nil
+                                table.insert(yield_info.signal_wake_keys, matched_wake_key)
+                                self.pending_signal_wake_keys[matched_wake_key] = nil
                             end
                             break
                         end
@@ -1189,11 +1187,12 @@ function methods:track_yield(node_id, yield_info)
             if existing and existing.detached and existing.signal_id == yield_info.signal_id and
                 existing.signal_data ~= nil then
                 yield_info.signal_data = existing.signal_data
-                yield_info.signal_wake_key = existing.signal_wake_key
-                yield_info.signal_wake_keys = existing.signal_wake_keys
-                for _, wake_key in ipairs(type(yield_info.signal_wake_keys) == "table" and
-                    yield_info.signal_wake_keys or {}) do
-                    self.pending_signal_wake_keys[wake_key] = nil
+                if type(existing.signal_wake_keys) == "table" then
+                    yield_info.signal_wake_keys = {}
+                    for _, wake_key in ipairs(existing.signal_wake_keys) do
+                        table.insert(yield_info.signal_wake_keys, wake_key)
+                        self.pending_signal_wake_keys[wake_key] = nil
+                    end
                 end
             else
                 -- 3. check DB (pre-queued: signal arrived before node ever yielded)
@@ -1220,10 +1219,10 @@ function methods:track_yield(node_id, yield_info)
                             if not parse_err then content = parsed end
                         end
                         yield_info.signal_data = content
-                        yield_info.signal_wake_key = "signal:" .. tostring(sig.data_id)
+                        local matched_wake_key = "signal:" .. tostring(sig.data_id)
                         yield_info.signal_wake_keys = yield_info.signal_wake_keys or {}
-                        table.insert(yield_info.signal_wake_keys, yield_info.signal_wake_key)
-                        self.pending_signal_wake_keys[yield_info.signal_wake_key] = nil
+                        table.insert(yield_info.signal_wake_keys, matched_wake_key)
+                        self.pending_signal_wake_keys[matched_wake_key] = nil
                     end
                 end
             end
@@ -1247,8 +1246,6 @@ function methods:satisfy_yield(node_id, results)
             for _, wake_key in ipairs(yield_info.signal_wake_keys) do
                 table.insert(consume_wake_keys, wake_key)
             end
-        elseif type(yield_info.signal_wake_key) == "string" then
-            table.insert(consume_wake_keys, yield_info.signal_wake_key)
         end
         table.insert(self.queued_commands, {
             type = consts.COMMAND_TYPES.CREATE_DATA,

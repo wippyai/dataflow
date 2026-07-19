@@ -529,6 +529,43 @@ local function define_tests()
                 test.is_true(result.success)
             end)
 
+            it("copies signal wake keys when a parked yield reattaches", function()
+                local original_wake_keys = { "signal:first", "signal:second" }
+                local tracked = nil :: any
+                local state = {
+                    workflow_state = {
+                        get_scheduler_snapshot = function()
+                            return {
+                                active_yields = {
+                                    ["await-1"] = {
+                                        yield_id = "old-yield",
+                                        signal_id = "approval-1",
+                                        signal_data = { outcome = "approve" },
+                                        signal_wake_keys = original_wake_keys,
+                                        wake_keys = { "yield:old-yield" },
+                                    },
+                                },
+                            }
+                        end,
+                        track_yield = function(_self: any, _node_id: string, info: any)
+                            tracked = info
+                        end,
+                    },
+                }
+
+                orchestrator.track_signal_yield(state, "await-1", {
+                    yield_id = "replacement-yield",
+                    wait_for_signal = true,
+                    signal_id = "approval-1",
+                }, "node-pid")
+
+                test.not_nil(tracked)
+                test.eq(#tracked.signal_wake_keys, 2)
+                table.insert(tracked.signal_wake_keys, "signal:replacement-only")
+                test.eq(#original_wake_keys, 2,
+                    "replacement yield must not alias the prior wake-key list")
+            end)
+
             it("should bail without scheduling when the dataflow is already terminal", function()
                 local scheduler_called = false
                 local unregistered: { string } = {}
