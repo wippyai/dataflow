@@ -59,7 +59,7 @@ function child_output.query_node_outputs(n, node_ids)
     return output_data_or_err, nil
 end
 
-local function decode_content(content)
+local function decode_content(content: any)
     if type(content) ~= "string" then
         return content
     end

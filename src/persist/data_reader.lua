@@ -219,7 +219,7 @@ function methods:_build_query(db_type)
     return query_builder
 end
 
-local function parse_json_metadata(metadata_str)
+local function parse_json_metadata(metadata_str: any)
     if not metadata_str or type(metadata_str) ~= "string" then
         return {}
     end

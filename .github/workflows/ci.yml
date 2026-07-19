@@ -1,0 +1,60 @@
+name: Dataflow checks
+
+on:
+  pull_request:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Wippy lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Wippy
+        run: |
+          curl -fsSL https://hub.wippy.ai/install.sh -o /tmp/wippy-install.sh
+          . /tmp/wippy-install.sh
+          echo "$HOME/.wippy/bin" >> "$GITHUB_PATH"
+      - name: Install module dependencies
+        run: make install
+      - name: Lint
+        run: make lint
+
+  test:
+    name: Tests (${{ matrix.database }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        database: [sqlite, postgres]
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: dataflow_test
+          POSTGRES_USER: dataflow
+          POSTGRES_PASSWORD: dataflow
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U dataflow -d dataflow_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install static-check dependency
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+      - name: Install Wippy
+        run: |
+          curl -fsSL https://hub.wippy.ai/install.sh -o /tmp/wippy-install.sh
+          . /tmp/wippy-install.sh
+          echo "$HOME/.wippy/bin" >> "$GITHUB_PATH"
+      - name: Install module dependencies
+        run: make install
+      - name: Run ${{ matrix.database }} tests
+        run: make test-${{ matrix.database }}

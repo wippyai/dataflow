@@ -13,7 +13,11 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  checks:
+    uses: ./.github/workflows/ci.yml
+
   release:
+    needs: checks
     uses: wippyai/template-module/.github/workflows/reusable-release.yml@v1
     with:
       publish: true

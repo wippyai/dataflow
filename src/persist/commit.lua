@@ -475,10 +475,12 @@ function commit._create_commit_only(commit_id, dataflow_id, payload, metadata)
         if row.type == consts.COMMAND_TYPES.CREATE_DATA and body.data_type == consts.DATA_TYPE.NODE_SIGNAL then
             local signal_data_id = body.data_id
             if type(signal_data_id) == "string" and signal_data_id ~= "" then
-                local _, wake_err = tx:execute([[
-                    INSERT INTO dataflow_wakes(dataflow_id, wake_key, wake_at) VALUES (?, ?, ?)
-                    ON CONFLICT(dataflow_id, wake_key) DO NOTHING
-                ]], { dataflow_id, "signal:" .. signal_data_id, created_at })
+                local _, wake_err = sql.builder.insert("dataflow_wakes")
+                    :columns("dataflow_id", "wake_key", "wake_at")
+                    :values(dataflow_id, "signal:" .. signal_data_id, created_at)
+                    :suffix("ON CONFLICT(dataflow_id, wake_key) DO NOTHING")
+                    :run_with(tx)
+                    :exec()
                 if wake_err then
                     tx:rollback(); db:release()
                     return nil, "Failed to project signal wake: " .. tostring(wake_err)
@@ -490,10 +492,12 @@ function commit._create_commit_only(commit_id, dataflow_id, payload, metadata)
             local deadline = body.content.yield_context.timeout_deadline
             local yield_id = body.content.yield_id or body.key
             if type(deadline) == "string" and deadline ~= "" and type(yield_id) == "string" and yield_id ~= "" then
-                local _, wake_err = tx:execute([[
-                    INSERT INTO dataflow_wakes(dataflow_id, wake_key, wake_at) VALUES (?, ?, ?)
-                    ON CONFLICT(dataflow_id, wake_key) DO UPDATE SET wake_at = excluded.wake_at
-                ]], { dataflow_id, "yield:" .. yield_id, deadline })
+                local _, wake_err = sql.builder.insert("dataflow_wakes")
+                    :columns("dataflow_id", "wake_key", "wake_at")
+                    :values(dataflow_id, "yield:" .. yield_id, deadline)
+                    :suffix("ON CONFLICT(dataflow_id, wake_key) DO UPDATE SET wake_at = excluded.wake_at")
+                    :run_with(tx)
+                    :exec()
                 if wake_err then
                     tx:rollback(); db:release()
                     return nil, "Failed to project yield wake: " .. tostring(wake_err)

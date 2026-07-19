@@ -3,8 +3,30 @@ local uuid = require("uuid")
 local _json = require("json")
 local _time = require("time")
 
-local node = require("node")
+local node_module = require("node")
 local consts = require("consts")
+
+type TestYieldChannel = Channel<any>
+
+type TestProcessDeps = {
+    listen: (topic: string, options: any?) -> (TestYieldChannel, any?),
+    send: (pid: string, topic: string, payload: any) -> (boolean, any?),
+}
+
+type TestNodeDeps = {
+    commit: any,
+    data_reader: any,
+    process: TestProcessDeps,
+}
+
+-- Test doubles intentionally implement only the dependency behavior exercised
+-- by each case. Keep the production constructor contract checked at this one
+-- explicit boundary while allowing focused partial doubles inside the cases.
+local node = {
+    new = function(args: any, deps: any)
+        return node_module.new(args, deps :: TestNodeDeps?)
+    end,
+}
 
 local function define_tests()
     describe("Node SDK with DI", function()

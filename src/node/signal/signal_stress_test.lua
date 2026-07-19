@@ -154,7 +154,7 @@ local function define_tests()
                 local sid = "burst10-" .. uuid.v7()
                 local df_id = make_signal_wf(sid)
                 c:start(df_id)
-                time.sleep("300ms")
+                test.is_true(wait_running(df_id), "waiting before burst")
 
                 for i = 1, 10 do
                     c:signal(df_id, sid, { burst = i })
@@ -166,13 +166,12 @@ local function define_tests()
                 local sid = "correct-after-wrong-" .. uuid.v7()
                 local df_id = make_signal_wf(sid)
                 c:start(df_id)
-                time.sleep("300ms")
+                test.is_true(wait_running(df_id), "waiting before noise")
 
                 for i = 1, 10 do
                     c:signal(df_id, "wrong-" .. i, { nope = i })
                 end
-                time.sleep("500ms")
-                test.eq(c:get_status(df_id), consts.STATUS.WAITING, "still waiting")
+                test.is_true(wait_running(df_id), "still waiting")
 
                 c:signal(df_id, sid, { correct = true })
                 test.is_true(wait_complete(df_id), "correct signal works after noise")
@@ -220,14 +219,12 @@ local function define_tests()
                 -- kill at sig1, send signal
                 kill_orchestrator(df_id)
                 c:signal(df_id, sid1, { gate = 1 })
-                time.sleep("2s")
-                test.eq(c:get_status(df_id), consts.STATUS.WAITING, "at sig2")
+                test.is_true(wait_running(df_id, 5000), "at sig2")
 
                 -- kill at sig2, send signal
                 kill_orchestrator(df_id)
                 c:signal(df_id, sid2, { gate = 2 })
-                time.sleep("2s")
-                test.eq(c:get_status(df_id), consts.STATUS.WAITING, "at sig3")
+                test.is_true(wait_running(df_id, 5000), "at sig3")
 
                 -- kill at sig3, send signal
                 kill_orchestrator(df_id)
@@ -269,16 +266,13 @@ local function define_tests()
                     make_input(uuid.v7(), sig_c, { task = "c" }),
                 })
                 c:start(df_id)
-                time.sleep("500ms")
-                test.eq(c:get_status(df_id), consts.STATUS.WAITING, "all 3 waiting")
+                test.is_true(wait_running(df_id, 5000), "all 3 waiting")
 
                 c:signal(df_id, sid_a, { branch = "a" })
-                time.sleep("300ms")
-                test.eq(c:get_status(df_id), consts.STATUS.WAITING, "2 waiting")
+                test.is_true(wait_running(df_id, 5000), "2 waiting")
 
                 c:signal(df_id, sid_b, { branch = "b" })
-                time.sleep("300ms")
-                test.eq(c:get_status(df_id), consts.STATUS.WAITING, "1 waiting")
+                test.is_true(wait_running(df_id, 5000), "1 waiting")
 
                 c:signal(df_id, sid_c, { branch = "c" })
                 test.is_true(wait_complete(df_id), "all 3 signals merge")
@@ -306,7 +300,7 @@ local function define_tests()
                     make_input(uuid.v7(), sig_b, { task = "b" }),
                 })
                 c:start(df_id)
-                time.sleep("500ms")
+                test.is_true(wait_running(df_id, 5000), "both waiting before kill")
 
                 kill_orchestrator(df_id)
 
@@ -362,10 +356,10 @@ local function define_tests()
                 test.is_true(wait_running(df_id), "at sig1")
 
                 c:signal(df_id, sid1, { message = "g1", delay_ms = 10, should_fail = false })
-                time.sleep("500ms")
+                test.is_true(wait_running(df_id, 5000), "at sig2")
 
                 c:signal(df_id, sid2, { message = "g2", delay_ms = 10, should_fail = false })
-                time.sleep("500ms")
+                test.is_true(wait_running(df_id, 5000), "at sig3")
 
                 c:signal(df_id, sid3, { message = "g3", delay_ms = 10, should_fail = false })
                 test.is_true(wait_complete(df_id, 5000), "deep pipeline done")
@@ -387,15 +381,13 @@ local function define_tests()
                 kill_orchestrator(df_id)
                 -- restart without signal
                 c:start(df_id)
-                time.sleep("500ms")
-                test.eq(c:get_status(df_id), consts.STATUS.WAITING, "still waiting")
+                test.is_true(wait_running(df_id, 5000), "still waiting")
 
                 -- kill 2
                 kill_orchestrator(df_id)
                 -- wrong signal
                 c:signal(df_id, "wrong-" .. uuid.v7(), { nope = true })
-                time.sleep("2s")
-                test.eq(c:get_status(df_id), consts.STATUS.WAITING, "wrong signal ignored")
+                test.is_true(wait_running(df_id, 5000), "wrong signal ignored")
 
                 -- kill 3
                 kill_orchestrator(df_id)
@@ -448,14 +440,15 @@ local function define_tests()
                 c:start(df1)
                 c:start(df2)
                 c:start(df3)
-                time.sleep("500ms")
+                test.is_true(wait_running(df1, 5000), "wf1 waiting")
+                test.is_true(wait_running(df2, 5000), "wf2 waiting")
+                test.is_true(wait_running(df3, 5000), "wf3 waiting")
 
                 -- signal only wf2
                 c:signal(df2, sid, { wf = 2 })
-                time.sleep("500ms")
-                test.eq(c:get_status(df1), consts.STATUS.WAITING, "wf1 still waiting")
-                test.eq(c:get_status(df2), consts.STATUS.COMPLETED_SUCCESS, "wf2 done")
-                test.eq(c:get_status(df3), consts.STATUS.WAITING, "wf3 still waiting")
+                test.is_true(wait_complete(df2), "wf2 done")
+                test.is_true(wait_running(df1), "wf1 still waiting")
+                test.is_true(wait_running(df3), "wf3 still waiting")
 
                 -- signal remaining
                 c:signal(df1, sid, { wf = 1 })
@@ -531,10 +524,9 @@ local function define_tests()
                     make_input(uuid.v7(), root, { message = "diamond", delay_ms = 10, should_fail = false }),
                 })
                 c:start(df_id)
-                time.sleep("500ms")
 
                 -- func branch should be done, signal still waiting
-                test.eq(c:get_status(df_id), consts.STATUS.WAITING, "waiting for signal")
+                test.is_true(wait_running(df_id, 5000), "waiting for signal")
 
                 -- kill and recover with signal
                 kill_orchestrator(df_id)

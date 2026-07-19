@@ -9,11 +9,11 @@ local function failure(message: any): any
     return { success = false, error = tostring(message or "unknown error") }
 end
 
-local function policy_ids(scope: any): ({ string }?, string?)
+local function policy_ids(scope: any): (string[]?, string?)
     if not scope or type(scope.policies) ~= "function" then
         return nil, "current scope is unavailable"
     end
-    local ids = {}
+    local ids = {} :: string[]
     for _, policy in ipairs(scope:policies()) do
         local id = policy and tostring(policy:id()) or ""
         if id == "" then return nil, "scope contains an invalid policy" end
@@ -25,7 +25,7 @@ end
 
 local function reconstruct_scope(ids: any): (any?, string?)
     if type(ids) ~= "table" then return nil, "persisted policies are invalid" end
-    local policies = {}
+    local policies = {} :: security.Policy[]
     for _, id in ipairs(ids) do
         local policy, policy_err = security.policy(tostring(id))
         if policy_err or not policy then

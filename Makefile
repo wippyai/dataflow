@@ -8,13 +8,29 @@
 
 TEST_DIR := test
 TEST_DB  := .wippy/test.db
+DATAFLOW_PG_HOST ?= 127.0.0.1
+DATAFLOW_PG_PORT ?= 5432
+DATAFLOW_PG_DATABASE ?= dataflow_test
+DATAFLOW_PG_USERNAME ?= dataflow
+DATAFLOW_PG_PASSWORD ?= dataflow
 
-.PHONY: test test-static lint install clean
+.PHONY: test test-sqlite test-postgres test-static lint install clean
 
-test: clean test-static
-	cd $(TEST_DIR) && wippy run test
+test: test-sqlite
+
+test-sqlite: clean test-static
+	cd $(TEST_DIR) && wippy run test --profile sqlite
+
+test-postgres: test-static
+	cd $(TEST_DIR) && wippy run test --profile postgres \
+		--set "vars.postgres_host=$(DATAFLOW_PG_HOST)" \
+		--set "vars.postgres_port=$(DATAFLOW_PG_PORT)" \
+		--set "vars.postgres_database=$(DATAFLOW_PG_DATABASE)" \
+		--set "vars.postgres_username=$(DATAFLOW_PG_USERNAME)" \
+		--set "vars.postgres_password=$(DATAFLOW_PG_PASSWORD)"
 
 test-static:
+	@command -v rg >/dev/null 2>&1 || { echo "test-static requires ripgrep (rg)"; exit 1; }
 	@if rg -n "keeper\\.views\\.dataflow|dataflow-link|Open full view" src/session/views/state.jet; then \
 		echo "dataflow state view must not link to keeper-owned UI"; \
 		exit 1; \
@@ -39,7 +55,7 @@ test-static:
 		END { if (!has_root_scope) { print "wake service must use the canonical root process scope"; exit 1 } }''' src/runner/_index.yaml
 
 lint:
-	cd $(TEST_DIR) && wippy lint
+	cd $(TEST_DIR) && wippy lint --profile sqlite --ns app --ns 'userspace.dataflow.**'
 
 install:
 	cd $(TEST_DIR) && wippy install
