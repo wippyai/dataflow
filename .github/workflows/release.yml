@@ -1,12 +1,10 @@
-name: Release
+name: Release Please
 
 on:
   push:
     branches: [master]
 
-permissions:
-  contents: write
-  pull-requests: write
+permissions: {}
 
 concurrency:
   group: release-${{ github.ref }}
@@ -14,11 +12,60 @@ concurrency:
 
 jobs:
   checks:
+    permissions:
+      contents: read
     uses: ./.github/workflows/ci.yml
 
   release:
     needs: checks
-    uses: wippyai/template-module/.github/workflows/reusable-release.yml@v1
-    with:
-      publish: true
-    secrets: inherit
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      created: ${{ steps.release.outputs.release_created }}
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - name: Run Release Please
+        id: release
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          token: ${{ github.token }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  deploy-dry-run:
+    name: Deploy dry run
+    needs: release
+    if: ${{ needs.release.outputs.created == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: v${{ needs.release.outputs.version }}
+          persist-credentials: false
+
+      - name: Install Wippy runtime
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WIPPY_VERSION: v0.3.24a
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          gh release download "$WIPPY_VERSION" --repo wippyai/runtime \
+            --pattern wippy-linux-amd64 --pattern SHA256SUMS --dir "$tmp"
+          (cd "$tmp" && sha256sum --ignore-missing -c SHA256SUMS)
+          install -Dm0755 "$tmp/wippy-linux-amd64" "$HOME/.wippy/bin/wippy"
+          "$HOME/.wippy/bin/wippy" version
+
+      - name: Deploy dry run
+        env:
+          RELEASE_VERSION: ${{ needs.release.outputs.version }}
+          WIPPY_TOKEN: ${{ secrets.WIPPY_TOKEN }}
+        run: |
+          set -euo pipefail
+          manifest_version="$(awk '/^version:/ { print $2; exit }' wippy.yaml)"
+          test "$manifest_version" = "$RELEASE_VERSION"
+          "$HOME/.wippy/bin/wippy" publish --version "$RELEASE_VERSION" --dry-run
