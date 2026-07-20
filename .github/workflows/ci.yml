@@ -38,6 +38,8 @@ jobs:
     name: Tests (${{ matrix.database }})
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    env:
+      MAKE_TARGET: test-${{ matrix.database }}
     strategy:
       fail-fast: false
       matrix:
@@ -73,7 +75,7 @@ jobs:
       - name: Run ${{ matrix.database }} tests
         env:
           WIPPY: ${{ steps.wippy.outputs.path }}
-        run: make test-${{ matrix.database }}
+        run: make "$MAKE_TARGET"
 
   package:
     name: Package dry run

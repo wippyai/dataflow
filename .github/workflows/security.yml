@@ -28,6 +28,7 @@ jobs:
         with:
           go-version: 1.26.5
           check-latest: false
+          cache: false
       - name: Test runtime signature verifier
         run: (cd .github/actions/setup-wippy && go test .)
       - name: Validate GitHub Actions workflows
@@ -46,6 +47,7 @@ jobs:
         with:
           go-version: 1.26.5
           check-latest: false
+          cache: false
       - name: Scan repository history for secrets
         run: go run github.com/zricethezav/gitleaks/v8@v8.30.1 detect --config .gitleaks.toml --source . --no-banner --redact
 
@@ -54,8 +56,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
+      # Required for Zizmor online audits of referenced GitHub Actions.
       actions: read
       contents: read
+      # Required to upload the Zizmor SARIF report for code scanning.
       security-events: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
