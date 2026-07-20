@@ -6,4 +6,6 @@
 *               @wippyai/framework
 
 # Specific code owners for certain files or directories.
-.github/*       @wippyai/github
+.github/*           @wippyai/github
+.github/actions/      @wippyai/github
+.github/workflows/    @wippyai/github

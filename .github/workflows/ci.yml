@@ -8,34 +8,43 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   lint:
     name: Wippy lint
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install Wippy
-        run: |
-          curl -fsSL https://hub.wippy.ai/install.sh -o /tmp/wippy-install.sh
-          . /tmp/wippy-install.sh
-          echo "$HOME/.wippy/bin" >> "$GITHUB_PATH"
+      - id: wippy
+        uses: ./.github/actions/setup-wippy
       - name: Install module dependencies
-        run: make install
+        env:
+          WIPPY: ${{ steps.wippy.outputs.path }}
+        run: |
+          make install
+          make verify-lock
       - name: Lint
+        env:
+          WIPPY: ${{ steps.wippy.outputs.path }}
         run: make lint
 
   test:
     name: Tests (${{ matrix.database }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
         database: [sqlite, postgres]
     services:
       postgres:
-        image: postgres:17-alpine
+        image: postgres@sha256:af194ccf3e2d7fe367012c7b88ce8b816c5c889b18a5b316799a1f0d7eac746a # 17-alpine, linux/amd64
         env:
           POSTGRES_DB: dataflow_test
           POSTGRES_USER: dataflow
@@ -53,12 +62,36 @@ jobs:
           persist-credentials: false
       - name: Install static-check dependency
         run: sudo apt-get update && sudo apt-get install -y ripgrep
-      - name: Install Wippy
-        run: |
-          curl -fsSL https://hub.wippy.ai/install.sh -o /tmp/wippy-install.sh
-          . /tmp/wippy-install.sh
-          echo "$HOME/.wippy/bin" >> "$GITHUB_PATH"
+      - id: wippy
+        uses: ./.github/actions/setup-wippy
       - name: Install module dependencies
-        run: make install
+        env:
+          WIPPY: ${{ steps.wippy.outputs.path }}
+        run: |
+          make install
+          make verify-lock
       - name: Run ${{ matrix.database }} tests
+        env:
+          WIPPY: ${{ steps.wippy.outputs.path }}
         run: make test-${{ matrix.database }}
+
+  package:
+    name: Package dry run
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: wippy
+        uses: ./.github/actions/setup-wippy
+      - name: Install module dependencies
+        env:
+          WIPPY: ${{ steps.wippy.outputs.path }}
+        run: |
+          make install
+          make verify-lock
+      - name: Validate package
+        env:
+          WIPPY: ${{ steps.wippy.outputs.path }}
+        run: make verify-package
