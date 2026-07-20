@@ -47,14 +47,15 @@ jobs:
           ref: v${{ needs.release.outputs.version }}
           persist-credentials: false
 
-      - name: Install Wippy runtime
+      - name: Install latest Wippy runtime
         env:
           GH_TOKEN: ${{ github.token }}
-          WIPPY_VERSION: v0.3.24a
         run: |
           set -euo pipefail
+          wippy_version="$(gh api repos/wippyai/runtime/releases/latest --jq .tag_name)"
+          test -n "$wippy_version"
           tmp="$(mktemp -d)"
-          gh release download "$WIPPY_VERSION" --repo wippyai/runtime \
+          gh release download "$wippy_version" --repo wippyai/runtime \
             --pattern wippy-linux-amd64 --pattern SHA256SUMS --dir "$tmp"
           (cd "$tmp" && sha256sum --ignore-missing -c SHA256SUMS)
           install -Dm0755 "$tmp/wippy-linux-amd64" "$HOME/.wippy/bin/wippy"
