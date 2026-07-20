@@ -56,11 +56,9 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
-      # Required for Zizmor online audits of referenced GitHub Actions.
-      actions: read
+      actions: read # Required for Zizmor online audits of referenced GitHub Actions.
       contents: read
-      # Required to upload the Zizmor SARIF report for code scanning.
-      security-events: write
+      security-events: write # Required to upload the Zizmor SARIF report for code scanning.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

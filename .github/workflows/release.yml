@@ -22,10 +22,8 @@ jobs:
     needs: checks
     runs-on: ubuntu-24.04
     permissions:
-      # Required for Release Please to create tags and GitHub releases.
-      contents: write
-      # Required for Release Please to create and update release pull requests.
-      pull-requests: write
+      contents: write # Required for Release Please to create tags and GitHub releases.
+      pull-requests: write # Required for Release Please to create and update release pull requests.
     outputs:
       created: ${{ steps.release.outputs.release_created }}
       version: ${{ steps.release.outputs.version }}
