@@ -1,0 +1,13 @@
+title = "Dataflow secret scanning"
+
+[extend]
+useDefault = true
+
+# These commits introduced reviewed test fixtures, not production credentials.
+# Keep this list commit-specific so new secrets are never silently allowlisted.
+[[allowlists]]
+description = "Reviewed test fixture false positives"
+commits = [
+  "701ce4fe8033ea8c69006142dd0cad5d1b908c8d",
+  "87682078c81dbc2795840cb0439a96b65d2ff292",
+]
