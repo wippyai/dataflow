@@ -24,6 +24,12 @@
 * **dataflow:** converge stale wake state ([586241f](https://github.com/wippyai/dataflow/commit/586241f40d641785b4fe754ff6f5bd7f3b32d850))
 * **dataflow:** fence orchestrator lifecycle ([9f82b0a](https://github.com/wippyai/dataflow/commit/9f82b0a717d88e5fac0716efd07d95420a24bf80))
 
+
+### Behavior Changes
+
+* Active workflow ownership is recovered only across a full application restart. Losing the canonical orchestrator inside a running application now durably fails the exact activation generation instead of resurrecting it.
+* Dataflow owns the lifecycle service actor and security group. Applications no longer inject a sweeper security scope.
+
 ## [0.5.5](https://github.com/wippyai/dataflow/compare/v0.5.4...v0.5.5) (2026-07-19)
 
 
