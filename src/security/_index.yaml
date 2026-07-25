@@ -5,15 +5,160 @@ entries:
   - name: root
     kind: registry.entry
     meta:
-      comment: Module-owned authority group for the bounded dataflow wake service.
+      comment: Module-owned authority group for the bounded Dataflow overseer.
 
-  - name: root.policy
+  - name: root.database
     kind: security.policy
     meta:
-      comment: Root policy for the module-owned dataflow wake service.
+      comment: Opens only the application-selected Dataflow database resource.
+    groups:
+      - userspace.dataflow.security:root
+    policy:
+      resources: app:db
+      actions:
+        - db.get
+      effect: allow
+
+  - name: root.orchestrator_spawn
+    kind: security.policy
+    meta:
+      comment: Starts only the declared Dataflow orchestrator as a monitored process.
+    groups:
+      - userspace.dataflow.security:root
+    policy:
+      resources:
+        - userspace.dataflow.runner:orchestrator
+      actions:
+        - process.spawn
+        - process.spawn.monitored
+      effect: allow
+
+  - name: root.process_host
+    kind: security.policy
+    meta:
+      comment: Targets only the application-selected process host.
+    groups:
+      - userspace.dataflow.security:root
+    policy:
+      resources: app:processes
+      actions:
+        - process.host
+      effect: allow
+
+  - name: root.actor_reconstruction
+    kind: security.policy
+    meta:
+      comment: Reconstructs the actor ID frozen with a deferred Dataflow execution.
     groups:
       - userspace.dataflow.security:root
     policy:
       resources: '*'
-      actions: '*'
+      actions:
+        - security.actor.create
+      effect: allow
+
+  - name: root.policy_reconstruction
+    kind: security.policy
+    meta:
+      comment: Resolves only the persisted policy or named-scope identities needed to rebuild a caller scope.
+    groups:
+      - userspace.dataflow.security:root
+    policy:
+      resources: '*'
+      actions:
+        - security.policy.get
+        - security.policy_group.get
+      effect: allow
+
+  - name: root.scope_reconstruction
+    kind: security.policy
+    meta:
+      comment: Builds a scope only from policies already resolved from the frozen execution frame.
+    groups:
+      - userspace.dataflow.security:root
+    policy:
+      resources:
+        - custom
+      actions:
+        - security.scope.create
+      effect: allow
+
+  - name: root.process_context
+    kind: security.policy
+    meta:
+      comment: Attaches the bounded Dataflow process context to an orchestrator spawn.
+    groups:
+      - userspace.dataflow.security:root
+    policy:
+      resources:
+        - context
+      actions:
+        - process.context
+      effect: allow
+
+  - name: root.process_security
+    kind: security.policy
+    meta:
+      comment: Propagates the reconstructed caller actor and scope to the orchestrator.
+    groups:
+      - userspace.dataflow.security:root
+    policy:
+      resources:
+        - security
+      actions:
+        - process.security
+      effect: allow
+
+  - name: root.process_delivery
+    kind: security.policy
+    meta:
+      comment: Observes, wakes, and stops only dynamically allocated orchestrator processes.
+    groups:
+      - userspace.dataflow.security:root
+    policy:
+      resources: '*'
+      actions:
+        - process.send
+        - process.monitor
+        - process.unmonitor
+        - process.cancel
+        - process.terminate
+      effect: allow
+
+  - name: root.process_lookup
+    kind: security.policy
+    meta:
+      comment: Resolves canonical Dataflow owner names before acquiring or failing an activation.
+    groups:
+      - userspace.dataflow.security:root
+    policy:
+      resources: '*'
+      actions:
+        - process.registry.lookup
+      effect: allow
+
+  - name: root.service_name
+    kind: security.policy
+    meta:
+      comment: Registers only the module-owned overseer service name.
+    groups:
+      - userspace.dataflow.security:root
+    policy:
+      resources:
+        - dataflow.overseer
+      actions:
+        - process.registry.register
+      effect: allow
+
+  - name: root.runtime_epoch
+    kind: security.policy
+    meta:
+      comment: Reads only the module-owned in-memory full-runtime boot epoch.
+    groups:
+      - userspace.dataflow.security:root
+    policy:
+      resources:
+        - userspace.dataflow.env:runtime_epoch
+      actions:
+        - env.get
       effect: allow

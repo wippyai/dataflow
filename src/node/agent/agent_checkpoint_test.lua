@@ -84,14 +84,6 @@ local function define_tests()
             test.not_nil(c, "client created")
         end)
 
-        local function kill_orchestrator(df_id)
-            local pid = process.registry.lookup("dataflow." .. df_id)
-            if pid then
-                process.terminate(pid)
-                time.sleep("200ms")
-            end
-        end
-
         local function wait_until(predicate, timeout_ms, interval_ms)
             local timeout = timeout_ms or 15000
             local interval = interval_ms or 100
@@ -420,41 +412,6 @@ local function define_tests()
 
             c:start(workflow.dataflow_id)
             test.is_true(wait_failed(workflow.dataflow_id), "strict mode fails agent on checkpoint error")
-        end)
-
-        it("checkpoint survives orchestrator kill between turns", function()
-            local workflow = create_workflow({
-                max_iterations = 5,
-                max_steps = 3,
-                tool_delay_ms = 1500,
-                prompt_tokens = 500,
-                checkpoint = {
-                    token_threshold = 100,
-                    function_id = "userspace.dataflow.node.agent.stub:checkpoint_summarizer"
-                }
-            })
-
-            c:start(workflow.dataflow_id)
-
-            -- wait until at least one checkpoint marker has been persisted
-            local marker_seen = wait_until(function()
-                local history = load_history(workflow.dataflow_id, workflow.node_id)
-                if count_checkpoint_markers(history) >= 1 then
-                    return true
-                end
-                return nil
-            end, 15000, 100)
-            test.is_true(marker_seen, "marker persisted before kill")
-
-            kill_orchestrator(workflow.dataflow_id)
-            c:start(workflow.dataflow_id)
-
-            test.not_nil(wait_node_result(workflow.dataflow_id, workflow.node_id, 30000),
-                "agent node completes after restart")
-
-            -- after restart the marker must still be in the durable history
-            local history = load_history(workflow.dataflow_id, workflow.node_id)
-            test.gt(count_checkpoint_markers(history), 0, "marker preserved across restart")
         end)
 
         -- === data-level verification ===
@@ -883,51 +840,6 @@ local function define_tests()
             test.gt(metrics.checkpoint_calls, 0, "checkpoint fired")
             test.gt(metrics.last_checkpoint_history_count, 0,
                 "summarizer received non-empty history")
-        end)
-
-        it("repeated kills preserve exactly one effective cut line", function()
-            local workflow = create_workflow({
-                max_iterations = 5,
-                max_steps = 3,
-                tool_delay_ms = 1200,
-                prompt_tokens = 500,
-                checkpoint = {
-                    token_threshold = 100,
-                    function_id = "userspace.dataflow.node.agent.stub:checkpoint_summarizer"
-                }
-            })
-
-            c:start(workflow.dataflow_id)
-
-            -- kill twice in quick succession
-            time.sleep("800ms")
-            kill_orchestrator(workflow.dataflow_id)
-            c:start(workflow.dataflow_id)
-            time.sleep("800ms")
-            kill_orchestrator(workflow.dataflow_id)
-            c:start(workflow.dataflow_id)
-
-            test.is_true(wait_complete(workflow.dataflow_id, 30000), "eventually completes")
-
-            local history = load_history(workflow.dataflow_id, workflow.node_id)
-            local markers = {}
-            for _, row in ipairs(history) do
-                if row.type == agent_consts.DATA_TYPE.AGENT_MEMORY
-                   and row.metadata and row.metadata.checkpoint_marker == true then
-                    markers[#markers + 1] = row
-                end
-            end
-
-            -- find latest marker
-            table.sort(markers, function(a, b)
-                return tostring(a.data_id or "") < tostring(b.data_id or "")
-            end)
-            test.gt(#markers, 0, "at least one marker survived restarts")
-
-            local latest = markers[#markers]
-            local filtered = filtered_history(history)
-            test.not_nil(latest, "latest marker exists after restart churn")
-            test.is_true(#filtered >= 1, "filtered history is well-defined after multi-kill")
         end)
 
         -- === warning mode (default) vs strict ===

@@ -120,6 +120,7 @@ function workflow_state.new(dataflow_id, options)
     local instance = {
         dataflow_id = dataflow_id,
         actor_id = nil :: string?,
+        actor_context = nil :: any,
         options = options or {},
 
         nodes = {},
@@ -449,6 +450,7 @@ function methods:load_state()
     end
 
     self.actor_id = dataflow.actor_id
+    self.actor_context = dataflow.actor_context
     self.dataflow_status = dataflow.status
     self.dataflow_metadata = dataflow.metadata or {}
 
@@ -1343,6 +1345,15 @@ function methods:queue_commands(commands)
     return self
 end
 
+-- A failed transaction leaves its command batch queued so callers may retry it.
+-- Lifecycle failure handling deliberately replaces that batch with one fenced
+-- terminal command; expose the reset as an explicit state operation rather than
+-- reaching into the workflow-state instance from the orchestrator.
+function methods:discard_queued_commands()
+    self.queued_commands = {}
+    return self
+end
+
 function methods:persist()
     if #self.queued_commands == 0 then
         return { changes_made = false, message = "No commands to persist" }, nil
@@ -1389,6 +1400,10 @@ function methods:get_actor_id(): string?
     local actor_id = self.actor_id
     if type(actor_id) == "string" and actor_id ~= "" then return actor_id end
     return nil
+end
+
+function methods:get_actor_context(): any
+    return self.actor_context
 end
 
 function methods:is_node_active(node_id)

@@ -28,12 +28,12 @@ entries:
       - time
       - security
       - funcs
-      - contract
     imports:
       commit: userspace.dataflow.persist:commit
       dataflow_consts: userspace.dataflow:consts
       data_reader: userspace.dataflow.persist:data_reader
       dataflow_repo: userspace.dataflow.persist:dataflow_repo
+      execution_frame: userspace.dataflow:execution_frame
 
   # userspace.dataflow:client_test
   - name: client_test
@@ -139,6 +139,30 @@ entries:
           - definition: |
               { "type": "object", "properties": { "success": { "type": "boolean" }, "pid": { "type": "string" }, "error": { "type": "string" } }, "required": ["success"] }
             format: application/schema+json
+
+  - name: execution_frame
+    kind: library.lua
+    meta:
+      name: Dataflow Execution Frame
+      comment: Captures and reconstructs versioned durable execution identity with bounded plain-data validation.
+    source: file://execution_frame.lua
+    modules:
+      - json
+      - security
+
+  - name: execution_frame_test
+    kind: function.lua
+    meta:
+      type: test
+      suite: dataflow
+      comment: Tests bounded execution-frame capture and fail-closed reconstruction.
+    source: file://execution_frame_test.lua
+    modules:
+      - json
+    imports:
+      execution_frame: userspace.dataflow:execution_frame
+      test: wippy.test:test
+    method: run_tests
 
   # userspace.dataflow:integration_test
   - name: integration_test
@@ -252,8 +276,12 @@ entries:
         path: ".meta.target_db"
       - entry: userspace.dataflow.migrations:07_create_dataflow_wakes
         path: ".meta.target_db"
-      - entry: userspace.dataflow.runner:wake_process.service
+      - entry: userspace.dataflow.migrations:08_create_dataflow_activations
+        path: ".meta.target_db"
+      - entry: userspace.dataflow.runner:overseer.service
         path: ".lifecycle.depends_on +="
+      - entry: userspace.dataflow.security:root.database
+        path: .policy.resources
 
   - name: web_host_origin_env
     kind: ns.requirement
@@ -279,10 +307,12 @@ entries:
       description: "Process host the targeted dataflow wake service runs on"
     default: app:processes
     targets:
-      - entry: userspace.dataflow.runner:wake_process.service
+      - entry: userspace.dataflow.runner:overseer.service
         path: .host
-      - entry: userspace.dataflow.runner:wake_process.service
+      - entry: userspace.dataflow.runner:overseer.service
         path: ".lifecycle.depends_on +="
+      - entry: userspace.dataflow.security:root.process_host
+        path: .policy.resources
 
   # Dependencies
   - name: dep.wippy.test

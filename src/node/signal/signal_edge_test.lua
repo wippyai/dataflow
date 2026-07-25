@@ -76,15 +76,6 @@ local function define_tests()
             return false
         end
 
-        local function kill_orchestrator(df_id)
-            local pid = process.registry.lookup("dataflow." .. df_id)
-            if pid then
-                process.terminate(pid)
-                time.sleep("200ms")
-            end
-            return pid
-        end
-
         local function timeout_branch_targets()
             return {
                 {
@@ -518,8 +509,8 @@ local function define_tests()
                 test.is_nil(output.timeout, "timeout branch not routed")
             end)
 
-            it("timeout deadline survives orchestrator restart", function()
-                local sid = "timeout-restart-" .. uuid.v7()
+            it("timeout deadline survives parked reactivation", function()
+                local sid = "timeout-reactivate-" .. uuid.v7()
                 local df_id = make_signal_wf(sid, {
                     timeout = "800ms",
                     data_targets = timeout_branch_targets(),
@@ -530,11 +521,11 @@ local function define_tests()
                 test.is_nil(process.registry.lookup("dataflow." .. df_id), "parked wait has no resident orchestrator")
                 c:start(df_id)
 
-                test.is_true(wait_complete(df_id, 5000), "workflow completes via persisted timeout after restart")
+                test.is_true(wait_complete(df_id, 5000), "workflow completes via persisted timeout")
                 local output, output_err = c:output(df_id)
                 test.is_nil(output_err, "output read succeeds")
-                test.not_nil(output.timeout, "timeout output exists after restart")
-                test.eq(output.timeout.timeout, true, "timeout flag routed after restart")
+                test.not_nil(output.timeout, "timeout output exists after reactivation")
+                test.eq(output.timeout.timeout, true, "timeout flag routed after reactivation")
             end)
         end)
     end)

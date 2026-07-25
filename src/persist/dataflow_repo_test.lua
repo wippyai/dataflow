@@ -536,6 +536,55 @@ local function define_tests()
             end)
         end)
 
+        describe("Legacy execution context capture", function()
+            it("captures once and preserves the winning context", function()
+                local dataflow_id = uuid.v7()
+                local actor_id = uuid.v7()
+                local _, create_err = create_test_dataflow(dataflow_id, actor_id, "legacy_context")
+                test.is_nil(create_err)
+                local first_context = '{"kind":"dataflow.execution_frame","version":1,"winner":1}'
+                local first, first_err = dataflow_repo.capture_context_if_empty(
+                    dataflow_id, actor_id, first_context)
+                test.is_nil(first_err)
+                test.eq(first.actor_context, first_context)
+                test.is_true(first.context_captured)
+
+                local second, second_err = dataflow_repo.capture_context_if_empty(
+                    dataflow_id, actor_id,
+                    '{"kind":"dataflow.execution_frame","version":1,"winner":2}')
+                test.is_nil(second_err)
+                test.eq(second.actor_context, first_context)
+                test.is_false(second.context_captured)
+            end)
+
+            it("does not reveal or modify a workflow owned by another actor", function()
+                local dataflow_id = uuid.v7()
+                local owner_id = uuid.v7()
+                local _, create_err = create_test_dataflow(dataflow_id, owner_id, "legacy_context")
+                test.is_nil(create_err)
+                local result, capture_err = dataflow_repo.capture_context_if_empty(
+                    dataflow_id, uuid.v7(),
+                    '{"kind":"dataflow.execution_frame","version":1}')
+                test.is_nil(result)
+                test.contains(capture_err, "not found or access denied")
+                local stored, stored_err = dataflow_repo.get_by_user(dataflow_id, owner_id)
+                test.is_nil(stored_err)
+                test.is_nil(stored.actor_context)
+            end)
+
+            it("validates nonempty capture identity fields", function()
+                local result, capture_err = dataflow_repo.capture_context_if_empty("", "actor", "context")
+                test.is_nil(result)
+                test.contains(capture_err, "Workflow ID")
+                result, capture_err = dataflow_repo.capture_context_if_empty("workflow", "", "context")
+                test.is_nil(result)
+                test.contains(capture_err, "Actor ID")
+                result, capture_err = dataflow_repo.capture_context_if_empty("workflow", "actor", "")
+                test.is_nil(result)
+                test.contains(capture_err, "Actor context")
+            end)
+        end)
+
         describe("Non-terminal Listing", function()
             local nt_type = "nonterminal_" .. uuid.v7()
             local nt_actor = uuid.v7()

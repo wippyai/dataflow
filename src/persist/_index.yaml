@@ -2,6 +2,31 @@ version: "1.0"
 namespace: userspace.dataflow.persist
 
 entries:
+  - name: activation_repo
+    kind: library.lua
+    meta:
+      private: true
+      comment: Generation-fenced desired activation state for durable orchestrator lives.
+    source: file://activation_repo.lua
+    modules: [sql, json]
+    imports:
+      dataflow_consts: userspace.dataflow:consts
+
+  - name: activation_repo_test
+    kind: function.lua
+    meta:
+      type: test
+      suite: Workflow
+      group: Workflow
+      comment: Proves monotonic activation fencing, exact wake promotion, and inert bare pending rows.
+    source: file://activation_repo_test.lua
+    modules: [sql, uuid, time]
+    imports:
+      activation_repo: userspace.dataflow.persist:activation_repo
+      dataflow_consts: userspace.dataflow:consts
+      test: wippy.test:test
+    method: run_tests
+
   # userspace.dataflow.persist:commit
   - name: commit
     kind: library.lua
@@ -23,6 +48,7 @@ entries:
       - time
       - security
     imports:
+      activation_repo: userspace.dataflow.persist:activation_repo
       commit_repo: userspace.dataflow.persist:commit_repo
       dataflow_consts: userspace.dataflow:consts
       ops: userspace.dataflow.persist:ops
@@ -253,6 +279,7 @@ entries:
       - uuid
       - json
     imports:
+      activation_repo: userspace.dataflow.persist:activation_repo
       dataflow_consts: userspace.dataflow:consts
 
   # userspace.dataflow.persist:ops_test
@@ -277,6 +304,7 @@ entries:
       - time
       - security
     imports:
+      activation_repo: userspace.dataflow.persist:activation_repo
       ops: userspace.dataflow.persist:ops
       test: wippy.test:test
     method: run_tests

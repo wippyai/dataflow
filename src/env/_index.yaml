@@ -28,3 +28,10 @@ entries:
       private: true
     variable: DATAFLOW_CHECKPOINT_FUNCTION_ID
     storage: userspace.dataflow.env:memory
+
+  - name: runtime_epoch
+    kind: env.variable
+    meta:
+      comment: Full-runtime boot epoch used to distinguish restart recovery from same-runtime process loss.
+      private: true
+    storage: userspace.dataflow.env:memory

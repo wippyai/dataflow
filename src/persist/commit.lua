@@ -6,6 +6,7 @@ local security = require("security")
 local ops = require("ops")
 local commit_repo = require("commit_repo")
 local consts = require("dataflow_consts")
+local activation_repo = require("activation_repo")
 
 local commit = {}
 
@@ -25,8 +26,138 @@ end
 
 -- Notify the exact-deadline actor only after a transaction commits. The
 -- indexed row is authoritative; this message only recalculates its timer.
-local function notify_wake_index()
-    commit._send_process_message("dataflow.wakes", "dataflow.wake.changed", { source = "commit" })
+local function notify_wake_index(dataflow_id)
+    commit._send_process_message("dataflow.overseer", "dataflow.activation.changed", {
+        source = "wake_index",
+        dataflow_id = dataflow_id,
+    })
+end
+
+function commit.notify_activation(dataflow_id, generation)
+    if type(dataflow_id) ~= "string" or dataflow_id == "" then
+        return nil, "Dataflow ID is required"
+    end
+    generation = tonumber(generation)
+    if not generation or generation < 1 or generation % 1 ~= 0 then
+        return nil, "Activation generation must be a positive integer"
+    end
+    commit._send_process_message("dataflow.overseer", "dataflow.activation.changed", {
+        dataflow_id = dataflow_id,
+        generation = generation,
+    })
+    return true, nil
+end
+
+function commit.request_activation_tx(tx, dataflow_id, launch_args, now_value)
+    return activation_repo.request_activation_tx(
+        tx, dataflow_id, launch_args, now_value or commit._get_current_timestamp())
+end
+
+function commit.request_activation(dataflow_id, launch_args, options)
+    options = options or {}
+    local db, db_err = get_db()
+    if db_err then return nil, db_err end
+    local tx, begin_err = db:begin()
+    if begin_err then
+        db:release()
+        return nil, "Failed to begin transaction: " .. tostring(begin_err)
+    end
+
+    local activation, activation_err = commit.request_activation_tx(tx, dataflow_id, launch_args)
+    if activation_err then
+        tx:rollback()
+        db:release()
+        return nil, activation_err
+    end
+    local _, commit_err = tx:commit()
+    if commit_err then
+        tx:rollback()
+        db:release()
+        return nil, "Failed to commit activation request: " .. tostring(commit_err)
+    end
+    db:release()
+
+    if options.notify ~= false and activation and activation.changed and not activation.terminal then
+        local called, notify_ok, notify_err = pcall(
+            commit.notify_activation, dataflow_id, activation.generation)
+        if not called then
+            activation.notify_error = tostring(notify_ok)
+        elseif notify_err then
+            activation.notify_error = tostring(notify_err)
+        end
+    end
+    return activation, nil
+end
+
+-- Terminalize an activation only if the generation that lost its runtime owner
+-- still owns the workflow. A newer start/signal generation wins the fence and
+-- is never failed by a stale EXIT event.
+function commit.fail_activation(dataflow_id, generation, failure)
+    if type(dataflow_id) ~= "string" or dataflow_id == "" then
+        return nil, "Dataflow ID is required"
+    end
+    generation = tonumber(generation)
+    if not generation or generation < 1 or generation % 1 ~= 0 then
+        return nil, "Activation generation must be a positive integer"
+    end
+    if type(failure) ~= "table" then return nil, "Failure details are required" end
+
+    local commands: { any } = {
+        {
+            type = ops.COMMAND_TYPES.COMPLETE_WORKFLOW,
+            payload = {
+                activation_generation = generation,
+                status = consts.STATUS.COMPLETED_FAILURE,
+                metadata = { runtime_failure = failure },
+                merge_metadata = true,
+            },
+        },
+    }
+    local execute: any = commit.execute
+    local result, execute_err = execute(dataflow_id, uuid.v7(), commands)
+    if execute_err then return nil, execute_err end
+    local projection = result and result.results and result.results[1] or nil
+    if not projection then return nil, "Runtime failure produced no lifecycle projection" end
+    return {
+        completed = projection.completed == true,
+        terminal = projection.terminal == true,
+        current_generation = projection.current_generation,
+        status = projection.status,
+    }, nil
+end
+
+function commit.disable_terminal_activation(dataflow_id)
+    local db, db_err = get_db()
+    if db_err then return nil, db_err end
+    local tx, begin_err = db:begin()
+    if begin_err then
+        db:release()
+        return nil, "Failed to begin transaction: " .. tostring(begin_err)
+    end
+    local result, disable_err = activation_repo.disable_terminal_tx(
+        tx, dataflow_id, commit._get_current_timestamp())
+    if disable_err then
+        tx:rollback()
+        db:release()
+        return nil, disable_err
+    end
+    local _, commit_err = tx:commit()
+    if commit_err then
+        tx:rollback()
+        db:release()
+        return nil, "Failed to commit terminal activation cleanup: " .. tostring(commit_err)
+    end
+    db:release()
+
+    local notify_errors = {}
+    local overseer_called, overseer_err = pcall(commit._send_process_message,
+        "dataflow.overseer", "dataflow.activation.changed", {
+            dataflow_id = dataflow_id,
+            terminal = true,
+        })
+    if not overseer_called then table.insert(notify_errors, tostring(overseer_err)) end
+    result.notify_errors = #notify_errors > 0 and notify_errors or nil
+    return result, nil
 end
 
 -- Isolated method for getting current user ID (can be mocked in tests)
@@ -94,6 +225,8 @@ function commit.publish_updates(dataflow_id, op_id, result)
         -- Track workflow operations
         elseif cmd_type == ops.COMMAND_TYPES.CREATE_WORKFLOW or
                cmd_type == ops.COMMAND_TYPES.UPDATE_WORKFLOW or
+               cmd_type == ops.COMMAND_TYPES.COMPLETE_WORKFLOW or
+               cmd_type == ops.COMMAND_TYPES.PASSIVATE_WORKFLOW or
                cmd_type == ops.COMMAND_TYPES.DELETE_WORKFLOW then
 
             has_workflow_changes = true
@@ -229,19 +362,60 @@ function commit.tx_execute(tx, dataflow_id, op_id, commands, options)
         })
     end
 
+    -- COMPLETE_WORKFLOW is a generation-fenced batch precondition. It must run
+    -- first so a stale orchestrator cannot mutate node details before learning
+    -- that a newer activation owns the workflow.
+    local completion_count = 0
+    local completion_index = nil
+    for index, command in ipairs(processed_commands) do
+        if command.type == ops.COMMAND_TYPES.COMPLETE_WORKFLOW then
+            completion_count = completion_count + 1
+            completion_index = index
+        end
+    end
+    if completion_count > 1 then
+        return nil, "COMPLETE_WORKFLOW may appear at most once in a command batch"
+    end
+    if completion_index ~= nil and completion_index ~= 1 then
+        return nil, "COMPLETE_WORKFLOW must be the first command in a command batch"
+    end
+
     -- Execute the processed operations within the provided transaction
-    local result, err = ops.execute(tx, dataflow_id, op_id, processed_commands)
+    local result, err
+    local completion_blocked = false
+    if completion_index == 1 then
+        result, err = ops.execute(tx, dataflow_id, op_id, { processed_commands[1] })
+        local projection = result and result.results and result.results[1] or nil
+        completion_blocked = not err and projection and projection.completed == false
+        if not err and not completion_blocked and #processed_commands > 1 then
+            local remaining = {}
+            for index = 2, #processed_commands do remaining[#remaining + 1] = processed_commands[index] end
+            local detail_result, detail_err = ops.execute(tx, dataflow_id, op_id, remaining)
+            if detail_err then
+                err = detail_err
+            else
+                for _, command_result in ipairs(detail_result.results or {}) do
+                    table.insert(result.results, command_result)
+                end
+                result.changes_made = result.changes_made == true or detail_result.changes_made == true
+            end
+        end
+    else
+        result, err = ops.execute(tx, dataflow_id, op_id, processed_commands)
+    end
     if err then
         return nil, err
     end
 
     -- Mark applied commits as processed
-    for _, commit_id in ipairs(commit_ids) do
-        local update_q = sql.builder.update("dataflow_commits")
-            :set("op_id", op_id or commit_id)
-            :where("commit_id = ?", commit_id)
-        local update_exec = update_q:run_with(tx)
-        update_exec:exec()
+    if not completion_blocked then
+        for _, commit_id in ipairs(commit_ids) do
+            local update_q = sql.builder.update("dataflow_commits")
+                :set("op_id", op_id or commit_id)
+                :where("commit_id = ?", commit_id)
+            local update_exec = update_q:run_with(tx)
+            update_exec:exec()
+        end
     end
 
     -- Add commit_ids to result for reference
@@ -335,7 +509,10 @@ function commit.execute(dataflow_id, op_id, commands, options)
 
     local wake_index_changed = result.wake_index_changed == true
     result.wake_index_changed = nil
-    if wake_index_changed then notify_wake_index() end
+    if wake_index_changed then
+        local notified, notify_err = pcall(notify_wake_index, dataflow_id)
+        if not notified then result.notify_error = tostring(notify_err) end
+    end
 
     -- Handle publishing if enabled (default is true)
     if options.publish ~= false then
@@ -383,8 +560,11 @@ function commit.submit(dataflow_id, op_id, commands, context)
         context = context or {},
     })
 
-    -- Just return the commit ID
-    return { commit_id = commit_id }, nil
+    return {
+        commit_id = commit_id,
+        activation_generation = commit_result.activation_generation,
+        notify_errors = commit_result.notify_errors,
+    }, nil
 end
 
 -- Internal function to create commit without updating last_commit_id
@@ -469,40 +649,42 @@ function commit._create_commit_only(commit_id, dataflow_id, payload, metadata)
     -- commit. Keys are transition identities, never timestamps or result data.
     local commands = type(payload) == "table" and payload.commands or {}
     local wake_index_changed = false
+    local activation_changed = false
+    local activation_generation = nil
     for _, command in ipairs(type(commands) == "table" and commands or {}) do
         local row = type(command) == "table" and command or {}
         local body = type(row.payload) == "table" and row.payload or {}
         if row.type == consts.COMMAND_TYPES.CREATE_DATA and body.data_type == consts.DATA_TYPE.NODE_SIGNAL then
             local signal_data_id = body.data_id
             if type(signal_data_id) == "string" and signal_data_id ~= "" then
-                local _, wake_err = sql.builder.insert("dataflow_wakes")
-                    :columns("dataflow_id", "wake_key", "wake_at")
-                    :values(dataflow_id, "signal:" .. signal_data_id, created_at)
-                    :suffix("ON CONFLICT(dataflow_id, wake_key) DO NOTHING")
-                    :run_with(tx)
-                    :exec()
-                if wake_err then
+                local activation, activation_err = activation_repo.activate_for_signal_tx(
+                    tx, dataflow_id, "signal:" .. signal_data_id, created_at, created_at)
+                if activation_err then
                     tx:rollback(); db:release()
-                    return nil, "Failed to project signal wake: " .. tostring(wake_err)
+                    return nil, "Failed to project signal activation: " .. tostring(activation_err)
                 end
-                wake_index_changed = true
+                if activation and activation.terminal then
+                    tx:rollback(); db:release()
+                    return nil, "Signal rejected because dataflow is terminal: " .. tostring(activation.status)
+                end
+                if activation and activation.wake_inserted then
+                    wake_index_changed = true
+                    activation_changed = activation.changed == true
+                end
+                activation_generation = activation and activation.generation or activation_generation
             end
         elseif row.type == consts.COMMAND_TYPES.CREATE_DATA and body.data_type == consts.DATA_TYPE.NODE_YIELD and
             type(body.content) == "table" and type(body.content.yield_context) == "table" then
             local deadline = body.content.yield_context.timeout_deadline
             local yield_id = body.content.yield_id or body.key
             if type(deadline) == "string" and deadline ~= "" and type(yield_id) == "string" and yield_id ~= "" then
-                local _, wake_err = sql.builder.insert("dataflow_wakes")
-                    :columns("dataflow_id", "wake_key", "wake_at")
-                    :values(dataflow_id, "yield:" .. yield_id, deadline)
-                    :suffix("ON CONFLICT(dataflow_id, wake_key) DO UPDATE SET wake_at = excluded.wake_at")
-                    :run_with(tx)
-                    :exec()
+                local wake, wake_err = activation_repo.register_yield_wake_tx(
+                    tx, dataflow_id, yield_id, deadline)
                 if wake_err then
                     tx:rollback(); db:release()
                     return nil, "Failed to project yield wake: " .. tostring(wake_err)
                 end
-                wake_index_changed = true
+                wake_index_changed = wake_index_changed or wake.changed == true
             end
         end
     end
@@ -517,7 +699,19 @@ function commit._create_commit_only(commit_id, dataflow_id, payload, metadata)
 
     db:release()
 
-    if wake_index_changed then notify_wake_index() end
+    local notify_errors = {}
+    if activation_changed then
+        local called, notify_ok, notify_err = pcall(
+            commit.notify_activation, dataflow_id, activation_generation)
+        if not called then
+            table.insert(notify_errors, tostring(notify_ok))
+        elseif notify_err then
+            table.insert(notify_errors, tostring(notify_err))
+        end
+    elseif wake_index_changed then
+        local called, notify_err = pcall(notify_wake_index, dataflow_id)
+        if not called then table.insert(notify_errors, tostring(notify_err)) end
+    end
 
     -- Return the created commit
     return {
@@ -525,7 +719,9 @@ function commit._create_commit_only(commit_id, dataflow_id, payload, metadata)
         dataflow_id = dataflow_id,
         payload = payload,
         metadata = type(metadata) == "table" and metadata or {},
-        created_at = created_at
+        created_at = created_at,
+        activation_generation = activation_generation,
+        notify_errors = #notify_errors > 0 and notify_errors or nil,
     }
 end
 

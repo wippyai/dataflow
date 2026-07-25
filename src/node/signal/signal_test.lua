@@ -172,6 +172,15 @@ local function define_tests()
                             dataflow_id = dataflow_id,
                             actor_id = "test-user",
                             status = "running",
+                            actor_context = '{"kind":"dataflow.execution_frame","version":1}',
+                        }, nil
+                    end,
+                    get_by_user = function(dataflow_id, actor_id)
+                        return {
+                            dataflow_id = dataflow_id,
+                            actor_id = actor_id,
+                            status = "running",
+                            actor_context = '{"kind":"dataflow.execution_frame","version":1}',
                         }, nil
                     end,
                 },
@@ -200,8 +209,7 @@ local function define_tests()
             test.eq(first_command(captured).payload.data_type, consts.DATA_TYPE.NODE_SIGNAL, "NODE_SIGNAL type")
             test.eq(first_command(captured).payload.key, "approval", "signal_id as key")
             test.eq(first_command(captured).payload.content.ok, true, "signal data passed")
-            test.eq(captured.notify_target, "dataflow.wakes", "central wake service notified")
-            test.eq(captured.notify_topic, "dataflow.wake.changed", "wake index change notified")
+            test.is_nil(captured.notify_target, "client leaves committed activation notification to commit")
             test.eq(captured.registry_lookups or 0, 0, "signal client does not inspect workflow ownership")
             test.eq(captured.spawn_attempts or 0, 0, "signal client does not restart workflows")
         end)

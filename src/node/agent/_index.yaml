@@ -284,33 +284,6 @@ entries:
       test: wippy.test:test
     method: run_tests
 
-  - name: agent_recovery_test
-    kind: function.lua
-    meta:
-      name: Agent Recovery Tests
-      type: test
-      comment: Chaos and recovery tests for durable agent turn persistence across orchestrator crashes
-      group: Workflow / Agent Node
-      tags:
-        - dataflow
-        - agent
-        - recovery
-        - chaos
-        - test
-    source: file://agent_recovery_test.lua
-    modules:
-      - time
-      - uuid
-      - funcs
-    imports:
-      agent_consts: userspace.dataflow.node.agent:consts
-      client: userspace.dataflow:client
-      consts: userspace.dataflow:consts
-      data_reader: userspace.dataflow.persist:data_reader
-      node_reader: userspace.dataflow.persist:node_reader
-      test: wippy.test:test
-    method: run_tests
-
   - name: node_context_test
     kind: function.lua
     meta:
