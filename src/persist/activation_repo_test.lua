@@ -64,10 +64,11 @@ local function define_tests()
 
         local function wake_generation(dataflow_id, wake_key)
             local db = test.not_nil(select(1, sql.get("app:db"))) :: any
-            local rows, query_err = db:query([[
-                SELECT activation_generation FROM dataflow_wakes
-                WHERE dataflow_id = ? AND wake_key = ?
-            ]], { dataflow_id, wake_key })
+            local rows, query_err = sql.builder.select("activation_generation")
+                :from("dataflow_wakes")
+                :where("dataflow_id = ?", dataflow_id)
+                :where("wake_key = ?", wake_key)
+                :run_with(db):query()
             db:release()
             test.is_nil(query_err)
             return rows and rows[1] and tonumber(rows[1].activation_generation) or nil
@@ -75,9 +76,10 @@ local function define_tests()
 
         local function wake_count(dataflow_id)
             local db = test.not_nil(select(1, sql.get("app:db"))) :: any
-            local rows, query_err = db:query(
-                "SELECT COUNT(*) AS total FROM dataflow_wakes WHERE dataflow_id = ?",
-                { dataflow_id })
+            local rows, query_err = sql.builder.select("COUNT(*) AS total")
+                :from("dataflow_wakes")
+                :where("dataflow_id = ?", dataflow_id)
+                :run_with(db):query()
             db:release()
             test.is_nil(query_err)
             return tonumber(rows and rows[1] and rows[1].total) or 0
@@ -86,36 +88,11 @@ local function define_tests()
         test.after_all(function()
             local db = test.not_nil(select(1, sql.get("app:db"))) :: any
             for _, id in ipairs(created) do
-                db:execute("DELETE FROM dataflows WHERE dataflow_id = ?", { id })
+                sql.builder.delete("dataflows")
+                    :where("dataflow_id = ?", id)
+                    :run_with(db):exec()
             end
             db:release()
-        end)
-
-        test.it("keeps bare PENDING inert and recovers only legacy RUNNING rows", function()
-            local pending_id = create_dataflow(consts.STATUS.PENDING)
-            local running_id = create_dataflow(consts.STATUS.RUNNING)
-
-            local pending = test.not_nil(select(1, transaction(function(tx)
-                return activation_repo.ensure_running_recovery_tx(tx, pending_id, now())
-            end))) :: any
-            test.is_false(pending.changed)
-            test.eq(pending.status, consts.STATUS.PENDING)
-            test.is_nil(select(1, activation_repo.get(pending_id)))
-            test.is_nil(find_active(pending_id))
-
-            local running = test.not_nil(select(1, transaction(function(tx)
-                return activation_repo.ensure_running_recovery_tx(tx, running_id, now())
-            end))) :: any
-            test.is_true(running.changed)
-            test.is_true(running.recovered)
-            test.eq(running.generation, 1)
-            test.is_true(running.desired_active)
-
-            local repeated = test.not_nil(select(1, transaction(function(tx)
-                return activation_repo.ensure_running_recovery_tx(tx, running_id, now(1))
-            end))) :: any
-            test.is_false(repeated.changed)
-            test.eq(repeated.generation, 1)
         end)
 
         test.it("persists plain-object launch arguments and advances requests monotonically", function()
@@ -161,6 +138,41 @@ local function define_tests()
             test.is_nil(select(1, activation_repo.get(id)))
         end)
 
+        test.it("claims an activation from one runtime epoch exactly once", function()
+            local id = create_dataflow(consts.STATUS.RUNNING)
+            local requested = test.not_nil(select(1, transaction(function(tx)
+                return activation_repo.request_activation_tx(tx, id, {}, now())
+            end))) :: any
+            test.is_nil(requested.owner_epoch)
+
+            local first = test.not_nil(select(1, transaction(function(tx)
+                return activation_repo.claim_epoch_tx(
+                    tx, id, 1, nil, "runtime-a", now(1))
+            end))) :: any
+            test.is_true(first.claimed)
+            test.eq(first.owner_epoch, "runtime-a")
+
+            local duplicate = test.not_nil(select(1, transaction(function(tx)
+                return activation_repo.claim_epoch_tx(
+                    tx, id, 1, nil, "runtime-a", now(2))
+            end))) :: any
+            test.is_false(duplicate.claimed)
+            test.eq(duplicate.owner_epoch, "runtime-a")
+
+            local reboot = test.not_nil(select(1, transaction(function(tx)
+                return activation_repo.claim_epoch_tx(
+                    tx, id, 1, "runtime-a", "runtime-b", now(3))
+            end))) :: any
+            test.is_true(reboot.claimed)
+            test.eq(reboot.owner_epoch, "runtime-b")
+
+            local next_generation = test.not_nil(select(1, transaction(function(tx)
+                return activation_repo.request_activation_tx(tx, id, {}, now(4))
+            end))) :: any
+            test.eq(next_generation.generation, 2)
+            test.is_nil(next_generation.owner_epoch)
+        end)
+
         test.it("advances only when a newly inserted signal wake wins", function()
             local id = create_dataflow(consts.STATUS.WAITING)
             local wake_key = "signal:" .. uuid.v7()
@@ -204,10 +216,11 @@ local function define_tests()
             local id = create_dataflow(consts.STATUS.WAITING)
             local wake_key = "yield:" .. uuid.v7()
             local db = test.not_nil(select(1, sql.get("app:db"))) :: any
-            local _, insert_err = db:execute([[
-                INSERT INTO dataflow_wakes(dataflow_id, wake_key, wake_at)
-                VALUES (?, ?, ?)
-            ]], { id, wake_key, now(-2) })
+            local _, insert_err = sql.builder.insert("dataflow_wakes"):set_map({
+                dataflow_id = id,
+                wake_key = wake_key,
+                wake_at = now(-2),
+            }):run_with(db):exec()
             db:release()
             test.is_nil(insert_err)
 
@@ -243,10 +256,11 @@ local function define_tests()
             local id = create_dataflow(consts.STATUS.WAITING)
             local wake_key = "yield:" .. uuid.v7()
             local db = test.not_nil(select(1, sql.get("app:db"))) :: any
-            test.is_nil(select(2, db:execute([[
-                INSERT INTO dataflow_wakes(dataflow_id, wake_key, wake_at)
-                VALUES (?, ?, ?)
-            ]], { id, wake_key, now(60) })))
+            test.is_nil(select(2, sql.builder.insert("dataflow_wakes"):set_map({
+                dataflow_id = id,
+                wake_key = wake_key,
+                wake_at = now(60),
+            }):run_with(db):exec()))
             db:release()
 
             local result = test.not_nil(select(1, transaction(function(tx)
@@ -266,18 +280,27 @@ local function define_tests()
             local due_key = "yield:" .. uuid.v7()
             local future_key = "yield:" .. uuid.v7()
             local db = test.not_nil(select(1, sql.get("app:db"))) :: any
-            local _, insert_err = db:execute([[
-                INSERT INTO dataflow_wakes(dataflow_id, wake_key, wake_at)
-                VALUES (?, ?, ?), (?, ?, ?)
-            ]], { id, due_key, now(-2), id, future_key, now(60) })
+            local _, insert_err = sql.builder.insert("dataflow_wakes"):set_map({
+                dataflow_id = id,
+                wake_key = due_key,
+                wake_at = now(-2),
+            }):run_with(db):exec()
+            if not insert_err then
+                _, insert_err = sql.builder.insert("dataflow_wakes"):set_map({
+                    dataflow_id = id,
+                    wake_key = future_key,
+                    wake_at = now(60),
+                }):run_with(db):exec()
+            end
             db:release()
             test.is_nil(insert_err)
             test.eq(wake_count(id), 2)
 
             local result = test.not_nil(select(1, transaction(function(tx)
-                local _, status_err = tx:execute(
-                    "UPDATE dataflows SET status = ? WHERE dataflow_id = ?",
-                    { consts.STATUS.COMPLETED_SUCCESS, id })
+                local _, status_err = sql.builder.update("dataflows")
+                    :set("status", consts.STATUS.COMPLETED_SUCCESS)
+                    :where("dataflow_id = ?", id)
+                    :run_with(tx):exec()
                 if status_err then return nil, status_err end
                 return activation_repo.activate_due_tx(tx, id, due_key, now())
             end))) :: any
@@ -324,9 +347,10 @@ local function define_tests()
             end)))
 
             local disabled = test.not_nil(select(1, transaction(function(tx)
-                local _, status_err = tx:execute(
-                    "UPDATE dataflows SET status = ? WHERE dataflow_id = ?",
-                    { consts.STATUS.COMPLETED_FAILURE, id })
+                local _, status_err = sql.builder.update("dataflows")
+                    :set("status", consts.STATUS.COMPLETED_FAILURE)
+                    :where("dataflow_id = ?", id)
+                    :run_with(tx):exec()
                 if status_err then return nil, status_err end
                 return activation_repo.disable_terminal_tx(tx, id, now(1))
             end))) :: any

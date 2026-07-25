@@ -22,6 +22,12 @@ profiles:
       "app:db:pool.max_open": 32
       "app:db:pool.max_idle": 8
       "app:db:options.sslmode": disable
+  restart_create:
+    override:
+      "app:restart_probe.create.service:lifecycle.auto_start": true
+  restart_observe:
+    override:
+      "app:restart_probe.observe.service:lifecycle.auto_start": true
 # Tests execute through the framework runner rather than a production caller.
 # Give every test entry an explicit, narrow identity; production Dataflow has no fallback.
 override:
@@ -29,16 +35,16 @@ override:
   "app:wait_for_boot:security.policies": [app:test_policy]
   "app:database_profile_test:security.actor.id": dataflow.test
   "app:database_profile_test:security.policies": [app:test_policy]
-  "app:wake_service_scope_test:security.actor.id": dataflow.test
-  "app:wake_service_scope_test:security.policies": [app:test_policy]
+  "app:runtime_failure_test:security.actor.id": dataflow.test
+  "app:runtime_failure_test:security.policies": [app:test_policy]
+  "app:overseer_scope_test:security.actor.id": dataflow.test
+  "app:overseer_scope_test:security.policies": [app:test_policy]
   "userspace.dataflow.migrations:migration_04_test:security.actor.id": dataflow.test
   "userspace.dataflow.migrations:migration_04_test:security.policies": [app:test_policy]
   "userspace.dataflow.node.agent.run_context:run_context_test:security.actor.id": dataflow.test
   "userspace.dataflow.node.agent.run_context:run_context_test:security.policies": [app:test_policy]
   "userspace.dataflow.node.agent:agent_checkpoint_test:security.actor.id": dataflow.test
   "userspace.dataflow.node.agent:agent_checkpoint_test:security.policies": [app:test_policy]
-  "userspace.dataflow.node.agent:agent_recovery_test:security.actor.id": dataflow.test
-  "userspace.dataflow.node.agent:agent_recovery_test:security.policies": [app:test_policy]
   "userspace.dataflow.node.agent:agent_truncation_real_test:security.actor.id": dataflow.test
   "userspace.dataflow.node.agent:agent_truncation_real_test:security.policies": [app:test_policy]
   "userspace.dataflow.node.agent:agent_truncation_test:security.actor.id": dataflow.test
@@ -57,46 +63,24 @@ override:
   "userspace.dataflow.node.cycle:cycle_test:security.policies": [app:test_policy]
   "userspace.dataflow.node.func:func_child_output_test:security.actor.id": dataflow.test
   "userspace.dataflow.node.func:func_child_output_test:security.policies": [app:test_policy]
-  "userspace.dataflow.node.func:func_recovery_test:security.actor.id": dataflow.test
-  "userspace.dataflow.node.func:func_recovery_test:security.policies": [app:test_policy]
   "userspace.dataflow.node.func:func_test:security.actor.id": dataflow.test
   "userspace.dataflow.node.func:func_test:security.policies": [app:test_policy]
   "userspace.dataflow.node.func:node_test:security.actor.id": dataflow.test
   "userspace.dataflow.node.func:node_test:security.policies": [app:test_policy]
   "userspace.dataflow.node.parallel:iterator_test:security.actor.id": dataflow.test
   "userspace.dataflow.node.parallel:iterator_test:security.policies": [app:test_policy]
-  "userspace.dataflow.node.parallel:parallel_recovery_test:security.actor.id": dataflow.test
-  "userspace.dataflow.node.parallel:parallel_recovery_test:security.policies": [app:test_policy]
   "userspace.dataflow.node.parallel:parallel_test:security.actor.id": dataflow.test
   "userspace.dataflow.node.parallel:parallel_test:security.policies": [app:test_policy]
-  "userspace.dataflow.node.signal:all_nodes_recovery_test:security.actor.id": dataflow.test
-  "userspace.dataflow.node.signal:all_nodes_recovery_test:security.policies": [app:test_policy]
-  "userspace.dataflow.node.signal:chaos_test:security.actor.id": dataflow.test
-  "userspace.dataflow.node.signal:chaos_test:security.policies": [app:test_policy]
   "userspace.dataflow.node.signal:compound_signal_test:security.actor.id": dataflow.test
   "userspace.dataflow.node.signal:compound_signal_test:security.policies": [app:test_policy]
-  "userspace.dataflow.node.signal:cycle_recovery_regression_test:security.actor.id": dataflow.test
-  "userspace.dataflow.node.signal:cycle_recovery_regression_test:security.policies": [app:test_policy]
-  "userspace.dataflow.node.signal:data_integrity_test:security.actor.id": dataflow.test
-  "userspace.dataflow.node.signal:data_integrity_test:security.policies": [app:test_policy]
-  "userspace.dataflow.node.signal:nested_recovery_test:security.actor.id": dataflow.test
-  "userspace.dataflow.node.signal:nested_recovery_test:security.policies": [app:test_policy]
-  "userspace.dataflow.node.signal:node_recovery_test:security.actor.id": dataflow.test
-  "userspace.dataflow.node.signal:node_recovery_test:security.policies": [app:test_policy]
-  "userspace.dataflow.node.signal:recovery_test:security.actor.id": dataflow.test
-  "userspace.dataflow.node.signal:recovery_test:security.policies": [app:test_policy]
   "userspace.dataflow.node.signal:signal_bugs_test:security.actor.id": dataflow.test
   "userspace.dataflow.node.signal:signal_bugs_test:security.policies": [app:test_policy]
-  "userspace.dataflow.node.signal:signal_durability_test:security.actor.id": dataflow.test
-  "userspace.dataflow.node.signal:signal_durability_test:security.policies": [app:test_policy]
   "userspace.dataflow.node.signal:signal_edge_test:security.actor.id": dataflow.test
   "userspace.dataflow.node.signal:signal_edge_test:security.policies": [app:test_policy]
   "userspace.dataflow.node.signal:signal_stress_test:security.actor.id": dataflow.test
   "userspace.dataflow.node.signal:signal_stress_test:security.policies": [app:test_policy]
   "userspace.dataflow.node.signal:signal_test:security.actor.id": dataflow.test
   "userspace.dataflow.node.signal:signal_test:security.policies": [app:test_policy]
-  "userspace.dataflow.node.state:state_recovery_test:security.actor.id": dataflow.test
-  "userspace.dataflow.node.state:state_recovery_test:security.policies": [app:test_policy]
   "userspace.dataflow.node.state:state_test:security.actor.id": dataflow.test
   "userspace.dataflow.node.state:state_test:security.policies": [app:test_policy]
   "userspace.dataflow.persist:commit_repo_test:security.actor.id": dataflow.test
@@ -121,8 +105,8 @@ override:
   "userspace.dataflow.runner:overseer_state_test:security.policies": [app:test_policy]
   "userspace.dataflow.runner:scheduler_test:security.actor.id": dataflow.test
   "userspace.dataflow.runner:scheduler_test:security.policies": [app:test_policy]
-  "userspace.dataflow.runner:wake_process_test:security.actor.id": dataflow.test
-  "userspace.dataflow.runner:wake_process_test:security.policies": [app:test_policy]
+  "userspace.dataflow.runner:overseer_test:security.actor.id": dataflow.test
+  "userspace.dataflow.runner:overseer_test:security.policies": [app:test_policy]
   "userspace.dataflow.runner:workflow_state_test:security.actor.id": dataflow.test
   "userspace.dataflow.runner:workflow_state_test:security.policies": [app:test_policy]
   "userspace.dataflow.template:graph_test:security.actor.id": dataflow.test

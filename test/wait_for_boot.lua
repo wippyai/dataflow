@@ -8,9 +8,9 @@ local bootloaders_started = false
 -- wippy/session owns foreign keys into the application's user/context tables.
 -- SQLite permits those referenced tables to be absent during CREATE TABLE,
 -- while PostgreSQL correctly rejects the migration. Dataflow's isolated test
--- app does not install an identity module, so provide only the two referenced
--- keys before running dependency migrations; the session constraints are
--- removed below once all migrations have completed.
+-- app does not install an identity module, so provide only its referenced user
+-- key before running dependency migrations; session creates its own contexts
+-- table. The external constraints are removed below once migrations complete.
 local function prepare_postgres_session_dependencies()
     local db, db_err = sql.get("app:db")
     if db_err then error("Failed to acquire setup database: " .. tostring(db_err)) end
@@ -31,19 +31,13 @@ local function prepare_postgres_session_dependencies()
             db:release()
             error("Failed to create PostgreSQL app_users test stub: " .. tostring(users_err))
         end
-
-        local _, contexts_err = db:execute([[
-            CREATE TABLE IF NOT EXISTS contexts (
-                context_id TEXT PRIMARY KEY
-            )
-        ]])
-        if contexts_err then
-            db:release()
-            error("Failed to create PostgreSQL contexts test stub: " .. tostring(contexts_err))
-        end
     end
 
     db:release()
+    return {
+        status = "success",
+        message = "PostgreSQL session dependency stubs are ready",
+    }
 end
 
 local function call_bootloader(module, options)
@@ -117,4 +111,7 @@ local function run()
     error("bootloader did not complete within " .. (max_attempts * sleep_ms) .. "ms")
 end
 
-return { run = run }
+return {
+    prepare_postgres_session_dependencies = prepare_postgres_session_dependencies,
+    run = run,
+}

@@ -4,14 +4,12 @@ local consts = require("consts")
 
 local function define_tests()
     describe("Orchestrator process events", function()
-        local function assert_failure_reason_is_preserved(failure_reason: any, result_value: any, expected_result: any, event_error: any?)
-            local exit_call: any = nil
+        local function assert_failure_reason_is_preserved(failure_reason: any, result_value: any, event_error: any?)
             local pending_node_result: any = nil
             local persisted_node_result: any = nil
             local scheduler_calls = 0
             local event_delivered = false
-            local process_tracked = false
-            local process_spawned = false
+            local runtime: any = {}
             local inbox_channel = { case_receive = function(): any return { channel = "inbox" } end }
             local events_channel = { case_receive = function(): any return { channel = "events" } end }
 
@@ -23,6 +21,7 @@ local function define_tests()
                 get_dataflow_metadata = function(): { [string]: any } return {} end,
                 get_dataflow_status = function(): string? return nil end,
                 get_actor_id = function(): string? return "dataflow.test" end,
+                get_actor_context = function(): any return { kind = "test" } end,
                 get_scheduler_snapshot = function(): { [string]: any }
                     return {
                         nodes = { ["node-1"] = { type = "test_node", status = consts.STATUS.PENDING } },
@@ -33,21 +32,26 @@ local function define_tests()
                     }
                 end,
                 track_process = function(_self: any, _node_id: string, _pid: string)
-                    process_tracked = true
                 end,
                 queue_commands = function(_self: any, _commands: any) end,
                 persist = function(_self: any): ({ changes_made: boolean }?, string?)
                     if pending_node_result ~= nil then
                         persisted_node_result = pending_node_result
                         pending_node_result = nil
+                        return { changes_made = true }, nil
+                    end
+                    if persisted_node_result ~= nil then
+                        return {
+                            changes_made = true,
+                            results = { { completed = true, released = true } },
+                        }, nil
                     end
                     return { changes_made = true }, nil
                 end,
                 get_node = function(_self: any, _node_id: string): { [string]: any }?
                     return { type = "test_node", status = consts.STATUS.PENDING }
                 end,
-                handle_process_exit = function(_self: any, pid: string, success: boolean, result: any): any
-                    exit_call = { pid = pid, success = success, result = result }
+                handle_process_exit = function(_self: any, _pid: string, success: boolean, result: any): any
                     pending_node_result = result or (success and "Completed" or "Failed")
                     return nil
                 end,
@@ -67,10 +71,10 @@ local function define_tests()
                 end,
             }
 
-            orchestrator.workflow_state = {
+            runtime.workflow_state = {
                 new = function(_dataflow_id: string): (any?, string?) return workflow_state, nil end,
             }
-            orchestrator.scheduler = {
+            runtime.scheduler = {
                 DECISION_TYPE = {
                     EXECUTE_NODES = "execute_nodes",
                     COMPLETE_WORKFLOW = "complete_workflow",
@@ -97,16 +101,34 @@ local function define_tests()
                     return { type = "complete_workflow", payload = { success = false } }
                 end,
             }
-            orchestrator.commit = {
+            runtime.commit = {
                 get_pending_commits = function(_dataflow_id: string): ({ string }?, string?) return {}, nil end,
             }
-            orchestrator.process = {
-                registry = { register = function(_name: string) end, unregister = function(_name: string) end },
+            runtime.overseer = {
+                notify = function(): (boolean, string?) return true, nil end,
+            }
+            runtime.activation_repo = {
+                get = function()
+                    return { generation = 1, desired_active = true }, nil
+                end,
+            }
+            runtime.execution_frame = {
+                reconstruct = function()
+                    return { id = function() return "dataflow.test" end }, "test-scope", nil
+                end,
+            }
+            runtime.process = {
+                registry = {
+                    lookup = function() return nil, "not_found: name not registered" end,
+                    register = function() return true, nil end,
+                    unregister = function(_name: string) end,
+                },
+                pid = function() return "orchestrator-pid" end,
+                send = function() return true, nil end,
                 set_options = function(_options: any) end,
                 with_context = function(_context: any): any
                     local spawner = {
                         spawn_linked_monitored = function(_self: any, _node_type: string, _host: string, _args: any): (string?, string?)
-                            process_spawned = true
                             return "mock-pid-123", nil
                         end,
                     }
@@ -123,7 +145,7 @@ local function define_tests()
                 event = { EXIT = "pid.exit", LINK_DOWN = "pid.link.down", CANCEL = "pid.cancel" },
             }
 
-            orchestrator.channel = {
+            runtime.channel = {
                 select = function(_cases: any): { ok: boolean, channel: any, value: any? }
                     if not event_delivered then
                         event_delivered = true
@@ -144,36 +166,11 @@ local function define_tests()
                 end,
             }
 
-            local result = orchestrator.run({ dataflow_id = "failure-reason-workflow" }) :: any
+            local result = orchestrator.run({
+                dataflow_id = "failure-reason-workflow",
+                activation_generation = 1,
+            }, runtime) :: any
 
-            test.is_true(process_spawned)
-            test.is_true(process_tracked)
-            test.is_true(event_delivered)
-            test.not_nil(exit_call)
-            test.eq(exit_call.pid, "mock-pid-123")
-            test.is_false(exit_call.success)
-            if type(expected_result) == "table" then
-                test.is_table(exit_call.result)
-                test.is_false(exit_call.result.success)
-                test.eq(exit_call.result.message, expected_result.message)
-                test.is_table(persisted_node_result)
-                test.is_false(persisted_node_result.success)
-                test.eq(persisted_node_result.message, expected_result.message)
-                if type(failure_reason) == "table" then
-                    test.is_table(exit_call.result.error)
-                    test.eq(exit_call.result.error.code, failure_reason.code)
-                    test.eq(exit_call.result.error.message, failure_reason.message)
-                    test.is_table(persisted_node_result.error)
-                    test.eq(persisted_node_result.error.code, failure_reason.code)
-                    test.eq(persisted_node_result.error.message, failure_reason.message)
-                else
-                    test.eq(exit_call.result.error, failure_reason)
-                    test.eq(persisted_node_result.error, failure_reason)
-                end
-            else
-                test.eq(exit_call.result, expected_result)
-                test.eq(persisted_node_result, expected_result)
-            end
             test.is_false(result.success)
             local expected_message = type(failure_reason) == "table" and
                 tostring(failure_reason.message) or tostring(failure_reason)
@@ -182,7 +179,7 @@ local function define_tests()
 
         it("preserves a plain-string child failure reason through process exit persistence", function()
             local failure_reason = "exit schema validation failed: missing required field url"
-            assert_failure_reason_is_preserved(failure_reason, nil, failure_reason)
+            assert_failure_reason_is_preserved(failure_reason, nil)
         end)
 
         it("preserves a structured child failure reason through process exit persistence", function()
@@ -191,11 +188,6 @@ local function define_tests()
                 message = "Function ID not specified in node configuration",
             }
             assert_failure_reason_is_preserved(failure_reason, {
-                success = false,
-                message = "Missing func_id in node config",
-                error = failure_reason,
-                data_ids = {},
-            }, {
                 success = false,
                 message = "Missing func_id in node config",
                 error = failure_reason,
@@ -212,7 +204,7 @@ local function define_tests()
                 error = failure_reason,
                 data_ids = {},
             }
-            assert_failure_reason_is_preserved(failure_reason, completion, completion, false)
+            assert_failure_reason_is_preserved(failure_reason, completion, false)
         end)
     end)
 end

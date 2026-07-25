@@ -16,7 +16,7 @@ DATAFLOW_PG_PASSWORD ?= dataflow
 WIPPY ?= wippy
 PUBLISH_DRY_RUN_TOKEN ?= wpy_ci_dry_run_0123456789abcdef0123456789abcdef
 
-.PHONY: test test-sqlite test-postgres test-static lint install verify-lock verify-package clean
+.PHONY: test test-sqlite test-postgres test-restart-sqlite test-restart-postgres test-static lint install verify-lock verify-package clean
 
 test: test-sqlite
 
@@ -30,6 +30,18 @@ test-postgres: test-static
 		--set "vars.postgres_database=$(DATAFLOW_PG_DATABASE)" \
 		--set "vars.postgres_username=$(DATAFLOW_PG_USERNAME)" \
 		--set "vars.postgres_password=$(DATAFLOW_PG_PASSWORD)"
+
+test-restart-sqlite: test-static
+	./scripts/restart-proof.sh
+
+test-restart-postgres: test-static
+	DATAFLOW_RESTART_DIALECT=postgres \
+	DATAFLOW_PG_HOST=$(DATAFLOW_PG_HOST) \
+	DATAFLOW_PG_PORT=$(DATAFLOW_PG_PORT) \
+	DATAFLOW_PG_DATABASE=$(DATAFLOW_PG_DATABASE)_restart \
+	DATAFLOW_PG_USERNAME=$(DATAFLOW_PG_USERNAME) \
+	DATAFLOW_PG_PASSWORD=$(DATAFLOW_PG_PASSWORD) \
+	./scripts/restart-proof.sh
 
 test-static:
 	@command -v rg >/dev/null 2>&1 || { echo "test-static requires ripgrep (rg)"; exit 1; }
@@ -54,15 +66,15 @@ test-static:
 			exit 1; \
 		fi; \
 	done
-	@if rg -n "name: (wake|sweeper)_security_scope" src/_index.yaml; then \
-		echo "wake service authority must be module-owned, not consumer-injected"; \
+	@if rg -n "name: (overseer|wake|sweeper)_security_scope" src/_index.yaml; then \
+		echo "overseer authority must be module-owned, not consumer-injected"; \
 		exit 1; \
 	fi
 	@awk 'BEGIN { in_service=0; has_root_scope=0 } \
-		/^  - name: wake_process\.service$$/ { in_service=1; next } \
+		/^  - name: overseer\.service$$/ { in_service=1; next } \
 		/^  - name: / { in_service=0 } \
 		in_service && /userspace\.dataflow\.security:root/ { has_root_scope=1 } \
-		END { if (!has_root_scope) { print "wake service must use the canonical root process scope"; exit 1 } }' src/runner/_index.yaml
+		END { if (!has_root_scope) { print "overseer service must use the canonical root process scope"; exit 1 } }' src/runner/_index.yaml
 
 lint:
 	cd $(TEST_DIR) && $(WIPPY) lint --profile sqlite --ns app --ns 'userspace.dataflow.**'

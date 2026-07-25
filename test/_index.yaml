@@ -2,6 +2,73 @@ version: "1.0"
 namespace: app
 
 entries:
+  - name: prepare_postgres_session_dependencies
+    kind: function.lua
+    meta:
+      type: bootloader
+      order: 19
+      comment: Creates the external identity keys required by session migrations in the isolated PostgreSQL fixture.
+    source: file://wait_for_boot.lua
+    modules:
+      - sql
+      - time
+    imports:
+      encryption_key_bootloader: wippy.bootloader.bootloaders:encryption_key
+      migration_bootloader: wippy.migration:migration_bootloader
+    method: prepare_postgres_session_dependencies
+
+  - name: restart_probe.create
+    kind: process.lua
+    meta:
+      test_only: true
+      comment: Creates one long-running workflow for the external two-runtime restart proof.
+      default_host: app:processes
+    source: file://restart_probe.lua
+    modules: [uuid, time]
+    imports:
+      client: userspace.dataflow:client
+      consts: userspace.dataflow:consts
+    method: create
+
+  - name: restart_probe.observe
+    kind: process.lua
+    meta:
+      test_only: true
+      comment: Keeps the second runtime alive while the overseer recovers the persisted workflow.
+      default_host: app:processes
+    source: file://restart_probe.lua
+    modules: [uuid, time]
+    imports:
+      client: userspace.dataflow:client
+      consts: userspace.dataflow:consts
+    method: observe
+
+  - name: restart_probe.create.service
+    kind: process.service
+    meta:
+      test_only: true
+    process: app:restart_probe.create
+    host: app:processes
+    lifecycle:
+      auto_start: false
+      security:
+        actor:
+          id: dataflow.test
+        groups: [app:test_runtime]
+
+  - name: restart_probe.observe.service
+    kind: process.service
+    meta:
+      test_only: true
+    process: app:restart_probe.observe
+    host: app:processes
+    lifecycle:
+      auto_start: false
+      security:
+        actor:
+          id: dataflow.test
+        groups: [app:test_runtime]
+
   - name: wait_for_boot
     kind: function.lua
     meta:
@@ -17,13 +84,13 @@ entries:
       migration_bootloader: wippy.migration:migration_bootloader
     method: run
 
-  - name: wake_service_scope_test
+  - name: overseer_scope_test
     kind: function.lua
     meta:
       type: test
       suite: "00_setup"
-      comment: Proves the bounded wake service carries canonical module-owned process authority.
-    source: file://wake_service_scope_test.lua
+      comment: Proves the bounded overseer carries canonical module-owned process authority.
+    source: file://overseer_scope_test.lua
     modules:
       - registry
     imports:
@@ -42,6 +109,21 @@ entries:
     imports:
       test: wippy.test:test
     method: run
+
+  - name: runtime_failure_test
+    kind: function.lua
+    meta:
+      type: test
+      suite: "01_runtime_failure"
+      comment: Proves same-runtime owner loss is terminal and cannot create zombie generations.
+    source: file://runtime_failure_test.lua
+    modules: [uuid, time, process]
+    imports:
+      activation_repo: userspace.dataflow.persist:activation_repo
+      client: userspace.dataflow:client
+      consts: userspace.dataflow:consts
+      test: wippy.test:test
+    method: run_tests
 
   - name: db
     kind: db.sql.sqlite
@@ -64,11 +146,17 @@ entries:
   - name: test_policy
     kind: security.policy
     groups:
-      - dataflow_test_runtime
+      - app:test_runtime
     policy:
       resources: '*'
       actions: '*'
       effect: allow
+
+  - name: test_runtime
+    kind: registry.entry
+    meta:
+      test_only: true
+      comment: Named policy group for test-only process services.
 
   - name: execution_identity.capture
     kind: function.lua

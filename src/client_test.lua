@@ -1091,7 +1091,7 @@ local function define_tests()
                 local i = info :: any
                 test.eq(i.dataflow_id, "workflow-123")
                 test.eq(i.timeout, "45s")
-                test.contains(i.message, "Cancel signal sent")
+                test.contains(i.message, "runtime stop requested")
 
                 test.eq(#captured_calls.dataflow_repo_get, 1)
                 test.eq(#captured_calls.process_lookup, 1)
@@ -1166,13 +1166,17 @@ local function define_tests()
                 test.contains(err, "Failed to cancel workflow: Commit failed")
             end)
 
-            it("should fail when cancel signal fails", function()
+            it("should keep durable cancellation when the runtime stop request fails", function()
                 mock_deps.process.cancel = function() return false, "Cancel failed" end
 
-                local success, err = test_client:cancel("workflow-123")
+                local success, err, info = test_client:cancel("workflow-123")
 
-                test.is_false(success)
-                test.contains(err, "Failed to send cancel signal: Cancel failed")
+                test.is_true(success)
+                test.is_nil(err)
+                local result = test.not_nil(info) :: any
+                test.is_true(result.status_updated)
+                test.is_false(result.process_cancelled)
+                test.eq(result.cancel_error, "Cancel failed")
             end)
         end)
 
@@ -1256,7 +1260,9 @@ local function define_tests()
                 test.contains(err, "Failed to update workflow status: Commit failed")
                 test.not_nil(info)
                 local i = info :: any
-                test.is_true(i.process_terminated)
+                test.is_false(i.process_terminated)
+                test.eq(#captured_calls.process_lookup, 0)
+                test.eq(#captured_calls.process_terminate, 0)
             end)
         end)
 

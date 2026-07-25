@@ -8,6 +8,15 @@ local commit = require("commit")
 local ops = require("ops")
 local consts = require("dataflow_consts")
 
+local function rebind(query, db_type)
+    if db_type ~= "postgres" and db_type ~= sql.type.POSTGRES then return query end
+    local index = 0
+    return (query:gsub("%?", function()
+        index = index + 1
+        return "$" .. index
+    end))
+end
+
 local function define_tests()
     describe("Commit Module", function()
         local test_ctx = {
@@ -532,17 +541,18 @@ local function define_tests()
                 local tx = get_test_transaction()
                 local now_ts = time.now():format(time.RFC3339NANO)
                 local node_id = uuid.v7()
-                local _, activation_err = tx:execute([[
+                local db_type = select(1, tx:db_type())
+                local _, activation_err = tx:execute(rebind([[
                     INSERT INTO dataflow_activations(
-                        dataflow_id, generation, desired_active, launch_args, requested_at, updated_at
-                    ) VALUES (?, ?, ?, NULL, ?, ?)
-                ]], { resources.dataflow_id, 2, true, now_ts, now_ts })
+                        dataflow_id, generation, desired_active, requested_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?)
+                ]], db_type), { resources.dataflow_id, 2, true, now_ts, now_ts })
                 test.is_nil(activation_err)
-                local _, node_err = tx:execute([[
+                local _, node_err = tx:execute(rebind([[
                     INSERT INTO dataflow_nodes(
                         node_id, dataflow_id, type, status, metadata, created_at, updated_at
                     ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                ]], {
+                ]], db_type), {
                     node_id, resources.dataflow_id, "test_node", consts.STATUS.PENDING,
                     "{}", now_ts, now_ts,
                 })
@@ -575,9 +585,10 @@ local function define_tests()
                 test.is_false((stale.results[1] :: any).completed)
                 test.eq(#stale.results, 1)
                 local stale_nodes, stale_node_err = tx:query(
-                    "SELECT status FROM dataflow_nodes WHERE node_id = ?", { node_id })
+                    rebind("SELECT status FROM dataflow_nodes WHERE node_id = ?", db_type), { node_id })
                 local stale_flows, stale_flow_err = tx:query(
-                    "SELECT status FROM dataflows WHERE dataflow_id = ?", { resources.dataflow_id })
+                    rebind("SELECT status FROM dataflows WHERE dataflow_id = ?", db_type),
+                    { resources.dataflow_id })
                 test.is_nil(stale_node_err)
                 test.is_nil(stale_flow_err)
                 test.eq(stale_nodes[1].status, consts.STATUS.PENDING)
@@ -589,9 +600,10 @@ local function define_tests()
                 test.is_true((current.results[1] :: any).completed)
                 test.eq(#current.results, 2)
                 local current_nodes, current_node_err = tx:query(
-                    "SELECT status FROM dataflow_nodes WHERE node_id = ?", { node_id })
+                    rebind("SELECT status FROM dataflow_nodes WHERE node_id = ?", db_type), { node_id })
                 local current_flows, current_flow_err = tx:query(
-                    "SELECT status FROM dataflows WHERE dataflow_id = ?", { resources.dataflow_id })
+                    rebind("SELECT status FROM dataflows WHERE dataflow_id = ?", db_type),
+                    { resources.dataflow_id })
                 test.is_nil(current_node_err)
                 test.is_nil(current_flow_err)
                 test.eq(current_nodes[1].status, consts.STATUS.COMPLETED_FAILURE)
@@ -1002,7 +1014,7 @@ local function define_tests()
                 test.is_nil(disable_err)
                 test.is_true(result.terminal)
                 test.eq(count_process_messages(
-                    "dataflow.wakes", "dataflow.wake.changed"), 1)
+                    "dataflow.overseer", "dataflow.activation.changed"), 1)
                 test.eq(count_process_messages(
                     "dataflow.overseer", "dataflow.activation.changed"), 1)
 
@@ -1037,7 +1049,7 @@ local function define_tests()
                 test.is_nil(err)
                 test.eq(result.activation_generation, 1)
                 test.eq(count_process_messages(
-                    "dataflow.wakes", "dataflow.wake.changed"), 1)
+                    "dataflow.overseer", "dataflow.activation.changed"), 1)
                 test.eq(count_process_messages(
                     "dataflow.overseer", "dataflow.activation.changed"), 1)
 
@@ -1059,7 +1071,7 @@ local function define_tests()
                 test.is_nil(duplicate_err)
                 test.eq(duplicate.activation_generation, 1)
                 test.eq(count_process_messages(
-                    "dataflow.wakes", "dataflow.wake.changed"), 1)
+                    "dataflow.overseer", "dataflow.activation.changed"), 1)
                 test.eq(count_process_messages(
                     "dataflow.overseer", "dataflow.activation.changed"), 1)
             end)
@@ -1123,10 +1135,10 @@ local function define_tests()
 
                 test.is_nil(err)
                 test.not_nil(result)
-                test.eq(count_process_messages("dataflow.wakes", "dataflow.wake.changed"), 1)
+                test.eq(count_process_messages("dataflow.overseer", "dataflow.activation.changed"), 1)
                 local message = test.not_nil(mock_calls.process_messages[1]) :: any
-                test.eq(message.target_process, "dataflow.wakes")
-                test.eq(message.topic, "dataflow.wake.changed")
+                test.eq(message.target_process, "dataflow.overseer")
+                test.eq(message.topic, "dataflow.activation.changed")
             end)
 
             it("does not notify for unrelated commits or failed transactions", function()
@@ -1140,7 +1152,7 @@ local function define_tests()
                 } }, { publish = false })
                 test.is_nil(err)
                 test.not_nil(result)
-                test.eq(count_process_messages("dataflow.wakes", "dataflow.wake.changed"), 0)
+                test.eq(count_process_messages("dataflow.overseer", "dataflow.activation.changed"), 0)
 
                 result, err = commit.execute(dataflow_id, nil, { {
                     type = ops.COMMAND_TYPES.UPDATE_WORKFLOW,
@@ -1148,7 +1160,7 @@ local function define_tests()
                 } }, { publish = false })
                 test.is_nil(err)
                 test.not_nil(result)
-                test.eq(count_process_messages("dataflow.wakes", "dataflow.wake.changed"), 1)
+                test.eq(count_process_messages("dataflow.overseer", "dataflow.activation.changed"), 1)
 
                 result, err = commit.execute(dataflow_id, nil, { {
                     type = consts.COMMAND.APPLY_COMMIT,
@@ -1156,7 +1168,7 @@ local function define_tests()
                 } }, { publish = false })
                 test.is_nil(result)
                 test.not_nil(err)
-                test.eq(count_process_messages("dataflow.wakes", "dataflow.wake.changed"), 1)
+                test.eq(count_process_messages("dataflow.overseer", "dataflow.activation.changed"), 1)
             end)
 
             it("notifies once after a timed-yield wake is committed to the outbox", function()
@@ -1181,7 +1193,7 @@ local function define_tests()
 
                 test.is_nil(err)
                 test.not_nil(result)
-                test.eq(count_process_messages("dataflow.wakes", "dataflow.wake.changed"), 1)
+                test.eq(count_process_messages("dataflow.overseer", "dataflow.activation.changed"), 1)
             end)
         end)
 

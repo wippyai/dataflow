@@ -36,26 +36,6 @@ entries:
       - uuid
     method: run
 
-  # userspace.dataflow.node.func:func_recovery_test
-  - name: func_recovery_test
-    kind: function.lua
-    meta:
-      name: Func Node Control Recovery Tests
-      type: test
-      comment: Verifies a func node's _control child is not duplicated when the orchestrator is killed mid-yield and recovered.
-      group: Workflow / Function Node
-    source: file://func_recovery_test.lua
-    modules:
-      - uuid
-      - time
-      - process
-    imports:
-      client: userspace.dataflow:client
-      consts: userspace.dataflow:consts
-      node_reader: userspace.dataflow.persist:node_reader
-      test: wippy.test:test
-    method: run_tests
-
   # userspace.dataflow.node.func:func_child_output_test
   - name: func_child_output_test
     kind: function.lua

@@ -95,15 +95,6 @@ local function define_tests()
             return { data_type = consts.DATA_TYPE.WORKFLOW_OUTPUT, key = key or "result", content_type = consts.CONTENT_TYPE.JSON }
         end
 
-        local function kill_orchestrator(df_id)
-            local pid = process.registry.lookup("dataflow." .. df_id)
-            if pid then
-                process.terminate(pid)
-                time.sleep("200ms")
-            end
-            return pid
-        end
-
         local function wait_running(df_id, timeout_ms)
             timeout_ms = timeout_ms or 2000
             local iterations = math.ceil(timeout_ms / 100)
@@ -632,15 +623,15 @@ local function define_tests()
         end)
 
         -- ==========================================
-        -- RECOVERY: COMPOUND PIPELINE KILL SCENARIOS
+        -- COMPOUND PIPELINE ACTIVATION SEQUENCES
         -- ==========================================
 
-        describe("compound recovery", function()
-            it("kills at signal in 3-node pipeline, recovers with signal", function()
+        describe("compound activation", function()
+            it("reactivates a parked 3-node pipeline with a signal", function()
                 local f1 = uuid.v7()
                 local sig = uuid.v7()
                 local f2 = uuid.v7()
-                local sid = "kill-pipe-" .. uuid.v7()
+                local sid = "reactivate-pipe-" .. uuid.v7()
 
                 local df_id = c:create_workflow({
                     make_func_node(f1, {
@@ -654,22 +645,21 @@ local function define_tests()
                         inputs = { required = { "default" } },
                         data_targets = { target_output() },
                     }),
-                    make_input(uuid.v7(), f1, { message = "kill-test", delay_ms = 10, should_fail = false }),
+                    make_input(uuid.v7(), f1, { message = "reactivate-test", delay_ms = 10, should_fail = false }),
                 })
                 c:start(df_id)
                 test.is_true(wait_running(df_id), "running at signal")
 
-                kill_orchestrator(df_id)
-                c:signal(df_id, sid, { message = "after-kill", delay_ms = 10, should_fail = false })
-                test.is_true(wait_complete(df_id, 8000), "recovered and completed")
+                c:signal(df_id, sid, { message = "after-park", delay_ms = 10, should_fail = false })
+                test.is_true(wait_complete(df_id, 8000), "reactivated and completed")
             end)
 
-            it("kills at signal in diamond, recovers", function()
+            it("reactivates a parked diamond", function()
                 local root = uuid.v7()
                 local sig = uuid.v7()
                 local func_b = uuid.v7()
                 local merger = uuid.v7()
-                local sid = "diamond-kill-" .. uuid.v7()
+                local sid = "diamond-reactivate-" .. uuid.v7()
 
                 local df_id = c:create_workflow({
                     make_func_node(root, {
@@ -696,13 +686,12 @@ local function define_tests()
                 test.is_true(wait_running(df_id), "running")
                 time.sleep("500ms")
 
-                kill_orchestrator(df_id)
                 c:signal(df_id, sid, { approved = true })
-                test.is_true(wait_complete(df_id, 8000), "diamond recovered after kill")
-                test.eq(count_outputs(df_id), 1, "diamond recovery produced one output")
+                test.is_true(wait_complete(df_id, 8000), "diamond reactivated")
+                test.eq(count_outputs(df_id), 1, "diamond produced one output")
             end)
 
-            it("kills during double-signal pipeline, recovers step by step", function()
+            it("reactivates a double-signal pipeline step by step", function()
                 local f1 = uuid.v7()
                 local sig1 = uuid.v7()
                 local sig2 = uuid.v7()
@@ -731,16 +720,12 @@ local function define_tests()
                 c:start(df_id)
                 test.is_true(wait_running(df_id), "at sig1")
 
-                -- kill at sig1
-                kill_orchestrator(df_id)
                 c:signal(df_id, sid1, { gate1 = true })
                 time.sleep(WAIT)
                 test.eq(c:get_status(df_id), consts.STATUS.WAITING, "now at sig2")
 
-                -- kill at sig2
-                kill_orchestrator(df_id)
                 c:signal(df_id, sid2, { message = "go", delay_ms = 10, should_fail = false })
-                test.is_true(wait_complete(df_id, 8000), "completed after double kill at each signal")
+                test.is_true(wait_complete(df_id, 8000), "completed after both signals")
             end)
 
             it("signal auto-starts a pending pipeline", function()

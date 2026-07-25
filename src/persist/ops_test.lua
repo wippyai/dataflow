@@ -22,6 +22,10 @@ local function txq(tx, query, params)
     return tx:query(rebind(query, tx:db_type()), params)
 end
 
+local function db_bool(value)
+    return value == true or tonumber(value) == 1
+end
+
 local function define_tests()
     describe("Operations Module", function()
         local test_ctx = {
@@ -827,7 +831,7 @@ local function define_tests()
                     SELECT desired_active FROM dataflow_activations WHERE dataflow_id = ?
                 ]], { resources.dataflow_id })
                 test.is_nil(activation_query_err)
-                test.eq(tonumber(activation_rows[1].desired_active), 0)
+                test.is_false(db_bool(activation_rows[1].desired_active))
             end)
 
             it("leaves workflow status unchanged when passivation generation is stale", function()
@@ -895,7 +899,7 @@ local function define_tests()
                     SELECT desired_active FROM dataflow_activations WHERE dataflow_id = ?
                 ]], { resources.dataflow_id })
                 test.is_nil(active_err)
-                test.eq(tonumber(activations[1].desired_active), 0)
+                test.is_false(db_bool(activations[1].desired_active))
             end)
 
             it("rejects stale completion after a newer signal activation", function()

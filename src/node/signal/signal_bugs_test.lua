@@ -594,33 +594,28 @@ local function define_tests()
             test.is_nil(process.registry.lookup("dataflow." .. df_id), "no orchestrator respawned")
         end)
 
-        it("signal after kill without restart does not auto-complete", function()
-            local sid = "kill-no-auto-" .. uuid.v7()
+        it("signal reactivates a parked workflow", function()
+            local sid = "parked-reactivate-" .. uuid.v7()
             local df_id = make_signal_wf(sid)
             c:start(df_id)
             time.sleep("500ms")
 
-            -- kill orchestrator
-            local pid = process.registry.lookup("dataflow." .. df_id)
-            if pid then
-                process.terminate(pid)
-            end
-            time.sleep("200ms")
+            test.is_nil(process.registry.lookup("dataflow." .. df_id),
+                "parked workflow has no resident orchestrator")
 
-            -- signal auto-respawns orchestrator via client
-            c:signal(df_id, sid, { after_kill = true })
+            c:signal(df_id, sid, { after_park = true })
             time.sleep("2s")
 
-            -- should recover and complete
-            test.eq(c:get_status(df_id), consts.STATUS.COMPLETED_SUCCESS, "recovered via auto-respawn")
+            test.eq(c:get_status(df_id), consts.STATUS.COMPLETED_SUCCESS,
+                "durable signal activation completes")
         end)
     end)
 
     -- ==========================================
-    -- INTEGRATION: COMPLEX RECOVERY PATTERNS
+    -- INTEGRATION: COMPLEX ACTIVATION PATTERNS
     -- ==========================================
 
-    describe("Complex recovery patterns", function()
+    describe("Complex activation patterns", function()
         local c
 
         before_all(function()
@@ -648,37 +643,23 @@ local function define_tests()
             })
         end
 
-        local function kill_orchestrator(df_id)
-            local pid = process.registry.lookup("dataflow." .. df_id)
-            if pid then
-                process.terminate(pid)
-                time.sleep("200ms")
-            end
-        end
-
-        it("kill immediately after signal is sent (race)", function()
-            local sid = "race-kill-" .. uuid.v7()
+        it("start immediately after signal is sent is idempotent", function()
+            local sid = "race-start-" .. uuid.v7()
             local df_id = make_signal_wf(sid)
             c:start(df_id)
             time.sleep("500ms")
 
-            -- send signal and immediately kill
             c:signal(df_id, sid, { ok = true })
-            kill_orchestrator(df_id)
-
-            -- restart
             c:start(df_id)
             time.sleep("2s")
             test.eq(c:get_status(df_id), consts.STATUS.COMPLETED_SUCCESS, "race resolved")
         end)
 
-        it("multiple signals queued while dead, correct one picked", function()
+        it("multiple signals queued while parked select the correct one", function()
             local sid = "queue-correct-" .. uuid.v7()
             local df_id = make_signal_wf(sid)
             c:start(df_id)
             time.sleep("500ms")
-
-            kill_orchestrator(df_id)
 
             -- queue wrong and correct signals
             c:signal(df_id, "wrong1-" .. uuid.v7(), { nope = true })
@@ -689,13 +670,11 @@ local function define_tests()
             test.eq(c:get_status(df_id), consts.STATUS.COMPLETED_SUCCESS, "correct signal picked from backlog")
         end)
 
-        it("signal correction: second signal overwrites first after kill", function()
+        it("duplicate signal correction remains idempotent", function()
             local sid = "correction-" .. uuid.v7()
             local df_id = make_signal_wf(sid)
             c:start(df_id)
             time.sleep("500ms")
-
-            kill_orchestrator(df_id)
 
             -- first signal (wrong decision)
             c:signal(df_id, sid, { approved = false, version = 1 })
@@ -706,7 +685,7 @@ local function define_tests()
             test.eq(c:get_status(df_id), consts.STATUS.COMPLETED_SUCCESS, "completed with correction")
         end)
 
-        it("five workflows killed and recovered independently", function()
+        it("five parked workflows reactivate independently", function()
             local sids = {}
             local df_ids = {}
 
@@ -718,11 +697,6 @@ local function define_tests()
 
             time.sleep("500ms")
 
-            -- kill all
-            for i = 1, 5 do
-                kill_orchestrator(df_ids[i])
-            end
-
             -- signal all in reverse
             for i = 5, 1, -1 do
                 c:signal(df_ids[i], sids[i], { index = i })
@@ -731,7 +705,7 @@ local function define_tests()
             -- verify all complete
             time.sleep("3s")
             for i = 1, 5 do
-                test.eq(c:get_status(df_ids[i]), consts.STATUS.COMPLETED_SUCCESS, "wf" .. i .. " recovered")
+                test.eq(c:get_status(df_ids[i]), consts.STATUS.COMPLETED_SUCCESS, "wf" .. i .. " completed")
             end
         end)
     end)

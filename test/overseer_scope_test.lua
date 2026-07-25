@@ -29,7 +29,7 @@ local function assert_policy(name, resources, actions)
 end
 
 local function run()
-    local entry, err = registry.get("userspace.dataflow.runner:wake_process.service")
+    local entry, err = registry.get("userspace.dataflow.runner:overseer.service")
     test.is_nil(err)
     test.not_nil(entry)
     test.not_nil(entry.data)
@@ -62,10 +62,16 @@ local function run()
         "process.send",
         "process.monitor",
         "process.unmonitor",
+        "process.cancel",
+        "process.terminate",
     })
-    assert_policy("root.service_name", { "dataflow.wakes", "dataflow.overseer" }, {
+    assert_policy("root.process_lookup", { "*" }, { "process.registry.lookup" })
+    assert_policy("root.service_name", { "dataflow.overseer" }, {
         "process.registry.register",
     })
+    assert_policy("root.runtime_epoch", {
+        "userspace.dataflow.env:runtime_epoch",
+    }, { "env.get" })
 
     local legacy = registry.get("userspace.dataflow.security:root.policy")
     test.is_nil(legacy)

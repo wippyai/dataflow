@@ -443,51 +443,40 @@ function methods:cancel(dataflow_id, timeout)
         return false, "Workflow cannot be cancelled in current state: " .. workflow.status
     end
 
-    -- Find workflow process
-    local process_name = "dataflow." .. dataflow_id
-    local pid = self._deps.process.registry.lookup(process_name)
-    if not pid then
-        -- No live orchestrator (parked run): degrade to a direct terminal status
-        -- update, the same path terminate uses. Without this a parked run is
-        -- uncancellable — process.cancel needs a live pid.
-        local update_commands = {
-            {
-                type = consts.COMMAND_TYPES.UPDATE_WORKFLOW,
-                payload = {
-                    status = consts.STATUS.CANCELLED,
-                    metadata = {
-                        cancelled_at = time.now():format(time.RFC3339),
-                        cancelled_by = self._actor_id
-                    }
-                }
-            }
-        }
+    -- Persist the business outcome before touching the runtime process. A
+    -- process CANCEL is also used during application shutdown and therefore
+    -- cannot itself carry cancellation semantics.
+    local _result, update_err = self._deps.commit.execute(dataflow_id, uuid.v7(), {
+        {
+            type = consts.COMMAND_TYPES.UPDATE_WORKFLOW,
+            payload = {
+                status = consts.STATUS.CANCELLED,
+                metadata = {
+                    cancelled_at = time.now():format(time.RFC3339),
+                    cancelled_by = self._actor_id,
+                },
+            },
+        },
+    })
+    if update_err then return false, "Failed to cancel workflow: " .. update_err end
 
-        local _result, update_err = self._deps.commit.execute(dataflow_id, uuid.v7(), update_commands)
-        if update_err then
-            return false, "Failed to cancel workflow: " .. update_err
-        end
-
-        return true, nil, {
-            dataflow_id = dataflow_id,
-            process_cancelled = false,
-            status_updated = true,
-            message = "Workflow cancelled without a live process"
-        }
-    end
-
-    -- Send cancel signal
-    local success, cancel_err = self._deps.process.cancel(pid, timeout)
-    if not success then
-        return false, "Failed to send cancel signal: " .. (cancel_err or "unknown error")
+    local pid = self._deps.process.registry.lookup("dataflow." .. dataflow_id)
+    local process_cancelled = false
+    local cancel_error = nil
+    if pid then
+        local success, cancel_err = self._deps.process.cancel(pid, timeout)
+        process_cancelled = success == true
+        cancel_error = success and nil or tostring(cancel_err or "unknown error")
     end
 
     return true, nil, {
         dataflow_id = dataflow_id,
         timeout = timeout,
-        process_cancelled = true,
-        status_updated = false,
-        message = "Cancel signal sent to workflow process"
+        process_cancelled = process_cancelled,
+        status_updated = true,
+        cancel_error = cancel_error,
+        message = pid and "Workflow cancelled; runtime stop requested" or
+            "Workflow cancelled without a live process",
     }
 end
 
@@ -525,19 +514,8 @@ function methods:terminate(dataflow_id)
         status_updated = false
     }
 
-    -- Find and terminate workflow process
-    local process_name = "dataflow." .. dataflow_id
-    local pid = self._deps.process.registry.lookup(process_name)
-    if pid then
-        local terminate_success, terminate_err = self._deps.process.terminate(pid)
-        if terminate_success then
-            info.process_terminated = true
-        else
-            info.terminate_error = terminate_err
-        end
-    end
-
-    -- Update workflow status
+    -- Persist the terminal state first so an EXIT can never race the overseer
+    -- into projecting an operational failure over an administrative outcome.
     local update_commands = {
         {
             type = consts.COMMAND_TYPES.UPDATE_WORKFLOW,
@@ -557,6 +535,16 @@ function methods:terminate(dataflow_id)
     end
 
     info.status_updated = true
+
+    local pid = self._deps.process.registry.lookup("dataflow." .. dataflow_id)
+    if pid then
+        local terminate_success, terminate_err = self._deps.process.terminate(pid)
+        if terminate_success then
+            info.process_terminated = true
+        else
+            info.terminate_error = terminate_err
+        end
+    end
     return true, nil, info
 end
 

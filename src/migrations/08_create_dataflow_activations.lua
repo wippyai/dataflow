@@ -7,6 +7,7 @@ return require("migration").define(function()
                         dataflow_id UUID PRIMARY KEY REFERENCES dataflows(dataflow_id) ON DELETE CASCADE,
                         generation BIGINT NOT NULL CHECK (generation > 0),
                         desired_active BOOLEAN NOT NULL,
+                        owner_epoch TEXT,
                         launch_args JSONB,
                         requested_at TIMESTAMPTZ NOT NULL,
                         updated_at TIMESTAMPTZ NOT NULL
@@ -33,6 +34,21 @@ return require("migration").define(function()
                     ON dataflow_activations(desired_active, updated_at)
                 ]])
                 if err then error(err) end
+
+                -- Migration is the single upgrade boundary. A workflow that
+                -- was durably running before activations existed becomes boot
+                -- recovery intent exactly once; runtime code never guesses
+                -- activation intent from business status.
+                _, err = db:execute([[
+                    INSERT INTO dataflow_activations(
+                        dataflow_id, generation, desired_active, owner_epoch,
+                        launch_args, requested_at, updated_at
+                    )
+                    SELECT dataflow_id, 1, TRUE, NULL, NULL, updated_at, updated_at
+                    FROM dataflows WHERE status = 'running'
+                    ON CONFLICT(dataflow_id) DO NOTHING
+                ]])
+                if err then error(err) end
             end)
 
             down(function(db)
@@ -56,6 +72,7 @@ return require("migration").define(function()
                         dataflow_id TEXT PRIMARY KEY REFERENCES dataflows(dataflow_id) ON DELETE CASCADE,
                         generation INTEGER NOT NULL CHECK (generation > 0),
                         desired_active INTEGER NOT NULL CHECK (desired_active IN (0, 1)),
+                        owner_epoch TEXT,
                         launch_args TEXT,
                         requested_at TEXT NOT NULL,
                         updated_at TEXT NOT NULL
@@ -88,6 +105,17 @@ return require("migration").define(function()
                 _, err = db:execute([[
                     CREATE INDEX IF NOT EXISTS idx_dataflow_activations_active
                     ON dataflow_activations(desired_active, updated_at)
+                ]])
+                if err then error(err) end
+
+                _, err = db:execute([[
+                    INSERT INTO dataflow_activations(
+                        dataflow_id, generation, desired_active, owner_epoch,
+                        launch_args, requested_at, updated_at
+                    )
+                    SELECT dataflow_id, 1, 1, NULL, NULL, updated_at, updated_at
+                    FROM dataflows WHERE status = 'running'
+                    ON CONFLICT(dataflow_id) DO NOTHING
                 ]])
                 if err then error(err) end
             end)

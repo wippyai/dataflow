@@ -111,14 +111,6 @@ local function define_tests()
             return { data_type = consts.DATA_TYPE.WORKFLOW_OUTPUT, key = key or "result", content_type = consts.CONTENT_TYPE.JSON }
         end
 
-        local function kill_orchestrator(df_id)
-            local pid = process.registry.lookup("dataflow." .. df_id)
-            if pid then
-                process.terminate(pid)
-                time.sleep("200ms")
-            end
-        end
-
         local function wait_complete(df_id, timeout_ms)
             timeout_ms = timeout_ms or 5000
             local iters = math.ceil(timeout_ms / 200)
@@ -179,11 +171,11 @@ local function define_tests()
         end)
 
         -- ==========================================
-        -- TRIPLE SIGNAL CHAIN WITH RECOVERY
+        -- TRIPLE SIGNAL CHAIN
         -- ==========================================
 
-        describe("triple signal chain with recovery", function()
-            it("func -> sig1 -> sig2 -> sig3 -> func, kill at each signal", function()
+        describe("triple signal chain", function()
+            it("func -> sig1 -> sig2 -> sig3 -> func advances each durable generation", function()
                 local f1 = uuid.v7()
                 local s1 = uuid.v7()
                 local s2 = uuid.v7()
@@ -216,20 +208,14 @@ local function define_tests()
                 c:start(df_id)
                 test.is_true(wait_running(df_id), "at sig1")
 
-                -- kill at sig1, send signal
-                kill_orchestrator(df_id)
                 c:signal(df_id, sid1, { gate = 1 })
                 test.is_true(wait_running(df_id, 5000), "at sig2")
 
-                -- kill at sig2, send signal
-                kill_orchestrator(df_id)
                 c:signal(df_id, sid2, { gate = 2 })
                 test.is_true(wait_running(df_id, 5000), "at sig3")
 
-                -- kill at sig3, send signal
-                kill_orchestrator(df_id)
                 c:signal(df_id, sid3, { message = "final", delay_ms = 10, should_fail = false })
-                test.is_true(wait_complete(df_id, 10000), "chain3 completed after 3 kills")
+                test.is_true(wait_complete(df_id, 10000), "chain3 completed")
             end)
         end)
 
@@ -278,7 +264,7 @@ local function define_tests()
                 test.is_true(wait_complete(df_id), "all 3 signals merge")
             end)
 
-            it("2 parallel signals, kill, signal both", function()
+            it("2 parallel parked signals reactivate independently", function()
                 local sig_a = uuid.v7()
                 local sig_b = uuid.v7()
                 local merge = uuid.v7()
@@ -300,15 +286,13 @@ local function define_tests()
                     make_input(uuid.v7(), sig_b, { task = "b" }),
                 })
                 c:start(df_id)
-                test.is_true(wait_running(df_id, 5000), "both waiting before kill")
-
-                kill_orchestrator(df_id)
+                test.is_true(wait_running(df_id, 5000), "both waiting")
 
                 c:signal(df_id, sid_a, { branch = "a" })
                 time.sleep("200ms")
                 c:signal(df_id, sid_b, { branch = "b" })
 
-                test.is_true(wait_complete(df_id, 8000), "both recovered via detached yields")
+                test.is_true(wait_complete(df_id, 8000), "both signals completed")
             end)
         end)
 
@@ -367,33 +351,27 @@ local function define_tests()
         end)
 
         -- ==========================================
-        -- INTERLEAVED KILL AND SIGNAL
+        -- INTERLEAVED START AND SIGNAL
         -- ==========================================
 
-        describe("interleaved kill and signal", function()
-            it("alternating kill-signal-kill-signal pattern", function()
+        describe("interleaved start and signal", function()
+            it("repeated starts and wrong signals remain quiescent", function()
                 local sid = "interleave-" .. uuid.v7()
                 local df_id = make_signal_wf(sid)
                 c:start(df_id)
                 test.is_true(wait_running(df_id), "running")
 
-                -- kill 1
-                kill_orchestrator(df_id)
-                -- restart without signal
+                -- A start while parked advances and then passivates again.
                 c:start(df_id)
                 test.is_true(wait_running(df_id, 5000), "still waiting")
 
-                -- kill 2
-                kill_orchestrator(df_id)
                 -- wrong signal
                 c:signal(df_id, "wrong-" .. uuid.v7(), { nope = true })
                 test.is_true(wait_running(df_id, 5000), "wrong signal ignored")
 
-                -- kill 3
-                kill_orchestrator(df_id)
                 -- correct signal
                 c:signal(df_id, sid, { finally = true })
-                test.is_true(wait_complete(df_id, 8000), "completed after interleaved pattern")
+                test.is_true(wait_complete(df_id, 8000), "completed after correct signal")
             end)
         end)
 
@@ -412,17 +390,16 @@ local function define_tests()
                 test.is_true(wait_complete(df_id, 8000), "handles same-tick")
             end)
 
-            it("signal before start, then kill, then restart", function()
-                local sid = "pre-start-kill-" .. uuid.v7()
+            it("signal before repeated starts is consumed once", function()
+                local sid = "pre-start-repeat-" .. uuid.v7()
                 local df_id = make_signal_wf(sid)
 
                 c:signal(df_id, sid, { early = true })
                 c:start(df_id)
                 time.sleep("200ms")
-                kill_orchestrator(df_id)
                 c:start(df_id)
 
-                test.is_true(wait_complete(df_id, 8000), "pre-start signal survives kill")
+                test.is_true(wait_complete(df_id, 8000), "pre-start signal is durable")
             end)
         end)
 
@@ -491,16 +468,16 @@ local function define_tests()
         end)
 
         -- ==========================================
-        -- DIAMOND WITH SIGNAL + KILL + RECOVERY
+        -- DIAMOND WITH PARKED SIGNAL BRANCH
         -- ==========================================
 
-        describe("diamond kill recovery", function()
-            it("diamond: func fans out, signal branch killed, func branch done, signal recovers", function()
+        describe("parked diamond", function()
+            it("diamond: func branch finishes while signal branch waits", function()
                 local root = uuid.v7()
                 local sig = uuid.v7()
                 local fb = uuid.v7()
                 local merge = uuid.v7()
-                local sid = "dkill-" .. uuid.v7()
+                local sid = "parked-diamond-" .. uuid.v7()
 
                 local df_id = c:create_workflow({
                     make_func_node(root, {
@@ -528,10 +505,8 @@ local function define_tests()
                 -- func branch should be done, signal still waiting
                 test.is_true(wait_running(df_id, 5000), "waiting for signal")
 
-                -- kill and recover with signal
-                kill_orchestrator(df_id)
                 c:signal(df_id, sid, { approved = true })
-                test.is_true(wait_complete(df_id, 10000), "diamond recovered")
+                test.is_true(wait_complete(df_id, 10000), "diamond completed")
             end)
         end)
     end)

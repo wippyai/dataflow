@@ -149,6 +149,7 @@ local function normalize_row(row: any)
         dataflow_id = tostring(row.dataflow_id),
         generation = tonumber(row.generation),
         desired_active = row.desired_active == true or tonumber(row.desired_active) == 1,
+        owner_epoch = row.owner_epoch and tostring(row.owner_epoch) or nil,
         launch_args = launch_args,
         requested_at = tostring(row.requested_at),
         updated_at = tostring(row.updated_at),
@@ -182,7 +183,8 @@ end
 
 local function get_tx(tx, dataflow_id)
     local rows, query_err = tx_query(tx, [[
-        SELECT dataflow_id, generation, desired_active, launch_args, requested_at, updated_at
+        SELECT dataflow_id, generation, desired_active, owner_epoch,
+               launch_args, requested_at, updated_at
         FROM dataflow_activations WHERE dataflow_id = ? LIMIT 1
     ]], { dataflow_id })
     if query_err then return nil, query_err end
@@ -229,13 +231,15 @@ local function advance_activation_tx(tx, dataflow_id, launch_args: any, now_valu
     local update_args = preserve_launch_args and "dataflow_activations.launch_args" or "excluded.launch_args"
     local result, write_err = tx_execute(tx, ([[
         INSERT INTO dataflow_activations(
-            dataflow_id, generation, desired_active, launch_args, requested_at, updated_at
+            dataflow_id, generation, desired_active, owner_epoch,
+            launch_args, requested_at, updated_at
         )
-        SELECT ?, 1, ?, ?, ?, ? FROM dataflows
+        SELECT ?, 1, ?, NULL, ?, ?, ? FROM dataflows
         WHERE dataflow_id = ? AND status NOT IN (?, ?, ?, ?)
         ON CONFLICT(dataflow_id) DO UPDATE SET
             generation = dataflow_activations.generation + 1,
             desired_active = excluded.desired_active,
+            owner_epoch = NULL,
             launch_args = %s,
             requested_at = excluded.requested_at,
             updated_at = excluded.updated_at
@@ -272,54 +276,6 @@ function activation_repo.request_activation_tx(tx, dataflow_id, launch_args, now
     local terminal = terminal_result_from_status(status)
     if terminal then return terminal, nil end
     return advance_activation_tx(tx, dataflow_id, launch_args, now_value, false)
-end
-
-function activation_repo.ensure_running_recovery_tx(tx, dataflow_id, now_value)
-    if not tx then return nil, "transaction is required" end
-    local valid, validation_err = validate_id(dataflow_id)
-    if not valid then return nil, validation_err end
-    valid, validation_err = validate_timestamp(now_value, "updated_at")
-    if not valid then return nil, validation_err end
-
-    local locked_status, lock_err = lock_workflow_status_tx(tx, dataflow_id)
-    if lock_err then return nil, lock_err end
-    local terminal = terminal_result_from_status(locked_status)
-    if terminal then
-        terminal.recovered = false
-        return terminal, nil
-    end
-
-    local result, insert_err = tx_execute(tx, [[
-        INSERT INTO dataflow_activations(
-            dataflow_id, generation, desired_active, launch_args, requested_at, updated_at
-        )
-        SELECT ?, 1, ?, NULL, ?, ? FROM dataflows
-        WHERE dataflow_id = ? AND status = ?
-        ON CONFLICT(dataflow_id) DO NOTHING
-    ]], { dataflow_id, true, now_value, now_value, dataflow_id, consts.STATUS.RUNNING })
-    if insert_err then return nil, "failed to ensure running activation: " .. tostring(insert_err) end
-
-    local status = locked_status
-    local row, row_err = get_tx(tx, dataflow_id)
-    if row_err then return nil, row_err end
-    if result and (result.rows_affected or 0) > 0 then
-        if not row then return nil, "running activation row missing after insert" end
-        row.changed = true
-        row.recovered = true
-        row.terminal = false
-        return row, nil
-    end
-    if TERMINAL_STATUS[status] then
-        return { changed = false, recovered = false, terminal = true, status = status }, nil
-    end
-    return {
-        changed = false,
-        recovered = false,
-        terminal = false,
-        status = status,
-        generation = row and row.generation or nil,
-        desired_active = row and row.desired_active or false,
-    }, nil
 end
 
 function activation_repo.activate_for_signal_tx(tx, dataflow_id, wake_key, wake_at, now_value)
@@ -502,6 +458,57 @@ function activation_repo.release_if_generation_tx(tx, dataflow_id, generation, n
     }, nil
 end
 
+-- Fence process ownership before spawn. A generation can be claimed only from
+-- the exact epoch observed by the overseer. The write happens before process
+-- creation, so an overseer crash between claim and spawn is classified as a
+-- same-runtime loss rather than retried into a process flood.
+function activation_repo.claim_epoch_tx(
+    tx, dataflow_id, generation, observed_epoch, runtime_epoch, now_value)
+    if not tx then return nil, "transaction is required" end
+    local valid, validation_err = validate_id(dataflow_id)
+    if not valid then return nil, validation_err end
+    generation = tonumber(generation)
+    if not generation or generation < 1 or generation % 1 ~= 0 then
+        return nil, "generation must be a positive integer"
+    end
+    if type(runtime_epoch) ~= "string" or runtime_epoch == "" then
+        return nil, "runtime_epoch is required"
+    end
+    valid, validation_err = validate_timestamp(now_value, "updated_at")
+    if not valid then return nil, validation_err end
+
+    local status, status_err = lock_workflow_status_tx(tx, dataflow_id)
+    if status_err then return nil, status_err end
+    local terminal = terminal_result_from_status(status)
+    if terminal then
+        terminal.claimed = false
+        return terminal, nil
+    end
+
+    local epoch_predicate = "owner_epoch IS NULL"
+    local params = { runtime_epoch, now_value, dataflow_id, generation, true }
+    if observed_epoch ~= nil then
+        if type(observed_epoch) ~= "string" or observed_epoch == "" then
+            return nil, "observed_epoch must be nil or a non-empty string"
+        end
+        epoch_predicate = "owner_epoch = ?"
+        table.insert(params, observed_epoch)
+    end
+    local result, update_err = tx_execute(tx, [[
+        UPDATE dataflow_activations
+        SET owner_epoch = ?, updated_at = ?
+        WHERE dataflow_id = ? AND generation = ? AND desired_active = ?
+          AND ]] .. epoch_predicate, params)
+    if update_err then return nil, "failed to claim activation epoch: " .. tostring(update_err) end
+
+    local current, current_err = get_tx(tx, dataflow_id)
+    if current_err then return nil, current_err end
+    if not current then return nil, "activation row missing after epoch claim" end
+    current.claimed = result ~= nil and (result.rows_affected or 0) == 1
+    current.terminal = false
+    return current, nil
+end
+
 function activation_repo.consume_wake_tx(tx, dataflow_id, wake_key, generation)
     if not tx then return nil, "transaction is required" end
     local valid, validation_err = validate_id(dataflow_id)
@@ -531,6 +538,30 @@ function activation_repo.consume_wake_tx(tx, dataflow_id, wake_key, generation)
     return { changed = result and (result.rows_affected or 0) > 0, consumed = result and (result.rows_affected or 0) > 0 }, nil
 end
 
+-- Register or re-arm a durable yield deadline. Reusing the same logical yield
+-- is a new wait episode, so any activation fence left by the previous episode
+-- must be cleared atomically with the new deadline.
+function activation_repo.register_yield_wake_tx(tx, dataflow_id, yield_id, wake_at)
+    if not tx then return nil, "transaction is required" end
+    local valid, validation_err = validate_id(dataflow_id)
+    if not valid then return nil, validation_err end
+    if type(yield_id) ~= "string" or yield_id == "" then return nil, "yield_id is required" end
+    valid, validation_err = validate_timestamp(wake_at, "wake_at")
+    if not valid then return nil, validation_err end
+
+    local result, write_err = tx_execute(tx, [[
+        INSERT INTO dataflow_wakes(dataflow_id, wake_key, wake_at, activation_generation)
+        VALUES (?, ?, ?, NULL)
+        ON CONFLICT(dataflow_id, wake_key) DO UPDATE SET
+            wake_at = excluded.wake_at,
+            activation_generation = NULL
+    ]], { dataflow_id, "yield:" .. yield_id, wake_at })
+    if write_err then return nil, "failed to register yield wake: " .. tostring(write_err) end
+    return {
+        changed = result ~= nil and (result.rows_affected or 0) > 0,
+    }, nil
+end
+
 function activation_repo.disable_terminal_tx(tx, dataflow_id, now_value)
     if not tx then return nil, "transaction is required" end
     local valid, validation_err = validate_id(dataflow_id)
@@ -549,7 +580,8 @@ function activation_repo.get(dataflow_id)
     local db, db_err = sql.get(consts.APP_DB)
     if db_err then return nil, db_err end
     local rows, query_err = db_query(db, [[
-        SELECT dataflow_id, generation, desired_active, launch_args, requested_at, updated_at
+        SELECT dataflow_id, generation, desired_active, owner_epoch,
+               launch_args, requested_at, updated_at
         FROM dataflow_activations WHERE dataflow_id = ? LIMIT 1
     ]], { dataflow_id })
     db:release()
@@ -561,7 +593,7 @@ function activation_repo.list_active()
     local db, db_err = sql.get(consts.APP_DB)
     if db_err then return nil, db_err end
     local rows, query_err = db_query(db, [[
-        SELECT a.dataflow_id, a.generation, a.desired_active, a.launch_args,
+        SELECT a.dataflow_id, a.generation, a.desired_active, a.owner_epoch, a.launch_args,
                a.requested_at, a.updated_at
         FROM dataflow_activations a
         JOIN dataflows d ON d.dataflow_id = a.dataflow_id

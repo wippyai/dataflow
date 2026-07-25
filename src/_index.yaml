@@ -278,7 +278,7 @@ entries:
         path: ".meta.target_db"
       - entry: userspace.dataflow.migrations:08_create_dataflow_activations
         path: ".meta.target_db"
-      - entry: userspace.dataflow.runner:wake_process.service
+      - entry: userspace.dataflow.runner:overseer.service
         path: ".lifecycle.depends_on +="
       - entry: userspace.dataflow.security:root.database
         path: .policy.resources
@@ -307,9 +307,9 @@ entries:
       description: "Process host the targeted dataflow wake service runs on"
     default: app:processes
     targets:
-      - entry: userspace.dataflow.runner:wake_process.service
+      - entry: userspace.dataflow.runner:overseer.service
         path: .host
-      - entry: userspace.dataflow.runner:wake_process.service
+      - entry: userspace.dataflow.runner:overseer.service
         path: ".lifecycle.depends_on +="
       - entry: userspace.dataflow.security:root.process_host
         path: .policy.resources

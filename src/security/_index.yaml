@@ -5,7 +5,7 @@ entries:
   - name: root
     kind: registry.entry
     meta:
-      comment: Module-owned authority group for the bounded dataflow wake service.
+      comment: Module-owned authority group for the bounded Dataflow overseer.
 
   - name: root.database
     kind: security.policy
@@ -112,7 +112,7 @@ entries:
   - name: root.process_delivery
     kind: security.policy
     meta:
-      comment: Observes and wakes dynamically allocated orchestrator PIDs without granting other process operations.
+      comment: Observes, wakes, and stops only dynamically allocated orchestrator processes.
     groups:
       - userspace.dataflow.security:root
     policy:
@@ -121,18 +121,44 @@ entries:
         - process.send
         - process.monitor
         - process.unmonitor
+        - process.cancel
+        - process.terminate
+      effect: allow
+
+  - name: root.process_lookup
+    kind: security.policy
+    meta:
+      comment: Resolves canonical Dataflow owner names before acquiring or failing an activation.
+    groups:
+      - userspace.dataflow.security:root
+    policy:
+      resources: '*'
+      actions:
+        - process.registry.lookup
       effect: allow
 
   - name: root.service_name
     kind: security.policy
     meta:
-      comment: Registers only the current wake-service name and its overseer successor.
+      comment: Registers only the module-owned overseer service name.
     groups:
       - userspace.dataflow.security:root
     policy:
       resources:
-        - dataflow.wakes
         - dataflow.overseer
       actions:
         - process.registry.register
+      effect: allow
+
+  - name: root.runtime_epoch
+    kind: security.policy
+    meta:
+      comment: Reads only the module-owned in-memory full-runtime boot epoch.
+    groups:
+      - userspace.dataflow.security:root
+    policy:
+      resources:
+        - userspace.dataflow.env:runtime_epoch
+      actions:
+        - env.get
       effect: allow
