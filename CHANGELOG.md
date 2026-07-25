@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+## [0.6.0](https://github.com/wippyai/dataflow/compare/v0.5.5...v0.6.0) (2026-07-25)
+
+
+### Features
+
+* **dataflow:** add durable execution frames ([7fc7639](https://github.com/wippyai/dataflow/commit/7fc7639a88c6919da0ac4059e38900137a496084))
+* **dataflow:** add pure overseer lifecycle state ([0c68d50](https://github.com/wippyai/dataflow/commit/0c68d507e88d6ca222c5e0ff3d3d86e86b73eac6))
+* **dataflow:** make workflow ownership restart-safe ([630c4ae](https://github.com/wippyai/dataflow/commit/630c4ae22f68750d2ce32393a27547f5ce01be56))
+* **dataflow:** make workflow ownership restart-safe ([102f1e9](https://github.com/wippyai/dataflow/commit/102f1e983dfbec9c068561d2c38cfecc90a11590))
+* **dataflow:** route client activation through overseer ([51e28e8](https://github.com/wippyai/dataflow/commit/51e28e8e29776b92ff052644609a33be445359ac))
+* **dataflow:** supervise durable activations ([c9186d9](https://github.com/wippyai/dataflow/commit/c9186d91f443c650c243029e67a6f2b0de7cbc77))
+* **persist:** add generation-fenced activations ([3d1d965](https://github.com/wippyai/dataflow/commit/3d1d9655ae7f9ea3de5cb18ee14efbbdbbad2e6a))
+* **persist:** fence workflow lifecycle projections ([04a7417](https://github.com/wippyai/dataflow/commit/04a7417dad5126847ef5fb72ad55943f12677599))
+
+
+### Bug Fixes
+
+* **client:** authorize durable activation ([700f8b8](https://github.com/wippyai/dataflow/commit/700f8b8bf8708cbcf3df93007e0b5886a03e42d7))
+* **dataflow:** bound overseer service authority ([d6e70b8](https://github.com/wippyai/dataflow/commit/d6e70b82aa9a669ef41b5ce2dc0216f7375539b3))
+* **dataflow:** converge stale wake state ([586241f](https://github.com/wippyai/dataflow/commit/586241f40d641785b4fe754ff6f5bd7f3b32d850))
+* **dataflow:** fence orchestrator lifecycle ([9f82b0a](https://github.com/wippyai/dataflow/commit/9f82b0a717d88e5fac0716efd07d95420a24bf80))
+
 ## [0.5.5](https://github.com/wippyai/dataflow/compare/v0.5.4...v0.5.5) (2026-07-19)
 
 
