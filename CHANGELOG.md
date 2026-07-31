@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## [0.6.1](https://github.com/wippyai/dataflow/compare/v0.6.0...v0.6.1) (2026-07-31)
+
+
+### Bug Fixes
+
+* **flow:** preserve agent capability overlays ([c53f6b2](https://github.com/wippyai/dataflow/commit/c53f6b2274abc45b25fdb3bb5398b60a72791145))
+
 ## [0.6.0](https://github.com/wippyai/dataflow/compare/v0.5.5...v0.6.0) (2026-07-25)
 
 
