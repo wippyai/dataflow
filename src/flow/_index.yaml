@@ -54,3 +54,16 @@ entries:
       df_compiler: userspace.dataflow.flow:compiler
       df_consts: userspace.dataflow:consts
     method: flow
+
+  - name: flow_test
+    kind: function.lua
+    meta:
+      type: test
+      suite: dataflow
+      comment: Flow builder contract tests
+    source: file://flow_test.lua
+    imports:
+      test: wippy.test:test
+      flow: userspace.dataflow.flow:flow
+      compiler: userspace.dataflow.flow:compiler
+    method: run_tests

@@ -119,6 +119,8 @@ function FlowBuilder:agent(agent_id, config)
             context = arena_config.context
         },
         inputs = config.inputs,
+        active_traits = config.active_traits,
+        active_tools = config.active_tools,
         show_tool_calls = config.show_tool_calls,
         metadata = config.metadata,
         input_transform = config.input_transform
