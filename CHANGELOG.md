@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## [0.7.0](https://github.com/wippyai/dataflow/compare/v0.6.1...v0.7.0) (2026-07-31)
+
+
+### Features
+
+* **parallel:** add durable rolling scheduling ([#50](https://github.com/wippyai/dataflow/issues/50)) ([0eb810a](https://github.com/wippyai/dataflow/commit/0eb810a5bbf24ceb3a9391ee3c8353c0d6262d01))
+
 ## [0.6.1](https://github.com/wippyai/dataflow/compare/v0.6.0...v0.6.1) (2026-07-31)
 
 
