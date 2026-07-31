@@ -155,6 +155,8 @@ function FlowGraph:create_template_nodes(template, parent_node_id)
                 model = op.config.model,
                 arena = op.config.arena,
                 inputs = op.config.inputs,
+                active_traits = op.config.active_traits,
+                active_tools = op.config.active_tools,
                 show_tool_calls = op.config.show_tool_calls,
                 input_transform = op.config.input_transform
             }
@@ -442,6 +444,8 @@ function compiler.build_graph(operations, session_context)
                 model = op.config.model,
                 arena = op.config.arena,
                 inputs = op.config.inputs,
+                active_traits = op.config.active_traits,
+                active_tools = op.config.active_tools,
                 show_tool_calls = op.config.show_tool_calls,
                 input_transform = op.config.input_transform
             }

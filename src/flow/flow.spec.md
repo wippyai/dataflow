@@ -625,6 +625,8 @@ Invokes a registered function. If function returns `{_control = {commands = [...
         context = {...}
     },
     inputs = {required = ["task"]},
+    active_traits = {},
+    active_tools = {"namespace.tools:search"},
     show_tool_calls = true,
     metadata = {title = "Specialist Agent"},
     input_transform = {task = "inputs.prompt"}
@@ -632,6 +634,11 @@ Invokes a registered function. If function returns `{_control = {commands = [...
 ```
 
 Creates an agent execution node with arena configuration.
+
+**`active_traits` / `active_tools` (optional):** Override the selected agent's
+active capability lists for this node. An empty list explicitly disables the
+corresponding capabilities; omission keeps the selected agent's configuration.
+The overlays are preserved for nested agent templates as well as root nodes.
 
 **`exit_func_id` (optional):** Validates finish tool output before completion. Only works with `tool_calling = "any"` or `"auto"` with `exit_schema`.
 
