@@ -104,15 +104,18 @@ end
 function iterator.redirect_terminals_to_parent(config, parent_node_id, iteration_index, source_node_id, attempt_id)
     local iteration_discriminator = build_iteration_discriminator(iteration_index, attempt_id)
     local new_data_targets = {}
-    for _, target in ipairs(config.data_targets or {}) do
+    for target_index, target in ipairs(config.data_targets or {}) do
         if not target.node_id and target.data_type == consts.DATA_TYPE.NODE_OUTPUT then
             table.insert(new_data_targets, {
                 data_type = consts.DATA_TYPE.ITERATION_RESULT,
                 node_id = parent_node_id,
                 discriminator = iteration_discriminator,
+                key = source_node_id .. ":terminal:" .. tostring(target_index),
                 content_type = target.content_type,
                 metadata = {
                     source_node_id = source_node_id,
+                    output_target_index = target_index,
+                    terminal_emission_key_version = 1,
                     iteration = iteration_index,
                     attempt_id = attempt_id
                 }
@@ -123,16 +126,19 @@ function iterator.redirect_terminals_to_parent(config, parent_node_id, iteration
     end
 
     local new_error_targets = {}
-    for _, target in ipairs(config.error_targets or {}) do
+    for target_index, target in ipairs(config.error_targets or {}) do
         if not target.node_id and target.data_type == consts.DATA_TYPE.NODE_OUTPUT then
             table.insert(new_error_targets, {
                 data_type = consts.DATA_TYPE.ITERATION_ERROR,
                 node_id = parent_node_id,
                 discriminator = iteration_discriminator,
-                key = target.key or "error",
+                key = source_node_id .. ":terminal:" .. tostring(target_index),
                 content_type = target.content_type,
                 metadata = {
                     source_node_id = source_node_id,
+                    output_key = target.key or "error",
+                    output_target_index = target_index,
+                    terminal_emission_key_version = 1,
                     iteration = iteration_index,
                     attempt_id = attempt_id
                 }
@@ -372,7 +378,12 @@ function iterator.collect_results(parent_node, iteration_info, deps)
     end
 
     if #output_data == 0 then
-        return nil, "No output data found for iteration"
+        return nil, {
+            code = "ITERATION_OUTPUT_MISSING",
+            message = "Iteration completed without routed output",
+            iteration = iteration_info.iteration,
+            attempt_id = iteration_info.attempt_id,
+        }
     end
 
     local parsed_outputs = {}
@@ -426,6 +437,15 @@ function iterator.collect_results(parent_node, iteration_info, deps)
 
     if #parsed_outputs == 1 then
         return parsed_outputs[1].content, nil
+    end
+
+    if #parsed_outputs == 0 then
+        return nil, {
+            code = "ITERATION_OUTPUT_MISSING",
+            message = "Iteration completed without routed output",
+            iteration = iteration_info.iteration,
+            attempt_id = iteration_info.attempt_id,
+        }
     end
 
     return parsed_outputs, nil

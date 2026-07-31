@@ -278,6 +278,8 @@ entries:
         path: ".meta.target_db"
       - entry: userspace.dataflow.migrations:08_create_dataflow_activations
         path: ".meta.target_db"
+      - entry: userspace.dataflow.migrations:09_add_iteration_uniqueness_guard
+        path: ".meta.target_db"
       - entry: userspace.dataflow.runner:overseer.service
         path: ".lifecycle.depends_on +="
       - entry: userspace.dataflow.security:root.database

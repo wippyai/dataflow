@@ -79,6 +79,58 @@ local function define_tests()
                 test.eq(result.error.code, parallel.ERRORS.INVALID_BATCH_SIZE)
             end)
 
+            it("should reject fractional batch size", function()
+                local mock_node = {
+                    config = function(_self: any)
+                        return { source_array_key = "items", batch_size = 2.5 }
+                    end,
+                    fail = function(_self: any, error_details: any, message: string?)
+                        return { success = false, error = error_details, message = message }
+                    end
+                }
+                parallel._deps.node = { new = function(_args: any) return mock_node, nil end }
+
+                local result = parallel.run({})
+                test.is_false(result.success)
+                test.eq(result.error.code, parallel.ERRORS.INVALID_BATCH_SIZE)
+            end)
+
+            it("should validate scheduling mode", function()
+                local mock_node = {
+                    config = function(_self: any)
+                        return { source_array_key = "items", scheduling = "waves" }
+                    end,
+                    fail = function(_self: any, error_details: any, message: string?)
+                        return { success = false, error = error_details, message = message }
+                    end
+                }
+                parallel._deps.node = { new = function(_args: any) return mock_node, nil end }
+
+                local result = parallel.run({})
+                test.is_false(result.success)
+                test.eq(result.error.code, parallel.ERRORS.INVALID_SCHEDULING)
+            end)
+
+            it("should reject fail_fast with rolling scheduling", function()
+                local mock_node = {
+                    config = function(_self: any)
+                        return {
+                            source_array_key = "items",
+                            scheduling = "rolling",
+                            on_error = "fail_fast"
+                        }
+                    end,
+                    fail = function(_self: any, error_details: any, message: string?)
+                        return { success = false, error = error_details, message = message }
+                    end
+                }
+                parallel._deps.node = { new = function(_args: any) return mock_node, nil end }
+
+                local result = parallel.run({})
+                test.is_false(result.success)
+                test.eq(result.error.code, parallel.ERRORS.UNSUPPORTED_SCHEDULING_COMBINATION)
+            end)
+
             it("should require source_array_key", function()
                 local mock_node = {
                     config = function(_self: any)
@@ -459,7 +511,6 @@ local function define_tests()
                 }
 
                 parallel._deps.iterator = mock_iterator
-
                 local result = parallel.run({})
                 test.is_true(result.success)
                 test.eq(#result.result, 1)
@@ -628,6 +679,88 @@ local function define_tests()
                 test.is_true(result.success)
                 test.eq(batches_processed, 2)
                 test.is_true(yield_called)
+            end)
+
+            it("should refill a bounded durable rolling window", function()
+                local batches_processed = 0
+                local status_query_count = 0
+                local observed_batches: any = {}
+                local observed_yields: any = {}
+                local mock_node = {
+                    dataflow_id = "rolling-test-flow",
+                    config = function(_self: any)
+                        return {
+                            source_array_key = "items",
+                            batch_size = 2,
+                            scheduling = "rolling"
+                        }
+                    end,
+                    inputs = function(_self: any)
+                        return { default = { content = { items = { "a", "b", "c" } } } }
+                    end,
+                    yield = function(_self: any, options: any)
+                        table.insert(observed_yields, options)
+                        return {}, nil
+                    end,
+                    complete = function(_self: any, result: any, message: string?)
+                        return { success = true, result = result, message = message }
+                    end
+                }
+                local mock_template_graph = { is_empty = function(_self: any) return false end }
+                local mock_iterator = {
+                    create_batch = function(_n: any, _template_graph: any, items: any,
+                                            batch_start: number, batch_end: number, _iteration_input_key: string)
+                        batches_processed = batches_processed + 1
+                        table.insert(observed_batches, { start = batch_start, finish = batch_end })
+                        local iterations = {}
+                        for index = batch_start, batch_end do
+                            table.insert(iterations, {
+                                iteration = index,
+                                iteration_index = index,
+                                input_item = items[index],
+                                root_nodes = { "node-" .. index }
+                            })
+                        end
+                        return iterations, nil
+                    end,
+                    collect_results = function(_n: any, iteration: any)
+                        return "result_" .. iteration.iteration, nil
+                    end
+                }
+                parallel._deps.node = { new = function(_args: any) return mock_node, nil end }
+                parallel._deps.template_graph = {
+                    build_for_node = function(_node: any) return mock_template_graph, nil end
+                }
+                parallel._deps.iterator = mock_iterator
+                parallel._deps.node_reader = {
+                    read_statuses = function(_dataflow_id: string, node_ids: any)
+                        status_query_count = status_query_count + 1
+                        local rows = {}
+                        for _, node_id in ipairs(node_ids or {}) do
+                            table.insert(rows, {
+                                node_id = node_id,
+                                status = consts.STATUS.COMPLETED_SUCCESS,
+                            })
+                        end
+                        return rows, nil
+                    end,
+                }
+
+                local result = parallel.run({})
+                test.is_true(result.success)
+                test.eq(batches_processed, 2)
+                test.eq(observed_batches[1].start, 1)
+                test.eq(observed_batches[1].finish, 2)
+                test.eq(observed_batches[2].start, 3)
+                test.eq(observed_batches[2].finish, 3)
+                test.eq(#observed_yields, 2)
+                test.eq(status_query_count, 2)
+                for _, yielded in ipairs(observed_yields) do
+                    test.eq(yielded.completion_policy, "any_group")
+                    test.eq(yielded.concurrency_group_key, "iteration")
+                    test.eq(yielded.max_concurrent_nodes, 2)
+                    test.is_true(#yielded.run_nodes <= 2)
+                end
             end)
 
             it("should handle fail_fast strategy", function()

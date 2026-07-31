@@ -792,6 +792,9 @@ local function define_tests()
                 test.is_true(snapshot.active_processes["node-1"])
                 test.not_nil(snapshot.input_tracker.requirements["node-1"])
                 test.is_false(snapshot.has_workflow_output)
+                snapshot.scheduler_rotation.last_rolling_parent = "parallel-a"
+                local next_snapshot = ws:get_scheduler_snapshot() :: any
+                test.eq(next_snapshot.scheduler_rotation.last_rolling_parent, "parallel-a")
             end)
         end)
 
@@ -1268,6 +1271,26 @@ local function define_tests()
                 ws:satisfy_yield("parent", {})
                 test.is_nil(ws.active_yields["parent"])
             end)
+
+            it("retains rolling child ownership during a partial-yield handoff", function()
+                local ws = workflow_state.new(test_ctx.dataflow_id) :: any
+                ws:track_yield("parent", {
+                    yield_id = "rolling-yield",
+                    completion_policy = "any_group",
+                    concurrency_group_key = "iteration",
+                    max_concurrent_nodes = 2,
+                    pending_children = { a = consts.STATUS.COMPLETED_SUCCESS, b = consts.STATUS.PENDING },
+                    wake_keys = { "yield:rolling-yield" },
+                })
+
+                ws:satisfy_yield("parent", { a = "result-a" })
+                local retained = test.not_nil(ws.active_yields.parent) :: any
+                test.is_true(retained.handoff)
+                test.eq(retained.pending_children.b, consts.STATUS.PENDING)
+                test.eq(#retained.wake_keys, 0)
+                test.eq(ws.queued_commands[1].payload.data_id, "rolling-yield")
+                test.eq(ws.queued_commands[1].payload.data_type, consts.DATA_TYPE.NODE_YIELD_RESULT)
+            end)
         end)
 
         describe("Yield Recovery", function()
@@ -1455,7 +1478,10 @@ local function define_tests()
                                     "yield_id": "%s",
                                     "reply_to": "test.yield_reply.%s",
                                     "yield_context": {
-                                        "run_nodes": ["%s", "%s"]
+                                        "run_nodes": ["%s", "%s"],
+                                        "completion_policy": "any_group",
+                                        "concurrency_group_key": "iteration",
+                                        "max_concurrent_nodes": 2
                                     },
                                     "timestamp": "2023-01-01T12:00:00Z"
                                 }]], parent_id, yield_id, parent_id, child1_id, child2_id),
@@ -1480,6 +1506,9 @@ local function define_tests()
                 local yield_info = ws.active_yields[parent_id] :: any
                 test.eq(yield_info.yield_id, yield_id)
                 test.eq(yield_info.reply_to, "test.yield_reply." .. parent_id)
+                test.eq(yield_info.completion_policy, "any_group")
+                test.eq(yield_info.concurrency_group_key, "iteration")
+                test.eq(yield_info.max_concurrent_nodes, 2)
 
                 test.eq(yield_info.pending_children[child1_id], consts.STATUS.PENDING)
                 test.eq(yield_info.pending_children[child2_id], consts.STATUS.COMPLETED_SUCCESS)

@@ -91,8 +91,12 @@ while [ "$attempts" -lt 200 ]; do
     phase1=$(query "
         SELECT a.dataflow_id || '|' || a.owner_epoch
         FROM dataflow_activations a
-        JOIN dataflow_nodes n ON n.dataflow_id = a.dataflow_id
-        WHERE a.desired_active AND n.status = 'running'
+        JOIN dataflow_data y ON y.dataflow_id = a.dataflow_id AND y.type = 'node.yield'
+        WHERE a.desired_active
+          AND (SELECT COUNT(*) FROM dataflow_nodes c
+               WHERE c.dataflow_id = a.dataflow_id
+                 AND c.parent_node_id IS NOT NULL
+                 AND c.status = 'running') = 2
         LIMIT 1;
     " 2>/dev/null || true)
     [ -n "$phase1" ] && break
@@ -109,6 +113,60 @@ done
 dataflow_id=${phase1%%|*}
 first_epoch=${phase1#*|}
 [ -n "$first_epoch" ] || { echo "first runtime did not claim an epoch" >&2; exit 1; }
+
+if [ "$dialect" = "postgres" ]; then
+    rolling_yield=$(query "
+        SELECT COUNT(*) FROM dataflow_data
+        WHERE dataflow_id = '$dataflow_id' AND type = 'node.yield'
+          AND convert_from(content, 'UTF8')::jsonb #>> '{yield_context,completion_policy}' = 'any_group'
+          AND convert_from(content, 'UTF8')::jsonb #>> '{yield_context,concurrency_group_key}' = 'iteration'
+          AND convert_from(content, 'UTF8')::jsonb #>> '{yield_context,max_concurrent_nodes}' = '2';
+    ")
+else
+    rolling_yield=$(query "
+        SELECT COUNT(*) FROM dataflow_data
+        WHERE dataflow_id = '$dataflow_id' AND type = 'node.yield'
+          AND json_extract(CAST(content AS TEXT), '$.yield_context.completion_policy') = 'any_group'
+          AND json_extract(CAST(content AS TEXT), '$.yield_context.concurrency_group_key') = 'iteration'
+          AND json_extract(CAST(content AS TEXT), '$.yield_context.max_concurrent_nodes') = 2;
+    ")
+fi
+[ "$rolling_yield" -ge 1 ] || { echo "rolling concurrency contract was not persisted" >&2; exit 1; }
+
+# The fast second iteration must release a slot while iteration one is still
+# running. This distinguishes a rolling window from the legacy wave barrier and
+# ensures the restart below interrupts a genuinely occupied rolling cursor.
+rolling_refilled=""
+attempts=0
+while [ "$attempts" -lt 100 ]; do
+    if [ "$dialect" = "postgres" ]; then
+        rolling_refilled=$(query "
+            SELECT CASE WHEN
+              EXISTS (SELECT 1 FROM dataflow_nodes
+                      WHERE dataflow_id = '$dataflow_id' AND status = 'running'
+                        AND (metadata->>'iteration')::int = 1)
+              AND EXISTS (SELECT 1 FROM dataflow_nodes
+                          WHERE dataflow_id = '$dataflow_id' AND status IN ('running', 'completed')
+                            AND (metadata->>'iteration')::int >= 3)
+            THEN 1 ELSE 0 END;
+        ")
+    else
+        rolling_refilled=$(query "
+            SELECT CASE WHEN
+              EXISTS (SELECT 1 FROM dataflow_nodes
+                      WHERE dataflow_id = '$dataflow_id' AND status = 'running'
+                        AND json_extract(metadata, '$.iteration') = 1)
+              AND EXISTS (SELECT 1 FROM dataflow_nodes
+                          WHERE dataflow_id = '$dataflow_id' AND status IN ('running', 'completed')
+                            AND json_extract(metadata, '$.iteration') >= 3)
+            THEN 1 ELSE 0 END;
+        ")
+    fi
+    [ "$rolling_refilled" = "1" ] && break
+    attempts=$((attempts + 1))
+    sleep 0.1
+done
+[ "$rolling_refilled" = "1" ] || { echo "rolling window did not refill before the slow iteration completed" >&2; exit 1; }
 
 stop_runtime "$runtime_pid"
 runtime_pid=""
@@ -165,6 +223,47 @@ done
 [ "$completed" = "1" ] || {
     echo "recovered workflow did not complete exactly once" >&2
     tail -120 "$phase2_log" >&2 || true
+    exit 1
+}
+
+iteration_results=$(query "
+    SELECT COUNT(*) FROM dataflow_data
+    WHERE dataflow_id = '$dataflow_id'
+      AND type IN ('iteration.result', 'iteration.error');
+")
+[ "$iteration_results" = "4" ] || {
+    echo "recovered rolling workflow did not persist exactly four terminal iteration rows" >&2
+    exit 1
+}
+
+cursor_rows=$(query "
+    SELECT COUNT(*) FROM dataflow_data
+    WHERE dataflow_id = '$dataflow_id'
+      AND type = 'parallel.progress'
+      AND key = 'cursor';
+")
+[ "$cursor_rows" = "1" ] || {
+    echo "rolling cursor was not compacted to one mutable row: $cursor_rows" >&2
+    exit 1
+}
+
+yield_rows=$(query "
+    SELECT COUNT(*) FROM dataflow_data
+    WHERE dataflow_id = '$dataflow_id'
+      AND type = 'node.yield';
+")
+[ "$yield_rows" = "1" ] || {
+    echo "superseded rolling barriers were not compacted: $yield_rows" >&2
+    exit 1
+}
+
+yield_result_rows=$(query "
+    SELECT COUNT(*) FROM dataflow_data
+    WHERE dataflow_id = '$dataflow_id'
+      AND type = 'node.yield.result';
+")
+[ "$yield_result_rows" -le 1 ] || {
+    echo "superseded rolling yield results were not compacted: $yield_result_rows" >&2
     exit 1
 }
 

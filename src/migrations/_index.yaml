@@ -169,3 +169,17 @@ entries:
     imports:
       migration: wippy.migration:migration
     method: migrate
+
+  - name: 09_add_iteration_uniqueness_guard
+    kind: function.lua
+    meta:
+      type: migration
+      tags: [dataflows, iteration, durability, uniqueness]
+      description: Enforce idempotency for versioned iteration terminal emissions
+      depends_on: [ns:wippy.migration]
+      target_db: app:db
+      timestamp: "2026-07-31T21:00:00Z"
+    source: file://09_add_iteration_uniqueness_guard.lua
+    imports:
+      migration: wippy.migration:migration
+    method: migrate

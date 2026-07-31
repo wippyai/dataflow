@@ -7,6 +7,29 @@ local iterator = require("iterator")
 local function define_tests()
     describe("Iterator Tests", function()
         describe("Single Iteration Creation", function()
+            it("assigns stable distinct emission identities to terminal targets", function()
+                local config = {
+                    data_targets = {
+                        { data_type = consts.DATA_TYPE.NODE_OUTPUT },
+                        { data_type = consts.DATA_TYPE.NODE_OUTPUT },
+                    },
+                    error_targets = {
+                        { data_type = consts.DATA_TYPE.NODE_OUTPUT, key = "primary-error" },
+                        { data_type = consts.DATA_TYPE.NODE_OUTPUT, key = "audit-error" },
+                    },
+                }
+
+                local redirected = iterator.redirect_terminals_to_parent(
+                    config, "parallel-parent", 3, "source-node", "attempt-1"
+                )
+                test.eq(redirected.data_targets[1].key, "source-node:terminal:1")
+                test.eq(redirected.data_targets[2].key, "source-node:terminal:2")
+                test.eq(redirected.error_targets[1].key, "source-node:terminal:1")
+                test.eq(redirected.error_targets[2].key, "source-node:terminal:2")
+                test.eq(redirected.data_targets[1].metadata.terminal_emission_key_version, 1)
+                test.eq(redirected.error_targets[2].metadata.output_key, "audit-error")
+            end)
+
             it("should create iteration with simple template graph", function()
                 local parent_node = {
                     dataflow_id = "test-df",
@@ -731,7 +754,8 @@ local function define_tests()
                 local result, err = iterator.collect_results(parent_node, iteration_info, deps)
 
                 test.is_nil(result)
-                test.contains(err, "No output data found")
+                test.is_table(err)
+                test.eq(err.code, "ITERATION_OUTPUT_MISSING")
             end)
 
             it("preserves a structured template failure envelope", function()

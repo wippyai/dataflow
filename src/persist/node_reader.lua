@@ -41,6 +41,15 @@ function node_reader.with_dataflow(dataflow_id)
     return setmetatable(instance, reader_mt), nil
 end
 
+function node_reader.read_statuses(dataflow_id, node_ids)
+    local reader, err = node_reader.with_dataflow(dataflow_id)
+    if not reader then return nil, err end
+    return reader
+        :with_nodes(node_ids)
+        :fetch_options({ config = false, metadata = false })
+        :all()
+end
+
 function methods:with_nodes(...)
     local args = { ... }
     local count = select("#", ...)
