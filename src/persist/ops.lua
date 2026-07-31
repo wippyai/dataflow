@@ -35,24 +35,75 @@ local function is_success_result_unique_slot(payload)
         payload.discriminator == "result.success" and payload.node_id ~= nil
 end
 
+local function is_iteration_terminal_unique_slot(payload)
+    return payload and
+        (payload.data_type == consts.DATA_TYPE.ITERATION_RESULT or
+        payload.data_type == consts.DATA_TYPE.ITERATION_ERROR) and
+        payload.node_id ~= nil and type(payload.discriminator) == "string" and
+        payload.discriminator ~= "" and type(payload.key) == "string" and
+        payload.key ~= "" and type(payload.metadata) == "table" and
+        payload.metadata.terminal_emission_key_version == 1
+end
+
 local function find_existing_unique_data_row(tx, dataflow_id, payload)
-    if not is_workflow_output_unique_slot(payload) and not is_success_result_unique_slot(payload) then
+    if not is_workflow_output_unique_slot(payload) and not is_success_result_unique_slot(payload) and
+       not is_iteration_terminal_unique_slot(payload) then
         return nil, nil
     end
 
     local query = sql.builder.select("data_id")
         :from("dataflow_data")
         :where("dataflow_id = ?", dataflow_id)
-        :where("type = ?", payload.data_type)
+
+    if not is_iteration_terminal_unique_slot(payload) then
+        query = query:where("type = ?", payload.data_type)
+    end
 
     if is_workflow_output_unique_slot(payload) then
         query = query
             :where(sql.builder.expr("COALESCE(key, '') = COALESCE(?, '')", payload.key))
             :where(sql.builder.expr("COALESCE(discriminator, '') = COALESCE(?, '')", payload.discriminator))
-    else
+    elseif is_success_result_unique_slot(payload) then
         query = query
             :where("node_id = ?", payload.node_id)
             :where("discriminator = ?", payload.discriminator)
+    else
+        local function find_iteration_type(data_type)
+            local typed_query = sql.builder.select("data_id")
+                :from("dataflow_data")
+                :where("dataflow_id = ?", dataflow_id)
+                :where("node_id = ?", payload.node_id)
+                :where("discriminator = ?", payload.discriminator)
+                :where(sql.builder.expr("COALESCE(key, '') = ?", payload.key))
+                :where("type = ?", data_type)
+
+            if tx:db_type() == "postgres" then
+                typed_query = typed_query:where(sql.builder.expr(
+                    "metadata->>'terminal_emission_key_version' = '1'"
+                ))
+            else
+                typed_query = typed_query
+                    :where(sql.builder.expr("json_valid(metadata)"))
+                    :where(sql.builder.expr(
+                        "json_extract(metadata, '$.terminal_emission_key_version') = 1"
+                    ))
+            end
+
+            local typed_rows, typed_err = typed_query
+                :order_by("created_at DESC")
+                :limit(1)
+                :run_with(tx)
+                :query()
+            if typed_err then
+                return nil, "Failed to query existing iteration terminal row: " .. typed_err
+            end
+            return typed_rows and typed_rows[1] or nil, nil
+        end
+
+        local result_row, result_err = find_iteration_type(consts.DATA_TYPE.ITERATION_RESULT)
+        if result_err then return nil, result_err end
+        if result_row then return result_row, nil end
+        return find_iteration_type(consts.DATA_TYPE.ITERATION_ERROR)
     end
 
     query = query:order_by("created_at DESC"):limit(1)
@@ -67,6 +118,29 @@ local function find_existing_unique_data_row(tx, dataflow_id, payload)
     end
 
     return rows[1], nil
+end
+
+local function replace_iteration_terminal(tx, dataflow_id, op_id, payload, data_id,
+                                          content_value, content_type, metadata)
+    local result, err = sql.builder.update("dataflow_data")
+        :where("dataflow_id = ?", dataflow_id)
+        :where("data_id = ?", data_id)
+        :set("type", payload.data_type)
+        :set("discriminator", payload.discriminator)
+        :set("key", payload.key)
+        :set("content", content_value)
+        :set("content_type", content_type)
+        :set("metadata", metadata)
+        :run_with(tx)
+        :exec()
+    if err then return nil, "Failed to replace iteration terminal data: " .. err end
+    return {
+        data_id = data_id,
+        changes_made = result.rows_affected > 0,
+        op_id = op_id,
+        deduplicated = true,
+        replaced = true,
+    }, nil
 end
 
 local function savepoint_name()
@@ -397,6 +471,18 @@ handlers[constants.COMMAND_TYPES.CREATE_DATA] = function(tx, dataflow_id, op_id,
         metadata = encoded
     end
 
+
+    if is_iteration_terminal_unique_slot(payload) then
+        local existing_row, existing_err = find_existing_unique_data_row(tx, dataflow_id, payload)
+        if existing_err then return nil, existing_err end
+        if existing_row and existing_row.data_id then
+            return replace_iteration_terminal(
+                tx, dataflow_id, op_id, payload, existing_row.data_id,
+                content_value, content_type, metadata
+            )
+        end
+    end
+
     local now_ts = time.now():format(time.RFC3339NANO)
 
     local insert_query = sql.builder.insert("dataflow_data")
@@ -414,7 +500,8 @@ handlers[constants.COMMAND_TYPES.CREATE_DATA] = function(tx, dataflow_id, op_id,
         })
 
     local executor = insert_query:run_with(tx)
-    local uses_unique_slot = is_workflow_output_unique_slot(payload) or is_success_result_unique_slot(payload)
+    local uses_unique_slot = is_workflow_output_unique_slot(payload) or
+        is_success_result_unique_slot(payload) or is_iteration_terminal_unique_slot(payload)
     local insert_savepoint = uses_unique_slot and savepoint_name() or nil
 
     if insert_savepoint then
@@ -445,6 +532,12 @@ handlers[constants.COMMAND_TYPES.CREATE_DATA] = function(tx, dataflow_id, op_id,
             end
 
             if existing_row and existing_row.data_id then
+                if is_iteration_terminal_unique_slot(payload) then
+                    return replace_iteration_terminal(
+                        tx, dataflow_id, op_id, payload, existing_row.data_id,
+                        content_value, content_type, metadata
+                    )
+                end
                 return {
                     data_id = existing_row.data_id,
                     changes_made = false,
@@ -523,7 +616,7 @@ handlers[constants.COMMAND_TYPES.UPDATE_DATA] = function(tx, dataflow_id, op_id,
 
     local has_update = false
 
-    if payload.content then
+    if payload.content ~= nil then
         local content_value = payload.content
         if type(content_value) == "table" then
             local encoded, err_encode = json.encode(content_value)
@@ -537,12 +630,12 @@ handlers[constants.COMMAND_TYPES.UPDATE_DATA] = function(tx, dataflow_id, op_id,
         has_update = true
     end
 
-    if payload.content_type then
+    if payload.content_type ~= nil then
         update_query = update_query:set("content_type", payload.content_type)
         has_update = true
     end
 
-    if payload.metadata then
+    if payload.metadata ~= nil then
         local metadata = payload.metadata
         if type(metadata) == "table" then
             local encoded, err_encode = json.encode(metadata)
@@ -553,6 +646,21 @@ handlers[constants.COMMAND_TYPES.UPDATE_DATA] = function(tx, dataflow_id, op_id,
         end
 
         update_query = update_query:set("metadata", metadata)
+        has_update = true
+    end
+
+    if payload.data_type ~= nil then
+        update_query = update_query:set("type", payload.data_type)
+        has_update = true
+    end
+
+    if payload.discriminator ~= nil then
+        update_query = update_query:set("discriminator", payload.discriminator)
+        has_update = true
+    end
+
+    if payload.key ~= nil then
+        update_query = update_query:set("key", payload.key)
         has_update = true
     end
 
@@ -570,6 +678,13 @@ handlers[constants.COMMAND_TYPES.UPDATE_DATA] = function(tx, dataflow_id, op_id,
 
     if err then
         return nil, "Failed to update data record: " .. err
+    end
+
+    if result.rows_affected == 0 and payload.create_if_missing == true then
+        return handlers[constants.COMMAND_TYPES.CREATE_DATA](tx, dataflow_id, op_id, {
+            type = constants.COMMAND_TYPES.CREATE_DATA,
+            payload = payload,
+        })
     end
 
     return {

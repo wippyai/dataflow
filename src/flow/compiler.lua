@@ -479,6 +479,7 @@ function compiler.build_graph(operations, session_context)
                 source_array_key = op.config.source_array_key,
                 iteration_input_key = op.config.iteration_input_key,
                 batch_size = op.config.batch_size,
+                scheduling = op.config.scheduling,
                 on_error = op.config.on_error,
                 filter = op.config.filter,
                 unwrap = op.config.unwrap,

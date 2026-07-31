@@ -758,7 +758,11 @@ Processes array items in parallel batches.
 })
 ```
 
-**`batch_size` (optional, default: 1):** Number of items to process in parallel. `batch_size = 1` means sequential processing.
+**`batch_size` (optional, default: 1):** Positive integer (maximum 1000) controlling the number of materialized in-flight iterations. `batch_size = 1` means sequential processing.
+
+**`scheduling` (optional, default: `"batch"`):** How completed items release capacity.
+- `"batch"`: Preserve fixed-wave behavior; the next wave starts after every item in the current wave completes.
+- `"rolling"`: Materialize at most `batch_size` iterations, persist completions, and refill a slot whenever one finishes. Child dispatch is capped by the same value and status polling is chunked. This bounds in-flight work and cursor state; the input and final accumulated result still scale with the total item count. This mode currently requires `on_error = "continue"`. A runtime that does not understand partial group completion safely waits for the bounded window as a fixed batch; it does not expand the window.
 
 **`on_error` (optional, default: "continue"):** Execution strategy when iterations fail.
 - `"continue"`: Process all items regardless of errors, node completes

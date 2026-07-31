@@ -41,6 +41,12 @@ local function normalize_string_array(values)
     return result
 end
 
+local function read_node_status(nodes, node_id)
+    local node = nodes[node_id]
+    if type(node) ~= "table" then return nil end
+    return node.status
+end
+
 local function sort_data_rows_desc(rows)
     table.sort(rows, function(a, b)
         -- Recovery only uses this on dataflow_data rows. Those rows are ordered by
@@ -131,6 +137,7 @@ function workflow_state.new(dataflow_id, options)
         active_yields = {},
         satisfied_signal_yields = {},
         pending_signal_wake_keys = {},
+        scheduler_rotation = {},
 
         input_tracker = {
             requirements = {},
@@ -638,7 +645,8 @@ function methods:_reconstruct_active_yields()
         -- for an already-consumed signal.
         local needs_signal_replay = yield_context.wait_for_signal == true and
             (was_reset or parent_node.status == consts.STATUS.WAITING)
-        if satisfied_result and not needs_signal_replay then
+        if satisfied_result and not needs_signal_replay and
+           yield_context.completion_policy ~= "any_group" then
             goto continue
         end
 
@@ -674,6 +682,9 @@ function methods:_reconstruct_active_yields()
             pending_children = pending_children,
             results = results,
             child_path = child_path,
+            completion_policy = yield_context.completion_policy,
+            concurrency_group_key = yield_context.concurrency_group_key,
+            max_concurrent_nodes = yield_context.max_concurrent_nodes,
             wait_for_signal = yield_context.wait_for_signal,
             signal_id = yield_context.signal_id,
             timeout = yield_context.timeout,
@@ -687,6 +698,9 @@ function methods:_reconstruct_active_yields()
         if satisfied_result then
             yield_info.signal_data = decode_json_content(satisfied_result.content)
             yield_info.wake_keys = {}
+            if yield_info.completion_policy == "any_group" then
+                yield_info.handoff = true
+            end
         end
 
         -- A parked node may have re-yielded several times while recovering.
@@ -911,6 +925,7 @@ function methods:get_scheduler_snapshot()
         nodes = self.nodes,
         active_yields = self.active_yields,
         active_processes = active_proc_map,
+        scheduler_rotation = self.scheduler_rotation,
         input_tracker = self.input_tracker,
         has_workflow_output = self.has_workflow_output,
         has_workflow_error = self.has_workflow_error
@@ -1001,16 +1016,38 @@ function methods:_node_has_required_inputs(node_id)
     return true
 end
 
-function methods:cancel_deadlocked_yield_children(parent_id, yield_info)
+function methods:cancel_deadlocked_yield_children(parent_id, yield_info, completed_child_id)
     if not yield_info or not yield_info.pending_children then
         return
     end
 
+    local group_key = yield_info.completion_policy == "any_group" and
+        yield_info.concurrency_group_key or nil
+    local completed_node = completed_child_id and self.nodes[completed_child_id] or nil
+    local group_value = group_key and completed_node and
+        type(completed_node.metadata) == "table" and completed_node.metadata[group_key] or nil
+
+    local function is_in_scope(child_id)
+        if not group_key then return true end
+        if group_value == nil then return child_id == completed_child_id end
+        local child = self.nodes[child_id]
+        return child and type(child.metadata) == "table" and
+            child.metadata[group_key] == group_value
+    end
+
     local has_runnable_child = false
-    for child_id, status in pairs(yield_info.pending_children) do
-        if status == consts.STATUS.PENDING then
-            local child_node = self.nodes[child_id]
-            if child_node and self:_node_has_required_inputs(child_id) then
+    for child_id, cached_status in pairs(yield_info.pending_children) do
+        if is_in_scope(child_id) then
+            local status = read_node_status(self.nodes, child_id) or cached_status
+            -- A running or parked sibling can still produce the input required by
+            -- another child. active_processes is authoritative while the cached
+            -- yield status is still pending during a dispatch.
+            if self.active_processes[child_id] ~= nil or status == consts.STATUS.RUNNING or
+               status == consts.STATUS.WAITING then
+                return
+            end
+            if status == consts.STATUS.PENDING and self.nodes[child_id] and
+               self:_node_has_required_inputs(child_id) then
                 has_runnable_child = true
                 break
             end
@@ -1020,8 +1057,9 @@ function methods:cancel_deadlocked_yield_children(parent_id, yield_info)
     if not has_runnable_child then
         local cancel_commands = {}
 
-        for child_id, status in pairs(yield_info.pending_children) do
-            if status == consts.STATUS.PENDING then
+        for child_id, cached_status in pairs(yield_info.pending_children) do
+            local status = read_node_status(self.nodes, child_id) or cached_status
+            if is_in_scope(child_id) and status == consts.STATUS.PENDING then
                 yield_info.pending_children[child_id] = consts.STATUS.CANCELLED
                 table.insert(cancel_commands, {
                     type = consts.COMMAND_TYPES.UPDATE_NODE,
@@ -1131,7 +1169,7 @@ function methods:handle_process_exit(pid, success, result)
     -- terminal parent forever. Attached child barriers remain until their live
     -- descendants drain through the normal parent/child exit path.
     local own_yield = self.active_yields[exited_node_id]
-    if own_yield and (own_yield.wait_for_signal or own_yield.detached) then
+    if own_yield and (own_yield.wait_for_signal or own_yield.detached or own_yield.handoff) then
         self.active_yields[exited_node_id] = nil
     end
 
@@ -1145,7 +1183,7 @@ function methods:handle_process_exit(pid, success, result)
             consts.STATUS.COMPLETED_FAILURE
             yield_info.results[exited_node_id] = result_data_id
 
-            self:cancel_deadlocked_yield_children(parent_id, yield_info)
+            self:cancel_deadlocked_yield_children(parent_id, yield_info, exited_node_id)
 
             local all_complete = true
             for child_id, status in pairs(yield_info.pending_children) do
@@ -1252,7 +1290,11 @@ function methods:satisfy_yield(node_id, results)
         table.insert(self.queued_commands, {
             type = consts.COMMAND_TYPES.CREATE_DATA,
             payload = {
-                data_id = uuid.v7(),
+                -- Rolling yields use their UUID as the result row ID. The
+                -- replacement yield can then delete the preceding wake result
+                -- atomically, keeping durable handoff state bounded.
+                data_id = yield_info.completion_policy == "any_group" and
+                    yield_info.yield_id or uuid.v7(),
                 data_type = consts.DATA_TYPE.NODE_YIELD_RESULT,
                 content = results,
                 key = yield_info.yield_id,
@@ -1296,7 +1338,12 @@ function methods:satisfy_yield(node_id, results)
                 signal_data = results,
             }
         end
-        self.active_yields[node_id] = nil
+        if yield_info.completion_policy == "any_group" then
+            yield_info.handoff = true
+            yield_info.wake_keys = {}
+        else
+            self.active_yields[node_id] = nil
+        end
     end
 
     return self

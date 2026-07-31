@@ -945,7 +945,10 @@ local function handle_yield_request(state: OrchestratorState, msg_payload: any, 
             reply_to = msg_payload and msg_payload.request_context and msg_payload.request_context.reply_to,
             pending_children = {},
             results = {},
-            child_path = child_path
+            child_path = child_path,
+            completion_policy = yield_context.completion_policy,
+            concurrency_group_key = yield_context.concurrency_group_key,
+            max_concurrent_nodes = yield_context.max_concurrent_nodes
         }
 
         -- Only track non-template nodes in pending_children

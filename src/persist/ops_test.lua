@@ -474,6 +474,96 @@ local function define_tests()
                 test.is_true(duplicate_result.results[1].deduplicated)
                 test.eq(duplicate_result.results[1].input, duplicate_command)
             end)
+
+            it("should treat duplicate iteration terminal creates as idempotent", function()
+                local resources = setup_test_resources()
+                local tx = get_test_transaction()
+                local discriminator = "iteration.000001.attempt-1"
+                local first_command = {
+                    type = ops.COMMAND_TYPES.CREATE_DATA,
+                    payload = {
+                        data_id = uuid.v7(),
+                        node_id = resources.node_id,
+                        data_type = "iteration.error",
+                        discriminator = discriminator,
+                        key = "source-node-1",
+                        metadata = { terminal_emission_key_version = 1 },
+                        content = { value = "first" },
+                    }
+                }
+                local first_result, first_err = ops.execute(tx, resources.dataflow_id, nil, first_command)
+                test.is_nil(first_err)
+                test.is_true(first_result.changes_made)
+
+                local duplicate_command = {
+                    type = ops.COMMAND_TYPES.CREATE_DATA,
+                    payload = {
+                        data_id = uuid.v7(),
+                        node_id = resources.node_id,
+                        data_type = "iteration.result",
+                        discriminator = discriminator,
+                        key = "source-node-1",
+                        metadata = { terminal_emission_key_version = 1 },
+                        content = { value = "duplicate" },
+                    }
+                }
+                local duplicate_result, duplicate_err = ops.execute(
+                    tx, resources.dataflow_id, nil, duplicate_command
+                )
+                test.is_nil(duplicate_err)
+                test.is_true(duplicate_result.changes_made)
+                test.eq(duplicate_result.results[1].data_id, first_result.results[1].data_id)
+                test.is_true(duplicate_result.results[1].deduplicated)
+                test.is_true(duplicate_result.results[1].replaced)
+                local replaced_rows, replaced_err = txq(tx,
+                    "SELECT type, content FROM dataflow_data WHERE data_id = ?",
+                    { first_result.results[1].data_id })
+                test.is_nil(replaced_err)
+                test.eq(replaced_rows[1].type, "iteration.result")
+                local replaced_content = json.decode(replaced_rows[1].content :: string)
+                test.eq(replaced_content.value, "duplicate")
+
+                local second_source = {
+                    type = ops.COMMAND_TYPES.CREATE_DATA,
+                    payload = {
+                        data_id = uuid.v7(),
+                        node_id = resources.node_id,
+                        data_type = "iteration.result",
+                        discriminator = discriminator,
+                        key = "source-node-2",
+                        metadata = { terminal_emission_key_version = 1 },
+                        content = { value = "second-source" },
+                    }
+                }
+                local second_result, second_err = ops.execute(
+                    tx, resources.dataflow_id, nil, second_source
+                )
+                test.is_nil(second_err)
+                test.is_true(second_result.changes_made)
+                test.is_false(second_result.results[1].data_id == first_result.results[1].data_id)
+
+                local legacy_discriminator = "iteration.000002.legacy-attempt"
+                for legacy_index = 1, 2 do
+                    local legacy_result, legacy_err = ops.execute(
+                        tx,
+                        resources.dataflow_id,
+                        nil,
+                        {
+                            type = ops.COMMAND_TYPES.CREATE_DATA,
+                            payload = {
+                                data_id = uuid.v7(),
+                                node_id = resources.node_id,
+                                data_type = "iteration.result",
+                                discriminator = legacy_discriminator,
+                                key = "legacy-source",
+                                content = { value = legacy_index },
+                            }
+                        }
+                    )
+                    test.is_nil(legacy_err)
+                    test.is_true(legacy_result.changes_made)
+                end
+            end)
         end)
 
         describe("Workflow Operations", function()
@@ -1781,6 +1871,33 @@ local function define_tests()
                 test.is_table(metadata.tags)
                 test.eq(#metadata.tags, 1)
                 test.eq(metadata.tags[1], "modified")
+            end)
+
+            it("should create a missing mutable data slot when explicitly requested", function()
+                local resources = setup_test_resources()
+                local tx = get_test_transaction()
+                local data_id = uuid.v7()
+                local result, err = ops.execute(tx, resources.dataflow_id, nil, {
+                    type = ops.COMMAND_TYPES.UPDATE_DATA,
+                    payload = {
+                        data_id = data_id,
+                        data_type = "parallel.progress",
+                        node_id = resources.node_id,
+                        key = "cursor",
+                        content = { next_batch_start = 7 },
+                        content_type = "application/json",
+                        create_if_missing = true,
+                    }
+                })
+
+                test.is_nil(err)
+                test.is_true(result.changes_made)
+                local rows, query_err = txq(tx,
+                    "SELECT type, key, content FROM dataflow_data WHERE data_id = ?", { data_id })
+                test.is_nil(query_err)
+                test.eq(#rows, 1)
+                test.eq(rows[1].type, "parallel.progress")
+                test.eq(rows[1].key, "cursor")
             end)
 
             it("should delete data with DELETE_DATA command", function()

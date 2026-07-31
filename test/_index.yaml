@@ -21,13 +21,12 @@ entries:
     kind: process.lua
     meta:
       test_only: true
-      comment: Creates one long-running workflow for the external two-runtime restart proof.
+      comment: Creates a bounded rolling workflow for the external two-runtime restart proof.
       default_host: app:processes
     source: file://restart_probe.lua
-    modules: [uuid, time]
+    modules: []
     imports:
-      client: userspace.dataflow:client
-      consts: userspace.dataflow:consts
+      flow: userspace.dataflow.flow:flow
     method: create
 
   - name: restart_probe.observe
@@ -37,10 +36,9 @@ entries:
       comment: Keeps the second runtime alive while the overseer recovers the persisted workflow.
       default_host: app:processes
     source: file://restart_probe.lua
-    modules: [uuid, time]
+    modules: []
     imports:
-      client: userspace.dataflow:client
-      consts: userspace.dataflow:consts
+      flow: userspace.dataflow.flow:flow
     method: observe
 
   - name: restart_probe.create.service

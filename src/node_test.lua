@@ -1310,6 +1310,46 @@ local function define_tests()
                 test.eq(signal_context.timeout_deadline, yield_context.timeout_deadline, "message uses durable deadline")
             end)
 
+            it("should persist grouped completion policy in yield context", function()
+                test.not_nil(test_node)
+                local result, err = test_node:yield({
+                    run_nodes = { "child-1", "child-2" },
+                    completion_policy = "any_group",
+                    concurrency_group_key = "iteration",
+                    max_concurrent_nodes = 2,
+                    yield_id = "rolling-yield-new",
+                    yield_data_id = "yield-data-new",
+                    supersede_yield_data_id = "yield-data-old",
+                    supersede_yield_result_data_id = "rolling-yield-old",
+                })
+
+                test.is_nil(err)
+                test.not_nil(result)
+                local persisted = captured_calls.commit_submit[1].commands[1].payload.content.yield_context
+                local sent = captured_calls.process_send[1].payload.yield_context
+                test.eq(persisted.completion_policy, "any_group")
+                test.eq(persisted.concurrency_group_key, "iteration")
+                test.eq(persisted.max_concurrent_nodes, 2)
+                test.eq(sent.completion_policy, "any_group")
+                test.eq(sent.concurrency_group_key, "iteration")
+                test.eq(sent.max_concurrent_nodes, 2)
+                test.eq(captured_calls.process_send[1].payload.request_context.yield_id, "rolling-yield-new")
+                test.eq(captured_calls.commit_submit[1].commands[1].payload.data_id, "yield-data-new")
+                test.eq(captured_calls.commit_submit[1].commands[2].type, consts.COMMAND_TYPES.DELETE_DATA)
+                test.eq(captured_calls.commit_submit[1].commands[2].payload.data_id, "yield-data-old")
+                test.eq(captured_calls.commit_submit[1].commands[3].type, consts.COMMAND_TYPES.DELETE_DATA)
+                test.eq(captured_calls.commit_submit[1].commands[3].payload.data_id, "rolling-yield-old")
+            end)
+
+            it("should reject incomplete grouped completion options", function()
+                test.not_nil(test_node)
+                local result, err = test_node:yield({ completion_policy = "any_group" })
+                test.is_nil(result)
+                test.contains(err, "requires a non-empty concurrency_group_key")
+                test.eq(#captured_calls.commit_submit, 0)
+                test.eq(#captured_calls.process_send, 0)
+            end)
+
             it("should persist numeric millisecond signal timeouts", function()
                 local result, err = test_node:yield({
                     wait_for_signal = true,

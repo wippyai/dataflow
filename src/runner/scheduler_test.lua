@@ -269,6 +269,199 @@ local function define_tests()
                 test.eq(#decision.payload.nodes[1].path, 2)
             end)
 
+            it("satisfies any_group yield when one iteration completes", function()
+                local state = scheduler.create_empty_state()
+                state.nodes.parent = { status = consts.STATUS.RUNNING, type = "parallel" }
+                state.nodes.a = {
+                    status = consts.STATUS.COMPLETED_SUCCESS,
+                    type = "func",
+                    metadata = { iteration = 1 },
+                }
+                state.nodes.b = {
+                    status = consts.STATUS.RUNNING,
+                    type = "func",
+                    metadata = { iteration = 2 },
+                }
+                state.active_yields.parent = {
+                    yield_id = "rolling-yield",
+                    reply_to = "rolling.reply",
+                    completion_policy = "any_group",
+                    concurrency_group_key = "iteration",
+                    max_concurrent_nodes = 2,
+                    pending_children = {
+                        a = consts.STATUS.COMPLETED_SUCCESS,
+                        b = consts.STATUS.RUNNING,
+                    },
+                    results = { a = "result-a" },
+                }
+
+                local decision = scheduler.find_next_work(state)
+                test.eq(decision.type, scheduler.DECISION_TYPE.SATISFY_YIELD)
+                test.eq(decision.payload.yield_id, "rolling-yield")
+            end)
+
+            it("starts every ready child in a bounded yielded window", function()
+                local state = scheduler.create_empty_state()
+                state.nodes.parent = { status = consts.STATUS.RUNNING, type = "parallel" }
+                state.nodes.a = {
+                    status = consts.STATUS.PENDING,
+                    type = "func",
+                    parent_node_id = "parent",
+                }
+                state.nodes.b = {
+                    status = consts.STATUS.PENDING,
+                    type = "func",
+                    parent_node_id = "parent",
+                }
+                state.active_yields.parent = {
+                    yield_id = "rolling-yield",
+                    completion_policy = "any_group",
+                    concurrency_group_key = "iteration",
+                    max_concurrent_nodes = 2,
+                    pending_children = {
+                        a = consts.STATUS.PENDING,
+                        b = consts.STATUS.PENDING,
+                    },
+                }
+                state.input_tracker.available.a = { default = true }
+                state.input_tracker.available.b = { default = true }
+
+                local decision = scheduler.find_next_work(state)
+                test.eq(decision.type, scheduler.DECISION_TYPE.EXECUTE_NODES)
+                test.eq(#decision.payload.nodes, 2)
+            end)
+
+            it("subtracts active rolling children from dispatch capacity", function()
+                local state = scheduler.create_empty_state()
+                state.nodes.parent = { status = consts.STATUS.RUNNING, type = "parallel" }
+                state.nodes.running = { status = consts.STATUS.RUNNING, type = "func" }
+                state.nodes.a = { status = consts.STATUS.PENDING, type = "func" }
+                state.nodes.b = { status = consts.STATUS.PENDING, type = "func" }
+                state.active_processes.running = { pid = "running-pid" }
+                state.active_yields.parent = {
+                    yield_id = "rolling-yield",
+                    completion_policy = "any_group",
+                    concurrency_group_key = "iteration",
+                    max_concurrent_nodes = 2,
+                    pending_children = {
+                        running = consts.STATUS.PENDING,
+                        a = consts.STATUS.PENDING,
+                        b = consts.STATUS.PENDING,
+                    },
+                }
+                state.input_tracker.available.a = { default = true }
+                state.input_tracker.available.b = { default = true }
+
+                local decision = scheduler.find_next_work(state)
+                test.eq(decision.type, scheduler.DECISION_TYPE.EXECUTE_NODES)
+                test.eq(#decision.payload.nodes, 1)
+                test.eq(decision.payload.nodes[1].trigger_reason, "yield_driven")
+            end)
+
+            it("scans past a blocked rolling yield to runnable work", function()
+                local state = scheduler.create_empty_state()
+                state.nodes.parent_a = { status = consts.STATUS.RUNNING, type = "parallel" }
+                state.nodes.parent_b = { status = consts.STATUS.RUNNING, type = "parallel" }
+                state.nodes.blocked = { status = consts.STATUS.PENDING, type = "func" }
+                state.nodes.ready = { status = consts.STATUS.PENDING, type = "func" }
+                state.active_yields.parent_a = {
+                    yield_id = "yield-a",
+                    completion_policy = "any_group",
+                    concurrency_group_key = "iteration",
+                    max_concurrent_nodes = 2,
+                    pending_children = { blocked = consts.STATUS.PENDING },
+                }
+                state.active_yields.parent_b = {
+                    yield_id = "yield-b",
+                    completion_policy = "any_group",
+                    concurrency_group_key = "iteration",
+                    max_concurrent_nodes = 2,
+                    pending_children = { ready = consts.STATUS.PENDING },
+                }
+                state.input_tracker.requirements.blocked = { required = { "input" } }
+                state.input_tracker.available.blocked = {}
+                state.input_tracker.available.ready = { default = true }
+
+                local decision = scheduler.find_next_work(state)
+                test.eq(decision.type, scheduler.DECISION_TYPE.EXECUTE_NODES)
+                test.eq(#decision.payload.nodes, 1)
+                test.eq(decision.payload.nodes[1].node_id, "ready")
+            end)
+
+            it("rotates a single free slot fairly between rolling parents", function()
+                local state = scheduler.create_empty_state()
+                state.nodes.parent_a = { status = consts.STATUS.RUNNING, type = "parallel" }
+                state.nodes.parent_b = { status = consts.STATUS.RUNNING, type = "parallel" }
+                for index = 1, 9 do
+                    local node_id = "active-" .. tostring(index)
+                    state.nodes[node_id] = { status = consts.STATUS.RUNNING, type = "func" }
+                    state.active_processes[node_id] = { pid = "pid-" .. tostring(index) }
+                end
+                for _, node_id in ipairs({ "a1", "a2", "b1", "b2" }) do
+                    state.nodes[node_id] = { status = consts.STATUS.PENDING, type = "func" }
+                    state.input_tracker.available[node_id] = { default = true }
+                end
+                state.active_yields.parent_a = {
+                    yield_id = "yield-a",
+                    completion_policy = "any_group",
+                    concurrency_group_key = "iteration",
+                    max_concurrent_nodes = 10,
+                    pending_children = { a1 = consts.STATUS.PENDING, a2 = consts.STATUS.PENDING },
+                }
+                state.active_yields.parent_b = {
+                    yield_id = "yield-b",
+                    completion_policy = "any_group",
+                    concurrency_group_key = "iteration",
+                    max_concurrent_nodes = 10,
+                    pending_children = { b1 = consts.STATUS.PENDING, b2 = consts.STATUS.PENDING },
+                }
+
+                local first = scheduler.find_next_work(state)
+                test.eq(first.type, scheduler.DECISION_TYPE.EXECUTE_NODES)
+                test.eq(#first.payload.nodes, 1)
+                local first_parent = first.payload.nodes[1].parent_id
+                local first_node = first.payload.nodes[1].node_id
+                state.nodes[first_node].status = consts.STATUS.RUNNING
+                state.active_processes[first_node] = { pid = "selected" }
+                state.nodes["active-1"].status = consts.STATUS.COMPLETED_SUCCESS
+                state.active_processes["active-1"] = nil
+
+                -- Production rebuilds the scheduler snapshot on every pass;
+                -- only the shared workflow-owned rotation state survives.
+                local next_snapshot = scheduler.create_empty_state()
+                next_snapshot.nodes = state.nodes
+                next_snapshot.active_yields = state.active_yields
+                next_snapshot.active_processes = state.active_processes
+                next_snapshot.input_tracker = state.input_tracker
+                next_snapshot.scheduler_rotation = state.scheduler_rotation
+                local second = scheduler.find_next_work(next_snapshot)
+                test.eq(second.type, scheduler.DECISION_TYPE.EXECUTE_NODES)
+                test.eq(#second.payload.nodes, 1)
+                test.is_false(second.payload.nodes[1].parent_id == first_parent)
+            end)
+
+            it("does not exceed the global cap through root scheduling", function()
+                local state = scheduler.create_empty_state()
+                state.nodes.parent = { status = consts.STATUS.RUNNING, type = "parallel" }
+                state.active_yields.parent = {
+                    yield_id = "rolling-yield",
+                    completion_policy = "any_group",
+                    concurrency_group_key = "iteration",
+                    max_concurrent_nodes = 10,
+                    pending_children = { ["active-1"] = consts.STATUS.RUNNING },
+                }
+                for index = 1, 10 do
+                    local node_id = "active-" .. tostring(index)
+                    state.nodes[node_id] = { status = consts.STATUS.RUNNING, type = "func" }
+                    state.active_processes[node_id] = { pid = "pid-" .. tostring(index) }
+                end
+                state.nodes.root = { status = consts.STATUS.PENDING, type = "func" }
+                state.input_tracker.available.root = { default = true }
+
+                local decision = scheduler.find_next_work(state)
+                test.eq(decision.type, scheduler.DECISION_TYPE.NO_WORK)
+            end)
+
             it("should not execute yield child without inputs", function()
                 local state = scheduler.create_empty_state()
                 state.nodes = {

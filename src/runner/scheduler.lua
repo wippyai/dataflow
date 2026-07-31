@@ -31,7 +31,7 @@ local function create_decision(decision_type, payload)
     }
 end
 
-local function create_nodes_execution(nodes)
+local function create_nodes_execution(nodes: table)
     return create_decision(DECISION_TYPE.EXECUTE_NODES, {
         nodes = nodes
     })
@@ -124,12 +124,85 @@ local function node_is_terminal(node)
         node.status == consts.STATUS.SKIPPED
 end
 
+local function child_execution(parent_id, yield_info, child_id, child_node)
+    return {
+        node_id = child_id,
+        node_type = child_node.type,
+        path = yield_info.child_path or {},
+        trigger_reason = TRIGGER_REASON.YIELD_DRIVEN,
+        parent_id = parent_id
+    }
+end
+
+local function yield_group_complete(yield_info, state)
+    local metadata_key = yield_info.concurrency_group_key
+    if type(metadata_key) ~= "string" or metadata_key == "" then
+        return false
+    end
+
+    local groups = {}
+    for child_id, _ in pairs(yield_info.pending_children or {}) do
+        local child_node = state.nodes[child_id]
+        if child_node then
+            local metadata = child_node.metadata or {}
+            local group_id = metadata[metadata_key]
+            if group_id == nil then
+                group_id = "node:" .. child_id
+            else
+                group_id = "group:" .. tostring(group_id)
+            end
+            local group = groups[group_id] or { total = 0, terminal = 0 }
+            group.total = group.total + 1
+            if node_is_terminal(child_node) then
+                group.terminal = group.terminal + 1
+            end
+            groups[group_id] = group
+        end
+    end
+
+    for _, group in pairs(groups) do
+        if group.total > 0 and group.terminal == group.total then
+            return true
+        end
+    end
+    return false
+end
+
+local function count_active_workers(state)
+    local count = 0
+    for node_id, node in pairs(state.nodes or {}) do
+        if not state.active_yields[node_id] and not node_is_terminal(node) and
+           (state.active_processes[node_id] ~= nil or node.status == consts.STATUS.RUNNING or
+            node.status == consts.STATUS.WAITING) then
+            count = count + 1
+        end
+    end
+    return count
+end
+
+local function global_concurrency_limit(state)
+    local limit = CONCURRENT_CONFIG.MAX_CONCURRENT_NODES
+    for _, yield_info in pairs(state.active_yields or {}) do
+        if yield_info.completion_policy == "any_group" and
+           type(yield_info.max_concurrent_nodes) == "number" and
+           yield_info.max_concurrent_nodes % 1 == 0 and
+           yield_info.max_concurrent_nodes >= 1 then
+            limit = math.max(limit, yield_info.max_concurrent_nodes)
+        end
+    end
+    return limit
+end
+
 local function find_yield_driven_work(state)
     local now = time.now()
 
     for parent_id, yield_info in pairs(state.active_yields) do
         local parent = state.nodes[parent_id]
         if node_is_terminal(parent) then goto continue end
+
+        -- A partially satisfied rolling yield retains ownership of unfinished
+        -- children until the live parent installs its replacement barrier.
+        if yield_info.handoff and not yield_info.detached then goto continue end
 
         -- detached yields belong to a dead process (parent was reset on recovery).
         -- satisfying them would send the reply into a void AND trick find_yield_driven_work
@@ -139,7 +212,9 @@ local function find_yield_driven_work(state)
         if yield_info.detached then
             local ready = yield_info.wait_for_signal and
                 (yield_info.signal_data ~= nil or signal_timeout_expired(yield_info, now)) or
-                (not yield_info.wait_for_signal and yield_children_complete(yield_info))
+                (not yield_info.wait_for_signal and
+                    (yield_children_complete(yield_info) or
+                     (yield_info.completion_policy == "any_group" and yield_group_complete(yield_info, state))))
             if ready and parent and
                (parent.status == consts.STATUS.PENDING or parent.status == consts.STATUS.WAITING) and
                not state.active_processes[parent_id] then
@@ -172,7 +247,8 @@ local function find_yield_driven_work(state)
                 })
             end
             -- signal not received yet, skip this yield
-        elseif yield_children_complete(yield_info) then
+        elseif yield_children_complete(yield_info) or
+               (yield_info.completion_policy == "any_group" and yield_group_complete(yield_info, state)) then
             return create_decision(DECISION_TYPE.SATISFY_YIELD, {
                 parent_id = parent_id,
                 yield_id = yield_info.yield_id,
@@ -184,49 +260,110 @@ local function find_yield_driven_work(state)
         ::continue::
     end
 
-    local ready_yield_children = {}
+    local rolling_groups = {}
+    local legacy_ready = {}
+    local global_limit = global_concurrency_limit(state)
 
     for parent_id, yield_info in pairs(state.active_yields) do
         if node_is_terminal(state.nodes[parent_id]) then goto continue end
 
         if yield_info.pending_children then
-            local has_any_pending = false
-            local has_any_runnable = false
-            local has_any_running = false
+            local rolling_group = nil
+
+            if yield_info.completion_policy == "any_group" then
+                local limit = yield_info.max_concurrent_nodes
+                if type(limit) ~= "number" or limit % 1 ~= 0 or limit < 1 then
+                    -- Safely recover yields persisted by an older rolling implementation.
+                    limit = 1
+                end
+
+                local active_count = 0
+                for child_id, _ in pairs(yield_info.pending_children) do
+                    local child_node = state.nodes[child_id]
+                    if child_node and not node_is_terminal(child_node) and
+                       (state.active_processes[child_id] ~= nil or
+                        child_node.status == consts.STATUS.RUNNING or
+                        child_node.status == consts.STATUS.WAITING) then
+                        active_count = active_count + 1
+                    end
+                end
+                rolling_group = {
+                    parent_id = parent_id,
+                    yield_info = yield_info,
+                    capacity = math.max(0, limit - active_count),
+                    ready = {},
+                    next_index = 1,
+                    selected = 0,
+                }
+            end
 
             for child_id, _ in pairs(yield_info.pending_children) do
                 local child_node = state.nodes[child_id]
                 if child_node then
-                    if child_node.status == consts.STATUS.RUNNING then
-                        has_any_running = true
-                    elseif child_node.status == consts.STATUS.PENDING then
-                        has_any_pending = true
+                    if child_node.status == consts.STATUS.PENDING then
                         if node_has_required_inputs(child_id, child_node, state.input_tracker) then
-                            has_any_runnable = true
-                            table.insert(ready_yield_children, {
-                                node_id = child_id,
-                                node_type = child_node.type,
-                                path = yield_info.child_path or {},
-                                trigger_reason = TRIGGER_REASON.YIELD_DRIVEN,
-                                parent_id = parent_id
-                            })
+                            if yield_info.completion_policy == "any_group" then
+                                table.insert(rolling_group.ready,
+                                    child_execution(parent_id, yield_info, child_id, child_node))
+                            else
+                                table.insert(legacy_ready,
+                                    child_execution(parent_id, yield_info, child_id, child_node))
+                            end
                         end
                     end
                 end
             end
 
-            if has_any_pending and not has_any_runnable and not has_any_running then
-                return create_decision(DECISION_TYPE.NO_WORK, {
-                    message = "Yield children pending for parent " .. parent_id .. ": waiting for inputs"
-                })
+            -- Keep scanning other active yields. A blocked branch must not hide
+            -- runnable work owned by another parallel parent.
+            if rolling_group and rolling_group.capacity > 0 and #rolling_group.ready > 0 then
+                table.insert(rolling_groups, rolling_group)
             end
         end
 
         ::continue::
     end
 
-    if #ready_yield_children > 0 then
-        return create_nodes_execution({ ready_yield_children[1] })
+    table.sort(rolling_groups, function(left, right)
+        return tostring(left.parent_id) < tostring(right.parent_id)
+    end)
+    local rotation = state.scheduler_rotation or {}
+    state.scheduler_rotation = rotation
+    if #rolling_groups > 1 and type(rotation.last_rolling_parent) == "string" then
+        local cursor = rotation.last_rolling_parent
+        table.sort(rolling_groups, function(left, right)
+            local left_id = tostring(left.parent_id)
+            local right_id = tostring(right.parent_id)
+            local left_after = left_id > cursor
+            local right_after = right_id > cursor
+            if left_after ~= right_after then return left_after end
+            return left_id < right_id
+        end)
+    end
+
+    local global_capacity = math.max(0, global_limit - count_active_workers(state))
+    local selected = {}
+    local made_progress = true
+    while global_capacity > 0 and made_progress do
+        made_progress = false
+        for _, group in ipairs(rolling_groups) do
+            if global_capacity <= 0 then break end
+            if group.selected < group.capacity and group.next_index <= #group.ready then
+                table.insert(selected, group.ready[group.next_index])
+                group.next_index = group.next_index + 1
+                group.selected = group.selected + 1
+                global_capacity = global_capacity - 1
+                rotation.last_rolling_parent = tostring(group.parent_id)
+                made_progress = true
+            end
+        end
+    end
+
+    if #selected > 0 then
+        return create_nodes_execution(selected)
+    end
+    if global_capacity > 0 and #legacy_ready > 0 then
+        return create_nodes_execution({ legacy_ready[1] })
     end
 
     return nil
@@ -255,6 +392,15 @@ function scheduler.next_wake_duration(state)
     return soonest_ns
 end
 
+local function node_is_yield_child(node_id, active_yields)
+    for _, yield_info in pairs(active_yields or {}) do
+        if yield_info.pending_children and yield_info.pending_children[node_id] ~= nil then
+            return true
+        end
+    end
+    return false
+end
+
 local function find_input_ready_work(state)
     local ready_nodes = {}
 
@@ -265,15 +411,7 @@ local function find_input_ready_work(state)
            state.input_tracker.requirements[node_id] and
            node_has_required_inputs(node_id, node_data, state.input_tracker) then
 
-            local is_yield_child = false
-            for _, yield_info in pairs(state.active_yields) do
-                if yield_info.pending_children and yield_info.pending_children[node_id] then
-                    is_yield_child = true
-                    break
-                end
-            end
-
-            if not is_yield_child then
+            if not node_is_yield_child(node_id, state.active_yields) then
                 table.insert(ready_nodes, {
                     node_id = node_id,
                     node_type = node_data.type,
@@ -284,7 +422,7 @@ local function find_input_ready_work(state)
         end
     end
 
-    return decide_execution_strategy(ready_nodes, CONCURRENT_CONFIG.ENABLE_INPUT_CONCURRENCY)
+    return decide_execution_strategy(state, ready_nodes, CONCURRENT_CONFIG.ENABLE_INPUT_CONCURRENCY)
 end
 
 local function find_root_driven_work(state)
@@ -294,6 +432,7 @@ local function find_root_driven_work(state)
         if node_data.status == consts.STATUS.PENDING and
            not state.active_processes[node_id] and
            not state.active_yields[node_id] and
+           not node_is_yield_child(node_id, state.active_yields) and
            not state.input_tracker.requirements[node_id] and
            node_has_available_inputs(node_id, state.input_tracker) then
 
@@ -306,16 +445,17 @@ local function find_root_driven_work(state)
         end
     end
 
-    return decide_execution_strategy(ready_nodes, CONCURRENT_CONFIG.ENABLE_ROOT_CONCURRENCY)
+    return decide_execution_strategy(state, ready_nodes, CONCURRENT_CONFIG.ENABLE_ROOT_CONCURRENCY)
 end
 
-function decide_execution_strategy(ready_nodes, allow_concurrent)
-    if #ready_nodes == 0 then
+function decide_execution_strategy(state, ready_nodes, allow_concurrent)
+    local capacity = math.max(0, global_concurrency_limit(state) - count_active_workers(state))
+    if #ready_nodes == 0 or capacity == 0 then
         return nil
     elseif #ready_nodes == 1 then
         return create_nodes_execution(ready_nodes)
     elseif allow_concurrent then
-        local limit = math.min(#ready_nodes, CONCURRENT_CONFIG.MAX_CONCURRENT_NODES)
+        local limit = math.min(#ready_nodes, capacity)
         local nodes_to_execute = {}
         for i = 1, limit do
             table.insert(nodes_to_execute, ready_nodes[i])
@@ -469,6 +609,7 @@ function scheduler.create_empty_state()
         nodes = {},
         active_yields = {},
         active_processes = {},
+        scheduler_rotation = {},
         input_tracker = {
             requirements = {},
             available = {}

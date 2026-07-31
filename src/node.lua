@@ -526,7 +526,22 @@ end
 local function durable_yield(self: table, options: any, park: boolean)
     options = options or {}
 
-    local yield_id = uuid.v7()
+    local completion_policy = options.completion_policy
+    local concurrency_group_key = options.concurrency_group_key
+    local max_concurrent_nodes = options.max_concurrent_nodes
+    if completion_policy ~= nil or concurrency_group_key ~= nil or max_concurrent_nodes ~= nil then
+        if completion_policy ~= "any_group" or type(concurrency_group_key) ~= "string" or
+           concurrency_group_key == "" or type(max_concurrent_nodes) ~= "number" or
+           max_concurrent_nodes % 1 ~= 0 or max_concurrent_nodes < 1 or max_concurrent_nodes > 1000 then
+            return nil, "completion_policy='any_group' requires a non-empty concurrency_group_key and " ..
+                "an integer max_concurrent_nodes between 1 and 1000"
+        end
+    end
+
+    local yield_id = options.yield_id or uuid.v7()
+    if type(yield_id) ~= "string" or yield_id == "" then
+        return nil, "yield_id must be a non-empty string when provided"
+    end
     local op_id = uuid.v7()
     local timeout_duration, timeout_err = parse_signal_timeout(options.timeout)
     if timeout_err then
@@ -540,10 +555,11 @@ local function durable_yield(self: table, options: any, park: boolean)
         timeout_ms = timeout_duration:milliseconds()
     end
 
+    local yield_data_id = options.yield_data_id or uuid.v7()
     local yield_command: table = {
         type = consts.COMMAND_TYPES.CREATE_DATA,
         payload = {
-            data_id = uuid.v7(),
+            data_id = yield_data_id,
             data_type = consts.DATA_TYPE.NODE_YIELD,
             content = {
                 node_id = self.node_id,
@@ -551,6 +567,9 @@ local function durable_yield(self: table, options: any, park: boolean)
                 reply_to = self._yield_reply_topic,
                 yield_context = {
                     run_nodes = options.run_nodes or table.create(0, 0),
+                    completion_policy = options.completion_policy,
+                    concurrency_group_key = options.concurrency_group_key,
+                    max_concurrent_nodes = options.max_concurrent_nodes,
                     wait_for_signal = options.wait_for_signal,
                     signal_id = options.signal_id,
                     timeout = options.timeout,
@@ -566,6 +585,20 @@ local function durable_yield(self: table, options: any, park: boolean)
         }
     }
     table.insert(self._queued_commands, yield_command)
+    if type(options.supersede_yield_data_id) == "string" and
+       options.supersede_yield_data_id ~= "" and options.supersede_yield_data_id ~= yield_data_id then
+        table.insert(self._queued_commands, {
+            type = consts.COMMAND_TYPES.DELETE_DATA,
+            payload = { data_id = options.supersede_yield_data_id }
+        })
+    end
+    if type(options.supersede_yield_result_data_id) == "string" and
+       options.supersede_yield_result_data_id ~= "" then
+        table.insert(self._queued_commands, {
+            type = consts.COMMAND_TYPES.DELETE_DATA,
+            payload = { data_id = options.supersede_yield_result_data_id }
+        })
+    end
 
     local submitted, err = self._deps.commit.submit(self.dataflow_id, op_id, self._queued_commands)
     if not submitted then
@@ -581,6 +614,9 @@ local function durable_yield(self: table, options: any, park: boolean)
         },
         yield_context = {
             run_nodes = options.run_nodes or table.create(0, 0),
+            completion_policy = options.completion_policy,
+            concurrency_group_key = options.concurrency_group_key,
+            max_concurrent_nodes = options.max_concurrent_nodes,
             wait_for_signal = options.wait_for_signal,
             signal_id = options.signal_id,
             timeout = options.timeout,

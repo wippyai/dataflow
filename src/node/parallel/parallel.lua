@@ -20,11 +20,17 @@ parallel._deps = {
 
 parallel.DEFAULTS = {
     BATCH_SIZE = 1,
+    SCHEDULING = "batch",
     ITERATION_INPUT_KEY = "default",
     FAILURE_STRATEGY = "collect_errors",
     ON_ERROR = "continue",
     FILTER = "all",
     UNWRAP = false
+}
+
+parallel.SCHEDULING = {
+    BATCH = "batch",
+    ROLLING = "rolling"
 }
 
 parallel.ON_ERROR_STRATEGIES = {
@@ -58,6 +64,9 @@ parallel.ERRORS = {
     INVALID_ON_ERROR_STRATEGY = "INVALID_ON_ERROR_STRATEGY",
     INVALID_FILTER_STRATEGY = "INVALID_FILTER_STRATEGY",
     INVALID_BATCH_SIZE = "INVALID_BATCH_SIZE",
+    INVALID_SCHEDULING = "INVALID_SCHEDULING",
+    UNSUPPORTED_SCHEDULING_COMBINATION = "UNSUPPORTED_SCHEDULING_COMBINATION",
+    ITERATION_OUTPUT_MISSING = "ITERATION_OUTPUT_MISSING",
     INVALID_PIPELINE_STEP = "INVALID_PIPELINE_STEP",
     INVALID_EXTRACTOR = "INVALID_EXTRACTOR"
 }
@@ -106,7 +115,12 @@ local function validate_filter_strategy(strategy)
 end
 
 local function validate_batch_size(size)
-    return type(size) == "number" and size > 0 and size <= 1000
+    return type(size) == "number" and size > 0 and size <= 1000 and size == math.floor(size)
+end
+
+local function validate_scheduling(scheduling)
+    return scheduling == parallel.SCHEDULING.BATCH or
+        scheduling == parallel.SCHEDULING.ROLLING
 end
 
 local function merge_context(base, additions)
@@ -420,7 +434,7 @@ function parallel.execute_reduction_pipeline_step(step, data)
     return grouped, nil
 end
 
-local function gather_run_nodes(iterations)
+local function gather_run_nodes(iterations: any)
     local total_run_nodes = 0
     for _, iteration in ipairs(iterations) do
         if type(iteration.uuid_mapping) == "table" and next(iteration.uuid_mapping) ~= nil then
@@ -493,8 +507,10 @@ end
 
 local function create_parallel_result(items)
     return {
-        successes = create_array(#items),
-        failures = create_array(#items),
+        -- Grow with actual outcomes. Preallocating both arrays to #items doubles
+        -- the resident pointer footprint for long-running rolling workloads.
+        successes = create_array(0),
+        failures = create_array(0),
         success_count = 0,
         failure_count = 0,
         total_iterations = #items
@@ -790,7 +806,8 @@ local function build_completion_from_output_row(row, total_iterations)
         outcome = outcome,
         attempt_id = row.metadata and row.metadata.attempt_id,
         result = outcome == PARALLEL_PROGRESS_OUTCOME.SUCCESS and content or nil,
-        error = outcome == PARALLEL_PROGRESS_OUTCOME.FAILURE and extract_error_value(content) or nil
+        error = outcome == PARALLEL_PROGRESS_OUTCOME.FAILURE and extract_error_value(content) or nil,
+        from_output = true
     }
 end
 
@@ -835,6 +852,24 @@ local function normalize_string_array(values)
     return normalized
 end
 
+local function normalize_active_iterations(values, total_iterations)
+    local normalized = {}
+    local seen = {}
+    for _, value in ipairs(type(values) == "table" and values or {}) do
+        local iteration = type(value) == "table" and tonumber(value.iteration) or nil
+        if iteration and iteration >= 1 and iteration <= total_iterations and
+           iteration == math.floor(iteration) and not seen[iteration] then
+            seen[iteration] = true
+            table.insert(normalized, {
+                iteration = iteration,
+                run_nodes = normalize_string_array(value.run_nodes)
+            })
+        end
+    end
+    table.sort(normalized, function(a, b) return a.iteration < b.iteration end)
+    return normalized
+end
+
 local function normalize_progress_cursor(content, total_iterations)
     local cursor = {
         next_batch_start = 1,
@@ -856,17 +891,46 @@ local function normalize_progress_cursor(content, total_iterations)
 
         if batch_start and batch_end and batch_start >= 1 and batch_start <= batch_end and
            batch_end <= total_iterations and type(attempt_id) == "string" and attempt_id ~= "" then
-            cursor.active_batch = {
-                batch_start = batch_start,
-                batch_end = batch_end,
-                attempt_id = attempt_id,
-                submitted_iterations = normalize_submitted_iterations(
-                    content.active_batch.submitted_iterations,
-                    batch_start,
-                    batch_end
-                ),
-                run_nodes = normalize_string_array(content.active_batch.run_nodes)
-            }
+            if content.active_batch.scheduling == parallel.SCHEDULING.ROLLING then
+                local active_iterations = normalize_active_iterations(
+                    content.active_batch.active_iterations,
+                    total_iterations
+                )
+                local submitted_iterations = {}
+                local run_nodes = {}
+                for _, active in ipairs(active_iterations) do
+                    table.insert(submitted_iterations, active.iteration)
+                    for _, node_id in ipairs(active.run_nodes) do table.insert(run_nodes, node_id) end
+                end
+                local next_iteration = tonumber(content.active_batch.next_iteration) or next_batch_start
+                next_iteration = math.max(1, math.min(next_iteration, total_iterations + 1))
+                cursor.active_batch = {
+                    scheduling = parallel.SCHEDULING.ROLLING,
+                    batch_start = batch_start,
+                    batch_end = batch_end,
+                    attempt_id = attempt_id,
+                    next_iteration = next_iteration,
+                    yield_data_id = type(content.active_batch.yield_data_id) == "string" and
+                        content.active_batch.yield_data_id or nil,
+                    yield_id = type(content.active_batch.yield_id) == "string" and
+                        content.active_batch.yield_id or nil,
+                    active_iterations = active_iterations,
+                    submitted_iterations = submitted_iterations,
+                    run_nodes = normalize_string_array(run_nodes)
+                }
+            else
+                cursor.active_batch = {
+                    batch_start = batch_start,
+                    batch_end = batch_end,
+                    attempt_id = attempt_id,
+                    submitted_iterations = normalize_submitted_iterations(
+                        content.active_batch.submitted_iterations,
+                        batch_start,
+                        batch_end
+                    ),
+                    run_nodes = normalize_string_array(content.active_batch.run_nodes)
+                }
+            end
         end
     end
 
@@ -940,6 +1004,7 @@ local function load_parallel_progress(n, total_iterations)
 
             if key == PARALLEL_PROGRESS_CURSOR_KEY then
                 progress.cursor = normalize_progress_cursor(content, total_iterations)
+                progress.cursor.data_id = row.data_id
             else
                 local matched_iteration = string.match(key, "^iteration%.(%d+)$")
                 if matched_iteration then
@@ -961,7 +1026,10 @@ local function load_parallel_progress(n, total_iterations)
     end
 
     if progress.cursor.active_batch and progress.cursor.active_batch.batch_end < progress.cursor.next_batch_start then
-        progress.cursor.active_batch = nil
+        local active = progress.cursor.active_batch
+        if active.scheduling ~= parallel.SCHEDULING.ROLLING or #(active.active_iterations or {}) == 0 then
+            progress.cursor.active_batch = nil
+        end
     end
 
     advance_cursor(progress.cursor, progress.completed_iterations :: any, total_iterations, progress.cursor.next_batch_start)
@@ -978,12 +1046,31 @@ local function queue_parallel_cursor(n, cursor: any)
         return true, nil
     end
 
-    local _, data_err = n:data(parallel._deps.consts.DATA_TYPE.PARALLEL_PROGRESS, {
+    local content = {
         next_batch_start = cursor.next_batch_start,
         active_batch = cursor.active_batch
-    }, {
+    }
+
+    if type(n.command) == "function" then
+        cursor.data_id = cursor.data_id or parallel._deps.uuid.v7()
+        n:command({
+            type = parallel._deps.consts.COMMAND_TYPES.UPDATE_DATA,
+            payload = {
+                data_id = cursor.data_id,
+                data_type = parallel._deps.consts.DATA_TYPE.PARALLEL_PROGRESS,
+                content = content,
+                content_type = parallel._deps.consts.CONTENT_TYPE.JSON,
+                key = PARALLEL_PROGRESS_CURSOR_KEY,
+                node_id = n.node_id,
+                create_if_missing = true,
+            }
+        })
+        return true, nil
+    end
+
+    local _, data_err = n:data(parallel._deps.consts.DATA_TYPE.PARALLEL_PROGRESS, content, {
         node_id = n.node_id,
-        key = PARALLEL_PROGRESS_CURSOR_KEY
+        key = PARALLEL_PROGRESS_CURSOR_KEY,
     })
 
     if data_err then
@@ -1006,7 +1093,7 @@ local function persist_parallel_cursor(n, cursor: any)
     return n:submit()
 end
 
-local function persist_iteration_completion(n, completion: any)
+local function queue_iteration_completion(n, completion: any)
     if not can_persist_parallel_progress(n) then
         return true, nil
     end
@@ -1026,6 +1113,13 @@ local function persist_iteration_completion(n, completion: any)
         return nil, data_err
     end
 
+    return true, nil
+end
+
+local function persist_iteration_completion(n, completion: any)
+    local queued, queue_err = queue_iteration_completion(n, completion)
+    if not queued then return nil, queue_err end
+    if not can_persist_parallel_progress(n) then return true, nil end
     return n:submit()
 end
 
@@ -1134,10 +1228,13 @@ local function collect_iteration_completion(n, config: any, failure_strategy, pa
     return process_iteration_output(config, failure_strategy, parallel_result, iteration, iteration_result)
 end
 
-local function recover_iteration_completion(n, config: any, failure_strategy, parallel_result, iteration: any)
+local function recover_iteration_completion(n, config: any, failure_strategy, parallel_result, iteration: any,
+                                             terminal_confirmed: boolean?)
     local iteration_result, collect_err = parallel._deps.iterator.collect_results(n, iteration)
     if collect_err then
-        if string.find(error_message(collect_err, ""), "No output data found for iteration", 1, true) ~= nil then
+        local missing_output = type(collect_err) == "table" and
+            collect_err.code == parallel.ERRORS.ITERATION_OUTPUT_MISSING
+        if missing_output and not terminal_confirmed then
             return nil, nil
         end
 
@@ -1276,7 +1373,7 @@ local function recover_active_batch(n, config: any, failure_strategy, parallel_r
         for _, iteration_index in ipairs(pending_iterations) do
             local iteration = build_iteration_record(items, iteration_index :: number, active_batch.attempt_id)
             local completion, recover_err = recover_iteration_completion(
-                n, config, failure_strategy, parallel_result, iteration)
+                n, config, failure_strategy, parallel_result, iteration, true)
             if recover_err then return nil, recover_err end
             if completion then
                 progress.completed_iterations[iteration_index] = completion
@@ -1452,6 +1549,231 @@ local function process_batch(n, template_graph, items, batch_start, batch_end, i
     return nil
 end
 
+local function refresh_rolling_cursor(active_batch)
+    local submitted_iterations = {}
+    local run_nodes = {}
+    for _, active in ipairs(active_batch.active_iterations or {}) do
+        table.insert(submitted_iterations, active.iteration)
+        for _, node_id in ipairs(active.run_nodes or {}) do
+            table.insert(run_nodes, node_id)
+        end
+    end
+    active_batch.submitted_iterations = submitted_iterations
+    active_batch.run_nodes = normalize_string_array(run_nodes)
+end
+
+local function create_rolling_iterations(n, template_graph, items, iteration_input_key, passthrough_inputs,
+                                         config: any, parallel_result, progress: any)
+    local active_batch = progress.cursor.active_batch
+    local available = (config.batch_size :: number) - #(active_batch.active_iterations or {})
+    local next_iteration = active_batch.next_iteration :: number
+    if available <= 0 or next_iteration > #items then
+        return nil
+    end
+
+    local batch_end = math.min(next_iteration + available - 1, #items)
+    local selected = {}
+    for iteration = next_iteration, batch_end do table.insert(selected, iteration) end
+
+    local iterations, create_err = parallel._deps.iterator.create_batch(
+        n,
+        template_graph,
+        items,
+        next_iteration,
+        batch_end,
+        iteration_input_key,
+        passthrough_inputs,
+        {
+            attempt_id = active_batch.attempt_id,
+            iteration_indices = selected
+        }
+    )
+
+    active_batch.next_iteration = batch_end + 1
+    progress.cursor.next_batch_start = active_batch.next_iteration
+
+    if create_err then
+        discard_queued_commands(n)
+        for _, iteration_index in ipairs(selected) do
+            local iteration = build_iteration_record(items, iteration_index, active_batch.attempt_id)
+            local completion = build_iteration_completion(iteration, PARALLEL_PROGRESS_OUTCOME.FAILURE, {
+                error = prefixed_error("Iteration creation failed: ", create_err, "unknown")
+            })
+            progress.completed_iterations[iteration_index] = completion
+            apply_iteration_completion(parallel_result, iteration, completion)
+            local submit_ok, submit_err = persist_iteration_completion(n, completion)
+            if not submit_ok then
+                return prefixed_error("Failed to persist parallel iteration progress: ", submit_err, "unknown")
+            end
+        end
+        local cursor_ok, cursor_err = persist_parallel_cursor(n, progress.cursor)
+        if not cursor_ok then
+            return prefixed_error("Failed to persist parallel cursor: ", cursor_err, "unknown")
+        end
+        return nil
+    end
+
+    for _, iteration in ipairs(iterations or {}) do
+        table.insert(active_batch.active_iterations, {
+            iteration = iteration.iteration,
+            run_nodes = gather_run_nodes({ iteration })
+        })
+    end
+    refresh_rolling_cursor(active_batch)
+    return nil
+end
+
+local function collect_rolling_completions(n, config: any, failure_strategy, parallel_result,
+                                           items, progress: any)
+    local active_batch = progress.cursor.active_batch
+    local remaining = {}
+    local queued_completion_count = 0
+    local run_node_ids = {}
+    local seen_node_ids = {}
+    for _, active in ipairs(active_batch.active_iterations or {}) do
+        if progress.completed_iterations[active.iteration] == nil then
+            for _, node_id in ipairs(active.run_nodes or {}) do
+                if not seen_node_ids[node_id] then
+                    seen_node_ids[node_id] = true
+                    table.insert(run_node_ids, node_id)
+                end
+            end
+        end
+    end
+
+    local status_by_node = {}
+    -- Stay below conservative SQLite bind-variable limits while reducing the
+    -- old one-query-per-iteration polling pattern to one query per 500 nodes.
+    local query_chunk_size = 500
+    for chunk_start = 1, #run_node_ids, query_chunk_size do
+        local chunk = {}
+        local chunk_end = math.min(#run_node_ids, chunk_start + query_chunk_size - 1)
+        for index = chunk_start, chunk_end do table.insert(chunk, run_node_ids[index]) end
+
+        local rows, rows_err = parallel._deps.node_reader.read_statuses(n.dataflow_id, chunk)
+        if rows_err then return prefixed_error("Rolling node read failed: ", rows_err, "unknown") end
+        for _, row in ipairs(rows or {}) do status_by_node[row.node_id] = row.status end
+    end
+
+    for _, active in ipairs(active_batch.active_iterations or {}) do
+        local iteration_index = active.iteration
+        if progress.completed_iterations[iteration_index] == nil then
+            local terminal_count = 0
+            local expected_count = #(active.run_nodes or {})
+            for _, node_id in ipairs(active.run_nodes or {}) do
+                local status = status_by_node[node_id]
+                if status == parallel._deps.consts.STATUS.COMPLETED_SUCCESS or
+                   status == parallel._deps.consts.STATUS.COMPLETED_FAILURE or
+                   status == parallel._deps.consts.STATUS.CANCELLED or
+                   status == parallel._deps.consts.STATUS.TERMINATED or
+                   status == parallel._deps.consts.STATUS.SKIPPED then
+                    terminal_count = terminal_count + 1
+                end
+            end
+
+            if expected_count == 0 or terminal_count ~= expected_count then
+                table.insert(remaining, active)
+            else
+                local iteration = build_iteration_record(items, iteration_index, active_batch.attempt_id)
+                local completion, completion_err = recover_iteration_completion(
+                    n, config, failure_strategy, parallel_result, iteration, true
+                )
+                if completion_err then return completion_err end
+                if completion then
+                    progress.completed_iterations[iteration_index] = completion
+                    local queue_ok, queue_err = queue_iteration_completion(n, completion)
+                    if not queue_ok then
+                        discard_queued_commands(n)
+                        return prefixed_error("Failed to queue parallel iteration progress: ", queue_err, "unknown")
+                    end
+                    queued_completion_count = queued_completion_count + 1
+                else
+                    return "Terminal iteration did not produce a durable completion"
+                end
+            end
+        end
+    end
+    active_batch.active_iterations = remaining
+    refresh_rolling_cursor(active_batch)
+    if queued_completion_count > 0 and can_persist_parallel_progress(n) then
+        local submit_ok, submit_err = n:submit()
+        if not submit_ok then
+            discard_queued_commands(n)
+            return prefixed_error("Failed to persist parallel iteration progress: ", submit_err, "unknown")
+        end
+    end
+    return nil
+end
+
+local function process_rolling(n, template_graph, items, iteration_input_key, passthrough_inputs,
+                               config: any, failure_strategy, parallel_result, progress: any)
+    local active_batch = progress.cursor.active_batch
+    if active_batch == nil or active_batch.scheduling ~= parallel.SCHEDULING.ROLLING then
+        local next_iteration = progress.cursor.next_batch_start
+        active_batch = {
+            scheduling = parallel.SCHEDULING.ROLLING,
+            batch_start = next_iteration,
+            batch_end = #items,
+            attempt_id = parallel._deps.uuid.v7(),
+            next_iteration = next_iteration,
+            active_iterations = {},
+            submitted_iterations = {},
+            run_nodes = {}
+        }
+        progress.cursor.active_batch = active_batch
+    end
+
+    while true do
+        local collect_err = collect_rolling_completions(
+            n, config, failure_strategy, parallel_result, items, progress
+        )
+        if collect_err then return collect_err end
+
+        local create_err = create_rolling_iterations(
+            n, template_graph, items, iteration_input_key, passthrough_inputs,
+            config, parallel_result, progress
+        )
+        if create_err then return create_err end
+
+        if #(active_batch.active_iterations or {}) == 0 and active_batch.next_iteration > #items then
+            progress.cursor.active_batch = nil
+            progress.cursor.next_batch_start = #items + 1
+            local submit_ok, submit_err = persist_parallel_cursor(n, progress.cursor)
+            if not submit_ok then
+                return prefixed_error("Failed to persist parallel cursor: ", submit_err, "unknown")
+            end
+            return nil
+        end
+
+        if #(active_batch.active_iterations or {}) > 0 then
+            local previous_yield_data_id = active_batch.yield_data_id
+            local previous_yield_id = active_batch.yield_id
+            active_batch.yield_data_id = parallel._deps.uuid.v7()
+            active_batch.yield_id = parallel._deps.uuid.v7()
+            local cursor_ok, cursor_err = queue_parallel_cursor(n, progress.cursor)
+            if not cursor_ok then
+                discard_queued_commands(n)
+                return prefixed_error("Failed to persist parallel cursor: ", cursor_err, "unknown")
+            end
+
+            local _, yield_err = n:yield({
+                run_nodes = active_batch.run_nodes,
+                completion_policy = "any_group",
+                concurrency_group_key = "iteration",
+                max_concurrent_nodes = config.batch_size,
+                yield_id = active_batch.yield_id,
+                yield_data_id = active_batch.yield_data_id,
+                supersede_yield_data_id = previous_yield_data_id,
+                supersede_yield_result_data_id = previous_yield_id,
+            })
+            if yield_err then
+                discard_queued_commands(n)
+                return prefixed_error("Rolling yield failed: ", yield_err, "unknown")
+            end
+        end
+    end
+end
+
 local function run(args)
     local n, err = parallel._deps.node.new(args)
     if err then
@@ -1494,9 +1816,27 @@ local function run(args)
     if not validate_batch_size(batch_size) then
         return n:fail({
             code = parallel.ERRORS.INVALID_BATCH_SIZE,
-            message = "batch_size must be a positive number <= 1000"
+            message = "batch_size must be a positive integer <= 1000"
         }, "Invalid batch size")
     end
+
+    local scheduling = config.scheduling or parallel.DEFAULTS.SCHEDULING
+    if not validate_scheduling(scheduling) then
+        return n:fail({
+            code = parallel.ERRORS.INVALID_SCHEDULING,
+            message = "scheduling must be 'batch' or 'rolling'"
+        }, "Invalid scheduling mode")
+    end
+
+    if scheduling == parallel.SCHEDULING.ROLLING and
+       failure_strategy == parallel.FAILURE_STRATEGIES.FAIL_FAST then
+        return n:fail({
+            code = parallel.ERRORS.UNSUPPORTED_SCHEDULING_COMBINATION,
+            message = "scheduling='rolling' currently requires on_error='continue'"
+        }, "Invalid rolling scheduling configuration")
+    end
+
+    config.scheduling = scheduling
 
     if config.item_steps ~= nil then
         if type(config.item_steps) ~= "table" then
@@ -1617,67 +1957,69 @@ local function run(args)
     end
 
     local progress: any = load_parallel_progress(n, #items)
+    if scheduling == parallel.SCHEDULING.ROLLING then
+        -- Raw terminal rows prove that output was emitted, but item pipelines
+        -- still must run before an iteration becomes durable parallel progress.
+        for iteration, completion in pairs(progress.completed_iterations) do
+            if completion.from_output == true then progress.completed_iterations[iteration] = nil end
+        end
+    end
     local started_from_recovery = has_recovery_progress(progress)
 
     local parallel_result = rebuild_parallel_result(items, progress.completed_iterations)
 
     local iteration_input_key = config.iteration_input_key or parallel.DEFAULTS.ITERATION_INPUT_KEY
 
-    local pending_active_iterations, recover_err = recover_active_batch(
-        n,
-        config,
-        failure_strategy,
-        parallel_result,
-        items,
-        progress
-    )
-    if recover_err then
-        return fail_iteration(n, recover_err)
-    end
-
-    if progress.cursor.active_batch ~= nil and #pending_active_iterations > 0 then
-        local active_batch = progress.cursor.active_batch
-        local batch_err = process_batch(
-            n,
-            template_graph,
-            items,
-            active_batch.batch_start,
-            active_batch.batch_end,
-            iteration_input_key,
-            passthrough_inputs,
-            config,
-            failure_strategy,
-            parallel_result,
-            progress,
-            pending_active_iterations
-        )
-
-        if batch_err then
-            return fail_iteration(n, batch_err)
+    if scheduling == parallel.SCHEDULING.ROLLING then
+        -- Finish an older fixed-wave cursor safely if configuration changed
+        -- while it was active, then enter the bounded rolling state machine.
+        if progress.cursor.active_batch ~= nil and
+           progress.cursor.active_batch.scheduling ~= parallel.SCHEDULING.ROLLING then
+            local pending, recover_err = recover_active_batch(
+                n, config, failure_strategy, parallel_result, items, progress
+            )
+            if recover_err then return fail_iteration(n, recover_err) end
+            if progress.cursor.active_batch ~= nil and #pending > 0 then
+                local active = progress.cursor.active_batch
+                local batch_err = process_batch(
+                    n, template_graph, items, active.batch_start, active.batch_end,
+                    iteration_input_key, passthrough_inputs, config, failure_strategy,
+                    parallel_result, progress, pending
+                )
+                if batch_err then return fail_iteration(n, batch_err) end
+            end
         end
-    end
 
-    while progress.cursor.next_batch_start <= #items do
-        local batch_start = progress.cursor.next_batch_start :: number
-        local batch_end = math.min(batch_start + batch_size - 1, #items)
-
-        local batch_err = process_batch(
-            n,
-            template_graph,
-            items,
-            batch_start,
-            batch_end,
-            iteration_input_key,
-            passthrough_inputs,
-            config,
-            failure_strategy,
-            parallel_result,
-            progress,
-            nil
+        local rolling_err = process_rolling(
+            n, template_graph, items, iteration_input_key, passthrough_inputs,
+            config, failure_strategy, parallel_result, progress
         )
+        if rolling_err then return fail_iteration(n, rolling_err) end
+    else
+        local pending_active_iterations, recover_err = recover_active_batch(
+            n, config, failure_strategy, parallel_result, items, progress
+        )
+        if recover_err then return fail_iteration(n, recover_err) end
 
-        if batch_err then
-            return fail_iteration(n, batch_err)
+        if progress.cursor.active_batch ~= nil and #pending_active_iterations > 0 then
+            local active_batch = progress.cursor.active_batch
+            local batch_err = process_batch(
+                n, template_graph, items, active_batch.batch_start, active_batch.batch_end,
+                iteration_input_key, passthrough_inputs, config, failure_strategy,
+                parallel_result, progress, pending_active_iterations
+            )
+            if batch_err then return fail_iteration(n, batch_err) end
+        end
+
+        while progress.cursor.next_batch_start <= #items do
+            local batch_start = progress.cursor.next_batch_start :: number
+            local batch_end = math.min(batch_start + batch_size - 1, #items)
+            local batch_err = process_batch(
+                n, template_graph, items, batch_start, batch_end,
+                iteration_input_key, passthrough_inputs, config, failure_strategy,
+                parallel_result, progress, nil
+            )
+            if batch_err then return fail_iteration(n, batch_err) end
         end
     end
 
