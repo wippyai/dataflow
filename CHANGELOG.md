@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## [0.7.1](https://github.com/wippyai/dataflow/compare/v0.7.0...v0.7.1) (2026-08-01)
+
+
+### Bug Fixes
+
+* **persist:** make mutable slot creation race-safe ([#53](https://github.com/wippyai/dataflow/issues/53)) ([7df3afe](https://github.com/wippyai/dataflow/commit/7df3afe41ee6aa67107963f96dc724cf34a056cc))
+
 ## [0.7.0](https://github.com/wippyai/dataflow/compare/v0.6.1...v0.7.0) (2026-07-31)
 
 
