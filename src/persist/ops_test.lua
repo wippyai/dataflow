@@ -214,6 +214,36 @@ local function define_tests()
                 test.eq(tonumber(wakes[1].activation_generation), 7)
             end)
 
+            it("deduplicates exact parallel progress creation replay", function()
+                local resources = setup_test_resources()
+                local tx = get_test_transaction()
+                local data_id = uuid.v7()
+                local command = {
+                    type = ops.COMMAND_TYPES.CREATE_DATA,
+                    payload = {
+                        data_id = data_id,
+                        node_id = resources.node_id,
+                        key = "iteration.000034",
+                        data_type = "parallel.progress",
+                        content = { iteration = 34, outcome = "success" },
+                        content_type = "application/json",
+                    },
+                }
+
+                local created, create_err = ops.execute(tx, resources.dataflow_id, nil, command)
+                test.is_nil(create_err)
+                test.is_true(created.results[1].changes_made)
+                local replayed, replay_err = ops.execute(tx, resources.dataflow_id, nil, command)
+                test.is_nil(replay_err)
+                test.is_false(replayed.results[1].changes_made)
+                test.is_true(replayed.results[1].deduplicated)
+
+                local rows, query_err = txq(tx,
+                    "SELECT COUNT(*) AS data_count FROM dataflow_data WHERE data_id = ?", { data_id })
+                test.is_nil(query_err)
+                test.eq(tonumber(rows[1].data_count), 1)
+            end)
+
             it("rejects conflicting payloads for the same explicit data ID", function()
                 local resources = setup_test_resources()
                 local tx = get_test_transaction()
