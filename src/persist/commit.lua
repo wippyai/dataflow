@@ -292,6 +292,23 @@ function commit.tx_execute(tx, dataflow_id, op_id, commands, options)
             end
             seen_apply_commit_ids[commit_id] = true
 
+            -- Claim before expanding the durable command. A SELECT followed by
+            -- execution lets two orchestrators observe op_id = NULL and apply
+            -- the same command concurrently. The conditional UPDATE is the
+            -- portable compare-and-set fence: PostgreSQL serializes contenders,
+            -- while SQLite admits one writer. A failed command rolls the claim
+            -- back with the surrounding transaction.
+            local claim_result, claim_err = sql.builder.update("dataflow_commits")
+                :set("op_id", op_id)
+                :where("commit_id = ?", commit_id)
+                :where("dataflow_id = ?", dataflow_id)
+                :where("op_id IS NULL")
+                :run_with(tx)
+                :exec()
+            if claim_err then
+                return nil, "Failed to claim commit: " .. claim_err .. " at index " .. i
+            end
+
             local commit_query = sql.builder.select("*")
                 :from("dataflow_commits")
                 :where("commit_id = ?", commit_id)
@@ -311,7 +328,10 @@ function commit.tx_execute(tx, dataflow_id, op_id, commands, options)
 
             local commit_data = commits[1]
 
-            if commit_data.op_id ~= nil and tostring(commit_data.op_id) ~= "" then
+            if (claim_result.rows_affected or 0) == 0 then
+                if commit_data.op_id == nil or tostring(commit_data.op_id) == "" then
+                    return nil, "Commit could not be claimed: " .. commit_id .. " at index " .. i
+                end
                 table.insert(skipped_commit_ids, commit_id)
                 goto continue_command
             end
@@ -407,14 +427,21 @@ function commit.tx_execute(tx, dataflow_id, op_id, commands, options)
         return nil, err
     end
 
-    -- Mark applied commits as processed
-    if not completion_blocked then
+    -- A blocked completion is intentionally retryable. Release only claims
+    -- owned by this operation; successful claims already carry their durable
+    -- op_id from the compare-and-set above.
+    if completion_blocked then
         for _, commit_id in ipairs(commit_ids) do
             local update_q = sql.builder.update("dataflow_commits")
-                :set("op_id", op_id or commit_id)
+                :set("op_id", sql.as.null())
                 :where("commit_id = ?", commit_id)
+                :where("dataflow_id = ?", dataflow_id)
+                :where("op_id = ?", op_id)
             local update_exec = update_q:run_with(tx)
-            update_exec:exec()
+            local _, release_err = update_exec:exec()
+            if release_err then
+                return nil, "Failed to release blocked commit claim: " .. release_err
+            end
         end
     end
 
