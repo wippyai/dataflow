@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## [0.7.3](https://github.com/wippyai/dataflow/compare/v0.7.2...v0.7.3) (2026-08-01)
+
+
+### Bug Fixes
+
+* recover explicit replay conflicts portably ([6163214](https://github.com/wippyai/dataflow/commit/6163214ed7711b380da4174ad376c32d367df0a2))
+* recover explicit replay conflicts portably ([2d34bd0](https://github.com/wippyai/dataflow/commit/2d34bd0eb75c318795a6580ca2300eed1c03a881))
+
 ## [0.7.2](https://github.com/wippyai/dataflow/compare/v0.7.1...v0.7.2) (2026-08-01)
 
 
