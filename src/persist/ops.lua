@@ -681,10 +681,67 @@ handlers[constants.COMMAND_TYPES.UPDATE_DATA] = function(tx, dataflow_id, op_id,
     end
 
     if result.rows_affected == 0 and payload.create_if_missing == true then
-        return handlers[constants.COMMAND_TYPES.CREATE_DATA](tx, dataflow_id, op_id, {
-            type = constants.COMMAND_TYPES.CREATE_DATA,
-            payload = payload,
+        -- A zero-row UPDATE is not enough to prove absence: another transaction
+        -- may be committing the initial cursor row. Insert-if-absent converges that
+        -- race without raising a uniqueness error, then the retry applies our newer
+        -- value. The normal rolling-update path remains a single write.
+        if payload.data_type == nil or payload.content == nil then
+            return nil, "Mutable data slot creation requires data_type and content"
+        end
+        local content_value = payload.content
+        if type(content_value) == "table" then
+            local encoded, encode_err = json.encode(content_value)
+            if encode_err then return nil, "Failed to encode content: " .. encode_err end
+            content_value = encoded
+        end
+        local metadata = payload.metadata or "{}"
+        if type(metadata) == "table" then
+            local encoded, encode_err = json.encode(metadata)
+            if encode_err then return nil, "Failed to encode metadata: " .. encode_err end
+            metadata = encoded
+        end
+        local inserted, insert_err = sql.builder.insert("dataflow_data")
+            :set_map({
+                data_id = payload.data_id,
+                dataflow_id = dataflow_id,
+                node_id = payload.node_id or sql.as.null(),
+                type = payload.data_type,
+                discriminator = payload.discriminator,
+                key = payload.key,
+                content = content_value,
+                content_type = payload.content_type or "application/json",
+                metadata = metadata,
+                created_at = time.now():format(time.RFC3339NANO),
+            })
+            :suffix("ON CONFLICT(data_id) DO NOTHING")
+            :run_with(tx)
+            :exec()
+        if insert_err then return nil, "Failed to create mutable data slot: " .. insert_err end
+
+        local rows, query_err = sql.builder.select("dataflow_id")
+            :from("dataflow_data")
+            :where("data_id = ?", payload.data_id)
+            :limit(1)
+            :run_with(tx)
+            :query()
+        if query_err then
+            return nil, "Failed to verify mutable data slot: " .. query_err
+        end
+        if not rows or not rows[1] or tostring(rows[1].dataflow_id) ~= tostring(dataflow_id) then
+            return nil, "Mutable data slot belongs to another workflow or could not be created"
+        end
+
+        local retry_payload = {}
+        for key, value in pairs(payload) do retry_payload[key] = value end
+        retry_payload.create_if_missing = false
+        local retried, retry_err = handlers[constants.COMMAND_TYPES.UPDATE_DATA](tx, dataflow_id, op_id, {
+            type = constants.COMMAND_TYPES.UPDATE_DATA,
+            payload = retry_payload,
         })
+        if retry_err then return nil, retry_err end
+        retried.created = inserted.rows_affected > 0
+        retried.deduplicated = inserted.rows_affected == 0
+        return retried
     end
 
     return {
