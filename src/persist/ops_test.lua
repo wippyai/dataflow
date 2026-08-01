@@ -1900,6 +1900,78 @@ local function define_tests()
                 test.eq(rows[1].key, "cursor")
             end)
 
+            it("should treat an identical mutable upsert as an idempotent hit", function()
+                local resources = setup_test_resources()
+                local tx = get_test_transaction()
+                local data_id = uuid.v7()
+                local command = {
+                    type = ops.COMMAND_TYPES.UPDATE_DATA,
+                    payload = {
+                        data_id = data_id,
+                        data_type = "parallel.progress",
+                        node_id = resources.node_id,
+                        key = "cursor",
+                        content = { next_batch_start = 7 },
+                        content_type = "application/json",
+                        create_if_missing = true,
+                    }
+                }
+
+                local created, create_err = ops.execute(tx, resources.dataflow_id, nil, command)
+                test.is_nil(create_err)
+                test.is_true(created.changes_made)
+
+                local replayed, replay_err = ops.execute(tx, resources.dataflow_id, nil, command)
+                test.is_nil(replay_err)
+                test.not_nil(replayed)
+                test.eq(replayed.results[1].data_id, data_id)
+
+                local rows, query_err = txq(tx,
+                    "SELECT data_id FROM dataflow_data WHERE data_id = ?", { data_id })
+                test.is_nil(query_err)
+                test.eq(#rows, 1)
+            end)
+
+            it("should never adopt a mutable slot owned by another workflow", function()
+                local owner = setup_test_resources()
+                local tx = get_test_transaction()
+                local data_id = uuid.v7()
+                local _, create_err = ops.execute(tx, owner.dataflow_id, nil, {
+                    type = ops.COMMAND_TYPES.CREATE_DATA,
+                    payload = {
+                        data_id = data_id,
+                        data_type = "parallel.progress",
+                        node_id = owner.node_id,
+                        key = "cursor",
+                        content = { owner = "first" },
+                    }
+                })
+                test.is_nil(create_err)
+
+                local other = setup_test_resources()
+                local result, err = ops.execute(tx, other.dataflow_id, nil, {
+                    type = ops.COMMAND_TYPES.UPDATE_DATA,
+                    payload = {
+                        data_id = data_id,
+                        data_type = "parallel.progress",
+                        node_id = other.node_id,
+                        key = "cursor",
+                        content = { owner = "second" },
+                        create_if_missing = true,
+                    }
+                })
+                test.is_nil(result)
+                test.is_true(type(err) == "string" and err:match("another workflow") ~= nil)
+
+                local rows, query_err = txq(tx,
+                    "SELECT dataflow_id, content FROM dataflow_data WHERE data_id = ?", { data_id })
+                test.is_nil(query_err)
+                test.eq(#rows, 1)
+                test.eq(rows[1].dataflow_id, owner.dataflow_id)
+                local content = json.decode(rows[1].content :: string)
+                test.eq(content.owner, "first")
+            end)
+
             it("should delete data with DELETE_DATA command", function()
                 local resources = setup_test_resources()
                 local tx = get_test_transaction()
