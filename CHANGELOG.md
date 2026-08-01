@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## [0.7.4](https://github.com/wippyai/dataflow/compare/v0.7.3...v0.7.4) (2026-08-01)
+
+
+### Bug Fixes
+
+* fence rolling yield handoffs ([85d6cf7](https://github.com/wippyai/dataflow/commit/85d6cf75af44188258591918db090c4ae5c3f412))
+* fence rolling yield handoffs ([1fa7c94](https://github.com/wippyai/dataflow/commit/1fa7c945c6a80b19da4bf13b796cd40255f84483))
+
 ## [0.7.3](https://github.com/wippyai/dataflow/compare/v0.7.2...v0.7.3) (2026-08-01)
 
 
