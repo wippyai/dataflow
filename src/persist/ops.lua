@@ -45,9 +45,10 @@ local function is_iteration_terminal_unique_slot(payload)
         payload.metadata.terminal_emission_key_version == 1
 end
 
-local function is_explicit_yield_replay(payload)
+local function is_idempotent_explicit_replay(payload)
     return payload and payload.data_id ~= nil and
-        payload.data_type == consts.DATA_TYPE.NODE_YIELD
+        (payload.data_type == consts.DATA_TYPE.NODE_YIELD or
+        payload.data_type == consts.DATA_TYPE.PARALLEL_PROGRESS)
 end
 
 local function find_existing_unique_data_row(tx, dataflow_id, payload)
@@ -224,6 +225,37 @@ local function matches_explicit_data_replay(row, payload, content, content_type,
         json_equal(row.content, content) and
         nullable_equal(row.content_type, content_type) and
         json_equal(row.metadata, metadata)
+end
+
+local function resolve_idempotent_explicit_replay(tx, dataflow_id, op_id, data_id,
+                                                  payload, content, content_type, metadata)
+    local existing, existing_err = find_data_by_id(tx, data_id)
+    if existing_err then return nil, existing_err end
+    -- A concurrent consumer may remove an ephemeral row after winning the
+    -- insert. The collision still proves this create was already observed;
+    -- treating it as consumed avoids resurrecting a stale yield.
+    if existing == nil then
+        return {
+            data_id = data_id,
+            changes_made = false,
+            op_id = op_id,
+            deduplicated = true,
+            consumed = true,
+        }
+    end
+    if tostring(existing.dataflow_id) ~= tostring(dataflow_id) then
+        return nil, "Data ID belongs to another workflow"
+    end
+    if not matches_explicit_data_replay(
+            existing, payload, content, content_type, metadata) then
+        return nil, "Data ID already exists with conflicting payload"
+    end
+    return {
+        data_id = data_id,
+        changes_made = false,
+        op_id = op_id,
+        deduplicated = true,
+    }
 end
 
 -- ============================================================================
@@ -554,17 +586,11 @@ handlers[constants.COMMAND_TYPES.CREATE_DATA] = function(tx, dataflow_id, op_id,
             created_at = now_ts
         })
 
-    -- A yield's caller-assigned ID is its durable command identity. Duplicate
-    -- concurrent execution must converge without re-arming its wake side effect.
-    -- Other data types retain their existing semantic-slot behavior below.
-    if is_explicit_yield_replay(payload) then
-        insert_query = insert_query:suffix("ON CONFLICT(data_id) DO NOTHING")
-    end
-
     local executor = insert_query:run_with(tx)
     local uses_unique_slot = is_workflow_output_unique_slot(payload) or
         is_success_result_unique_slot(payload) or is_iteration_terminal_unique_slot(payload)
-    local insert_savepoint = uses_unique_slot and savepoint_name() or nil
+    local insert_savepoint = (uses_unique_slot or is_idempotent_explicit_replay(payload)) and
+        savepoint_name() or nil
 
     if insert_savepoint then
         local _, savepoint_err = create_savepoint(tx, insert_savepoint)
@@ -588,6 +614,11 @@ handlers[constants.COMMAND_TYPES.CREATE_DATA] = function(tx, dataflow_id, op_id,
         end
 
         if is_unique_violation(err) then
+            if is_idempotent_explicit_replay(payload) then
+                return resolve_idempotent_explicit_replay(
+                    tx, dataflow_id, op_id, data_id, payload,
+                    content_value, content_type, metadata)
+            end
             local existing_row, existing_err = find_existing_unique_data_row(tx, dataflow_id, payload)
             if existing_err then
                 return nil, existing_err
@@ -610,42 +641,6 @@ handlers[constants.COMMAND_TYPES.CREATE_DATA] = function(tx, dataflow_id, op_id,
         end
 
         return nil, "Failed to create data record: " .. err
-    end
-
-    if is_explicit_yield_replay(payload) and (result.rows_affected or 0) == 0 then
-        if insert_savepoint then
-            local _, release_err = release_savepoint(tx, insert_savepoint)
-            if release_err then return nil, release_err end
-            insert_savepoint = nil
-        end
-
-        local existing, existing_err = find_data_by_id(tx, data_id)
-        if existing_err then return nil, existing_err end
-        -- A concurrent consumer may remove an ephemeral row after winning the
-        -- insert. The collision still proves this create was already observed;
-        -- treating it as consumed avoids resurrecting a stale yield.
-        if existing == nil then
-            return {
-                data_id = data_id,
-                changes_made = false,
-                op_id = op_id,
-                deduplicated = true,
-                consumed = true,
-            }
-        end
-        if tostring(existing.dataflow_id) ~= tostring(dataflow_id) then
-            return nil, "Data ID belongs to another workflow"
-        end
-        if not matches_explicit_data_replay(
-                existing, payload, content_value, content_type, metadata) then
-            return nil, "Data ID already exists with conflicting payload"
-        end
-        return {
-            data_id = data_id,
-            changes_made = false,
-            op_id = op_id,
-            deduplicated = true,
-        }
     end
 
     if insert_savepoint then
