@@ -244,6 +244,85 @@ local function define_tests()
                 test.eq(tonumber(rows[1].data_count), 1)
             end)
 
+            it("deduplicates an exact rolling yield result without consuming a re-armed wake", function()
+                local resources = setup_test_resources()
+                local tx = get_test_transaction()
+                local yield_id = uuid.v7()
+                local wake_key = "yield:" .. yield_id
+                local deadline = "2026-08-01T18:00:00Z"
+                local command = {
+                    type = ops.COMMAND_TYPES.CREATE_DATA,
+                    payload = {
+                        data_id = yield_id,
+                        node_id = resources.node_id,
+                        key = yield_id,
+                        data_type = "node.yield.result",
+                        content = { child = "result-row" },
+                        content_type = "application/json",
+                        consume_wake_keys = { wake_key },
+                    },
+                }
+
+                local _, wake_err = activation_repo.register_yield_wake_tx(
+                    tx, resources.dataflow_id, yield_id, deadline)
+                test.is_nil(wake_err)
+                local created, create_err = ops.execute(tx, resources.dataflow_id, nil, command)
+                test.is_nil(create_err)
+                test.is_true(created.results[1].changes_made)
+
+                local consumed, consumed_err = txq(tx, [[
+                    SELECT wake_key FROM dataflow_wakes
+                    WHERE dataflow_id = ? AND wake_key = ?
+                ]], { resources.dataflow_id, wake_key })
+                test.is_nil(consumed_err)
+                test.eq(#consumed, 0)
+
+                local _, rearm_err = activation_repo.register_yield_wake_tx(
+                    tx, resources.dataflow_id, yield_id, deadline)
+                test.is_nil(rearm_err)
+                local replayed, replay_err = ops.execute(tx, resources.dataflow_id, nil, command)
+                test.is_nil(replay_err)
+                test.is_false(replayed.results[1].changes_made)
+                test.is_true(replayed.results[1].deduplicated)
+
+                local rows, query_err = txq(tx,
+                    "SELECT COUNT(*) AS data_count FROM dataflow_data WHERE data_id = ?", { yield_id })
+                test.is_nil(query_err)
+                test.eq(tonumber(rows[1].data_count), 1)
+                local wakes, replay_wake_err = txq(tx, [[
+                    SELECT wake_key FROM dataflow_wakes
+                    WHERE dataflow_id = ? AND wake_key = ?
+                ]], { resources.dataflow_id, wake_key })
+                test.is_nil(replay_wake_err)
+                test.eq(#wakes, 1)
+            end)
+
+            it("rejects conflicting rolling yield results for the same identity", function()
+                local resources = setup_test_resources()
+                local tx = get_test_transaction()
+                local yield_id = uuid.v7()
+                local function create(value)
+                    return ops.execute(tx, resources.dataflow_id, nil, {
+                        type = ops.COMMAND_TYPES.CREATE_DATA,
+                        payload = {
+                            data_id = yield_id,
+                            node_id = resources.node_id,
+                            key = yield_id,
+                            data_type = "node.yield.result",
+                            content = { child = value },
+                            content_type = "application/json",
+                        },
+                    })
+                end
+
+                local _, create_err = create("first")
+                test.is_nil(create_err)
+                local replayed, replay_err = create("second")
+                test.is_nil(replayed)
+                test.is_true(type(replay_err) == "string" and
+                    replay_err:match("conflicting payload") ~= nil)
+            end)
+
             it("rejects conflicting payloads for the same explicit data ID", function()
                 local resources = setup_test_resources()
                 local tx = get_test_transaction()

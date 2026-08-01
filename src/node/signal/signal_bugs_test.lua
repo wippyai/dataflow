@@ -451,6 +451,8 @@ local function define_tests()
 
             ws:satisfy_yield("n1", { first = true })
             test.eq(#ws.queued_commands, 1, "one command")
+            test.not_nil(ws.active_yields["n1"], "yield retained before persistence")
+            ws:_update_state_from_results({ results = { { input = ws.queued_commands[1] } } })
             test.is_nil(ws.active_yields["n1"], "yield removed")
 
             ws:satisfy_yield("n1", { second = true })

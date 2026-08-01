@@ -45,9 +45,16 @@ local function is_iteration_terminal_unique_slot(payload)
         payload.metadata.terminal_emission_key_version == 1
 end
 
+local function is_rolling_yield_result(payload)
+    return payload and payload.data_type == consts.DATA_TYPE.NODE_YIELD_RESULT and
+        type(payload.data_id) == "string" and payload.data_id ~= "" and
+        tostring(payload.data_id) == tostring(payload.key)
+end
+
 local function is_idempotent_explicit_replay(payload)
     return payload and payload.data_id ~= nil and
         (payload.data_type == consts.DATA_TYPE.NODE_YIELD or
+        is_rolling_yield_result(payload) or
         payload.data_type == consts.DATA_TYPE.PARALLEL_PROGRESS)
 end
 
@@ -640,7 +647,8 @@ handlers[constants.COMMAND_TYPES.CREATE_DATA] = function(tx, dataflow_id, op_id,
             end
         end
 
-        return nil, "Failed to create data record: " .. err
+        return nil, "Failed to create data record [type=" ..
+            tostring(payload.data_type) .. ", data_id=" .. tostring(data_id) .. "]: " .. err
     end
 
     if insert_savepoint then

@@ -858,6 +858,8 @@ local function define_tests()
                 test.is_true(ws:is_node_active("parent-1"))
 
                 ws:satisfy_yield("parent-1", { result = "test" })
+                test.not_nil(ws.active_yields["parent-1"])
+                ws:_update_state_from_results({ results = { { input = ws.queued_commands[1] } } })
                 test.is_nil(ws.active_yields["parent-1"])
                 test.gt(#ws.queued_commands, 0)
             end)
@@ -888,6 +890,47 @@ local function define_tests()
                 test.not_nil(exit_info)
                 test.not_nil(exit_info.yield_complete)
                 test.eq(exit_info.yield_complete.parent_id, "parent-1")
+            end)
+
+            it("does not satisfy a rolling yield twice while its parent is handing off", function()
+                local ws = workflow_state.new(test_ctx.dataflow_id) :: any
+                ws.nodes["parent-1"] = { status = consts.STATUS.RUNNING, type = "parent" }
+                ws.nodes["child-1"] = {
+                    status = consts.STATUS.COMPLETED_SUCCESS,
+                    type = "child",
+                    parent_node_id = "parent-1",
+                }
+                ws.nodes["child-2"] = {
+                    status = consts.STATUS.RUNNING,
+                    type = "child",
+                    parent_node_id = "parent-1",
+                }
+                ws:track_yield("parent-1", {
+                    yield_id = "rolling-yield",
+                    completion_policy = "any_group",
+                    pending_children = {
+                        ["child-1"] = consts.STATUS.COMPLETED_SUCCESS,
+                        ["child-2"] = consts.STATUS.PENDING,
+                    },
+                    results = { ["child-1"] = "result-1" },
+                })
+                ws:satisfy_yield("parent-1", { ["child-1"] = "result-1" })
+                test.is_nil(ws.active_yields["parent-1"].handoff)
+                ws:_update_state_from_results({ results = { { input = ws.queued_commands[1] } } })
+                test.is_true(ws.active_yields["parent-1"].handoff)
+                ws.queued_commands = {}
+                ws:track_process("child-2", "child-2-pid")
+
+                local exit_info = ws:handle_process_exit(
+                    "child-2-pid", true, "child-2 result") :: any
+
+                test.not_nil(exit_info)
+                test.is_nil(exit_info.yield_complete)
+                test.not_nil(ws.active_yields["parent-1"].results["child-2"])
+                for _, command in ipairs(ws.queued_commands) do
+                    local payload = command.payload or {}
+                    test.neq(payload.data_type, consts.DATA_TYPE.NODE_YIELD_RESULT)
+                end
             end)
 
             it("copies detached signal wake keys when a replacement yield attaches", function()
@@ -1060,6 +1103,7 @@ local function define_tests()
                     signal_wake_keys = { "signal:signal-data" },
                 })
                 ws:satisfy_yield("signal-node", { decision = "approve" })
+                ws:_update_state_from_results({ results = { { input = ws.queued_commands[1] } } })
 
                 ws:track_yield("signal-node", {
                     yield_id = "replacement-yield",
@@ -1269,10 +1313,12 @@ local function define_tests()
                 })
 
                 ws:satisfy_yield("parent", {})
+                test.not_nil(ws.active_yields["parent"])
+                ws:_update_state_from_results({ results = { { input = ws.queued_commands[1] } } })
                 test.is_nil(ws.active_yields["parent"])
             end)
 
-            it("retains rolling child ownership during a partial-yield handoff", function()
+            it("enters rolling handoff only after the yield result is persisted", function()
                 local ws = workflow_state.new(test_ctx.dataflow_id) :: any
                 ws:track_yield("parent", {
                     yield_id = "rolling-yield",
@@ -1285,7 +1331,17 @@ local function define_tests()
 
                 ws:satisfy_yield("parent", { a = "result-a" })
                 local retained = test.not_nil(ws.active_yields.parent) :: any
+                test.is_nil(retained.handoff)
+                test.eq(#retained.wake_keys, 1)
+                test.is_true(ws:yield_requires_satisfaction("parent", "rolling-yield"))
+                local queued_before_retry = #ws.queued_commands
+                ws:satisfy_yield("parent", { a = "result-a" })
+                test.eq(#ws.queued_commands, queued_before_retry,
+                    "a failed transaction reuses its retained satisfaction batch")
+                ws:_update_state_from_results({ results = { { input = ws.queued_commands[1] } } })
                 test.is_true(retained.handoff)
+                test.is_false(ws:yield_requires_satisfaction("parent", "rolling-yield"))
+                test.is_false(ws:yield_requires_satisfaction("parent", "replacement-yield"))
                 test.eq(retained.pending_children.b, consts.STATUS.PENDING)
                 test.eq(#retained.wake_keys, 0)
                 test.eq(ws.queued_commands[1].payload.data_id, "rolling-yield")

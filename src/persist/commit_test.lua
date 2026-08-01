@@ -794,6 +794,97 @@ local function define_tests()
                 }), 1)
                 test.eq(get_commit_op_id(tx, commit_id), op_id)
             end)
+
+            it("rolls back a commit claim when expanded commands fail", function()
+                if test_ctx.tx then test_ctx.tx:rollback(); test_ctx.tx = nil end
+                if test_ctx.db then test_ctx.db:release(); test_ctx.db = nil end
+
+                local dataflow_id = create_isolated_dataflow()
+                local commit_id = uuid.v7()
+                local payload_json = json.encode({
+                    commands = {
+                        { type = "NOT_A_DATAFLOW_COMMAND", payload = {} },
+                    },
+                })
+                local db = test.not_nil(select(1, sql.get("app:db"))) :: any
+                local _, insert_err = db:execute(rebind([[
+                    INSERT INTO dataflow_commits(
+                        commit_id, dataflow_id, op_id, payload, metadata, created_at
+                    ) VALUES (?, ?, NULL, ?, ?, ?)
+                ]], select(1, db:type())), {
+                    commit_id, dataflow_id, payload_json, "{}",
+                    time.now():format(time.RFC3339NANO),
+                })
+                db:release()
+                test.is_nil(insert_err)
+
+                local result, execute_err = commit.execute(dataflow_id, uuid.v7(), {
+                    {
+                        type = consts.COMMAND.APPLY_COMMIT,
+                        payload = { commit_id = commit_id },
+                    },
+                }, { publish = false })
+                test.is_nil(result)
+                test.contains(execute_err, "Unknown command type")
+
+                local verify_db = test.not_nil(select(1, sql.get("app:db"))) :: any
+                local rows, query_err = verify_db:query(rebind(
+                    "SELECT op_id FROM dataflow_commits WHERE commit_id = ?",
+                    select(1, verify_db:type())), { commit_id })
+                verify_db:release()
+                test.is_nil(query_err)
+                test.eq(#rows, 1)
+                test.is_nil(rows[1].op_id)
+            end)
+
+            it("releases a stale generation-fenced commit claim", function()
+                local resources = setup_test_resources()
+                local tx = get_test_transaction()
+                local db_type = select(1, tx:db_type())
+                local now_ts = time.now():format(time.RFC3339NANO)
+                local commit_id = uuid.v7()
+                local _, activation_err = tx:execute(rebind([[
+                    INSERT INTO dataflow_activations(
+                        dataflow_id, generation, desired_active, requested_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?)
+                ]], db_type), { resources.dataflow_id, 2, true, now_ts, now_ts })
+                test.is_nil(activation_err)
+                local payload_json = json.encode({
+                    commands = {
+                        {
+                            type = ops.COMMAND_TYPES.COMPLETE_WORKFLOW,
+                            payload = {
+                                activation_generation = 1,
+                                status = consts.STATUS.COMPLETED_FAILURE,
+                            },
+                        },
+                    },
+                })
+                local _, insert_err = tx:execute(rebind([[
+                    INSERT INTO dataflow_commits(
+                        commit_id, dataflow_id, op_id, payload, metadata, created_at
+                    ) VALUES (?, ?, NULL, ?, ?, ?)
+                ]], db_type), {
+                    commit_id, resources.dataflow_id, payload_json, "{}", now_ts,
+                })
+                test.is_nil(insert_err)
+
+                local result, execute_err = commit.tx_execute(
+                    tx, resources.dataflow_id, uuid.v7(), {
+                        {
+                            type = consts.COMMAND.APPLY_COMMIT,
+                            payload = { commit_id = commit_id },
+                        },
+                    }, { publish = false })
+                test.is_nil(execute_err)
+                test.is_false((result.results[1] :: any).completed)
+                test.is_nil(get_commit_op_id(tx, commit_id))
+                local flows, flow_err = tx:query(rebind(
+                    "SELECT last_commit_id FROM dataflows WHERE dataflow_id = ?",
+                    db_type), { resources.dataflow_id })
+                test.is_nil(flow_err)
+                test.is_nil(flows[1].last_commit_id)
+            end)
         end)
 
         describe("get_pending_commits - No Transaction Conflicts", function()
