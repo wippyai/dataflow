@@ -156,7 +156,12 @@ local function normalize_row(row: any)
     }, nil
 end
 
-local function lock_workflow_status_tx(tx, dataflow_id)
+-- The workflow row is the first lock in every transaction that also mutates
+-- activation or wake rows. PostgreSQL foreign-key checks can hold KEY SHARE on
+-- this parent row, so acquiring a weaker UPDATE lock and upgrading it later can
+-- deadlock with a concurrent commit. Callers that cross the workflow/lifecycle
+-- boundary must establish this lock before either side is changed.
+function activation_repo.lock_workflow_tx(tx, dataflow_id)
     local db_type, type_err = tx:db_type()
     if type_err then return nil, type_err end
     if db_type ~= sql.type.POSTGRES and db_type ~= "postgres" then
@@ -271,7 +276,7 @@ function activation_repo.request_activation_tx(tx, dataflow_id, launch_args, now
     if not valid then return nil, id_err end
     valid, id_err = validate_timestamp(now_value, "requested_at")
     if not valid then return nil, id_err end
-    local status, status_err = lock_workflow_status_tx(tx, dataflow_id)
+    local status, status_err = activation_repo.lock_workflow_tx(tx, dataflow_id)
     if status_err then return nil, status_err end
     local terminal = terminal_result_from_status(status)
     if terminal then return terminal, nil end
@@ -290,7 +295,7 @@ function activation_repo.activate_for_signal_tx(tx, dataflow_id, wake_key, wake_
     valid, validation_err = validate_timestamp(now_value, "requested_at")
     if not valid then return nil, validation_err end
 
-    local status, status_err = lock_workflow_status_tx(tx, dataflow_id)
+    local status, status_err = activation_repo.lock_workflow_tx(tx, dataflow_id)
     if status_err then return nil, status_err end
     local terminal = terminal_result_from_status(status)
     if terminal then
@@ -348,7 +353,7 @@ function activation_repo.activate_due_tx(tx, dataflow_id, wake_key, now_value)
     valid, validation_err = validate_timestamp(now_value, "now")
     if not valid then return nil, validation_err end
 
-    local status, status_err = lock_workflow_status_tx(tx, dataflow_id)
+    local status, status_err = activation_repo.lock_workflow_tx(tx, dataflow_id)
     if status_err then return nil, status_err end
     local terminal = terminal_result_from_status(status)
     if terminal then
@@ -423,7 +428,7 @@ function activation_repo.release_if_generation_tx(tx, dataflow_id, generation, n
     valid, validation_err = validate_timestamp(now_value, "updated_at")
     if not valid then return nil, validation_err end
 
-    local status, status_err = lock_workflow_status_tx(tx, dataflow_id)
+    local status, status_err = activation_repo.lock_workflow_tx(tx, dataflow_id)
     if status_err then return nil, status_err end
     local terminal = terminal_result_from_status(status)
     if terminal then
@@ -477,7 +482,7 @@ function activation_repo.claim_epoch_tx(
     valid, validation_err = validate_timestamp(now_value, "updated_at")
     if not valid then return nil, validation_err end
 
-    local status, status_err = lock_workflow_status_tx(tx, dataflow_id)
+    local status, status_err = activation_repo.lock_workflow_tx(tx, dataflow_id)
     if status_err then return nil, status_err end
     local terminal = terminal_result_from_status(status)
     if terminal then
@@ -515,7 +520,7 @@ function activation_repo.consume_wake_tx(tx, dataflow_id, wake_key, generation)
     if not valid then return nil, validation_err end
     if type(wake_key) ~= "string" or wake_key == "" then return nil, "wake_key is required" end
 
-    local status, status_err = lock_workflow_status_tx(tx, dataflow_id)
+    local status, status_err = activation_repo.lock_workflow_tx(tx, dataflow_id)
     if status_err then return nil, status_err end
     local terminal = terminal_result_from_status(status)
     if terminal then
@@ -568,7 +573,7 @@ function activation_repo.disable_terminal_tx(tx, dataflow_id, now_value)
     if not valid then return nil, validation_err end
     valid, validation_err = validate_timestamp(now_value, "updated_at")
     if not valid then return nil, validation_err end
-    local status, status_err = lock_workflow_status_tx(tx, dataflow_id)
+    local status, status_err = activation_repo.lock_workflow_tx(tx, dataflow_id)
     if status_err then return nil, status_err end
     if not TERMINAL_STATUS[status] then return nil, "dataflow is not terminal" end
     return cleanup_terminal_tx(tx, dataflow_id, status, now_value)

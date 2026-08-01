@@ -794,6 +794,24 @@ handlers[constants.COMMAND_TYPES.UPDATE_WORKFLOW] = function(tx, dataflow_id, op
 
     local payload = command.payload or {}
     local wf_id_to_update = payload.dataflow_id or dataflow_id
+    local terminal = payload.status == constants.STATUS.COMPLETED_SUCCESS or
+        payload.status == constants.STATUS.COMPLETED_FAILURE or
+        payload.status == constants.STATUS.CANCELLED or
+        payload.status == constants.STATUS.TERMINATED
+
+    -- A terminal update crosses from the workflow row into activation and wake
+    -- rows. Establish the canonical parent-first lock order before UPDATE takes
+    -- PostgreSQL's weaker NO KEY UPDATE lock; upgrading that lock afterwards can
+    -- deadlock with a concurrent commit holding a foreign-key KEY SHARE lock.
+    if terminal then
+        local _, lock_err = activation_repo.lock_workflow_tx(tx, wf_id_to_update)
+        if lock_err then
+            if tostring(lock_err) == "dataflow not found" then
+                return nil, "Workflow not found or no changes applied"
+            end
+            return nil, "Failed to lock workflow lifecycle: " .. tostring(lock_err)
+        end
+    end
 
     -- Metadata merge configuration - default is merge=true for consistency
     local merge_metadata = payload.merge_metadata
@@ -928,10 +946,6 @@ handlers[constants.COMMAND_TYPES.UPDATE_WORKFLOW] = function(tx, dataflow_id, op
         return nil, "Workflow not found or no changes applied"
     end
 
-    local terminal = payload.status == constants.STATUS.COMPLETED_SUCCESS or
-        payload.status == constants.STATUS.COMPLETED_FAILURE or
-        payload.status == constants.STATUS.CANCELLED or
-        payload.status == constants.STATUS.TERMINATED
     if terminal then
         local _, projection_err = activation_repo.disable_terminal_tx(tx, wf_id_to_update, now_ts)
         if projection_err then
