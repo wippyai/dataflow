@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## [0.7.5](https://github.com/wippyai/dataflow/compare/v0.7.4...v0.7.5) (2026-08-06)
+
+
+### Bug Fixes
+
+* **dataflow:** satisfy strict overseer boundaries ([2e45cd7](https://github.com/wippyai/dataflow/commit/2e45cd70ac2534525a5a41991918aff1b6ee186c))
+* **dataflow:** satisfy strict overseer boundaries ([d4aab76](https://github.com/wippyai/dataflow/commit/d4aab7654b89c80a53a834ad431710632747c59b))
+
 ## [0.7.4](https://github.com/wippyai/dataflow/compare/v0.7.3...v0.7.4) (2026-08-01)
 
 
