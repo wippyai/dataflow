@@ -129,7 +129,7 @@ local function now_value(): string
 end
 
 local function with_tx(fn: (any) -> (any?, string?)): (any?, string?)
-    local db, db_err = M.sql.get(M.consts.APP_DB)
+    local db, db_err = M.sql.get(tostring(M.consts.APP_DB))
     if db_err then return nil, tostring(db_err) end
     local tx, begin_err = db:begin()
     if begin_err then
@@ -153,6 +153,12 @@ local function with_tx(fn: (any) -> (any?, string?)): (any?, string?)
 end
 
 M.with_tx = with_tx
+
+-- Keep the replaceable test seam while preserving the callback's two-result
+-- contract for strict callers. Fields read through M are intentionally dynamic.
+local function call_with_tx(fn: (any) -> (any?, string?)): (any?, string?)
+    return M.with_tx(fn)
+end
 
 local function is_terminal(status: string?): boolean
     return TERMINAL_STATUS[tostring(status or "")] == true
@@ -284,10 +290,11 @@ function M.drive_decision(runtime: Runtime, initial: Decision?): (boolean?, stri
 
         elseif decision.kind == M.overseer_state.ACTION.CLAIM then
             if not runtime.epoch then return nil, "runtime epoch is unavailable" end
-            local claimed, claim_err = M.with_tx(function(tx)
-                return M.activation_repo.claim_epoch_tx(
+            local claimed, claim_err = call_with_tx(function(tx)
+                local result, err = M.activation_repo.claim_epoch_tx(
                     tx, dataflow_id, generation, decision.observed_epoch,
                     runtime.epoch, now_value())
+                return result, err and tostring(err) or nil
             end)
             if claim_err then return nil, tostring(claim_err) end
             decision = select(1, apply_transition(runtime,
@@ -387,7 +394,7 @@ function M.drive_decision(runtime: Runtime, initial: Decision?): (boolean?, stri
                                 frame_err or "missing actor or scope"),
                         })))
                 else
-                    local args = clone_launch_args(activation.launch_args)
+                    local args = clone_launch_args(activation.launch_args :: { [string]: any }?)
                     args.dataflow_id = dataflow_id
                     args.activation_generation = generation
                     local spawn_ok, spawn_pid, spawn_err = pcall(function()
@@ -395,7 +402,7 @@ function M.drive_decision(runtime: Runtime, initial: Decision?): (boolean?, stri
                             :with_name("dataflow." .. dataflow_id)
                             :with_actor(actor)
                             :with_scope(scope)
-                            :spawn_monitored(M.consts.ORCHESTRATOR, M.consts.HOST_ID, args)
+                            :spawn_monitored(tostring(M.consts.ORCHESTRATOR), tostring(M.consts.HOST_ID), args)
                     end)
                     if not spawn_ok then
                         spawn_err = tostring(spawn_pid)
@@ -509,7 +516,7 @@ function M.reconcile_activation(
 end
 
 local function pending_due(now: string, limit: number): ({ WakeRow }?, string?)
-    local db, db_err = M.sql.get(M.consts.APP_DB)
+    local db, db_err = M.sql.get(tostring(M.consts.APP_DB))
     if db_err then return nil, tostring(db_err) end
     local db_type, type_err = db:type()
     if type_err then db:release(); return nil, tostring(type_err) end
@@ -533,9 +540,10 @@ function M.promote_due(runtime: Runtime): (number?, string?)
     if due_err then return nil, due_err end
     local promoted = 0
     for _, row in ipairs(rows or {}) do
-        local activation, activation_err = M.with_tx(function(tx)
-            return M.activation_repo.activate_due_tx(
+        local activation, activation_err = call_with_tx(function(tx)
+            local result, err = M.activation_repo.activate_due_tx(
                 tx, tostring(row.dataflow_id), tostring(row.wake_key), now)
+            return result, err and tostring(err) or nil
         end)
         if activation_err then
             if schema_not_ready(activation_err) then return nil, activation_err end
@@ -679,7 +687,7 @@ function M.handle_exit(runtime: Runtime, event: any): (boolean?, string?)
 end
 
 function M.next_pending_wake(): (any?, string?)
-    local db, db_err = M.sql.get(M.consts.APP_DB)
+    local db, db_err = M.sql.get(tostring(M.consts.APP_DB))
     if db_err then return nil, tostring(db_err) end
     local rows, query_err = db:query([[
         SELECT dataflow_id, wake_key, wake_at FROM dataflow_wakes
