@@ -48,21 +48,23 @@ local function define_tests()
             -- An input_transform field whose expression resolves to nil produces
             -- an entry with nil content; the reserved carriers read it as "not
             -- provided", never as a malformed value.
-            local input_context, agent_id_override, model_override, input_data, err = process({
+            local input_context, agent_id_override, model_override, max_iterations_override, input_data, err = process({
                 context = { content = nil, metadata = {} },
                 model = { content = nil, metadata = {} },
                 agent_id = { content = nil, metadata = {} },
+                max_iterations = { content = nil, metadata = {} },
                 lead = { content = { name = "Jane" }, metadata = {} },
             })
             test.is_nil(err)
             test.is_nil(input_context)
             test.is_nil(agent_id_override)
             test.is_nil(model_override)
+            test.is_nil(max_iterations_override)
             test.is_true(input_data:find('<input key="lead">', 1, true) ~= nil)
         end)
 
         it("renders no input tag for a nil-content input", function()
-            local _, _, _, input_data, err = process({
+            local _, _, _, _, input_data, err = process({
                 empty = { content = nil, metadata = {} },
                 brief = { content = "text", metadata = {} },
             })
@@ -72,10 +74,11 @@ local function define_tests()
         end)
 
         it("still merges a table context and applies string overrides", function()
-            local input_context, agent_id_override, model_override, input_data, err = process({
+            local input_context, agent_id_override, model_override, max_iterations_override, input_data, err = process({
                 context = { content = { kb_ids = { "kb-1" } }, metadata = {} },
                 model = { content = "class:fast", metadata = {} },
                 agent_id = { content = "ns:researcher", metadata = {} },
+                max_iterations = { content = 80, metadata = {} },
                 lead = { content = { name = "Jane" }, metadata = {} },
             })
             test.is_nil(err)
@@ -83,7 +86,20 @@ local function define_tests()
             test.eq((input_context :: any).kb_ids[1], "kb-1")
             test.eq(model_override, "class:fast")
             test.eq(agent_id_override, "ns:researcher")
+            test.eq(max_iterations_override, 80)
             test.is_true(input_data:find('<input key="context">', 1, true) == nil)
+            test.is_true(input_data:find('<input key="max_iterations">', 1, true) == nil)
+        end)
+
+        it("rejects a max_iterations input that is not a positive integer", function()
+            local _, _, _, _, _, err = process({
+                max_iterations = { content = "eighty", metadata = {} },
+            })
+            test.not_nil(err)
+            local _, _, _, _, _, err2 = process({
+                max_iterations = { content = -3, metadata = {} },
+            })
+            test.not_nil(err2)
         end)
     end)
 end

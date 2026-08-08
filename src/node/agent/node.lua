@@ -500,7 +500,7 @@ local function process_multiple_inputs(inputs)
     if inputs.context and inputs.context.content ~= nil then
         local context_content = inputs.context.content
         if type(context_content) ~= "table" then
-            return nil, nil, nil, nil, "context must be a table/object"
+            return nil, nil, nil, nil, nil, "context must be a table/object"
         end
         input_context = context_content
     end
@@ -509,7 +509,7 @@ local function process_multiple_inputs(inputs)
     if inputs.agent_id and inputs.agent_id.content ~= nil then
         local agent_id_content = inputs.agent_id.content
         if type(agent_id_content) ~= "string" or agent_id_content == "" then
-            return nil, nil, nil, nil, "agent_id must be a non-empty string"
+            return nil, nil, nil, nil, nil, "agent_id must be a non-empty string"
         end
         agent_id_override = agent_id_content
     end
@@ -518,14 +518,25 @@ local function process_multiple_inputs(inputs)
     if inputs.model and inputs.model.content ~= nil then
         local model_content = inputs.model.content
         if type(model_content) ~= "string" or model_content == "" then
-            return nil, nil, nil, nil, "model must be a non-empty string"
+            return nil, nil, nil, nil, nil, "model must be a non-empty string"
         end
         model_override = model_content
     end
 
+    local max_iterations_override = nil
+    if inputs.max_iterations and inputs.max_iterations.content ~= nil then
+        local max_iterations_content = tonumber(inputs.max_iterations.content)
+        if not max_iterations_content or max_iterations_content < 1
+            or max_iterations_content ~= math.floor(max_iterations_content) then
+            return nil, nil, nil, nil, nil, "max_iterations must be a positive integer"
+        end
+        max_iterations_override = max_iterations_content
+    end
+
     local parts = {}
     for key, input in pairs(inputs) do
-        if key ~= "context" and key ~= "agent_id" and key ~= "model" and input.content ~= nil then
+        if key ~= "context" and key ~= "agent_id" and key ~= "model" and key ~= "max_iterations"
+            and input.content ~= nil then
             local content = input.content
             if type(content) == "table" then
                 content = json.encode(content)
@@ -537,10 +548,10 @@ local function process_multiple_inputs(inputs)
     end
 
     if #parts == 0 then
-        return input_context, agent_id_override, model_override, "", nil
+        return input_context, agent_id_override, model_override, max_iterations_override, "", nil
     end
 
-    return input_context, agent_id_override, model_override, table.concat(parts, "\n\n"), nil
+    return input_context, agent_id_override, model_override, max_iterations_override, table.concat(parts, "\n\n"), nil
 end
 
 local function validate_and_resolve_config(config)
@@ -1805,7 +1816,8 @@ local function run(args)
         }, inputs_err)
     end
 
-    local input_context, agent_id_override, model_override, input_data, input_err = process_multiple_inputs(inputs)
+    local input_context, agent_id_override, model_override, max_iterations_override, input_data, input_err =
+        process_multiple_inputs(inputs)
     if input_err then
         return n:fail({
             code = agent_consts.ERROR.INPUT_VALIDATION_FAILED,
@@ -1917,7 +1929,7 @@ local function run(args)
 
     local saved_state = ((args.node or {}).metadata or {}).state or {}
     local iteration = saved_state.current_iteration or 0
-    local max_iterations = config.arena.max_iterations or agent_consts.DEFAULTS.MAX_ITERATIONS
+    local max_iterations = max_iterations_override or config.arena.max_iterations or agent_consts.DEFAULTS.MAX_ITERATIONS
     local min_iterations = config.arena.min_iterations or agent_consts.DEFAULTS.MIN_ITERATIONS
     local tool_calling = config.arena.tool_calling
     local show_tool_calls = config.show_tool_calls ~= false
