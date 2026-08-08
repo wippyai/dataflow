@@ -26,6 +26,10 @@ local function handler(input)
         time.sleep(tostring(delay_ms) .. "ms")
     end
 
+    if type(input.fail_message) == "string" and input.fail_message ~= "" then
+        return nil, input.fail_message
+    end
+
     return {
         ok = true,
         scenario_id = scenario_id,

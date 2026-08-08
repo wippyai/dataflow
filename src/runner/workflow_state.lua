@@ -973,7 +973,13 @@ function methods:get_failed_node_errors()
     local failed_nodes = {}
     for node_id, node_data in pairs(self.nodes) do
         if node_data.status == consts.STATUS.COMPLETED_FAILURE then
-            table.insert(failed_nodes, node_id)
+            local metadata = type(node_data.metadata) == "table" and node_data.metadata or {}
+            -- A failure whose error was consumed by its parent (declared via
+            -- error_observed) is handled; only unhandled failures are
+            -- workflow-terminal evidence.
+            if metadata.error_observed ~= true then
+                table.insert(failed_nodes, node_id)
+            end
         end
     end
 
