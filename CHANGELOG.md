@@ -2,6 +2,44 @@
 
 ## Unreleased
 
+## [0.7.5](https://github.com/wippyai/dataflow/compare/v0.7.4...v0.7.5) (2026-08-06)
+
+
+### Bug Fixes
+
+* **dataflow:** satisfy strict overseer boundaries ([2e45cd7](https://github.com/wippyai/dataflow/commit/2e45cd70ac2534525a5a41991918aff1b6ee186c))
+* **dataflow:** satisfy strict overseer boundaries ([d4aab76](https://github.com/wippyai/dataflow/commit/d4aab7654b89c80a53a834ad431710632747c59b))
+
+## [0.7.4](https://github.com/wippyai/dataflow/compare/v0.7.3...v0.7.4) (2026-08-01)
+
+
+### Bug Fixes
+
+* fence rolling yield handoffs ([85d6cf7](https://github.com/wippyai/dataflow/commit/85d6cf75af44188258591918db090c4ae5c3f412))
+* fence rolling yield handoffs ([1fa7c94](https://github.com/wippyai/dataflow/commit/1fa7c945c6a80b19da4bf13b796cd40255f84483))
+
+## [0.7.3](https://github.com/wippyai/dataflow/compare/v0.7.2...v0.7.3) (2026-08-01)
+
+
+### Bug Fixes
+
+* recover explicit replay conflicts portably ([6163214](https://github.com/wippyai/dataflow/commit/6163214ed7711b380da4174ad376c32d367df0a2))
+* recover explicit replay conflicts portably ([2d34bd0](https://github.com/wippyai/dataflow/commit/2d34bd0eb75c318795a6580ca2300eed1c03a881))
+
+## [0.7.2](https://github.com/wippyai/dataflow/compare/v0.7.1...v0.7.2) (2026-08-01)
+
+
+### Bug Fixes
+
+* **persist:** deduplicate concurrent yield creation ([#55](https://github.com/wippyai/dataflow/issues/55)) ([9550f89](https://github.com/wippyai/dataflow/commit/9550f89d29e9a5096c757fb3f142076511862dde))
+
+## [0.7.1](https://github.com/wippyai/dataflow/compare/v0.7.0...v0.7.1) (2026-08-01)
+
+
+### Bug Fixes
+
+* **persist:** make mutable slot creation race-safe ([#53](https://github.com/wippyai/dataflow/issues/53)) ([7df3afe](https://github.com/wippyai/dataflow/commit/7df3afe41ee6aa67107963f96dc724cf34a056cc))
+
 ## [0.7.0](https://github.com/wippyai/dataflow/compare/v0.6.1...v0.7.0) (2026-07-31)
 
 

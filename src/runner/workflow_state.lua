@@ -908,6 +908,26 @@ function methods:_update_state_from_results(results)
                         end
                     end
                 end
+            elseif payload.data_type == consts.DATA_TYPE.NODE_YIELD_RESULT and payload.node_id then
+                local yield_info = self.active_yields[payload.node_id]
+                local yield_id = payload.key or payload.discriminator
+                if yield_info and tostring(yield_info.yield_id or "") == tostring(yield_id or "") then
+                    -- Satisfaction state follows the committed row. Marking a
+                    -- handoff or removing the barrier before persistence can
+                    -- strand the scheduler when the transaction rolls back.
+                    if yield_info.wait_for_signal then
+                        self.satisfied_signal_yields[payload.node_id] = {
+                            signal_id = yield_info.signal_id,
+                            signal_data = payload.content,
+                        }
+                    end
+                    if yield_info.completion_policy == "any_group" then
+                        yield_info.handoff = true
+                        yield_info.wake_keys = {}
+                    else
+                        self.active_yields[payload.node_id] = nil
+                    end
+                end
             end
         end
 
@@ -1197,7 +1217,11 @@ function methods:handle_process_exit(pid, success, result)
                 end
             end
 
-            if all_complete then
+            -- A rolling parent has already received this yield's one allowed
+            -- continuation once handoff is set. Later child exits remain
+            -- durable and are picked up by its replacement barrier; emitting a
+            -- second result for the old yield races the stable result identity.
+            if all_complete and not yield_info.handoff then
                 exit_info.yield_complete = {
                     parent_id = parent_id,
                     yield_info = yield_info
@@ -1276,6 +1300,20 @@ end
 function methods:satisfy_yield(node_id, results)
     local yield_info = self.active_yields[node_id]
     if yield_info then
+        -- persist() deliberately retains a failed transaction's commands. The
+        -- scheduler may immediately choose SATISFY_YIELD again, so reuse that
+        -- exact batch instead of appending a second result (and second set of
+        -- wake-consumption markers) before retrying the commit.
+        for _, command in ipairs(self.queued_commands) do
+            local payload = command.payload or {}
+            if command.type == consts.COMMAND_TYPES.CREATE_DATA and
+                payload.data_type == consts.DATA_TYPE.NODE_YIELD_RESULT and
+                payload.node_id == node_id and
+                tostring(payload.key or "") == tostring(yield_info.yield_id or "") then
+                return self
+            end
+        end
+
         local consume_wake_keys = {}
         if type(yield_info.wake_keys) == "table" then
             for _, wake_key in ipairs(yield_info.wake_keys) do table.insert(consume_wake_keys, wake_key) end
@@ -1332,21 +1370,22 @@ function methods:satisfy_yield(node_id, results)
             end
         end
 
-        if yield_info.wait_for_signal then
-            self.satisfied_signal_yields[node_id] = {
-                signal_id = yield_info.signal_id,
-                signal_data = results,
-            }
-        end
-        if yield_info.completion_policy == "any_group" then
-            yield_info.handoff = true
-            yield_info.wake_keys = {}
-        else
-            self.active_yields[node_id] = nil
-        end
+        -- The active barrier changes only when _update_state_from_results sees
+        -- the committed NODE_YIELD_RESULT. A failed persist therefore remains
+        -- schedulable and retains every wake needed for an exact retry.
     end
 
     return self
+end
+
+-- Process-exit decisions are computed before their command batch is persisted.
+-- A retained satisfaction from an earlier failed transaction may commit in that
+-- same batch, so callers must revalidate the exact barrier after persistence
+-- before acting on a previously computed yield_complete decision.
+function methods:yield_requires_satisfaction(node_id, yield_id)
+    local yield_info = self.active_yields[node_id]
+    return yield_info ~= nil and yield_info.handoff ~= true and
+        tostring(yield_info.yield_id or "") == tostring(yield_id or "")
 end
 
 -- Stop tracking a parked wait whose external arm failed. The node process receives

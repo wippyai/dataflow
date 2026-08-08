@@ -1056,17 +1056,22 @@ local function handle_process_event(state: OrchestratorState, event: any)
     local persist_result, persist_err = state.workflow_state:persist()
 
     if exit_info and exit_info.yield_complete then
+        local completed_yield = exit_info.yield_complete
         if not load_startup_pending_commits(state) then
             return false
         end
         if not process_pending_commits(state) then
             return false
         end
+        if not state.workflow_state:yield_requires_satisfaction(
+            completed_yield.parent_id, completed_yield.yield_info.yield_id) then
+            return true
+        end
         return handle_satisfy_yield(state, {
-            parent_id = exit_info.yield_complete.parent_id,
-            yield_id = exit_info.yield_complete.yield_info.yield_id,
-            reply_to = exit_info.yield_complete.yield_info.reply_to,
-            results = exit_info.yield_complete.yield_info.results
+            parent_id = completed_yield.parent_id,
+            yield_id = completed_yield.yield_info.yield_id,
+            reply_to = completed_yield.yield_info.reply_to,
+            results = completed_yield.yield_info.results
         })
     end
 

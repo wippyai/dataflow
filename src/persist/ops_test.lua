@@ -167,6 +167,215 @@ local function define_tests()
                 test.eq(rows[1].data_id, data_id)
             end)
 
+            it("deduplicates an exact replay with an explicit data ID", function()
+                local resources = setup_test_resources()
+                local tx = get_test_transaction()
+                local data_id = uuid.v7()
+                local command = {
+                    type = ops.COMMAND_TYPES.CREATE_DATA,
+                    payload = {
+                        data_id = data_id,
+                        node_id = resources.node_id,
+                        key = "replayed-yield",
+                        data_type = "node.yield",
+                        content = {
+                            yield_id = "replayed-yield",
+                            yield_context = { timeout_deadline = "2026-08-01T18:00:00Z" },
+                        },
+                        content_type = "application/json",
+                        metadata = { source = "ops_test" },
+                    },
+                }
+
+                local created, create_err = ops.execute(tx, resources.dataflow_id, nil, command)
+                test.is_nil(create_err)
+                test.is_true(created.results[1].changes_made)
+                local _, fence_err = tx:execute(rebind([[
+                    UPDATE dataflow_wakes SET activation_generation = ?
+                    WHERE dataflow_id = ? AND wake_key = ?
+                ]], tx:db_type()), { 7, resources.dataflow_id, "yield:replayed-yield" })
+                test.is_nil(fence_err)
+
+                local replayed, replay_err = ops.execute(tx, resources.dataflow_id, nil, command)
+                test.is_nil(replay_err)
+                test.is_false(replayed.results[1].changes_made)
+                test.is_true(replayed.results[1].deduplicated)
+
+                local rows, query_err = txq(tx,
+                    "SELECT COUNT(*) AS data_count FROM dataflow_data WHERE data_id = ?", { data_id })
+                test.is_nil(query_err)
+                test.eq(tonumber(rows[1].data_count), 1)
+                local wakes, wake_err = txq(tx, [[
+                    SELECT activation_generation FROM dataflow_wakes
+                    WHERE dataflow_id = ? AND wake_key = ?
+                ]], { resources.dataflow_id, "yield:replayed-yield" })
+                test.is_nil(wake_err)
+                test.eq(#wakes, 1)
+                test.eq(tonumber(wakes[1].activation_generation), 7)
+            end)
+
+            it("deduplicates exact parallel progress creation replay", function()
+                local resources = setup_test_resources()
+                local tx = get_test_transaction()
+                local data_id = uuid.v7()
+                local command = {
+                    type = ops.COMMAND_TYPES.CREATE_DATA,
+                    payload = {
+                        data_id = data_id,
+                        node_id = resources.node_id,
+                        key = "iteration.000034",
+                        data_type = "parallel.progress",
+                        content = { iteration = 34, outcome = "success" },
+                        content_type = "application/json",
+                    },
+                }
+
+                local created, create_err = ops.execute(tx, resources.dataflow_id, nil, command)
+                test.is_nil(create_err)
+                test.is_true(created.results[1].changes_made)
+                local replayed, replay_err = ops.execute(tx, resources.dataflow_id, nil, command)
+                test.is_nil(replay_err)
+                test.is_false(replayed.results[1].changes_made)
+                test.is_true(replayed.results[1].deduplicated)
+
+                local rows, query_err = txq(tx,
+                    "SELECT COUNT(*) AS data_count FROM dataflow_data WHERE data_id = ?", { data_id })
+                test.is_nil(query_err)
+                test.eq(tonumber(rows[1].data_count), 1)
+            end)
+
+            it("deduplicates an exact rolling yield result without consuming a re-armed wake", function()
+                local resources = setup_test_resources()
+                local tx = get_test_transaction()
+                local yield_id = uuid.v7()
+                local wake_key = "yield:" .. yield_id
+                local deadline = "2026-08-01T18:00:00Z"
+                local command = {
+                    type = ops.COMMAND_TYPES.CREATE_DATA,
+                    payload = {
+                        data_id = yield_id,
+                        node_id = resources.node_id,
+                        key = yield_id,
+                        data_type = "node.yield.result",
+                        content = { child = "result-row" },
+                        content_type = "application/json",
+                        consume_wake_keys = { wake_key },
+                    },
+                }
+
+                local _, wake_err = activation_repo.register_yield_wake_tx(
+                    tx, resources.dataflow_id, yield_id, deadline)
+                test.is_nil(wake_err)
+                local created, create_err = ops.execute(tx, resources.dataflow_id, nil, command)
+                test.is_nil(create_err)
+                test.is_true(created.results[1].changes_made)
+
+                local consumed, consumed_err = txq(tx, [[
+                    SELECT wake_key FROM dataflow_wakes
+                    WHERE dataflow_id = ? AND wake_key = ?
+                ]], { resources.dataflow_id, wake_key })
+                test.is_nil(consumed_err)
+                test.eq(#consumed, 0)
+
+                local _, rearm_err = activation_repo.register_yield_wake_tx(
+                    tx, resources.dataflow_id, yield_id, deadline)
+                test.is_nil(rearm_err)
+                local replayed, replay_err = ops.execute(tx, resources.dataflow_id, nil, command)
+                test.is_nil(replay_err)
+                test.is_false(replayed.results[1].changes_made)
+                test.is_true(replayed.results[1].deduplicated)
+
+                local rows, query_err = txq(tx,
+                    "SELECT COUNT(*) AS data_count FROM dataflow_data WHERE data_id = ?", { yield_id })
+                test.is_nil(query_err)
+                test.eq(tonumber(rows[1].data_count), 1)
+                local wakes, replay_wake_err = txq(tx, [[
+                    SELECT wake_key FROM dataflow_wakes
+                    WHERE dataflow_id = ? AND wake_key = ?
+                ]], { resources.dataflow_id, wake_key })
+                test.is_nil(replay_wake_err)
+                test.eq(#wakes, 1)
+            end)
+
+            it("rejects conflicting rolling yield results for the same identity", function()
+                local resources = setup_test_resources()
+                local tx = get_test_transaction()
+                local yield_id = uuid.v7()
+                local function create(value)
+                    return ops.execute(tx, resources.dataflow_id, nil, {
+                        type = ops.COMMAND_TYPES.CREATE_DATA,
+                        payload = {
+                            data_id = yield_id,
+                            node_id = resources.node_id,
+                            key = yield_id,
+                            data_type = "node.yield.result",
+                            content = { child = value },
+                            content_type = "application/json",
+                        },
+                    })
+                end
+
+                local _, create_err = create("first")
+                test.is_nil(create_err)
+                local replayed, replay_err = create("second")
+                test.is_nil(replayed)
+                test.is_true(type(replay_err) == "string" and
+                    replay_err:match("conflicting payload") ~= nil)
+            end)
+
+            it("rejects conflicting payloads for the same explicit data ID", function()
+                local resources = setup_test_resources()
+                local tx = get_test_transaction()
+                local data_id = uuid.v7()
+                local function create(content)
+                    return ops.execute(tx, resources.dataflow_id, nil, {
+                        type = ops.COMMAND_TYPES.CREATE_DATA,
+                        payload = {
+                            data_id = data_id,
+                            node_id = resources.node_id,
+                            key = "stable-key",
+                            data_type = "node.yield",
+                            content = { yield_id = "stable-key", value = content },
+                        },
+                    })
+                end
+
+                local _, create_err = create({ value = "first" })
+                test.is_nil(create_err)
+                local replayed, replay_err = create({ value = "second" })
+                test.is_nil(replayed)
+                test.is_true(type(replay_err) == "string" and replay_err:match("conflicting payload") ~= nil)
+            end)
+
+            it("does not adopt an explicit data ID owned by another workflow", function()
+                local owner = setup_test_resources()
+                local tx = get_test_transaction()
+                local data_id = uuid.v7()
+                local _, create_err = ops.execute(tx, owner.dataflow_id, nil, {
+                    type = ops.COMMAND_TYPES.CREATE_DATA,
+                    payload = {
+                        data_id = data_id,
+                        node_id = owner.node_id,
+                        data_type = "node.yield",
+                        content = { yield_id = "owned-yield" },
+                    },
+                })
+                test.is_nil(create_err)
+
+                local other = setup_test_resources()
+                local result, err = ops.execute(tx, other.dataflow_id, nil, {
+                    type = ops.COMMAND_TYPES.CREATE_DATA,
+                    payload = {
+                        data_id = data_id,
+                        node_id = other.node_id,
+                        data_type = "node.yield",
+                        content = { yield_id = "owned-yield" },
+                    },
+                })
+                test.is_nil(result)
+                test.is_true(type(err) == "string" and err:match("another workflow") ~= nil)
+            end)
+
             it("re-arms a reused yield wake by clearing its previous activation fence", function()
                 local resources = setup_test_resources()
                 local tx = get_test_transaction()
@@ -1929,6 +2138,78 @@ local function define_tests()
                 test.eq(#rows, 1)
                 test.eq(rows[1].type, "parallel.progress")
                 test.eq(rows[1].key, "cursor")
+            end)
+
+            it("should treat an identical mutable upsert as an idempotent hit", function()
+                local resources = setup_test_resources()
+                local tx = get_test_transaction()
+                local data_id = uuid.v7()
+                local command = {
+                    type = ops.COMMAND_TYPES.UPDATE_DATA,
+                    payload = {
+                        data_id = data_id,
+                        data_type = "parallel.progress",
+                        node_id = resources.node_id,
+                        key = "cursor",
+                        content = { next_batch_start = 7 },
+                        content_type = "application/json",
+                        create_if_missing = true,
+                    }
+                }
+
+                local created, create_err = ops.execute(tx, resources.dataflow_id, nil, command)
+                test.is_nil(create_err)
+                test.is_true(created.changes_made)
+
+                local replayed, replay_err = ops.execute(tx, resources.dataflow_id, nil, command)
+                test.is_nil(replay_err)
+                test.not_nil(replayed)
+                test.eq(replayed.results[1].data_id, data_id)
+
+                local rows, query_err = txq(tx,
+                    "SELECT data_id FROM dataflow_data WHERE data_id = ?", { data_id })
+                test.is_nil(query_err)
+                test.eq(#rows, 1)
+            end)
+
+            it("should never adopt a mutable slot owned by another workflow", function()
+                local owner = setup_test_resources()
+                local tx = get_test_transaction()
+                local data_id = uuid.v7()
+                local _, create_err = ops.execute(tx, owner.dataflow_id, nil, {
+                    type = ops.COMMAND_TYPES.CREATE_DATA,
+                    payload = {
+                        data_id = data_id,
+                        data_type = "parallel.progress",
+                        node_id = owner.node_id,
+                        key = "cursor",
+                        content = { owner = "first" },
+                    }
+                })
+                test.is_nil(create_err)
+
+                local other = setup_test_resources()
+                local result, err = ops.execute(tx, other.dataflow_id, nil, {
+                    type = ops.COMMAND_TYPES.UPDATE_DATA,
+                    payload = {
+                        data_id = data_id,
+                        data_type = "parallel.progress",
+                        node_id = other.node_id,
+                        key = "cursor",
+                        content = { owner = "second" },
+                        create_if_missing = true,
+                    }
+                })
+                test.is_nil(result)
+                test.is_true(type(err) == "string" and err:match("another workflow") ~= nil)
+
+                local rows, query_err = txq(tx,
+                    "SELECT dataflow_id, content FROM dataflow_data WHERE data_id = ?", { data_id })
+                test.is_nil(query_err)
+                test.eq(#rows, 1)
+                test.eq(rows[1].dataflow_id, owner.dataflow_id)
+                local content = json.decode(rows[1].content :: string)
+                test.eq(content.owner, "first")
             end)
 
             it("should delete data with DELETE_DATA command", function()

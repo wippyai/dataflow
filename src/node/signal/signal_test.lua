@@ -923,6 +923,8 @@ local function define_tests()
             }
 
             ws:satisfy_yield("node-1", { ok = true })
+            test.not_nil(ws.active_yields["node-1"], "yield retained until persistence")
+            ws:_update_state_from_results({ results = { { input = ws.queued_commands[1] } } })
             test.is_nil(ws.active_yields["node-1"], "yield removed after satisfaction")
         end)
 
