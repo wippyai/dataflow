@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## [0.7.6](https://github.com/wippyai/dataflow/compare/v0.7.5...v0.7.6) (2026-08-08)
+
+
+### Bug Fixes
+
+* **agent:** keep aggregate failure evidence derived from unhandled outcomes ([a3aacd4](https://github.com/wippyai/dataflow/commit/a3aacd42cc9d7122c6d3cc7e5a6e29a5fe9acc2f))
+* **agent:** treat a nil-content named input as absent ([ea9ed60](https://github.com/wippyai/dataflow/commit/ea9ed60f030af863f660d9b3c2b3ba41afeeb536))
+* nil-resolved transform fields deliver no input; agent reserved carriers read absence ([05fe4ec](https://github.com/wippyai/dataflow/commit/05fe4ec4bb1d64fb851ee0a02147dc82a74901b3))
+* **node:** a transform field resolving to nil delivers no input ([acc696d](https://github.com/wippyai/dataflow/commit/acc696dcdeb11072ca9542610d45b13db5d220d2))
+* **runner:** completion persists as its own batch; consumed child errors are not failure evidence ([64d2026](https://github.com/wippyai/dataflow/commit/64d20266059fb3b51606bad483bfb61e92353f03))
+* **runner:** persist completion as a generation-fenced batch head ([7a9b985](https://github.com/wippyai/dataflow/commit/7a9b9853d2da6d737496239b2969897349701283))
+
 ## [0.7.5](https://github.com/wippyai/dataflow/compare/v0.7.4...v0.7.5) (2026-08-06)
 
 
