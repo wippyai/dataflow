@@ -2,6 +2,21 @@ version: "1.0"
 namespace: userspace.dataflow.migrations
 
 entries:
+  # userspace.dataflow.migrations:00_encoding_contract
+  - name: 00_encoding_contract
+    kind: function.lua
+    meta:
+      type: migration
+      tags: [dataflows, encoding, contract]
+      description: The database encoding contract — Postgres must be UTF8
+      depends_on: [ns:wippy.migration]
+      target_db: app:db
+      timestamp: "2025-01-01T00:00:00Z"
+    source: file://00_encoding_contract.lua
+    imports:
+      migration: wippy.migration:migration
+    method: migrate
+
   # userspace.dataflow.migrations:01_create_dataflows_table
   - name: 01_create_dataflows_table
     kind: function.lua
