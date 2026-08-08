@@ -399,6 +399,21 @@ function delegation_handler.map_delegation_results_to_conversation(delegation_re
                     is_error = true
                 }
             })
+
+            if info.child_id then
+                -- This update and the error observation above flush in one
+                -- durable commit; the declaration exists only together with the
+                -- delivered observation. A consumed child failure is not
+                -- workflow-terminal evidence; the consuming parent's own
+                -- outcome is.
+                parent_node_sdk:command({
+                    type = "UPDATE_NODE",
+                    payload = {
+                        node_id = info.child_id,
+                        metadata = { error_observed = true }
+                    }
+                })
+            end
         end
     end
 end

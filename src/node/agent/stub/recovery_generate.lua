@@ -9,7 +9,16 @@ local function response_tokens(prompt_tokens, completion_tokens)
     }
 end
 
-local function tool_call_response(scenario_id, step, delay_ms, prompt_tokens, completion_tokens, tool_name)
+local function tool_call_response(scenario_id, step, delay_ms, prompt_tokens, completion_tokens, tool_name, extra_args)
+    local arguments = {
+        scenario_id = scenario_id,
+        step = step,
+        delay_ms = delay_ms or 0
+    }
+    for key, value in pairs(extra_args or {}) do
+        arguments[key] = value
+    end
+
     return {
         success = true,
         result = {
@@ -18,11 +27,7 @@ local function tool_call_response(scenario_id, step, delay_ms, prompt_tokens, co
                 {
                     id = helpers.call_id(scenario_id, step),
                     name = tool_name or "recovery_tool",
-                    arguments = {
-                        scenario_id = scenario_id,
-                        step = step,
-                        delay_ms = delay_ms or 0
-                    }
+                    arguments = arguments
                 }
             }
         },
@@ -62,6 +67,26 @@ local function handler(contract_args)
     -- scenario.prompt_tokens override lets checkpoint tests force the per-turn
     -- prompt token count above the checkpoint threshold deterministically
     local base_prompt = tonumber(scenario.prompt_tokens) or nil
+
+    if scenario.mode == "failing_tool_then_final" then
+        if result_count == 0 then
+            return tool_call_response(scenario.scenario_id, 1, scenario.tool_delay_ms, base_prompt or 13, 8, "recovery_tool", {
+                fail_message = scenario.fail_message or "Page returned status 403"
+            })
+        end
+
+        return final_response(scenario.scenario_id, scenario.mode, result_count, base_prompt or 9, 4)
+    end
+
+    if scenario.mode == "failing_tool_then_llm_error" then
+        if result_count == 0 then
+            return tool_call_response(scenario.scenario_id, 1, scenario.tool_delay_ms, base_prompt or 13, 8, "recovery_tool", {
+                fail_message = scenario.fail_message or "Page returned status 403"
+            })
+        end
+
+        return nil, "recovery provider unavailable"
+    end
 
     if scenario.mode == "single_tool_then_final" then
         if result_count == 0 then

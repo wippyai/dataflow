@@ -1409,7 +1409,7 @@ local function configure_tool_wrappers(caller, agent_instance, n, agent_id, mode
 end
 
 local function process_tool_results(n, tool_results, iteration, exit_tool_name, agent_result: any, arena_config,
-                                    session_context)
+                                    session_context, tool_call_to_node_id)
     local control_responses = {}
     local control_delegations = {}
     local task_complete = false
@@ -1505,6 +1505,22 @@ local function process_tool_results(n, tool_results, iteration, exit_tool_name, 
                             is_error = tool_error ~= nil
                         }
                     })
+
+                    local viz_node_id = tool_error ~= nil and tool_call_to_node_id and
+                        tool_call_to_node_id[call_id] or nil
+                    if viz_node_id then
+                        -- Declared alongside the observation just recorded; both
+                        -- flush in one durable commit. A consumed child failure
+                        -- is not workflow-terminal evidence; the consuming
+                        -- parent's own outcome is.
+                        n:command({
+                            type = consts.COMMAND_TYPES.UPDATE_NODE,
+                            payload = {
+                                node_id = viz_node_id,
+                                metadata = { error_observed = true }
+                            }
+                        })
+                    end
                 end
             end
         end
@@ -1576,7 +1592,8 @@ local function check_completion(tool_calling, agent_result: any, iteration, min_
 end
 
 local function finalize_iteration(n, agent_ctx, session_context, iteration, max_iterations, min_iterations, tool_calling,
-                                  exit_tool_name, agent_result: any, delegate_calls: any, tool_results, arena_config)
+                                  exit_tool_name, agent_result: any, delegate_calls: any, tool_results, arena_config,
+                                  tool_call_to_node_id)
     local control_responses, control_delegations, task_complete, final_result = process_tool_results(
         n,
         tool_results,
@@ -1584,7 +1601,8 @@ local function finalize_iteration(n, agent_ctx, session_context, iteration, max_
         exit_tool_name,
         agent_result,
         arena_config,
-        session_context
+        session_context,
+        tool_call_to_node_id
     )
 
     append_control_delegations(delegate_calls, control_delegations)
@@ -1718,7 +1736,8 @@ local function recover_persisted_action(n, agent_ctx, agent_instance, caller, se
         recovered_agent_result,
         delegate_calls,
         tool_results,
-        config.arena
+        config.arena,
+        tool_call_to_node_id
     )
 
     if finalize_err then
@@ -2259,7 +2278,8 @@ local function run(args)
             },
             delegate_calls,
             tool_results,
-            config.arena
+            config.arena,
+            tool_call_to_node_id
         )
         if finalize_err then
             if type(finalize_err) == "table" then

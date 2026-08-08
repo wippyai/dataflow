@@ -654,18 +654,18 @@ function handle_complete_workflow(state: OrchestratorState, payload: any)
         end
     end
 
-    local commands = {
-        {
-            type = consts.COMMAND_TYPES.COMPLETE_WORKFLOW,
-            payload = {
-                activation_generation = state.activation_generation,
-                status = final_status,
-                metadata = { error = not success and detailed_error or nil }
-            }
+    -- A failed transaction leaves its batch queued for retry. The completion
+    -- command is queued at the batch head so retained commands persist behind
+    -- the generation fence in one transaction, and are dropped with it when a
+    -- newer activation owns the workflow.
+    state.workflow_state:queue_completion({
+        type = consts.COMMAND_TYPES.COMPLETE_WORKFLOW,
+        payload = {
+            activation_generation = state.activation_generation,
+            status = final_status,
+            metadata = { error = not success and detailed_error or nil }
         }
-    }
-
-    state.workflow_state:queue_commands(commands)
+    })
     local persist_result, persist_err = state.workflow_state:persist()
 
     if persist_err then
@@ -693,8 +693,27 @@ function handle_complete_workflow(state: OrchestratorState, payload: any)
             state.running = false
             return false, false
         end
-        -- The completion decision was made against an older activation. Let the
-        -- scheduler reload and re-evaluate the newer durable work immediately.
+        -- The lost fence dropped this batch durably, including any commands a
+        -- failed transaction had left queued. Rebuild from durable state so the
+        -- re-evaluation cannot act on in-memory outcomes that never persisted;
+        -- completion is only decided without live node processes, so a reload
+        -- orphans nothing.
+        local fresh_state, fresh_err = state.runtime.workflow_state.new(state.dataflow_id)
+        local loaded = nil
+        if fresh_state then
+            loaded, fresh_err = fresh_state:load_state()
+        end
+        if not loaded then
+            state.exit_result = {
+                success = false,
+                dataflow_id = state.dataflow_id,
+                error = "Failed to reload workflow state after losing the completion fence: " ..
+                    tostring(fresh_err),
+            }
+            state.running = false
+            return false, false
+        end
+        state.workflow_state = fresh_state
         state.reschedule_requested = true
         return true, true
     end
@@ -1053,7 +1072,16 @@ local function handle_process_event(state: OrchestratorState, event: any)
     end
     local exit_info = state.workflow_state:handle_process_exit(from_pid, success, terminal_result)
 
-    local persist_result, persist_err = state.workflow_state:persist()
+    local _persist_result, persist_err = state.workflow_state:persist()
+    if persist_err then
+        -- The failed batch stays queued; the next persist on this state
+        -- retries it as part of its own transaction.
+        logger:warn("process exit persistence failed; batch retained for retry", {
+            dataflow_id = state.dataflow_id,
+            node_id = node_id,
+            error = tostring(persist_err),
+        })
+    end
 
     if exit_info and exit_info.yield_complete then
         local completed_yield = exit_info.yield_complete

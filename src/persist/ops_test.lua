@@ -1201,6 +1201,37 @@ local function define_tests()
                 test.is_false(db_bool(activations[1].desired_active))
             end)
 
+            it("locks the workflow before a terminal status update", function()
+                local resources = setup_test_resources()
+                local tx = get_test_transaction()
+                local observed_statuses = {}
+                local original_lock = activation_repo.lock_workflow_tx
+                activation_repo.lock_workflow_tx = function(lock_tx, dataflow_id)
+                    local rows, query_err = txq(lock_tx,
+                        "SELECT status FROM dataflows WHERE dataflow_id = ?",
+                        { dataflow_id })
+                    if query_err then return nil, query_err end
+                    observed_statuses[#observed_statuses + 1] = rows[1].status
+                    return original_lock(lock_tx, dataflow_id)
+                end
+
+                local execute_result
+                local execute_err
+                local called, call_err = pcall(function()
+                    execute_result, execute_err = ops.execute(tx, resources.dataflow_id, nil, {
+                        type = ops.COMMAND_TYPES.UPDATE_WORKFLOW,
+                        payload = { status = ops.STATUS.CANCELLED },
+                    })
+                end)
+                activation_repo.lock_workflow_tx = original_lock
+                if not called then error(call_err) end
+
+                test.is_nil(execute_err)
+                test.not_nil(execute_result)
+                test.eq(observed_statuses[1], "active")
+                test.eq(observed_statuses[2], ops.STATUS.CANCELLED)
+            end)
+
             it("rejects stale completion after a newer signal activation", function()
                 local resources = setup_test_resources()
                 local tx = get_test_transaction()

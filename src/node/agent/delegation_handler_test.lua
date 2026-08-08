@@ -4,8 +4,10 @@ local client = require("client")
 local node = require("node")
 local consts = require("consts")
 local node_reader = require("node_reader")
+local data_reader = require("data_reader")
 local commit = require("commit")
 local delegation_handler = require("delegation_handler")
+local workflow_state = require("workflow_state")
 
 -- Applies the node's queued commands synchronously (the orchestrator is not running
 -- in this test), mirroring the control_handler integration tests.
@@ -130,6 +132,68 @@ local function define_tests()
                 :all()
             test.eq(#rows, 1)
             test.eq((rows[1].metadata or {}).title, "Researcher")
+        end)
+
+        it("declares a consumed delegation failure on the child and excludes it from failure evidence", function()
+            local n, dataflow_id, parent_node_id = setup_parent()
+            local session_context = { dataflow_id = dataflow_id, node_id = parent_node_id }
+            local delegation = {
+                agent_id = "researcher",
+                tool_call_id = "call-failed",
+                input_data = { task = "investigate" },
+                delegate_tool_name = "to_researcher"
+            }
+
+            local info = delegation_handler.create_child_node(n, delegation, 1, session_context)
+            apply(n, dataflow_id)
+
+            -- Child run ends in failure.
+            local _, update_err = commit.execute(dataflow_id, uuid.v7(), {
+                {
+                    type = consts.COMMAND_TYPES.UPDATE_NODE,
+                    payload = {
+                        node_id = info.child_id,
+                        status = consts.STATUS.COMPLETED_FAILURE
+                    }
+                }
+            }, { publish = false })
+            test.is_nil(update_err, "child failure persisted")
+
+            -- Parent consumes the failure as an observation.
+            delegation_handler.map_delegation_results_to_conversation({
+                {
+                    success = false,
+                    error = "delegated agent failed",
+                    delegation_info = info
+                }
+            }, n, 1)
+            apply(n, dataflow_id)
+
+            local observations = (data_reader.with_dataflow(dataflow_id) :: any)
+                :with_nodes(parent_node_id)
+                :with_data_types("agent.observation")
+                :all() or {}
+            local error_observation = nil
+            for _, row in ipairs(observations) do
+                if (row.metadata or {}).is_error == true then
+                    error_observation = row
+                end
+            end
+            test.not_nil(error_observation, "delegation error recorded as parent observation")
+
+            local child_rows = (node_reader.with_dataflow(dataflow_id) :: any)
+                :with_nodes(info.child_id)
+                :all() or {}
+            test.eq(#child_rows, 1)
+            test.eq(child_rows[1].status, consts.STATUS.COMPLETED_FAILURE, "child keeps its failure status")
+            test.is_true((child_rows[1].metadata or {}).error_observed == true,
+                "consumed failure declared on the child")
+
+            local ws = workflow_state.new(dataflow_id) :: any
+            local _, load_err = ws:load_state()
+            test.is_nil(load_err, "workflow state loaded")
+            test.is_nil(ws:get_failed_node_errors(),
+                "consumed delegation failure is not workflow failure evidence")
         end)
     end)
 end

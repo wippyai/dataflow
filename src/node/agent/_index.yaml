@@ -135,8 +135,10 @@ entries:
       client: userspace.dataflow:client
       node: userspace.dataflow:node
       node_reader: userspace.dataflow.persist:node_reader
+      data_reader: userspace.dataflow.persist:data_reader
       commit: userspace.dataflow.persist:commit
       consts: userspace.dataflow:consts
+      workflow_state: userspace.dataflow.runner:workflow_state
       test: wippy.test:test
     method: run_tests
     
@@ -300,6 +302,32 @@ entries:
     imports:
       agent_node: userspace.dataflow.node.agent:node
       agent_consts: userspace.dataflow.node.agent:consts
+      test: wippy.test:test
+    method: run_tests
+
+  - name: agent_tool_failure_test
+    kind: function.lua
+    meta:
+      name: Agent Tool Failure Tests
+      type: test
+      comment: Aggregate dataflow status stays derived from the agent outcome when a tool child fails
+      group: Workflow / Agent Node
+      timeout: "120s"
+      tags:
+        - dataflow
+        - agent
+        - test
+    source: file://agent_tool_failure_test.lua
+    modules:
+      - time
+      - uuid
+    imports:
+      agent_consts: userspace.dataflow.node.agent:consts
+      client: userspace.dataflow:client
+      consts: userspace.dataflow:consts
+      data_reader: userspace.dataflow.persist:data_reader
+      dataflow_repo: userspace.dataflow.persist:dataflow_repo
+      node_reader: userspace.dataflow.persist:node_reader
       test: wippy.test:test
     method: run_tests
 

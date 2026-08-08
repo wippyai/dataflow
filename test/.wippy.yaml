@@ -45,6 +45,8 @@ override:
   "userspace.dataflow.node.agent.run_context:run_context_test:security.policies": [app:test_policy]
   "userspace.dataflow.node.agent:agent_checkpoint_test:security.actor.id": dataflow.test
   "userspace.dataflow.node.agent:agent_checkpoint_test:security.policies": [app:test_policy]
+  "userspace.dataflow.node.agent:agent_tool_failure_test:security.actor.id": dataflow.test
+  "userspace.dataflow.node.agent:agent_tool_failure_test:security.policies": [app:test_policy]
   "userspace.dataflow.node.agent:agent_truncation_real_test:security.actor.id": dataflow.test
   "userspace.dataflow.node.agent:agent_truncation_real_test:security.policies": [app:test_policy]
   "userspace.dataflow.node.agent:agent_truncation_test:security.actor.id": dataflow.test
@@ -97,6 +99,8 @@ override:
   "userspace.dataflow.persist:ops_test:security.policies": [app:test_policy]
   "userspace.dataflow.persist:wake_repo_test:security.actor.id": dataflow.test
   "userspace.dataflow.persist:wake_repo_test:security.policies": [app:test_policy]
+  "userspace.dataflow.runner:orchestrator_completion_flush_test:security.actor.id": dataflow.test
+  "userspace.dataflow.runner:orchestrator_completion_flush_test:security.policies": [app:test_policy]
   "userspace.dataflow.runner:orchestrator_process_event_test:security.actor.id": dataflow.test
   "userspace.dataflow.runner:orchestrator_process_event_test:security.policies": [app:test_policy]
   "userspace.dataflow.runner:orchestrator_test:security.actor.id": dataflow.test

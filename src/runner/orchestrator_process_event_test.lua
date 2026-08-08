@@ -34,6 +34,7 @@ local function define_tests()
                 track_process = function(_self: any, _node_id: string, _pid: string)
                 end,
                 queue_commands = function(_self: any, _commands: any) end,
+                queue_completion = function(_self: any, _command: any) end,
                 persist = function(_self: any): ({ changes_made: boolean }?, string?)
                     if pending_node_result ~= nil then
                         persisted_node_result = pending_node_result

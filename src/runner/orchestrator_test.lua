@@ -50,6 +50,7 @@ local function harness(options: HarnessOptions?): any
     workflow_state.get_failed_node_errors = function(): string? return cfg.failed_node_errors end
     workflow_state.track_process = function(self: any): any return self end
     workflow_state.queue_commands = function(self: any): any return self end
+    workflow_state.queue_completion = function(self: any): any return self end
     workflow_state.discard_queued_commands = function(self: any): any return self end
     workflow_state.get_node = function(): any return { type = "test_node", status = consts.STATUS.PENDING } end
     workflow_state.handle_process_exit = function(): string? return nil end

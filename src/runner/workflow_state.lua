@@ -973,7 +973,13 @@ function methods:get_failed_node_errors()
     local failed_nodes = {}
     for node_id, node_data in pairs(self.nodes) do
         if node_data.status == consts.STATUS.COMPLETED_FAILURE then
-            table.insert(failed_nodes, node_id)
+            local metadata = type(node_data.metadata) == "table" and node_data.metadata or {}
+            -- A failure whose error was consumed by its parent (declared via
+            -- error_observed) is handled; only unhandled failures are
+            -- workflow-terminal evidence.
+            if metadata.error_observed ~= true then
+                table.insert(failed_nodes, node_id)
+            end
         end
     end
 
@@ -1437,6 +1443,15 @@ end
 -- reaching into the workflow-state instance from the orchestrator.
 function methods:discard_queued_commands()
     self.queued_commands = {}
+    return self
+end
+
+-- COMPLETE_WORKFLOW is a generation-fenced batch precondition: the persist
+-- layer applies it first and applies the rest of the batch only when the fence
+-- wins. Queue the completion at the head so commands retained by an earlier
+-- failed transaction ride behind the fence in the same transaction.
+function methods:queue_completion(command)
+    table.insert(self.queued_commands, 1, command)
     return self
 end
 
