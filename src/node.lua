@@ -307,11 +307,16 @@ function methods:_transform_inputs_with_expr(raw_inputs, transform_config)
         if err then
             return nil, "Transform failed for " .. field_name .. ": " .. tostring(err)
         end
-        result[field_name] = {
-            content = content,
-            metadata = {},
-            discriminator = field_name
-        }
+        -- A field whose expression resolves to nil is an input that does not
+        -- exist: consumers see it exactly like an input that was never
+        -- delivered, matching raw-input presence semantics.
+        if content ~= nil then
+            result[field_name] = {
+                content = content,
+                metadata = {},
+                discriminator = field_name
+            }
+        end
     end
     return result, nil
 end
