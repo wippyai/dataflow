@@ -4,6 +4,7 @@ local uuid = require("uuid")
 local json = require("json")
 local consts = require("dataflow_consts")
 local activation_repo = require("activation_repo")
+local encoding = require("encoding")
 
 -- Use shared constants from consts
 local constants = {
@@ -295,6 +296,7 @@ handlers[constants.COMMAND_TYPES.CREATE_NODE] = function(tx, dataflow_id, op_id,
         end
         metadata = encoded
     end
+    metadata = encoding.ensure_utf8(metadata)
 
     local config = payload.config or "{}"
     if type(config) == "table" then
@@ -552,6 +554,9 @@ handlers[constants.COMMAND_TYPES.CREATE_DATA] = function(tx, dataflow_id, op_id,
         end
         content_value = encoded
     end
+    -- Storage boundary: external content can carry arbitrary bytes; what is
+    -- written is always valid UTF-8.
+    content_value = encoding.ensure_utf8(content_value)
 
     local content_type = payload.content_type or "application/json"
     local node_id = payload.node_id or sql.as.null()
@@ -795,12 +800,14 @@ handlers[constants.COMMAND_TYPES.UPDATE_DATA] = function(tx, dataflow_id, op_id,
             if encode_err then return nil, "Failed to encode content: " .. encode_err end
             content_value = encoded
         end
+        content_value = encoding.ensure_utf8(content_value)
         local metadata = payload.metadata or "{}"
         if type(metadata) == "table" then
             local encoded, encode_err = json.encode(metadata)
             if encode_err then return nil, "Failed to encode metadata: " .. encode_err end
             metadata = encoded
         end
+        metadata = encoding.ensure_utf8(metadata)
         local inserted, insert_err = sql.builder.insert("dataflow_data")
             :set_map({
                 data_id = payload.data_id,
