@@ -837,6 +837,48 @@ local function define_tests()
 
                 test.is_nil(exit_info)
             end)
+
+            -- A process can die with a raw error value (userdata, function —
+            -- anything the runtime hands back). The queued node.result must
+            -- always carry persistable, non-nil content: a row that binds SQL
+            -- NULL poisons the whole completion batch and strands the run.
+            it("persists a non-encodable terminal result as its string form", function()
+                local ws = workflow_state.new(test_ctx.dataflow_id) :: any
+                ws.nodes["node-1"] = { status = consts.STATUS.RUNNING, type = "test_node" }
+                ws:track_process("node-1", "pid-123")
+
+                local weird = coroutine.create(function() end)
+                local exit_info = ws:handle_process_exit("pid-123", false, weird) :: any
+                test.not_nil(exit_info)
+
+                local content = nil
+                for _, cmd in ipairs(ws.queued_commands) do
+                    local p = (cmd :: any).payload or {}
+                    if p.data_type == consts.DATA_TYPE.NODE_RESULT then content = p.content end
+                end
+                test.not_nil(content)
+                test.eq(type(content), "string")
+            end)
+
+            it("persists a table result whose values cannot encode as its string form", function()
+                local ws = workflow_state.new(test_ctx.dataflow_id) :: any
+                ws.nodes["node-1"] = { status = consts.STATUS.RUNNING, type = "test_node" }
+                ws:track_process("node-1", "pid-123")
+
+                local poison = { message = "boom", raw = coroutine.create(function() end) }
+                local exit_info = ws:handle_process_exit("pid-123", false, poison) :: any
+                test.not_nil(exit_info)
+
+                local content = nil
+                for _, cmd in ipairs(ws.queued_commands) do
+                    local p = (cmd :: any).payload or {}
+                    if p.data_type == consts.DATA_TYPE.NODE_RESULT then content = p.content end
+                end
+                test.not_nil(content)
+                local encoded, encode_err = json.encode(content)
+                test.is_nil(encode_err)
+                test.not_nil(encoded)
+            end)
         end)
 
         describe("Yield Tracking", function()
