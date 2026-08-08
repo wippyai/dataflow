@@ -428,6 +428,32 @@ local function define_tests()
                 test.eq(inputs["default"].key, "default")
             end)
 
+            it("omits a field whose expression resolves to nil", function()
+                local args = {
+                    node_id = "test-node-123",
+                    dataflow_id = "test-dataflow-456",
+                    node = {
+                        config = {
+                            input_transform = {
+                                user_name = "inputs.user_data.name",
+                                context = "inputs.user_data.context",
+                                model = "inputs.user_data.model"
+                            }
+                        }
+                    }
+                }
+
+                local test_node, err = node.new(args, expr_mock_deps)
+                test.is_nil(err)
+                test.not_nil(test_node)
+
+                local inputs = test_node:inputs()
+                test.not_nil(inputs)
+                test.eq(inputs.user_name.content, "John")
+                test.is_nil(inputs.context)
+                test.is_nil(inputs.model)
+            end)
+
             it("should transform inputs with field mapping", function()
                 local args = {
                     node_id = "test-node-123",
