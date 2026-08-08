@@ -1,6 +1,7 @@
 local sql = require("sql")
 local json = require("json")
 local time = require("time")
+local encoding = require("encoding")
 
 local DB_RESOURCE = "app:db"
 
@@ -75,6 +76,7 @@ function commit_repo.create(commit_id, dataflow_id, payload, metadata)
     else
         payload_json = tostring(payload)
     end
+    payload_json = encoding.ensure_utf8(payload_json)
 
     -- Process metadata - encode tables as JSON or use empty object
     local metadata_json = "{}"

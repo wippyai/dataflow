@@ -6,6 +6,7 @@ local security = require("security")
 local ops = require("ops")
 local commit_repo = require("commit_repo")
 local consts = require("dataflow_consts")
+local encoding = require("encoding")
 local activation_repo = require("activation_repo")
 
 local commit = {}
@@ -626,6 +627,9 @@ function commit._create_commit_only(commit_id, dataflow_id, payload, metadata)
     else
         payload_json = tostring(payload)
     end
+    -- Storage boundary: the commit payload carries node content verbatim and
+    -- external bytes must not fail the write.
+    payload_json = encoding.ensure_utf8(payload_json)
 
     -- Process metadata - encode tables as JSON or use empty object
     local metadata_json = "{}"
@@ -641,6 +645,7 @@ function commit._create_commit_only(commit_id, dataflow_id, payload, metadata)
             metadata_json = metadata
         end
     end
+    metadata_json = encoding.ensure_utf8(metadata_json)
 
     -- Create timestamp
     local created_at = time.now():format(time.RFC3339NANO)
