@@ -1171,12 +1171,27 @@ function methods:handle_process_exit(pid, success, result)
         }
     })
 
+    -- A process can die with any value the runtime hands back — a raw error,
+    -- userdata, a coroutine. The node.result row must always carry persistable
+    -- content: a value that binds SQL NULL poisons the whole completion batch
+    -- and strands the run, so anything that is not plain data persists as its
+    -- string form.
+    local result_content = result
+    local content_kind = type(result_content)
+    if content_kind ~= "string" and content_kind ~= "number"
+        and content_kind ~= "boolean" and content_kind ~= "table" then
+        result_content = result_content ~= nil and tostring(result_content) or nil
+    end
+    if result_content == nil then
+        result_content = success and "Completed" or "Failed"
+    end
+
     table.insert(self.queued_commands, {
         type = consts.COMMAND_TYPES.CREATE_DATA,
         payload = {
             data_id = result_data_id,
             data_type = consts.DATA_TYPE.NODE_RESULT,
-            content = result or (success and "Completed" or "Failed"),
+            content = result_content,
             node_id = exited_node_id,
             discriminator = discriminator
         }
