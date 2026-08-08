@@ -493,8 +493,11 @@ local function build_status_message(iteration, max_iterations, total_tokens, too
 end
 
 local function process_multiple_inputs(inputs)
+    -- An input entry with nil content is an input that was not provided — an
+    -- input_transform field whose expression resolved to nil produces exactly
+    -- this shape. It never counts as a malformed value and never renders a tag.
     local input_context = nil
-    if inputs.context then
+    if inputs.context and inputs.context.content ~= nil then
         local context_content = inputs.context.content
         if type(context_content) ~= "table" then
             return nil, nil, nil, nil, "context must be a table/object"
@@ -503,7 +506,7 @@ local function process_multiple_inputs(inputs)
     end
 
     local agent_id_override = nil
-    if inputs.agent_id then
+    if inputs.agent_id and inputs.agent_id.content ~= nil then
         local agent_id_content = inputs.agent_id.content
         if type(agent_id_content) ~= "string" or agent_id_content == "" then
             return nil, nil, nil, nil, "agent_id must be a non-empty string"
@@ -512,7 +515,7 @@ local function process_multiple_inputs(inputs)
     end
 
     local model_override = nil
-    if inputs.model then
+    if inputs.model and inputs.model.content ~= nil then
         local model_content = inputs.model.content
         if type(model_content) ~= "string" or model_content == "" then
             return nil, nil, nil, nil, "model must be a non-empty string"
@@ -522,7 +525,7 @@ local function process_multiple_inputs(inputs)
 
     local parts = {}
     for key, input in pairs(inputs) do
-        if key ~= "context" and key ~= "agent_id" and key ~= "model" then
+        if key ~= "context" and key ~= "agent_id" and key ~= "model" and input.content ~= nil then
             local content = input.content
             if type(content) == "table" then
                 content = json.encode(content)
@@ -2372,5 +2375,6 @@ return {
     run = run,
     _test = {
         build_agent_context_config = build_agent_context_config,
+        process_multiple_inputs = process_multiple_inputs,
     }
 }
