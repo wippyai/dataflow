@@ -143,29 +143,31 @@ local function define_tests()
             test.not_nil(error_observation, "tool error observation recorded for the agent")
 
             -- The tool.call child keeps per-node error visibility.
-            local tool_nodes = node_reader.with_dataflow(workflow.dataflow_id)
+            local tool_nodes = (node_reader.with_dataflow(workflow.dataflow_id) :: any)
                 :with_node_types("tool.call")
                 :all() or {}
             test.eq(#tool_nodes, 1, "one tool.call child node created")
-            test.eq(tool_nodes[1].status, consts.STATUS.COMPLETED_FAILURE, "tool.call child records the failure")
-            test.is_true(tool_nodes[1].metadata.has_error == true, "tool.call child carries has_error metadata")
+            local tool_node = tool_nodes[1] :: any
+            test.eq(tool_node.status, consts.STATUS.COMPLETED_FAILURE, "tool.call child records the failure")
+            test.is_true((tool_node.metadata or {}).has_error == true, "tool.call child carries has_error metadata")
 
             -- The agent consumed the error and finished its run.
-            local agent_result = data_reader.with_dataflow(workflow.dataflow_id)
+            local agent_result = (data_reader.with_dataflow(workflow.dataflow_id) :: any)
                 :with_nodes(workflow.node_id)
                 :with_data_types(consts.DATA_TYPE.NODE_RESULT)
                 :one()
             test.not_nil(agent_result, "agent node produced a result")
-            test.eq(agent_result.discriminator, "result.success", "agent completed successfully after observing the error")
+            test.eq((agent_result :: any).discriminator, "result.success",
+                "agent completed successfully after observing the error")
 
             -- The engine keeps driving the agent past the tool-child error: the
             -- agent node reaches its own terminal status instead of staying a
             -- zombie 'running' row.
-            local agent_nodes = node_reader.with_dataflow(workflow.dataflow_id)
+            local agent_nodes = (node_reader.with_dataflow(workflow.dataflow_id) :: any)
                 :with_nodes(workflow.node_id)
                 :all() or {}
             test.eq(#agent_nodes, 1, "agent node row present")
-            test.eq(agent_nodes[1].status, consts.STATUS.COMPLETED_SUCCESS,
+            test.eq((agent_nodes[1] :: any).status, consts.STATUS.COMPLETED_SUCCESS,
                 "agent node is driven to completion after the tool-child error")
 
             -- The terminal aggregate is backed by a true terminal outcome.
@@ -188,19 +190,21 @@ local function define_tests()
             test.eq(final_status, consts.STATUS.COMPLETED_FAILURE,
                 "unhandled agent failure terminates the workflow as failed")
 
-            local tool_nodes = node_reader.with_dataflow(workflow.dataflow_id)
+            local tool_nodes = (node_reader.with_dataflow(workflow.dataflow_id) :: any)
                 :with_node_types("tool.call")
                 :all() or {}
             test.eq(#tool_nodes, 1, "one tool.call child node created")
-            test.eq(tool_nodes[1].status, consts.STATUS.COMPLETED_FAILURE, "tool.call child records the failure")
+            local tool_node = tool_nodes[1] :: any
+            test.eq(tool_node.status, consts.STATUS.COMPLETED_FAILURE, "tool.call child records the failure")
 
             local row, row_err = dataflow_repo.get(workflow.dataflow_id)
             test.is_nil(row_err, "dataflow row loaded")
-            local aggregate_error = tostring(row.metadata and row.metadata.error or "")
+            local row_metadata = (row :: any).metadata or {}
+            local aggregate_error = tostring(row_metadata.error or "")
             test.is_true(aggregate_error ~= "", "aggregate failure carries error details")
             test.is_true(string.find(aggregate_error, workflow.node_id, 1, true) ~= nil,
                 "aggregate failure names the agent node")
-            test.is_true(string.find(aggregate_error, tool_nodes[1].node_id, 1, true) == nil,
+            test.is_true(string.find(aggregate_error, tool_node.node_id, 1, true) == nil,
                 "aggregate failure does not blame the tool child whose error the agent consumed")
         end)
     end)

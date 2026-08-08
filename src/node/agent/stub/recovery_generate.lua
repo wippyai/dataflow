@@ -70,7 +70,7 @@ local function handler(contract_args)
 
     if scenario.mode == "failing_tool_then_final" then
         if result_count == 0 then
-            return tool_call_response(scenario.scenario_id, 1, scenario.tool_delay_ms, base_prompt or 13, 8, nil, {
+            return tool_call_response(scenario.scenario_id, 1, scenario.tool_delay_ms, base_prompt or 13, 8, "recovery_tool", {
                 fail_message = scenario.fail_message or "Page returned status 403"
             })
         end
@@ -80,7 +80,7 @@ local function handler(contract_args)
 
     if scenario.mode == "failing_tool_then_llm_error" then
         if result_count == 0 then
-            return tool_call_response(scenario.scenario_id, 1, scenario.tool_delay_ms, base_prompt or 13, 8, nil, {
+            return tool_call_response(scenario.scenario_id, 1, scenario.tool_delay_ms, base_prompt or 13, 8, "recovery_tool", {
                 fail_message = scenario.fail_message or "Page returned status 403"
             })
         end

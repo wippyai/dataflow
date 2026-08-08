@@ -1446,6 +1446,15 @@ function methods:discard_queued_commands()
     return self
 end
 
+-- COMPLETE_WORKFLOW is a generation-fenced batch precondition: the persist
+-- layer applies it first and applies the rest of the batch only when the fence
+-- wins. Queue the completion at the head so commands retained by an earlier
+-- failed transaction ride behind the fence in the same transaction.
+function methods:queue_completion(command)
+    table.insert(self.queued_commands, 1, command)
+    return self
+end
+
 function methods:persist()
     if #self.queued_commands == 0 then
         return { changes_made = false, message = "No commands to persist" }, nil

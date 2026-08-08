@@ -66,6 +66,33 @@ entries:
       test: wippy.test:test
     method: run_tests
 
+  - name: orchestrator_completion_flush_test
+    kind: function.lua
+    meta:
+      name: Orchestrator Completion Flush Tests
+      type: test
+      comment: Completion forms a valid fenced batch after a failed transaction leaves commands queued for retry
+      group: Workflow
+      timeout: "60s"
+      tags:
+        - dataflow
+        - orchestrator
+        - test
+    source: file://orchestrator_completion_flush_test.lua
+    modules:
+      - uuid
+    imports:
+      client: userspace.dataflow:client
+      commit: userspace.dataflow.persist:commit
+      consts: userspace.dataflow:consts
+      execution_frame: userspace.dataflow:execution_frame
+      node_reader: userspace.dataflow.persist:node_reader
+      orchestrator: userspace.dataflow.runner:orchestrator
+      scheduler: userspace.dataflow.runner:scheduler
+      test: wippy.test:test
+      workflow_state: userspace.dataflow.runner:workflow_state
+    method: run_tests
+
   - name: orchestrator_process_event_test
     kind: function.lua
     meta:
