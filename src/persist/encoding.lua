@@ -7,6 +7,17 @@ local M = {}
 
 local REPLACEMENT = "\239\191\189" -- U+FFFD
 
+local BINARY_CONTENT_TYPE = "application/octet-stream"
+
+-- ensure_storable(value, content_type) -> value. The boundary is content-type
+-- aware: declared binary passes through byte-identical — it lives in binary
+-- columns and sanitizing it would be corruption. Everything else is text and
+-- must be valid UTF-8.
+function M.ensure_storable(value: any, content_type: any): any
+    if content_type == BINARY_CONTENT_TYPE then return value end
+    return M.ensure_utf8(value)
+end
+
 function M.ensure_utf8(s: any): any
     if type(s) ~= "string" then return s end
     local n = #s
