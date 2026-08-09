@@ -860,13 +860,14 @@ local function define_tests()
                 test.eq(type(content), "string")
             end)
 
-            it("persists a table result whose values cannot encode as its string form", function()
+            it("persists a cyclic table result as its failure text", function()
                 local ws = workflow_state.new(test_ctx.dataflow_id) :: any
                 ws.nodes["node-1"] = { status = consts.STATUS.RUNNING, type = "test_node" }
                 ws:track_process("node-1", "pid-123")
 
-                local poison = { message = "boom", raw = coroutine.create(function() end) }
-                local exit_info = ws:handle_process_exit("pid-123", false, poison) :: any
+                local cyclic: any = { message = "boom" }
+                cyclic.self = cyclic
+                local exit_info = ws:handle_process_exit("pid-123", false, cyclic) :: any
                 test.not_nil(exit_info)
 
                 local content = nil
@@ -874,10 +875,8 @@ local function define_tests()
                     local p = (cmd :: any).payload or {}
                     if p.data_type == consts.DATA_TYPE.NODE_RESULT then content = p.content end
                 end
-                test.not_nil(content)
-                local encoded, encode_err = json.encode(content)
-                test.is_nil(encode_err)
-                test.not_nil(encoded)
+                test.eq(type(content), "string")
+                test.is_true((content :: string):find("unserializable", 1, true) ~= nil)
             end)
         end)
 

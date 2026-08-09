@@ -142,9 +142,9 @@ local function replace_iteration_terminal(tx, dataflow_id, op_id, payload, data_
         :set("type", payload.data_type)
         :set("discriminator", payload.discriminator)
         :set("key", payload.key)
-        :set("content", content_value)
+        :set("content", encoding.ensure_storable(content_value, content_type))
         :set("content_type", content_type)
-        :set("metadata", metadata)
+        :set("metadata", encoding.ensure_utf8(metadata))
         :run_with(tx)
         :exec()
     if err then return nil, "Failed to replace iteration terminal data: " .. err end
@@ -317,7 +317,7 @@ handlers[constants.COMMAND_TYPES.CREATE_NODE] = function(tx, dataflow_id, op_id,
             parent_node_id = parent_node_id,
             type = payload.node_type,
             status = status,
-            config = config,
+            config = encoding.ensure_utf8(config),
             metadata = metadata,
             created_at = now_ts,
             updated_at = now_ts
@@ -379,7 +379,7 @@ handlers[constants.COMMAND_TYPES.UPDATE_NODE] = function(tx, dataflow_id, op_id,
             end
             config = encoded
         end
-        update_query = update_query:set("config", config)
+        update_query = update_query:set("config", encoding.ensure_utf8(config))
         has_update = true
     end
 
@@ -464,7 +464,7 @@ handlers[constants.COMMAND_TYPES.UPDATE_NODE] = function(tx, dataflow_id, op_id,
             end
         end
 
-        update_query = update_query:set("metadata", meta_val_for_db)
+        update_query = update_query:set("metadata", encoding.ensure_utf8(meta_val_for_db))
         has_update = true
     end
 
@@ -554,11 +554,10 @@ handlers[constants.COMMAND_TYPES.CREATE_DATA] = function(tx, dataflow_id, op_id,
         end
         content_value = encoded
     end
-    -- Storage boundary: external content can carry arbitrary bytes; what is
-    -- written is always valid UTF-8.
-    content_value = encoding.ensure_utf8(content_value)
-
     local content_type = payload.content_type or "application/json"
+    -- Storage boundary: external content can carry arbitrary bytes; every
+    -- textual write is valid UTF-8, declared binary passes byte-identical.
+    content_value = encoding.ensure_storable(content_value, content_type)
     local node_id = payload.node_id or sql.as.null()
     local metadata = payload.metadata or "{}"
 
@@ -569,7 +568,7 @@ handlers[constants.COMMAND_TYPES.CREATE_DATA] = function(tx, dataflow_id, op_id,
         end
         metadata = encoded
     end
-
+    metadata = encoding.ensure_utf8(metadata)
 
     if is_iteration_terminal_unique_slot(payload) then
         local existing_row, existing_err = find_existing_unique_data_row(tx, dataflow_id, payload)
@@ -732,7 +731,7 @@ handlers[constants.COMMAND_TYPES.UPDATE_DATA] = function(tx, dataflow_id, op_id,
             content_value = encoded
         end
 
-        update_query = update_query:set("content", content_value)
+        update_query = update_query:set("content", encoding.ensure_storable(content_value, payload.content_type))
         has_update = true
     end
 
@@ -751,7 +750,7 @@ handlers[constants.COMMAND_TYPES.UPDATE_DATA] = function(tx, dataflow_id, op_id,
             metadata = encoded
         end
 
-        update_query = update_query:set("metadata", metadata)
+        update_query = update_query:set("metadata", encoding.ensure_utf8(metadata))
         has_update = true
     end
 
@@ -1084,7 +1083,7 @@ handlers[constants.COMMAND_TYPES.UPDATE_WORKFLOW] = function(tx, dataflow_id, op
             end
         end
 
-        update_query_builder = update_query_builder:set("metadata", meta_val_for_db)
+        update_query_builder = update_query_builder:set("metadata", encoding.ensure_utf8(meta_val_for_db))
         has_real_update_field = true
     end
 

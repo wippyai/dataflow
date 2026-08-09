@@ -113,33 +113,6 @@ entries:
       agent_ref: userspace.dataflow:agent_ref
     method: run_tests
 
-  - name: execution_identity
-    kind: contract.definition
-    meta:
-      title: Dataflow Execution Identity
-      comment: Optional app-provided bridge for durable workflow identity capture and orchestrator revival.
-    methods:
-      - name: capture
-        description: Capture the current execution identity as an opaque actor_id plus actor_context row. Input { reason? }.
-        input_schemas:
-          - definition: |
-              { "type": "object", "properties": { "reason": { "type": "string" } } }
-            format: application/schema+json
-        output_schemas:
-          - definition: |
-              { "type": "object", "properties": { "success": { "type": "boolean" }, "actor_id": { "type": "string" }, "actor_context": {}, "error": { "type": "string" } }, "required": ["success"] }
-            format: application/schema+json
-      - name: spawn_orchestrator
-        description: Spawn the dataflow orchestrator for a persisted dataflow under that dataflow's captured identity. Input { dataflow_id, process_id, host_id, args? }.
-        input_schemas:
-          - definition: |
-              { "type": "object", "properties": { "dataflow_id": { "type": "string" }, "process_id": { "type": "string" }, "host_id": { "type": "string" }, "args": { "type": "object" } }, "required": ["dataflow_id", "process_id", "host_id"] }
-            format: application/schema+json
-        output_schemas:
-          - definition: |
-              { "type": "object", "properties": { "success": { "type": "boolean" }, "pid": { "type": "string" }, "error": { "type": "string" } }, "required": ["success"] }
-            format: application/schema+json
-
   - name: execution_frame
     kind: library.lua
     meta:

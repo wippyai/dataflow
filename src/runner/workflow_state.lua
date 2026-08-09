@@ -1182,6 +1182,14 @@ function methods:handle_process_exit(pid, success, result)
         and content_kind ~= "boolean" and content_kind ~= "table" then
         result_content = result_content ~= nil and tostring(result_content) or nil
     end
+    if content_kind == "table" then
+        -- A table must actually encode (cycles do not); an unserializable
+        -- result persists as its failure text instead of poisoning the batch.
+        local ok, _, encode_err = pcall(function() return json.encode(result_content) end)
+        if not ok or encode_err ~= nil then
+            result_content = "unserializable node result: " .. tostring(result)
+        end
+    end
     if result_content == nil then
         result_content = success and "Completed" or "Failed"
     end

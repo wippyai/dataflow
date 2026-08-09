@@ -92,6 +92,7 @@ function commit_repo.create(commit_id, dataflow_id, payload, metadata)
             metadata_json = metadata
         end
     end
+    metadata_json = encoding.ensure_utf8(metadata_json)
 
     -- Create timestamp
     local created_at = time.now():format(time.RFC3339)
