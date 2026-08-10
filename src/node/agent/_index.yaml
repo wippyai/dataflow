@@ -331,6 +331,25 @@ entries:
       test: wippy.test:test
     method: run_tests
 
+  - name: process_tool_results_test
+    kind: function.lua
+    meta:
+      name: Agent Node process_tool_results Test
+      type: test
+      comment: Unit tests proving a rejected finish still records observations for sibling tool calls in the same turn.
+      group: Workflow / Agent Node
+      tags:
+        - dataflow
+        - agent
+        - exit-validation
+        - test
+    source: file://process_tool_results_test.lua
+    imports:
+      agent_node: userspace.dataflow.node.agent:node
+      agent_consts: userspace.dataflow.node.agent:consts
+      test: wippy.test:test
+    method: run_tests
+
   - name: agent_checkpoint_test
     kind: function.lua
     meta:

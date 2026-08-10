@@ -1428,7 +1428,6 @@ local function process_tool_results(n, tool_results, iteration, exit_tool_name, 
     local control_delegations = {}
     local task_complete = false
     local final_result = nil
-    local skip_call = false
 
     if exit_tool_name and agent_result.tool_calls then
         for _, original_tool_call in ipairs(agent_result.tool_calls) do
@@ -1454,8 +1453,6 @@ local function process_tool_results(n, tool_results, iteration, exit_tool_name, 
                                 exit_validation = true
                             }
                         })
-                        task_complete = false
-                        skip_call = true
                     else
                         task_complete = true
                         final_result = validated_result
@@ -1469,7 +1466,11 @@ local function process_tool_results(n, tool_results, iteration, exit_tool_name, 
         end
     end
 
-    if task_complete or skip_call then
+    -- A rejected finish must not short-circuit here: any sibling tool calls in the
+    -- same turn already ran (tool_results holds their output) and each still needs a
+    -- recorded observation, or the next request carries tool_use ids the API never
+    -- sees answered. Only a genuine completion ends the loop early.
+    if task_complete then
         return control_responses, control_delegations, task_complete, final_result
     end
 
@@ -2388,5 +2389,6 @@ return {
     _test = {
         build_agent_context_config = build_agent_context_config,
         process_multiple_inputs = process_multiple_inputs,
+        process_tool_results = process_tool_results,
     }
 }
