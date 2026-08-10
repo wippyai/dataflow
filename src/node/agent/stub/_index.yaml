@@ -98,6 +98,13 @@ entries:
   imports:
     helpers: userspace.dataflow.node.agent.stub:recovery_helpers
   method: handler
+- name: exit_reject_validator
+  kind: function.lua
+  meta:
+    test_only: true
+    comment: Exit validator stub that always rejects, for exit-validation-rejection tests
+  source: file://exit_reject_validator.lua
+  method: handler
 - name: lifecycle_recorder
   kind: function.lua
   meta:
