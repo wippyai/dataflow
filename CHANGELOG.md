@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+## [0.7.6](https://github.com/wippyai/dataflow/compare/v0.7.5...v0.7.6) (2026-08-10)
+
+
+### Features
+
+* **agent:** max_iterations joins the reserved agent-node inputs ([35cf94d](https://github.com/wippyai/dataflow/commit/35cf94d150aaf4496698001c8410ddab327ca868))
+* **agent:** max_iterations joins the reserved agent-node inputs ([aa27014](https://github.com/wippyai/dataflow/commit/aa2701481828e850fc1903da1d30eb562832da11))
+* **migrations:** assert UTF8 database encoding at install ([cc2a51f](https://github.com/wippyai/dataflow/commit/cc2a51fb63f03ba2fd38010ac3c92293deabb6a6))
+* **migrations:** the database encoding is a day-one contract ([91dca33](https://github.com/wippyai/dataflow/commit/91dca336fa7ab4f328ab9b9aacfafe24e1a87ff9))
+
+
+### Bug Fixes
+
+* **agent:** answer sibling tool calls when the exit validator rejects finish ([66ede44](https://github.com/wippyai/dataflow/commit/66ede449207d2dc237815ffa5e043e222d834eed))
+* **agent:** keep aggregate failure evidence derived from unhandled outcomes ([a3aacd4](https://github.com/wippyai/dataflow/commit/a3aacd42cc9d7122c6d3cc7e5a6e29a5fe9acc2f))
+* **agent:** treat a nil-content named input as absent ([ea9ed60](https://github.com/wippyai/dataflow/commit/ea9ed60f030af863f660d9b3c2b3ba41afeeb536))
+* answer sibling tool calls when exit validator rejects finish ([5723b80](https://github.com/wippyai/dataflow/commit/5723b80a9b56123ef0de7db820802dc6ec4a57d7))
+* nil-resolved transform fields deliver no input; agent reserved carriers read absence ([05fe4ec](https://github.com/wippyai/dataflow/commit/05fe4ec4bb1d64fb851ee0a02147dc82a74901b3))
+* **node:** a transform field resolving to nil delivers no input ([acc696d](https://github.com/wippyai/dataflow/commit/acc696dcdeb11072ca9542610d45b13db5d220d2))
+* **persist:** complete the storage boundary; respect binary content ([9f85f18](https://github.com/wippyai/dataflow/commit/9f85f187f80d6e66d8f77282901167bfbfb09ec4))
+* **persist:** the storage boundary covers every write and respects binary ([d8ac99f](https://github.com/wippyai/dataflow/commit/d8ac99fd7b74281eb2ecc32353ce5a13bcb02bde))
+* **persist:** the storage boundary guarantees valid UTF-8 ([3a371c0](https://github.com/wippyai/dataflow/commit/3a371c09506a5f09a75e97d50bba6c1e7dd09c9e))
+* **persist:** the storage boundary guarantees valid UTF-8 ([1b6699b](https://github.com/wippyai/dataflow/commit/1b6699be138c6da69c848c8719de0a087cf411eb))
+* **runner:** a terminal process result always persists as valid content ([bc50465](https://github.com/wippyai/dataflow/commit/bc504655045d1180f23f844a13da9d4b2288f5a8))
+* **runner:** a terminal process result always persists as valid content ([1b2176d](https://github.com/wippyai/dataflow/commit/1b2176dd32b3093774779ef185ae3129a33ae67e))
+* **runner:** completion persists as its own batch; consumed child errors are not failure evidence ([64d2026](https://github.com/wippyai/dataflow/commit/64d20266059fb3b51606bad483bfb61e92353f03))
+* **runner:** persist completion as a generation-fenced batch head ([7a9b985](https://github.com/wippyai/dataflow/commit/7a9b9853d2da6d737496239b2969897349701283))
+
 ## [0.7.5](https://github.com/wippyai/dataflow/compare/v0.7.4...v0.7.5) (2026-08-06)
 
 
