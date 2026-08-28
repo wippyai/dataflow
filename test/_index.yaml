@@ -188,6 +188,13 @@ entries:
       - name: wippy.migration:app_db
         value: app:db
 
+  - name: dep.wippy.security
+    kind: ns.dependency
+    meta:
+      description: Standard process policy groups required by framework services
+    component: wippy/security
+    version: ">=v0.4.2"
+
   - name: dep.wippy.bootloader
     kind: ns.dependency
     meta:

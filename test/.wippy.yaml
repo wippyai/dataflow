@@ -1,4 +1,7 @@
 version: "1.0"
+workspace:
+  replacements:
+    wippy/dataflow: ../src
 vars:
   sqlite_file: ./.wippy/test.db
   postgres_host: 127.0.0.1
