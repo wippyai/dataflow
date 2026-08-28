@@ -125,6 +125,70 @@ local function define_tests()
             test.eq((final_result :: any).answer, "done", "final result carries the finish arguments")
             test.eq(#recorded, 0, "success path does not record sibling tool observations")
         end)
+
+        it("rejects a finish call that omits a required exit field", function()
+            local process_tool_results = agent_node._test.process_tool_results
+            local n, recorded = make_recording_node()
+            local agent_result = {
+                tool_calls = {
+                    { id = "call_finish", name = "finish", arguments = {} },
+                }
+            }
+
+            local _responses, _delegations, task_complete, final_result = process_tool_results(
+                n,
+                {},
+                1,
+                "finish",
+                agent_result,
+                {
+                    exit_schema = {
+                        type = "object",
+                        properties = { answer = { type = "string" } },
+                        required = { "answer" }
+                    }
+                },
+                {},
+                {}
+            )
+
+            test.eq(task_complete, false, "invalid finish does not complete the task")
+            test.is_nil(final_result, "invalid finish has no final result")
+            local rejection = find_by_tool_call_id(recorded, "call_finish")
+            test.not_nil(rejection, "schema rejection is recorded")
+            test.contains(rejection.content, "answer", "rejection identifies the missing field")
+        end)
+
+        it("accepts a finish call that satisfies the exit schema", function()
+            local process_tool_results = agent_node._test.process_tool_results
+            local n, recorded = make_recording_node()
+            local agent_result = {
+                tool_calls = {
+                    { id = "call_finish", name = "finish", arguments = { answer = "done" } },
+                }
+            }
+
+            local _responses, _delegations, task_complete, final_result = process_tool_results(
+                n,
+                {},
+                1,
+                "finish",
+                agent_result,
+                {
+                    exit_schema = {
+                        type = "object",
+                        properties = { answer = { type = "string" } },
+                        required = { "answer" }
+                    }
+                },
+                {},
+                {}
+            )
+
+            test.eq(task_complete, true, "valid finish completes the task")
+            test.eq((final_result :: any).answer, "done", "valid finish preserves its result")
+            test.eq(#recorded, 0, "valid finish records no rejection")
+        end)
     end)
 end
 
