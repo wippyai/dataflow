@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## [0.7.15](https://github.com/wippyai/dataflow/compare/v0.7.14...v0.7.15) (2026-08-28)
+
+### Bug Fixes
+
+* **agent:** validate structured finish arguments ([eaefd93](https://github.com/wippyai/dataflow/commit/eaefd932c6bb68d24af423b458e9edc44043d15f))
+* **api:** declare exact dataflow dependencies ([4121cbf](https://github.com/wippyai/dataflow/commit/4121cbf0185328a101d56116a9375db9bc6b5ef1))
+
 ## [0.7.6](https://github.com/wippyai/dataflow/compare/v0.7.5...v0.7.6) (2026-08-10)
 
 
