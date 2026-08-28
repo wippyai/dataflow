@@ -1422,6 +1422,33 @@ local function configure_tool_wrappers(caller, agent_instance, n, agent_id, mode
     end
 end
 
+local function exit_schema_violation(schema: any, arguments: any): string?
+    if type(schema) ~= "table" then return nil end
+    if type(arguments) ~= "table" then
+        return "the finish call carried " .. type(arguments)
+            .. " arguments where the exit schema requires an object"
+    end
+
+    local missing = {} :: { string }
+    local required = (schema :: any).required
+    if type(required) == "table" then
+        for _, key in ipairs(required :: { any }) do
+            if type(key) == "string" and (arguments :: any)[key] == nil then
+                table.insert(missing, key :: string)
+            end
+        end
+    end
+    if #missing > 0 then
+        return "the finish call is missing required fields: " .. table.concat(missing, ", ")
+    end
+
+    local properties = (schema :: any).properties
+    if next(arguments :: any) == nil and type(properties) == "table" and next(properties :: any) ~= nil then
+        return "the finish call carried no arguments where the exit schema declares properties"
+    end
+    return nil
+end
+
 local function process_tool_results(n, tool_results, iteration, exit_tool_name, agent_result: any, arena_config,
                                     session_context, tool_call_to_node_id)
     local control_responses = {}
@@ -1458,8 +1485,24 @@ local function process_tool_results(n, tool_results, iteration, exit_tool_name, 
                         final_result = validated_result
                     end
                 else
-                    task_complete = true
-                    final_result = exit_arguments or { success = false, error = "Exit tool called without arguments" }
+                    local violation = exit_schema_violation(arena_config.exit_schema, exit_arguments)
+                    if violation then
+                        n:data(agent_consts.DATA_TYPE.AGENT_OBSERVATION, violation, {
+                            key = iteration .. "_exit_validation_failed",
+                            content_type = consts.CONTENT_TYPE.TEXT,
+                            node_id = n.node_id,
+                            metadata = {
+                                iteration = iteration,
+                                is_error = true,
+                                tool_call_id = original_tool_call.id,
+                                tool_name = original_tool_call.name,
+                                exit_validation = true
+                            }
+                        })
+                    else
+                        task_complete = true
+                        final_result = exit_arguments
+                    end
                 end
                 break
             end
