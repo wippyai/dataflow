@@ -8,10 +8,6 @@ entries:
     meta:
       comment: Cancel a running dataflow
       description: Dataflow management HTTP endpoints
-      depends_on:
-        - app:api
-        - ns:userspace.dataflow
-        - ns:userspace.dataflow.persist
       router: app:api
     source: file://cancel_dataflow.lua
     modules:
@@ -27,10 +23,6 @@ entries:
     meta:
       comment: Cancel dataflow endpoint
       description: Dataflow management HTTP endpoints
-      depends_on:
-        - app:api
-        - ns:userspace.dataflow
-        - ns:userspace.dataflow.persist
       router: app:api
     method: POST
     func: cancel_dataflow
@@ -42,10 +34,6 @@ entries:
     meta:
       comment: Deliver a signal to a waiting dataflow
       description: Dataflow management HTTP endpoints
-      depends_on:
-        - app:api
-        - ns:userspace.dataflow
-        - ns:userspace.dataflow.persist
       router: app:api
     source: file://signal_dataflow.lua
     modules:
@@ -62,10 +50,6 @@ entries:
     meta:
       comment: Signal dataflow endpoint
       description: Dataflow management HTTP endpoints
-      depends_on:
-        - app:api
-        - ns:userspace.dataflow
-        - ns:userspace.dataflow.persist
       router: app:api
     method: POST
     func: signal_dataflow
@@ -77,10 +61,6 @@ entries:
     meta:
       comment: Get complete dataflow details with nodes and data
       description: Dataflow management HTTP endpoints
-      depends_on:
-        - app:api
-        - ns:userspace.dataflow
-        - ns:userspace.dataflow.persist
       router: app:api
     source: file://get_dataflow.lua
     modules:
@@ -98,10 +78,6 @@ entries:
     meta:
       comment: Get dataflow endpoint
       description: Dataflow management HTTP endpoints
-      depends_on:
-        - app:api
-        - ns:userspace.dataflow
-        - ns:userspace.dataflow.persist
       router: app:api
     method: GET
     func: get_dataflow
@@ -113,10 +89,6 @@ entries:
     meta:
       comment: Get dataflow nodes only
       description: Dataflow management HTTP endpoints
-      depends_on:
-        - app:api
-        - ns:userspace.dataflow
-        - ns:userspace.dataflow.persist
       router: app:api
     source: file://get_dataflow_nodes.lua
     modules:
@@ -133,10 +105,6 @@ entries:
     meta:
       comment: Get dataflow nodes endpoint
       description: Dataflow management HTTP endpoints
-      depends_on:
-        - app:api
-        - ns:userspace.dataflow
-        - ns:userspace.dataflow.persist
       router: app:api
     method: GET
     func: get_dataflow_nodes
@@ -148,10 +116,6 @@ entries:
     meta:
       comment: List user's dataflows with filtering and pagination
       description: Dataflow management HTTP endpoints
-      depends_on:
-        - app:api
-        - ns:userspace.dataflow
-        - ns:userspace.dataflow.persist
       router: app:api
     source: file://list_dataflows.lua
     modules:
@@ -167,10 +131,6 @@ entries:
     meta:
       comment: List dataflows endpoint
       description: Dataflow management HTTP endpoints
-      depends_on:
-        - app:api
-        - ns:userspace.dataflow
-        - ns:userspace.dataflow.persist
       router: app:api
     method: GET
     func: list_dataflows
@@ -182,10 +142,6 @@ entries:
     meta:
       comment: Terminate a dataflow forcefully
       description: Dataflow management HTTP endpoints
-      depends_on:
-        - app:api
-        - ns:userspace.dataflow
-        - ns:userspace.dataflow.persist
       router: app:api
     source: file://terminate_dataflow.lua
     modules:
@@ -194,19 +150,14 @@ entries:
     imports:
       client: userspace.dataflow:client
     method: handler
-    
+
   # userspace.dataflow.api:terminate_dataflow.endpoint
   - name: terminate_dataflow.endpoint
     kind: http.endpoint
     meta:
       comment: Terminate dataflow endpoint
       description: Dataflow management HTTP endpoints
-      depends_on:
-        - app:api
-        - ns:userspace.dataflow
-        - ns:userspace.dataflow.persist
       router: app:api
     method: POST
     func: terminate_dataflow
     path: /dataflows/{id}/terminate
-    
