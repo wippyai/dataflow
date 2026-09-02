@@ -180,6 +180,7 @@ function control_handler.process_artifacts(control, node_sdk, iteration)
                 data_id = artifact_id,
                 key = title,
                 content_type = content_type,
+                node_id = node_sdk.node_id,
                 metadata = {
                     title = title,
                     comment = artifact.description,

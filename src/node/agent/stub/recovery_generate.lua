@@ -50,6 +50,23 @@ local function final_response(scenario_id, mode, function_result_count, prompt_t
     }
 end
 
+-- An assistant turn with no text and no tool calls: the model declining to
+-- answer. finish_reason is "stop", exactly what providers report for it.
+local function empty_response(prompt_tokens, completion_tokens)
+    return {
+        success = true,
+        result = {
+            content = "",
+            tool_calls = {}
+        },
+        finish_reason = "stop",
+        tokens = response_tokens(prompt_tokens, completion_tokens),
+        metadata = {}
+    }
+end
+
+local EMPTY_RESULT_FEEDBACK = "Your response was empty"
+
 local function handler(contract_args)
     local messages = contract_args and contract_args.messages or {}
     local scenario: any = helpers.parse_scenario(messages)
@@ -121,6 +138,31 @@ local function handler(contract_args)
         end
 
         return final_response(scenario.scenario_id, scenario.mode, result_count, base_prompt or 10, 3)
+    end
+
+    -- artifact_then_empty_then_final: one artifact-creating tool turn, then an
+    -- empty assistant turn, then a real answer once the engine has pushed the
+    -- empty-result feedback back into the conversation.
+    if scenario.mode == "artifact_then_empty_then_final" then
+        if result_count == 0 then
+            return tool_call_response(scenario.scenario_id, 1, scenario.tool_delay_ms, base_prompt or 13, 8,
+                "artifact_tool", {
+                    title = "Report",
+                    content = scenario.artifact_content or "# Report\n\nFull findings."
+                })
+        end
+
+        if helpers.count_text_matches(messages, EMPTY_RESULT_FEEDBACK) == 0 then
+            return empty_response(base_prompt or 9, 0)
+        end
+
+        return final_response(scenario.scenario_id, scenario.mode, result_count, base_prompt or 9, 4)
+    end
+
+    -- empty_until_limit: every turn is empty; the node must run out of
+    -- iterations instead of completing on nothing.
+    if scenario.mode == "empty_until_limit" then
+        return empty_response(base_prompt or 9, 0)
     end
 
     -- checkpoint_stress: drives three tool turns then a final response, with

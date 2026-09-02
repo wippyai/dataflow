@@ -56,6 +56,17 @@ function helpers.parse_scenario(messages)
     }
 end
 
+function helpers.count_text_matches(messages, needle)
+    local count = 0
+    for _, message in ipairs(messages or {}) do
+        local text = message.content and message.content[1] and message.content[1].text
+        if type(text) == "string" and string.find(text, needle, 1, true) then
+            count = count + 1
+        end
+    end
+    return count
+end
+
 function helpers.count_function_results(messages)
     local count = 0
     for _, message in ipairs(messages or {}) do

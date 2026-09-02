@@ -78,6 +78,7 @@ consts.ERROR_MSG = {
 -- Feedback Messages
 consts.FEEDBACK = {
     NO_TOOLS_CALLED = "Environment: You have not used any tools. Continue with your reasoning and use appropriate tools.",
+    EMPTY_RESULT = "Environment: Your response was empty. Provide your final answer as text, or continue with the appropriate tools.",
     EXIT_AVAILABLE = "Environment: Use the '%s' tool when you are ready to complete the task.",
     ITERATIONS_WARNING = "Environment: You have %d iterations remaining before reaching the maximum limit. Plan accordingly.",
     FINAL_ITERATION = "Environment: You have 1 iteration remaining - this is your last chance. You must complete your task or call the finish tool now.",

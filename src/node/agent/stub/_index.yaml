@@ -54,6 +54,30 @@ entries:
   imports:
     helpers: userspace.dataflow.node.agent.stub:recovery_helpers
   method: handler
+- name: artifact_tool
+  kind: function.lua
+  meta:
+    type: tool
+    name: artifact_tool
+    title: Artifact Tool
+    test_only: true
+    comment: Persists its content as a control artifact for agent empty-result tests
+    input_schema:
+      type: object
+      properties:
+        scenario_id:
+          type: string
+        title:
+          type: string
+        content:
+          type: string
+      required:
+      - scenario_id
+      - content
+  source: file://artifact_tool.lua
+  imports:
+    helpers: userspace.dataflow.node.agent.stub:recovery_helpers
+  method: handler
 - name: recovery_control_tool
   kind: function.lua
   meta:
