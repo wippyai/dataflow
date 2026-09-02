@@ -1599,34 +1599,60 @@ local function tools_were_attempted(agent_result)
     return false
 end
 
+-- A result completes the task only when it carries content: text needs a
+-- non-whitespace character, a structured table needs at least one field, and
+-- nil/false are the model declining to answer. Field-level validation of a
+-- structured result belongs to the exit schema.
+local function has_usable_result(result)
+    if result == nil or result == false then
+        return false
+    end
+    if type(result) == "string" then
+        return result:match("%S") ~= nil
+    end
+    if type(result) == "table" then
+        return next(result) ~= nil
+    end
+    return true
+end
+
+-- Returns (task_complete, final_result, feedback_recorded). feedback_recorded is
+-- true when an observation asking the model for a real answer was queued.
 local function check_completion(tool_calling, agent_result: any, iteration, min_iterations, exit_tool_name, n)
     local task_complete = false
     local final_result = nil
+    local feedback_recorded = false
 
     if iteration < min_iterations then
-        return task_complete, final_result
+        return task_complete, final_result, feedback_recorded
     end
 
     if tool_calling == agent_consts.TOOL_CALLING.NONE then
-        if agent_result.result and agent_result.result ~= "" then
+        if has_usable_result(agent_result.result) then
             task_complete = true
             final_result = agent_result.result
         end
     elseif tool_calling == agent_consts.TOOL_CALLING.AUTO then
         if not tools_were_attempted(agent_result) then
-            if agent_result.result and agent_result.result ~= nil then
+            if has_usable_result(agent_result.result) then
                 task_complete = true
                 final_result = agent_result.result
             else
                 local feedback = agent_consts.FEEDBACK.NO_TOOLS_CALLED
+                local key = iteration .. "_no_tools_called"
+                if agent_result.result ~= nil then
+                    feedback = agent_consts.FEEDBACK.EMPTY_RESULT
+                    key = iteration .. "_empty_result"
+                end
                 n:data(agent_consts.DATA_TYPE.AGENT_OBSERVATION, feedback, {
-                    key = iteration .. "_no_tools_called",
+                    key = key,
                     content_type = consts.CONTENT_TYPE.TEXT,
                     node_id = n.node_id,
                     metadata = {
                         iteration = iteration
                     }
                 })
+                feedback_recorded = true
             end
         end
     elseif tool_calling == agent_consts.TOOL_CALLING.ANY then
@@ -1643,10 +1669,11 @@ local function check_completion(tool_calling, agent_result: any, iteration, min_
                     iteration = iteration
                 }
             })
+            feedback_recorded = true
         end
     end
 
-    return task_complete, final_result
+    return task_complete, final_result, feedback_recorded
 end
 
 local function finalize_iteration(n, agent_ctx, session_context, iteration, max_iterations, min_iterations, tool_calling,
@@ -1698,8 +1725,19 @@ local function finalize_iteration(n, agent_ctx, session_context, iteration, max_
     end
 
     if not task_complete and not has_delegations then
-        task_complete, final_result = check_completion(tool_calling, agent_result, iteration, min_iterations,
-            exit_tool_name, n)
+        local feedback_recorded
+        task_complete, final_result, feedback_recorded = check_completion(tool_calling, agent_result, iteration,
+            min_iterations, exit_tool_name, n)
+        -- The feedback check_completion records has to be applied before the
+        -- next prompt is built from persisted history, or the model only sees
+        -- it one turn late. yield waits for the orchestrator to apply the commit;
+        -- a bare submit only queues it.
+        if feedback_recorded then
+            local _, yield_err = n:yield()
+            if yield_err then
+                return nil, nil, yield_err
+            end
+        end
     end
 
     return task_complete, final_result, nil
@@ -2431,6 +2469,7 @@ return {
     run = run,
     _test = {
         build_agent_context_config = build_agent_context_config,
+        check_completion = check_completion,
         process_multiple_inputs = process_multiple_inputs,
         process_tool_results = process_tool_results,
     }

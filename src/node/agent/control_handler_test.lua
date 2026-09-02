@@ -394,6 +394,8 @@ local function define_tests()
                 local data_cmds = queued_of_type(n, consts.COMMAND_TYPES.CREATE_DATA)
                 test.eq(#data_cmds, 1)
                 test.eq(data_cmds[1].payload.data_type, consts.DATA_TYPE.ARTIFACT)
+                test.eq(data_cmds[1].payload.node_id, n.node_id, "artifact row is attributed to the creating node")
+                test.eq(data_cmds[1].payload.content_type, consts.CONTENT_TYPE.TEXT)
                 test.eq(changes[1].title, "Note")
             end)
 

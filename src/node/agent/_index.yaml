@@ -331,6 +331,50 @@ entries:
       test: wippy.test:test
     method: run_tests
 
+  - name: agent_empty_result_test
+    kind: function.lua
+    meta:
+      name: Agent Node Empty Result Test
+      type: test
+      comment: Loop-level tests proving an empty assistant turn never completes the agent node, an earlier control artifact survives, and all-empty runs fail at the iteration limit.
+      group: Workflow / Agent Node
+      tags:
+        - dataflow
+        - agent
+        - completion
+        - test
+    source: file://agent_empty_result_test.lua
+    modules:
+      - time
+      - uuid
+    imports:
+      agent_consts: userspace.dataflow.node.agent:consts
+      client: userspace.dataflow:client
+      consts: userspace.dataflow:consts
+      data_reader: userspace.dataflow.persist:data_reader
+      node_reader: userspace.dataflow.persist:node_reader
+      test: wippy.test:test
+    method: run_tests
+
+  - name: check_completion_test
+    kind: function.lua
+    meta:
+      name: Agent Node check_completion Test
+      type: test
+      comment: Unit tests for the terminal predicate across tool_calling modes, covering empty, whitespace, nil, false, and empty-table results.
+      group: Workflow / Agent Node
+      tags:
+        - dataflow
+        - agent
+        - completion
+        - test
+    source: file://check_completion_test.lua
+    imports:
+      agent_node: userspace.dataflow.node.agent:node
+      agent_consts: userspace.dataflow.node.agent:consts
+      test: wippy.test:test
+    method: run_tests
+
   - name: process_tool_results_test
     kind: function.lua
     meta:
