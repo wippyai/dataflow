@@ -8,6 +8,8 @@ modules:
     - name: wippy/bootloader
       version: 0.3.14
       hash: aa5e32807eba6a5ea0e5a224069a006288f58605c4542a444f5469caee862c58
+    - name: wippy/dataflow
+      version: 0.0.0
     - name: wippy/llm
       version: 0.4.42
       hash: 173caaf535bafec0c184c93de63eca75e6281d87dfcfa460ec59982020812ad8
