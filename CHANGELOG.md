@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## [0.7.16](https://github.com/wippyai/dataflow/compare/v0.7.15...v0.7.16) (2026-09-02)
+
+
+### Bug Fixes
+
+* **agent:** empty assistant turn never completes the node ([56405d3](https://github.com/wippyai/dataflow/commit/56405d355e968a9f1c9f88c4f615c04567c759bd))
+* **agent:** empty assistant turn never completes the node ([8a352b0](https://github.com/wippyai/dataflow/commit/8a352b0d527bd50b4bc86a974b08bbf696271f87))
+
 ## [0.7.15](https://github.com/wippyai/dataflow/compare/v0.7.14...v0.7.15) (2026-08-28)
 
 ### Bug Fixes
