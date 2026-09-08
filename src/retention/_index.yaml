@@ -36,7 +36,7 @@ entries:
     host: app:processes
     lifecycle:
       auto_start: false
-      depends_on: [userspace.dataflow.env:memory]
+      depends_on: []
       security:
         actor:
           id: system.dataflow.retention

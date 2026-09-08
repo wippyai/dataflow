@@ -48,3 +48,49 @@ Existing `n:yield` behavior is unchanged.
 [releases-page]: https://github.com/wippyai/dataflow/releases
 [packcli]: https://github.com/wippyai/wippy-releases/releases
 [modules-registry]: https://modules.wippy.ai
+# Optional diagnostic retention
+
+The host can enable native cleanup through its `wippy/dataflow` dependency:
+
+```yaml
+parameters:
+  - name: userspace.dataflow:retention_enabled
+    value: true
+  - name: userspace.dataflow:diagnostic_retention_days
+    value: "30"
+  - name: userspace.dataflow:retention_interval_seconds
+    value: "300"
+  - name: userspace.dataflow:retention_batch_size
+    value: "1000"
+```
+
+`retention_enabled` defaults to `false`: the optional process service does not
+start until the host enables it. The other defaults are 30 days, 3600 seconds,
+and 500 rows per table per batch. Setting days to `0` also disables deletion.
+Days accept integers 0–36500, intervals 60–86400 seconds, and batches 1–1000.
+The service uses the host's existing `target_db` and `process_host` bindings.
+
+Cleanup starts 30 seconds after service startup and then runs on the configured
+interval. Each transaction removes at most one batch from each diagnostic table.
+It retries on the next interval after a database or configuration error; logs from
+`dataflow.retention` report the policy, candidate counts, and deleted counts.
+
+Only entire parent/child families whose flows are all terminal and older than the
+retention window qualify. Active, waiting, paused, recent, unknown-state, and
+unrooted families are preserved. PostgreSQL serializes eligibility with flow
+status changes and child insertion for each bounded transaction, using a 2-second
+lock timeout and a 30-second statement timeout; SQLite reserves its writer before
+reading eligibility. A busy database fails the batch safely and retries later.
+
+The sweeper prunes applied commit history (except each flow's last commit) and
+intermediate `cycle.state`, `cycle.function_result`, `node.input`, `node.yield`,
+`node.yield.result`, and `parallel.progress` records. It preserves pending commits,
+flow and node summaries, flow inputs/outputs, node results/outputs, observations,
+actions, and evidence. Full diagnostic replay of pruned old flows is no longer
+available. This is **diagnostic retention**, not deletion of durable application
+records or all workflow history. PostgreSQL autovacuum makes deleted space
+reusable; the service does not run disruptive `VACUUM FULL` operations.
+
+For an administrative preview, call the library
+`userspace.dataflow.retention:sweeper.run(db, {days=30, batch_size=1000, dry_run=true})`
+with an authorized database handle. The library is not a public HTTP endpoint.
