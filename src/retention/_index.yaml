@@ -1,0 +1,43 @@
+version: "1.0"
+namespace: userspace.dataflow.retention
+entries:
+  - name: sweeper
+    kind: library.lua
+    meta:
+      comment: Bounded diagnostic retention for terminal workflow families; preserves durable results and evidence.
+    source: file://sweeper.lua
+    modules: [time]
+
+  - name: sweeper_test
+    kind: function.lua
+    meta:
+      type: test
+      suite: Retention
+    source: file://sweeper_test.lua
+    modules: [sql, uuid, time]
+    imports:
+      test: wippy.test:test
+      sweeper: userspace.dataflow.retention:sweeper
+    method: run_tests
+
+  - name: process
+    kind: process.lua
+    source: file://service.lua
+    modules: [env, sql, time, logger]
+    imports:
+      sweeper: userspace.dataflow.retention:sweeper
+    method: run
+
+  - name: service
+    kind: process.service
+    meta:
+      comment: Native opt-in diagnostic retention, configured through Dataflow dependency parameters.
+    process: userspace.dataflow.retention:process
+    host: app:processes
+    lifecycle:
+      auto_start: false
+      depends_on: [userspace.dataflow.env:memory]
+      security:
+        actor:
+          id: system.dataflow.retention
+        groups: [userspace.dataflow.security:retention]

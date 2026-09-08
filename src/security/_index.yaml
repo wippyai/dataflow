@@ -162,3 +162,28 @@ entries:
       actions:
         - env.get
       effect: allow
+
+  - name: retention
+    kind: registry.entry
+    meta:
+      comment: Module-owned authority for diagnostic retention; no actor reconstruction or process spawning.
+
+  - name: retention.database
+    kind: security.policy
+    groups: [userspace.dataflow.security:retention]
+    policy:
+      resources: app:db
+      actions: [db.get]
+      effect: allow
+
+  - name: retention.configuration
+    kind: security.policy
+    groups: [userspace.dataflow.security:retention]
+    policy:
+      resources:
+        - userspace.dataflow.env:diagnostic_retention_days
+        - userspace.dataflow.env:retention_interval_seconds
+        - userspace.dataflow.env:retention_batch_size
+        - userspace.dataflow.env:retention_db
+      actions: [env.get]
+      effect: allow

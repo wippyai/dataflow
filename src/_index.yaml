@@ -255,6 +255,12 @@ entries:
         path: ".meta.target_db"
       - entry: userspace.dataflow.runner:overseer.service
         path: ".lifecycle.depends_on +="
+      - entry: userspace.dataflow.env:retention_db
+        path: .default
+      - entry: userspace.dataflow.retention:service
+        path: ".lifecycle.depends_on +="
+      - entry: userspace.dataflow.security:retention.database
+        path: .policy.resources
       - entry: userspace.dataflow.security:root.database
         path: .policy.resources
 
@@ -286,8 +292,49 @@ entries:
         path: .host
       - entry: userspace.dataflow.runner:overseer.service
         path: ".lifecycle.depends_on +="
+      - entry: userspace.dataflow.retention:service
+        path: .host
+      - entry: userspace.dataflow.retention:service
+        path: ".lifecycle.depends_on +="
       - entry: userspace.dataflow.security:root.process_host
         path: .policy.resources
+
+  # Retention is opt-in: publishing an upgrade never deletes existing history.
+  - name: retention_enabled
+    kind: ns.requirement
+    meta:
+      description: "Enable the optional native dataflow diagnostic retention service on this host."
+    default: false
+    targets:
+      - entry: userspace.dataflow.retention:service
+        path: .lifecycle.auto_start
+
+  - name: diagnostic_retention_days
+    kind: ns.requirement
+    meta:
+      description: "Days to keep intermediate dataflow diagnostics; 0 disables cleanup. Durable inputs, outputs and evidence are preserved."
+    default: "30"
+    targets:
+      - entry: userspace.dataflow.env:diagnostic_retention_days
+        path: .default
+
+  - name: retention_interval_seconds
+    kind: ns.requirement
+    meta:
+      description: "Seconds between bounded retention batches (60..86400)."
+    default: "3600"
+    targets:
+      - entry: userspace.dataflow.env:retention_interval_seconds
+        path: .default
+
+  - name: retention_batch_size
+    kind: ns.requirement
+    meta:
+      description: "Maximum rows removed per diagnostic table per sweep (1..1000)."
+    default: "500"
+    targets:
+      - entry: userspace.dataflow.env:retention_batch_size
+        path: .default
 
   # Dependencies
   - name: dep.wippy.test

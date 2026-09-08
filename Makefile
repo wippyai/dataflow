@@ -14,6 +14,7 @@ DATAFLOW_PG_DATABASE ?= dataflow_test
 DATAFLOW_PG_USERNAME ?= dataflow
 DATAFLOW_PG_PASSWORD ?= dataflow
 WIPPY ?= wippy
+TESTS ?=
 PUBLISH_DRY_RUN_TOKEN ?= wpy_ci_dry_run_0123456789abcdef0123456789abcdef
 
 .PHONY: test test-sqlite test-postgres test-restart-sqlite test-restart-postgres test-static lint install verify-lock verify-package clean
@@ -21,10 +22,10 @@ PUBLISH_DRY_RUN_TOKEN ?= wpy_ci_dry_run_0123456789abcdef0123456789abcdef
 test: test-sqlite
 
 test-sqlite: clean test-static
-	cd $(TEST_DIR) && $(WIPPY) test --profile sqlite
+	cd $(TEST_DIR) && $(WIPPY) test test $(TESTS) --profile sqlite
 
 test-postgres: test-static
-	cd $(TEST_DIR) && $(WIPPY) test --profile postgres \
+	cd $(TEST_DIR) && $(WIPPY) test test $(TESTS) --profile postgres \
 		--set "vars.postgres_host=$(DATAFLOW_PG_HOST)" \
 		--set "vars.postgres_port=$(DATAFLOW_PG_PORT)" \
 		--set "vars.postgres_database=$(DATAFLOW_PG_DATABASE)" \

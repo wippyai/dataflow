@@ -35,3 +35,23 @@ entries:
       comment: Full-runtime boot epoch used to distinguish restart recovery from same-runtime process loss.
       private: true
     storage: userspace.dataflow.env:memory
+
+  - name: diagnostic_retention_days
+    kind: env.variable
+    storage: userspace.dataflow.env:memory
+    default: "30"
+
+  - name: retention_interval_seconds
+    kind: env.variable
+    storage: userspace.dataflow.env:memory
+    default: "3600"
+
+  - name: retention_batch_size
+    kind: env.variable
+    storage: userspace.dataflow.env:memory
+    default: "500"
+
+  - name: retention_db
+    kind: env.variable
+    storage: userspace.dataflow.env:memory
+    default: "app:db"
