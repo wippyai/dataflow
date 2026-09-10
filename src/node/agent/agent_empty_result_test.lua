@@ -192,6 +192,25 @@ local function define_tests()
                 :one()
             test.is_nil(output, "no workflow output is produced from empty turns")
         end)
+
+        it("stops after three consecutive empty turns instead of burning every iteration", function()
+            local workflow = create_workflow("empty_until_limit", 12)
+
+            c:start(workflow.dataflow_id)
+
+            local final_status = wait_terminal(workflow.dataflow_id)
+            test.eq(final_status, consts.STATUS.COMPLETED_FAILURE, "empty turns never complete the workflow")
+
+            local feedback = empty_result_observations(workflow)
+            test.eq(#feedback, 3, "the node stops asking after three empty turns, not at max_iterations")
+
+            local agent_result = data_reader.with_dataflow(workflow.dataflow_id)
+                :with_nodes(workflow.node_id)
+                :with_data_types(consts.DATA_TYPE.NODE_RESULT)
+                :one()
+            test.not_nil(agent_result, "agent node produced a result")
+            test.eq((agent_result :: any).discriminator, "result.error", "the node fails rather than completing")
+        end)
     end)
 end
 

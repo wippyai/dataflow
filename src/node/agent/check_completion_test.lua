@@ -23,7 +23,7 @@ local function check(tool_calling, agent_result, opts)
     opts = opts or {}
     local check_completion = agent_node._test.check_completion
     local n, recorded = make_recording_node()
-    local complete, final_result, feedback_recorded = check_completion(
+    local complete, final_result, feedback_recorded, unproductive = check_completion(
         tool_calling,
         agent_result,
         opts.iteration or 3,
@@ -32,7 +32,7 @@ local function check(tool_calling, agent_result, opts)
         n
     )
     test.eq(feedback_recorded, #recorded > 0, "feedback_recorded mirrors the queued observation")
-    return complete, final_result, recorded
+    return complete, final_result, recorded, unproductive
 end
 
 local function define_tests()
@@ -170,6 +170,41 @@ local function define_tests()
             test.eq(#recorded, 1)
             test.eq((recorded[1] :: any).content, agent_consts.FEEDBACK.NO_TOOLS_CALLED .. " " ..
                 string.format(agent_consts.FEEDBACK.EXIT_AVAILABLE, "Finish"))
+        end)
+    end)
+
+    describe("check_completion: unproductive turn reporting", function()
+        it("reports an unusable tool_calling=none turn as unproductive", function()
+            local _complete, _result, recorded, unproductive = check(agent_consts.TOOL_CALLING.NONE, { result = "" })
+            test.eq(#recorded, 0, "none writes no feedback observation")
+            test.is_true(unproductive)
+        end)
+
+        it("does not report a completed tool_calling=none turn as unproductive", function()
+            local complete, _result, _recorded, unproductive = check(agent_consts.TOOL_CALLING.NONE,
+                { result = "final answer" })
+            test.is_true(complete)
+            test.is_false(unproductive)
+        end)
+
+        it("reports an empty tool_calling=auto turn as unproductive", function()
+            local _complete, _result, recorded, unproductive = check(agent_consts.TOOL_CALLING.AUTO, { result = "" })
+            test.eq(#recorded, 1)
+            test.is_true(unproductive)
+        end)
+
+        it("does not report a tool-calling turn as unproductive", function()
+            local _complete, _result, _recorded, unproductive = check(agent_consts.TOOL_CALLING.AUTO, {
+                result = "",
+                tool_calls = { { id = "1", name = "some_tool" } },
+            })
+            test.is_false(unproductive)
+        end)
+
+        it("does not report a warm-up turn below min_iterations as unproductive", function()
+            local _complete, _result, _recorded, unproductive = check(agent_consts.TOOL_CALLING.AUTO,
+                { result = "" }, { iteration = 1, min_iterations = 3 })
+            test.is_false(unproductive)
         end)
     end)
 end

@@ -20,7 +20,8 @@ consts.TOOL_CALLING = {
 consts.DEFAULTS = {
     MAX_ITERATIONS = 64,
     MIN_ITERATIONS = 1,
-    TOOL_CALLING = "any"
+    TOOL_CALLING = "any",
+    MAX_UNPRODUCTIVE_STEPS = 3
 }
 
 -- Input Configuration Defaults
@@ -73,6 +74,7 @@ consts.ERROR_MSG = {
     INPUT_VALIDATION_FAILED = "Input validation failed: %s",
     DELEGATION_FAILED = "Delegation failed: %s",
     NO_INPUTS_PROVIDED = "No inputs provided to the agent node",
+    UNPRODUCTIVE_STEPS = "Agent produced %d consecutive turns with no tool call and no answer",
 }
 
 -- Feedback Messages
