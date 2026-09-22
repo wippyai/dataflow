@@ -618,6 +618,7 @@ Invokes a registered function. If function returns `{_control = {commands = [...
         prompt = "System instructions",
         max_iterations = 8,
         min_iterations = 1,
+        max_empty_turns = 3,
         tool_calling = "auto",
         exit_schema = {...},
         exit_func_id = "namespace:validate_exit",
@@ -634,6 +635,12 @@ Invokes a registered function. If function returns `{_control = {commands = [...
 ```
 
 Creates an agent execution node with arena configuration.
+
+**`max_empty_turns` (optional, default 3):** How many consecutive turns the
+model may return with no text and no tool call before the node fails with
+`EMPTY_TURNS_EXCEEDED`. Each such turn is still answered with feedback asking
+for a real answer, and any turn carrying text or a tool call resets the count.
+The failure routes through `error_targets` like every other node failure.
 
 **`active_traits` / `active_tools` (optional):** Override the selected agent's
 active capability lists for this node. An empty list explicitly disables the

@@ -20,6 +20,7 @@ consts.TOOL_CALLING = {
 consts.DEFAULTS = {
     MAX_ITERATIONS = 64,
     MIN_ITERATIONS = 1,
+    MAX_EMPTY_TURNS = 3,
     TOOL_CALLING = "any"
 }
 
@@ -59,7 +60,8 @@ consts.ERROR = {
     INPUT_VALIDATION_FAILED = "INPUT_VALIDATION_FAILED",
     DELEGATION_FAILED = "DELEGATION_FAILED",
     STEP_FUNCTION_FAILED = "STEP_FUNCTION_FAILED",
-    CHECKPOINT_FAILED = "CHECKPOINT_FAILED"
+    CHECKPOINT_FAILED = "CHECKPOINT_FAILED",
+    EMPTY_TURNS_EXCEEDED = "EMPTY_TURNS_EXCEEDED"
 }
 
 -- Error Messages
@@ -73,6 +75,7 @@ consts.ERROR_MSG = {
     INPUT_VALIDATION_FAILED = "Input validation failed: %s",
     DELEGATION_FAILED = "Delegation failed: %s",
     NO_INPUTS_PROVIDED = "No inputs provided to the agent node",
+    EMPTY_TURNS_EXCEEDED = "The model returned %d consecutive turns with no content and no tool call",
 }
 
 -- Feedback Messages

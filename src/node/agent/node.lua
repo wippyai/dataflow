@@ -234,6 +234,7 @@ local REASON = {
     TOOL_RESULTS_RECORDED = "tool_results_recorded",
     CONTEXT_LIMIT_REACHED = "context_limit_reached",
     MAX_ITERATIONS_REACHED = "max_iterations_reached",
+    EMPTY_TURNS_EXCEEDED = "empty_turns_exceeded",
     HOST_FAILED = "host_failed",
     DATAFLOW_FINISHED = "dataflow_finished",
 }
@@ -578,6 +579,14 @@ local function validate_and_resolve_config(config)
         return nil, "none mode cannot have exit_schema"
     end
 
+    if config.arena.max_empty_turns ~= nil then
+        local bound = tonumber(config.arena.max_empty_turns)
+        if not bound or bound < 1 or bound ~= math.floor(bound) then
+            return nil, "max_empty_turns must be a positive integer"
+        end
+        config.arena.max_empty_turns = bound
+    end
+
     return config, nil
 end
 
@@ -633,14 +642,15 @@ local function accumulate_tokens(total_tokens, new_tokens)
 end
 
 local function update_node_progress(n, iteration, max_iterations, total_tokens, tool_calls_count, status_message,
-                                    agent_id, model_name)
+                                    agent_id, model_name, consecutive_empty_turns)
     local state_info = {
         current_iteration = iteration,
         max_iterations = max_iterations,
         agent_id = agent_id,
         model = model_name,
         total_tokens = total_tokens,
-        tool_calls = tool_calls_count
+        tool_calls = tool_calls_count,
+        consecutive_empty_turns = consecutive_empty_turns or 0
     }
 
     n:update_metadata({
@@ -2013,6 +2023,12 @@ local function run(args)
     local iteration = saved_state.current_iteration or 0
     local max_iterations = max_iterations_override or config.arena.max_iterations or agent_consts.DEFAULTS.MAX_ITERATIONS
     local min_iterations = config.arena.min_iterations or agent_consts.DEFAULTS.MIN_ITERATIONS
+    -- A model that answers nothing and calls nothing is asked once more; past
+    -- this bound the node fails with a named reason rather than absorbing the
+    -- whole iteration budget one identical empty turn at a time. The counter is
+    -- part of the persisted node state so a restart mid-run resumes the bound.
+    local max_empty_turns = config.arena.max_empty_turns or agent_consts.DEFAULTS.MAX_EMPTY_TURNS
+    local consecutive_empty_turns = saved_state.consecutive_empty_turns or 0
     local tool_calling = config.arena.tool_calling
     local show_tool_calls = config.show_tool_calls ~= false
     local task_complete = false
@@ -2116,7 +2132,7 @@ local function run(args)
 
     local initial_status = build_status_message(iteration, max_iterations, total_tokens, tool_calls_count, false, false)
     update_node_progress(n, iteration, max_iterations, total_tokens, tool_calls_count, initial_status, agent_id,
-        model_name)
+        model_name, consecutive_empty_turns)
 
     local recovered_complete, recovered_result, recovered_iteration, recovery_err = recover_persisted_action(
         n,
@@ -2257,8 +2273,13 @@ local function run(args)
         if agent_result.truncated then
             total_tokens = accumulate_tokens(total_tokens, agent_result.tokens)
 
+            -- A truncated turn overran the token budget; the model spoke, so
+            -- the empty-turn run ends here.
+            consecutive_empty_turns = 0
+
             local status_msg = build_status_message(iteration, max_iterations, total_tokens, tool_calls_count, false, false)
-            update_node_progress(n, iteration, max_iterations, total_tokens, tool_calls_count, status_msg, agent_id, model_name)
+            update_node_progress(n, iteration, max_iterations, total_tokens, tool_calls_count, status_msg, agent_id,
+                model_name, consecutive_empty_turns)
 
             store_agent_action(n, agent_result, iteration, agent_id, model_name, exit_tool_name, {})
 
@@ -2292,6 +2313,15 @@ local function run(args)
         local regular_tool_calls = (agent_result.tool_calls or {}) :: { ToolCall }
         local delegate_calls = (agent_result.delegate_calls or {}) :: { any }
 
+        -- A turn that carries text or asks for a tool is the model working, and
+        -- it ends whatever empty run preceded it. A turn carrying neither says
+        -- nothing and moves nothing, so it counts toward the bound.
+        if has_usable_result(agent_result.result) or tools_were_attempted(agent_result) then
+            consecutive_empty_turns = 0
+        else
+            consecutive_empty_turns = consecutive_empty_turns + 1
+        end
+
         for _, tool_call in ipairs(regular_tool_calls) do
             if not exit_tool_name or tool_call.name ~= exit_tool_name then
                 tool_calls_count = tool_calls_count + 1
@@ -2302,7 +2332,7 @@ local function run(args)
 
         local status_msg = build_status_message(iteration, max_iterations, total_tokens, tool_calls_count, false, false)
         update_node_progress(n, iteration, max_iterations, total_tokens, tool_calls_count, status_msg, agent_id,
-            model_name)
+            model_name, consecutive_empty_turns)
 
         store_memory_recall(n, agent_result, iteration)
         store_agent_action(n, agent_result, iteration, agent_id, model_name, exit_tool_name, {})
@@ -2394,6 +2424,23 @@ local function run(args)
             final_result = finalized_result
         end
 
+        -- check_completion has recorded the feedback for this turn; the model
+        -- has now been asked for a real answer max_empty_turns times and is
+        -- still silent. Fail here with the count rather than letting the
+        -- iteration budget absorb the rest of the identical turns.
+        if not task_complete and consecutive_empty_turns >= max_empty_turns then
+            local empty_message = string.format(agent_consts.ERROR_MSG.EMPTY_TURNS_EXCEEDED, consecutive_empty_turns)
+            local empty_status = build_status_message(iteration, max_iterations, total_tokens, tool_calls_count, true,
+                false)
+            update_node_progress(n, iteration, max_iterations, total_tokens, tool_calls_count, empty_status, agent_id,
+                model_name, consecutive_empty_turns)
+
+            return fail_with_lifecycle({
+                code = agent_consts.ERROR.EMPTY_TURNS_EXCEEDED,
+                message = empty_message
+            }, empty_message, REASON.EMPTY_TURNS_EXCEEDED, iteration)
+        end
+
         -- Reconcile any agent/model/trait/tool change a control directive applied this
         -- iteration so the next step uses the updated agent. apply_control_responses
         -- mutated agent_ctx (and persisted to node config); re-fetch the loaded agent,
@@ -2420,7 +2467,7 @@ local function run(args)
     if not task_complete and iteration >= max_iterations then
         local final_status = build_status_message(iteration, max_iterations, total_tokens, tool_calls_count, true, false)
         update_node_progress(n, iteration, max_iterations, total_tokens, tool_calls_count, final_status, agent_id,
-            model_name)
+            model_name, consecutive_empty_turns)
 
         return fail_with_lifecycle({
             code = agent_consts.ERROR.AGENT_EXEC_FAILED,
@@ -2430,7 +2477,8 @@ local function run(args)
 
     local final_status = build_status_message(iteration, max_iterations, total_tokens, tool_calls_count, true,
         task_complete)
-    update_node_progress(n, iteration, max_iterations, total_tokens, tool_calls_count, final_status, agent_id, model_name)
+    update_node_progress(n, iteration, max_iterations, total_tokens, tool_calls_count, final_status, agent_id,
+        model_name, consecutive_empty_turns)
 
     local output_content = final_result or { success = false, error = "No result produced" }
     local success = true

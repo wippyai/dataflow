@@ -9,6 +9,7 @@ local consts = require("df_consts")
 local DEFAULTS = {
     AGENT_MAX_ITERATIONS = 32,
     AGENT_MIN_ITERATIONS = 1,
+    AGENT_MAX_EMPTY_TURNS = 3,
     AGENT_TOOL_CALLING = "auto",
     PARALLEL_BATCH_SIZE = 1,
     PARALLEL_SCHEDULING = "batch",
@@ -113,6 +114,7 @@ function FlowBuilder:agent(agent_id, config)
             prompt = arena_config.prompt,
             max_iterations = arena_config.max_iterations or DEFAULTS.AGENT_MAX_ITERATIONS,
             min_iterations = arena_config.min_iterations or DEFAULTS.AGENT_MIN_ITERATIONS,
+            max_empty_turns = arena_config.max_empty_turns or DEFAULTS.AGENT_MAX_EMPTY_TURNS,
             tool_calling = arena_config.tool_calling or DEFAULTS.AGENT_TOOL_CALLING,
             exit_schema = arena_config.exit_schema,
             exit_func_id = arena_config.exit_func_id,
