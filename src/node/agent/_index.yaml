@@ -358,6 +358,45 @@ entries:
       test: wippy.test:test
     method: run_tests
 
+  - name: agent_tool_calling_default_test
+    kind: function.lua
+    meta:
+      name: Agent Node tool_calling Default Test
+      type: test
+      comment: Loop-level test proving a node config with an exit_schema and no tool_calling resolves to the default mode, is offered the finish tool, and completes on it.
+      group: Workflow / Agent Node
+      tags:
+        - dataflow
+        - agent
+        - completion
+        - test
+    source: file://agent_tool_calling_default_test.lua
+    modules:
+      - funcs
+      - json
+      - time
+      - uuid
+    imports:
+      client: userspace.dataflow:client
+      consts: userspace.dataflow:consts
+      data_reader: userspace.dataflow.persist:data_reader
+      test: wippy.test:test
+    method: run_tests
+
+  - name: config_resolution_test
+    kind: function.lua
+    meta:
+      name: Agent Node Config Resolution Test
+      type: test
+      comment: Unit tests for tool_calling resolution and validation of agent node arena configs.
+      group: Workflow / Agent Node
+    source: file://config_resolution_test.lua
+    imports:
+      agent_node: userspace.dataflow.node.agent:node
+      agent_consts: userspace.dataflow.node.agent:consts
+      test: wippy.test:test
+    method: run_tests
+
   - name: check_completion_test
     kind: function.lua
     meta:
