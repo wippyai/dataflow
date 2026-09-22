@@ -35,6 +35,21 @@ entries:
       dataflow_repo: userspace.dataflow.persist:dataflow_repo
       execution_frame: userspace.dataflow:execution_frame
 
+  # userspace.dataflow:child_output_test
+  - name: child_output_test
+    kind: function.lua
+    meta:
+      name: Child Output Tests
+      type: test
+      comment: Pins which of a child's pinned data ids the output collector returns.
+      group: Workflow
+    source: file://child_output_test.lua
+    imports:
+      child_output: userspace.dataflow:child_output
+      consts: userspace.dataflow:consts
+      test: wippy.test:test
+    method: run_tests
+
   # userspace.dataflow:client_test
   - name: client_test
     kind: function.lua

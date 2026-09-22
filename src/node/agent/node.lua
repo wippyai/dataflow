@@ -234,6 +234,7 @@ local REASON = {
     TOOL_RESULTS_RECORDED = "tool_results_recorded",
     CONTEXT_LIMIT_REACHED = "context_limit_reached",
     MAX_ITERATIONS_REACHED = "max_iterations_reached",
+    UNPRODUCTIVE_STEPS = "unproductive_steps",
     HOST_FAILED = "host_failed",
     DATAFLOW_FINISHED = "dataflow_finished",
 }
@@ -578,6 +579,14 @@ local function validate_and_resolve_config(config)
         return nil, "none mode cannot have exit_schema"
     end
 
+    if config.arena.max_unproductive_steps ~= nil then
+        local bound = tonumber(config.arena.max_unproductive_steps)
+        if not bound or bound < 1 or bound ~= math.floor(bound) then
+            return nil, "max_unproductive_steps must be a positive integer"
+        end
+        config.arena.max_unproductive_steps = bound
+    end
+
     return config, nil
 end
 
@@ -633,14 +642,15 @@ local function accumulate_tokens(total_tokens, new_tokens)
 end
 
 local function update_node_progress(n, iteration, max_iterations, total_tokens, tool_calls_count, status_message,
-                                    agent_id, model_name)
+                                    agent_id, model_name, unproductive_steps)
     local state_info = {
         current_iteration = iteration,
         max_iterations = max_iterations,
         agent_id = agent_id,
         model = model_name,
         total_tokens = total_tokens,
-        tool_calls = tool_calls_count
+        tool_calls = tool_calls_count,
+        unproductive_steps = unproductive_steps
     }
 
     n:update_metadata({
@@ -1676,6 +1686,24 @@ local function check_completion(tool_calling, agent_result: any, iteration, min_
     return task_complete, final_result, feedback_recorded
 end
 
+-- A turn is unproductive when it calls nothing and settles nothing: no tool or
+-- delegate call, and no answer its tool_calling mode accepts as final. It is
+-- exactly the turn check_completion answers with feedback (or, under "none",
+-- silently rejects). Warm-up turns below min_iterations never settle the task
+-- by design, so they are exempt. The verdict depends on the model's turn alone,
+-- which lets the count be persisted in the same commit as the turn itself.
+local function is_unproductive_turn(tool_calling, agent_result: any, iteration, min_iterations)
+    if iteration < min_iterations or tools_were_attempted(agent_result) then
+        return false
+    end
+
+    if tool_calling == agent_consts.TOOL_CALLING.NONE or tool_calling == agent_consts.TOOL_CALLING.AUTO then
+        return not has_usable_result(agent_result.result)
+    end
+
+    return tool_calling == agent_consts.TOOL_CALLING.ANY
+end
+
 local function finalize_iteration(n, agent_ctx, session_context, iteration, max_iterations, min_iterations, tool_calling,
                                   exit_tool_name, agent_result: any, delegate_calls: any, tool_results, arena_config,
                                   tool_call_to_node_id)
@@ -2013,6 +2041,7 @@ local function run(args)
     local iteration = saved_state.current_iteration or 0
     local max_iterations = max_iterations_override or config.arena.max_iterations or agent_consts.DEFAULTS.MAX_ITERATIONS
     local min_iterations = config.arena.min_iterations or agent_consts.DEFAULTS.MIN_ITERATIONS
+    local max_unproductive_steps = config.arena.max_unproductive_steps or agent_consts.DEFAULTS.MAX_UNPRODUCTIVE_STEPS
     local tool_calling = config.arena.tool_calling
     local show_tool_calls = config.show_tool_calls ~= false
     local task_complete = false
@@ -2020,6 +2049,9 @@ local function run(args)
 
     local total_tokens = new_total_tokens(saved_state.total_tokens)
     local tool_calls_count = saved_state.tool_calls or 0
+    -- The run of consecutive unproductive turns is node state: a resumed node
+    -- continues the run it was in rather than starting a fresh allowance.
+    local unproductive_steps = saved_state.unproductive_steps or 0
     local pending_checkpoint_history = {}
     local lifecycle_state = {
         active_agent_id = nil,
@@ -2114,9 +2146,22 @@ local function run(args)
         return n:fail(payload, message)
     end
 
+    local function fail_unproductive()
+        local stalled_status = build_status_message(iteration, max_iterations, total_tokens, tool_calls_count, true,
+            false)
+        update_node_progress(n, iteration, max_iterations, total_tokens, tool_calls_count, stalled_status, agent_id,
+            model_name, unproductive_steps)
+
+        local stalled_message = string.format(agent_consts.ERROR_MSG.UNPRODUCTIVE_STEPS, unproductive_steps)
+        return fail_with_lifecycle({
+            code = agent_consts.ERROR.UNPRODUCTIVE_STEPS,
+            message = stalled_message
+        }, stalled_message, REASON.UNPRODUCTIVE_STEPS, iteration)
+    end
+
     local initial_status = build_status_message(iteration, max_iterations, total_tokens, tool_calls_count, false, false)
     update_node_progress(n, iteration, max_iterations, total_tokens, tool_calls_count, initial_status, agent_id,
-        model_name)
+        model_name, unproductive_steps)
 
     local recovered_complete, recovered_result, recovered_iteration, recovery_err = recover_persisted_action(
         n,
@@ -2146,6 +2191,12 @@ local function run(args)
     if recovered_complete then
         task_complete = true
         final_result = recovered_result
+    end
+
+    -- A node that persisted the turn exhausting its allowance and restarted
+    -- before failing resolves the same way it would have without the restart.
+    if not task_complete and unproductive_steps >= max_unproductive_steps then
+        return fail_unproductive()
     end
 
     while iteration < max_iterations and not task_complete do
@@ -2256,9 +2307,13 @@ local function run(args)
 
         if agent_result.truncated then
             total_tokens = accumulate_tokens(total_tokens, agent_result.tokens)
+            -- A truncated turn overran the token budget: the model spoke, so the
+            -- consecutive unproductive run ends here.
+            unproductive_steps = 0
 
             local status_msg = build_status_message(iteration, max_iterations, total_tokens, tool_calls_count, false, false)
-            update_node_progress(n, iteration, max_iterations, total_tokens, tool_calls_count, status_msg, agent_id, model_name)
+            update_node_progress(n, iteration, max_iterations, total_tokens, tool_calls_count, status_msg, agent_id,
+                model_name, unproductive_steps)
 
             store_agent_action(n, agent_result, iteration, agent_id, model_name, exit_tool_name, {})
 
@@ -2300,9 +2355,15 @@ local function run(args)
 
         total_tokens = accumulate_tokens(total_tokens, agent_result.tokens)
 
+        if is_unproductive_turn(tool_calling, agent_result, iteration, min_iterations) then
+            unproductive_steps = unproductive_steps + 1
+        else
+            unproductive_steps = 0
+        end
+
         local status_msg = build_status_message(iteration, max_iterations, total_tokens, tool_calls_count, false, false)
         update_node_progress(n, iteration, max_iterations, total_tokens, tool_calls_count, status_msg, agent_id,
-            model_name)
+            model_name, unproductive_steps)
 
         store_memory_recall(n, agent_result, iteration)
         store_agent_action(n, agent_result, iteration, agent_id, model_name, exit_tool_name, {})
@@ -2394,6 +2455,14 @@ local function run(args)
             final_result = finalized_result
         end
 
+        -- The unproductive turn has been answered with feedback above; once the
+        -- model has stayed unproductive for the whole allowance the node fails
+        -- with a named reason instead of spending the rest of the iteration
+        -- budget on identical turns.
+        if not task_complete and unproductive_steps >= max_unproductive_steps then
+            return fail_unproductive()
+        end
+
         -- Reconcile any agent/model/trait/tool change a control directive applied this
         -- iteration so the next step uses the updated agent. apply_control_responses
         -- mutated agent_ctx (and persisted to node config); re-fetch the loaded agent,
@@ -2420,7 +2489,7 @@ local function run(args)
     if not task_complete and iteration >= max_iterations then
         local final_status = build_status_message(iteration, max_iterations, total_tokens, tool_calls_count, true, false)
         update_node_progress(n, iteration, max_iterations, total_tokens, tool_calls_count, final_status, agent_id,
-            model_name)
+            model_name, unproductive_steps)
 
         return fail_with_lifecycle({
             code = agent_consts.ERROR.AGENT_EXEC_FAILED,
@@ -2430,7 +2499,8 @@ local function run(args)
 
     local final_status = build_status_message(iteration, max_iterations, total_tokens, tool_calls_count, true,
         task_complete)
-    update_node_progress(n, iteration, max_iterations, total_tokens, tool_calls_count, final_status, agent_id, model_name)
+    update_node_progress(n, iteration, max_iterations, total_tokens, tool_calls_count, final_status, agent_id,
+        model_name, unproductive_steps)
 
     local output_content = final_result or { success = false, error = "No result produced" }
     local success = true
@@ -2470,6 +2540,7 @@ return {
     _test = {
         build_agent_context_config = build_agent_context_config,
         check_completion = check_completion,
+        is_unproductive_turn = is_unproductive_turn,
         process_multiple_inputs = process_multiple_inputs,
         process_tool_results = process_tool_results,
     }

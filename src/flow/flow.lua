@@ -113,6 +113,7 @@ function FlowBuilder:agent(agent_id, config)
             prompt = arena_config.prompt,
             max_iterations = arena_config.max_iterations or DEFAULTS.AGENT_MAX_ITERATIONS,
             min_iterations = arena_config.min_iterations or DEFAULTS.AGENT_MIN_ITERATIONS,
+            max_unproductive_steps = arena_config.max_unproductive_steps,
             tool_calling = arena_config.tool_calling or DEFAULTS.AGENT_TOOL_CALLING,
             exit_schema = arena_config.exit_schema,
             exit_func_id = arena_config.exit_func_id,
