@@ -67,6 +67,15 @@ end
 
 local EMPTY_RESULT_FEEDBACK = "Your response was empty"
 
+local function offers_tool(contract_args, tool_name)
+    for _, tool in ipairs(contract_args and contract_args.tools or {}) do
+        if tool.name == tool_name then
+            return true
+        end
+    end
+    return false
+end
+
 local function handler(contract_args)
     local messages = contract_args and contract_args.messages or {}
     local scenario: any = helpers.parse_scenario(messages)
@@ -181,6 +190,33 @@ local function handler(contract_args)
         end
 
         return empty_response(base_prompt or 9, 0)
+    end
+
+    -- finish_when_offered: calls the finish tool as soon as the request offers it
+    -- and answers in plain text otherwise, so a node that withholds the finish
+    -- tool never receives a terminal call.
+    if scenario.mode == "finish_when_offered" then
+        if offers_tool(contract_args, "finish") then
+            helpers.bump_metric(scenario.scenario_id, "finish_offered", 1)
+            return {
+                success = true,
+                result = {
+                    content = "",
+                    tool_calls = {
+                        {
+                            id = helpers.call_id(scenario.scenario_id, "finish"),
+                            name = "finish",
+                            arguments = { answer = "finished:" .. tostring(scenario.scenario_id) }
+                        }
+                    }
+                },
+                finish_reason = "tool_call",
+                tokens = response_tokens(base_prompt or 9, 4),
+                metadata = {}
+            }
+        end
+
+        return final_response(scenario.scenario_id, scenario.mode, result_count, base_prompt or 9, 4)
     end
 
     -- checkpoint_stress: drives three tool turns then a final response, with

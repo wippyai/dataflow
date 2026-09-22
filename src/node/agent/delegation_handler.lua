@@ -148,7 +148,7 @@ function delegation_handler.create_child_node(parent_node_sdk, delegation, deleg
             max_iterations = delegation.max_iterations or session_context.max_iterations or
             agent_consts.DEFAULTS.MAX_ITERATIONS,
             min_iterations = 1,
-            tool_calling = delegation.tool_calling or agent_consts.DEFAULTS.TOOL_CALLING,
+            tool_calling = delegation.tool_calling,
             traits = delegation.traits or {},
             tools = delegation.tools or {},
             exit_schema = delegation.exit_schema,

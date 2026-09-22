@@ -564,12 +564,10 @@ local function validate_and_resolve_config(config)
         return nil, "Arena configuration is required"
     end
 
+    -- The resolved mode is written back so every consumer reads one value.
     local tool_calling = config.arena.tool_calling or agent_consts.DEFAULTS.TOOL_CALLING
     local has_exit_schema = config.arena.exit_schema ~= nil
-
-    if tool_calling == agent_consts.TOOL_CALLING.AUTO and has_exit_schema then
-        config.arena.tool_calling = tool_calling
-    end
+    config.arena.tool_calling = tool_calling
 
     if tool_calling == agent_consts.TOOL_CALLING.ANY and not has_exit_schema then
         return nil, "any mode requires exit_schema to be defined"
