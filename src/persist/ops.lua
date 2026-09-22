@@ -951,7 +951,7 @@ handlers[constants.COMMAND_TYPES.CREATE_WORKFLOW] = function(tx, dataflow_id, op
     }
 end
 
-handlers[constants.COMMAND_TYPES.UPDATE_WORKFLOW] = function(tx, dataflow_id, op_id, command)
+local function update_workflow(tx, dataflow_id, op_id, command)
     if not dataflow_id or dataflow_id == "" then
         return nil, "Workflow ID is required"
     end
@@ -1128,6 +1128,8 @@ handlers[constants.COMMAND_TYPES.UPDATE_WORKFLOW] = function(tx, dataflow_id, op
     }
 end
 
+handlers[constants.COMMAND_TYPES.UPDATE_WORKFLOW] = update_workflow
+
 handlers[constants.COMMAND_TYPES.PASSIVATE_WORKFLOW] = function(tx, dataflow_id, op_id, command)
     if not dataflow_id or dataflow_id == "" then
         return nil, "Workflow ID is required"
@@ -1205,7 +1207,7 @@ handlers[constants.COMMAND_TYPES.COMPLETE_WORKFLOW] = function(tx, dataflow_id, 
         }
     end
 
-    local update_result, update_err = handlers[constants.COMMAND_TYPES.UPDATE_WORKFLOW](
+    local update_result, update_err = update_workflow(
         tx, dataflow_id, op_id, {
             type = constants.COMMAND_TYPES.UPDATE_WORKFLOW,
             payload = {

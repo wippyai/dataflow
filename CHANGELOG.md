@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+## [0.7.18](https://github.com/wippyai/dataflow/compare/v0.7.17...v0.7.18) (2026-09-22)
+
+### Bug Fixes
+
+* **agent:** cap consecutive turns that call no tool and give no answer ([b044352](https://github.com/wippyai/dataflow/commit/b04435220249c5756552f977196e8a2cb670114a))
+* **agent:** make the unproductive-step bound configurable, named and durable ([e0ce006](https://github.com/wippyai/dataflow/commit/e0ce0068de4287ac0abf812438cf8e8bd7d68935))
+* **persist:** call the workflow update handler through its local name ([bd8541c](https://github.com/wippyai/dataflow/commit/bd8541cccdc816163d6ee212b3cc132a3d1a4987))
+
+## [0.7.17](https://github.com/wippyai/dataflow/compare/v0.7.16...v0.7.17) (2026-09-08)
+
+### Features
+
+* add optional host-configured dataflow diagnostic retention ([9692909](https://github.com/wippyai/dataflow/commit/9692909aba666d53d7ad6d9445c44d27f8fbaef3))
+
 ## [0.7.16](https://github.com/wippyai/dataflow/compare/v0.7.15...v0.7.16) (2026-09-02)
 
 ### Bug Fixes

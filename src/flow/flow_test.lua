@@ -62,6 +62,30 @@ local function define_tests()
             test.eq(node.config.active_tools[1], "example.tools:search")
         end)
 
+        it("compiles the unproductive-step bound into the agent arena", function()
+            local builder = (flow.create() :: any)
+                :with_input({ subject = "example" })
+                :agent("example.agent", {
+                    arena = { prompt = "Work.", max_unproductive_steps = 5 },
+                })
+            local result, err = compiler.compile(builder.operations, {})
+
+            test.is_nil(err)
+            local node = test.not_nil(agent_node(result.graph, false))
+            test.eq(node.config.arena.max_unproductive_steps, 5)
+        end)
+
+        it("leaves the unproductive-step bound to the agent node default when unset", function()
+            local builder = (flow.create() :: any)
+                :with_input({ subject = "example" })
+                :agent("example.agent", { arena = { prompt = "Work." } })
+            local result, err = compiler.compile(builder.operations, {})
+
+            test.is_nil(err)
+            local node = test.not_nil(agent_node(result.graph, false))
+            test.is_nil(node.config.arena.max_unproductive_steps)
+        end)
+
         it("compiles rolling parallel scheduling", function()
             local template = (flow.template() :: any):func("example.process")
             local builder = (flow.create() :: any)

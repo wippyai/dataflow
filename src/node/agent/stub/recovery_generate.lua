@@ -159,9 +159,27 @@ local function handler(contract_args)
         return final_response(scenario.scenario_id, scenario.mode, result_count, base_prompt or 9, 4)
     end
 
-    -- empty_until_limit: every turn is empty; the node must run out of
-    -- iterations instead of completing on nothing.
+    -- empty_until_limit: every turn is empty; the node must stop on the
+    -- consecutive-empty bound instead of completing on nothing.
     if scenario.mode == "empty_until_limit" then
+        return empty_response(base_prompt or 9, 0)
+    end
+
+    -- empty_tool_empty_empty_final: turn 1 empty, turn 2 a tool call, turns 3
+    -- and 4 empty, turn 5 a real answer. The turn number comes from the
+    -- llm_calls metric this handler already bumped, so the sequence is exact.
+    -- Runs of at most two consecutive empty turns stay below a bound of three.
+    if scenario.mode == "empty_tool_empty_empty_final" then
+        local turn = tonumber(helpers.get_metric(scenario.scenario_id, "llm_calls", 0)) or 0
+
+        if turn == 2 then
+            return tool_call_response(scenario.scenario_id, 1, scenario.tool_delay_ms, base_prompt or 13, 8)
+        end
+
+        if turn >= 5 then
+            return final_response(scenario.scenario_id, scenario.mode, result_count, base_prompt or 9, 4)
+        end
+
         return empty_response(base_prompt or 9, 0)
     end
 
