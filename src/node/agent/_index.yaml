@@ -336,7 +336,7 @@ entries:
     meta:
       name: Agent Node Empty Result Test
       type: test
-      comment: Loop-level tests proving an empty assistant turn never completes the agent node, an earlier control artifact survives, and all-empty runs fail at the iteration limit.
+      comment: Loop-level tests proving an empty assistant turn never completes the agent node, an earlier control artifact survives, consecutive unproductive turns fail the node on the configured bound across modes and resumes, and a turn carrying a tool call resets that bound.
       group: Workflow / Agent Node
       tags:
         - dataflow
@@ -345,6 +345,8 @@ entries:
         - test
     source: file://agent_empty_result_test.lua
     modules:
+      - funcs
+      - json
       - time
       - uuid
     imports:

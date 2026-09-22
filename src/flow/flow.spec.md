@@ -618,6 +618,7 @@ Invokes a registered function. If function returns `{_control = {commands = [...
         prompt = "System instructions",
         max_iterations = 8,
         min_iterations = 1,
+        max_unproductive_steps = 3,
         tool_calling = "auto",
         exit_schema = {...},
         exit_func_id = "namespace:validate_exit",
@@ -634,6 +635,16 @@ Invokes a registered function. If function returns `{_control = {commands = [...
 ```
 
 Creates an agent execution node with arena configuration.
+
+**`max_unproductive_steps` (optional, default 3):** How many consecutive turns
+the model may spend without calling a tool and without an answer its
+`tool_calling` mode accepts before the node fails with `UNPRODUCTIVE_STEPS`.
+Under `auto` and `none` that is a turn with no text and no tool call; under
+`any` it is any turn without a tool call. Each such turn is still answered with
+the usual feedback, turns below `min_iterations` are exempt, and any turn that
+calls a tool or is truncated resets the count. The count is node state, so a
+resumed node continues it. The failure routes through `error_targets` like
+every other node failure.
 
 **`active_traits` / `active_tools` (optional):** Override the selected agent's
 active capability lists for this node. An empty list explicitly disables the

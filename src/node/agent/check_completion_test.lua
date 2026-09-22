@@ -23,7 +23,7 @@ local function check(tool_calling, agent_result, opts)
     opts = opts or {}
     local check_completion = agent_node._test.check_completion
     local n, recorded = make_recording_node()
-    local complete, final_result, feedback_recorded, unproductive = check_completion(
+    local complete, final_result, feedback_recorded = check_completion(
         tool_calling,
         agent_result,
         opts.iteration or 3,
@@ -32,7 +32,7 @@ local function check(tool_calling, agent_result, opts)
         n
     )
     test.eq(feedback_recorded, #recorded > 0, "feedback_recorded mirrors the queued observation")
-    return complete, final_result, recorded, unproductive
+    return complete, final_result, recorded
 end
 
 local function define_tests()
@@ -173,38 +173,50 @@ local function define_tests()
         end)
     end)
 
-    describe("check_completion: unproductive turn reporting", function()
-        it("reports an unusable tool_calling=none turn as unproductive", function()
-            local _complete, _result, recorded, unproductive = check(agent_consts.TOOL_CALLING.NONE, { result = "" })
-            test.eq(#recorded, 0, "none writes no feedback observation")
-            test.is_true(unproductive)
+    describe("is_unproductive_turn", function()
+        local is_unproductive_turn = agent_node._test.is_unproductive_turn
+        local AUTO = agent_consts.TOOL_CALLING.AUTO
+        local ANY = agent_consts.TOOL_CALLING.ANY
+        local NONE = agent_consts.TOOL_CALLING.NONE
+        local tool_turn = { result = "", tool_calls = { { id = "1", name = "some_tool" } } }
+        local delegate_turn = { result = "", delegate_calls = { { id = "1", name = "delegate" } } }
+
+        it("counts an empty turn under every mode", function()
+            test.is_true(is_unproductive_turn(AUTO, { result = "" }, 3, 1))
+            test.is_true(is_unproductive_turn(ANY, { result = "" }, 3, 1))
+            test.is_true(is_unproductive_turn(NONE, { result = "" }, 3, 1))
+            test.is_true(is_unproductive_turn(AUTO, { result = "  \n" }, 3, 1), "whitespace is no answer")
+            test.is_true(is_unproductive_turn(AUTO, { result = {} }, 3, 1), "an empty table is no answer")
         end)
 
-        it("does not report a completed tool_calling=none turn as unproductive", function()
-            local complete, _result, _recorded, unproductive = check(agent_consts.TOOL_CALLING.NONE,
-                { result = "final answer" })
-            test.is_true(complete)
-            test.is_false(unproductive)
+        it("does not count a turn whose answer the mode accepts", function()
+            test.is_false(is_unproductive_turn(AUTO, { result = "final answer" }, 3, 1))
+            test.is_false(is_unproductive_turn(NONE, { result = "final answer" }, 3, 1))
         end)
 
-        it("reports an empty tool_calling=auto turn as unproductive", function()
-            local _complete, _result, recorded, unproductive = check(agent_consts.TOOL_CALLING.AUTO, { result = "" })
-            test.eq(#recorded, 1)
-            test.is_true(unproductive)
+        it("counts a text-only turn under any, where only the finish tool settles the task", function()
+            test.is_true(is_unproductive_turn(ANY, { result = "thinking out loud" }, 3, 1))
         end)
 
-        it("does not report a tool-calling turn as unproductive", function()
-            local _complete, _result, _recorded, unproductive = check(agent_consts.TOOL_CALLING.AUTO, {
-                result = "",
-                tool_calls = { { id = "1", name = "some_tool" } },
-            })
-            test.is_false(unproductive)
+        it("does not count a turn that calls a tool or delegates", function()
+            test.is_false(is_unproductive_turn(AUTO, tool_turn, 3, 1))
+            test.is_false(is_unproductive_turn(ANY, tool_turn, 3, 1))
+            test.is_false(is_unproductive_turn(AUTO, delegate_turn, 3, 1))
         end)
 
-        it("does not report a warm-up turn below min_iterations as unproductive", function()
-            local _complete, _result, _recorded, unproductive = check(agent_consts.TOOL_CALLING.AUTO,
-                { result = "" }, { iteration = 1, min_iterations = 3 })
-            test.is_false(unproductive)
+        it("does not count a warm-up turn below min_iterations", function()
+            test.is_false(is_unproductive_turn(AUTO, { result = "" }, 1, 3))
+            test.is_false(is_unproductive_turn(NONE, { result = "" }, 2, 3))
+        end)
+
+        it("classifies exactly the turns check_completion answers with feedback", function()
+            for _, agent_result in ipairs({ { result = "" }, { result = "text" }, tool_turn }) do
+                for _, mode in ipairs({ AUTO, ANY }) do
+                    local complete, _result, recorded = check(mode, agent_result)
+                    test.eq(is_unproductive_turn(mode, agent_result, 3, 1), not complete and #recorded > 0,
+                        "unproductive matches feedback for " .. mode)
+                end
+            end
         end)
     end)
 end
