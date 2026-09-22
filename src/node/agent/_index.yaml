@@ -383,6 +383,20 @@ entries:
       test: wippy.test:test
     method: run_tests
 
+  - name: config_resolution_test
+    kind: function.lua
+    meta:
+      name: Agent Node Config Resolution Test
+      type: test
+      comment: Unit tests for tool_calling resolution and validation of agent node arena configs.
+      group: Workflow / Agent Node
+    source: file://config_resolution_test.lua
+    imports:
+      agent_node: userspace.dataflow.node.agent:node
+      agent_consts: userspace.dataflow.node.agent:consts
+      test: wippy.test:test
+    method: run_tests
+
   - name: check_completion_test
     kind: function.lua
     meta:

@@ -2536,6 +2536,7 @@ end
 return {
     run = run,
     _test = {
+        validate_and_resolve_config = validate_and_resolve_config,
         build_agent_context_config = build_agent_context_config,
         check_completion = check_completion,
         is_unproductive_turn = is_unproductive_turn,

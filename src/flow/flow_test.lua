@@ -86,6 +86,28 @@ local function define_tests()
             test.is_nil(node.config.arena.max_unproductive_steps)
         end)
 
+        it("leaves tool_calling to the agent node default when unset", function()
+            local builder = (flow.create() :: any)
+                :with_input({ subject = "example" })
+                :agent("example.agent", { arena = { prompt = "Work." } })
+            local result, err = compiler.compile(builder.operations, {})
+
+            test.is_nil(err)
+            local node = test.not_nil(agent_node(result.graph, false))
+            test.is_nil(node.config.arena.tool_calling)
+        end)
+
+        it("compiles an explicit tool_calling mode into the agent arena", function()
+            local builder = (flow.create() :: any)
+                :with_input({ subject = "example" })
+                :agent("example.agent", { arena = { prompt = "Work.", tool_calling = "none" } })
+            local result, err = compiler.compile(builder.operations, {})
+
+            test.is_nil(err)
+            local node = test.not_nil(agent_node(result.graph, false))
+            test.eq(node.config.arena.tool_calling, "none")
+        end)
+
         it("compiles rolling parallel scheduling", function()
             local template = (flow.template() :: any):func("example.process")
             local builder = (flow.create() :: any)
