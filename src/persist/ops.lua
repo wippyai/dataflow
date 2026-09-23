@@ -1279,6 +1279,14 @@ handlers[constants.COMMAND_TYPES.DELETE_WORKFLOW] = function(tx, dataflow_id, op
     if wake_err then return nil, "Failed to clear deleted dataflow wake: " .. tostring(wake_err) end
     local wake_index_changed = (wake_result.rows_affected or 0) > 0
 
+    -- Dependents are removed explicitly: SQLite connections do not enforce the
+    -- cascading foreign keys.
+    local _, activation_err = sql.builder.delete("dataflow_activations")
+        :where("dataflow_id = ?", wf_id_to_delete)
+        :run_with(tx)
+        :exec()
+    if activation_err then return nil, "Failed to delete dataflow activation: " .. tostring(activation_err) end
+
     local delete_query = sql.builder.delete("dataflows")
         :where("dataflow_id = ?", wf_id_to_delete)
 

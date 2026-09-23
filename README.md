@@ -15,6 +15,18 @@
 
 </div>
 
+## Caller security
+
+A workflow runs under the actor and scope of the caller that created it; the
+orchestrator needs no grant beyond what that scope already allows for running the
+workflow. To classify ownership it reads the module's runtime epoch
+(`userspace.dataflow.env:runtime_epoch`, action `env.get`). The orchestrator entry
+carries the `userspace.dataflow.security:epoch_reader` group for this, and wippy
+merges that group into the caller's scope, so callers need no grant for it. A
+caller policy that explicitly **denies** `env.get` on that resource (or on `*`)
+overrides the merged allow and stops every orchestrator of that caller; exclude
+`userspace.dataflow.env:runtime_epoch` from such a deny.
+
 ## Durable external waits
 
 Nodes that start external work and then wait for a signal use the declarative park contract:

@@ -358,18 +358,6 @@ function activation_repo.activate_due_tx(tx, dataflow_id, wake_key, now_value)
     valid, validation_err = validate_timestamp(now_value, "now")
     if not valid then return nil, validation_err end
 
-    -- A wake outlives its dataflow only where the database does not enforce
-    -- the cascading foreign key (SQLite); such a wake is discarded, never
-    -- promoted.
-    local owners, owners_err = tx_query(tx,
-        "SELECT dataflow_id FROM dataflows WHERE dataflow_id = ? LIMIT 1", { dataflow_id })
-    if owners_err then return nil, owners_err end
-    if not owners or not owners[1] then
-        local _, discard_err = tx_execute(tx, "DELETE FROM dataflow_wakes WHERE dataflow_id = ?", { dataflow_id })
-        if discard_err then return nil, "failed to discard orphaned wakes: " .. tostring(discard_err) end
-        return { changed = true, terminal = false, promoted = false, missing = true }, nil
-    end
-
     local status, status_err = activation_repo.lock_workflow_tx(tx, dataflow_id)
     if status_err then return nil, status_err end
     local terminal = terminal_result_from_status(status)

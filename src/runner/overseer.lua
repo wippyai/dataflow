@@ -31,10 +31,12 @@ type OwnershipState = {
     by_dataflow: { [string]: string },
 }
 
--- Spawns made for one observed ownership state that never led to an admission.
+-- Spawns made for one observed ownership state that never led to an admission,
+-- and when the next one may be made.
 type StartAttempts = {
     fence: string,
     count: number,
+    retry_at: number,
 }
 
 type Runtime = {
@@ -214,9 +216,21 @@ local function failure_message(event: any): string
 end
 
 local MAX_RECONCILE_PASSES = 4
--- Spawns allowed for one observed ownership state; an orchestrator that exits
--- before admitting itself leaves that state unchanged.
-local MAX_STARTS = 3
+-- Spawns allowed for one observed ownership state. An orchestrator that exits
+-- before admitting itself leaves that state unchanged; the next spawn waits
+-- for start_retry_delay, so a transient outage can pass before the last one.
+local MAX_STARTS = 5
+local START_RETRY_BASE_NS = 1000000000
+
+M.MAX_STARTS = MAX_STARTS
+
+function M.start_retry_delay(attempt: number): number
+    return START_RETRY_BASE_NS * math.floor(2 ^ (attempt - 1))
+end
+
+function M.clock(): number
+    return M.time.now():unix_nano()
+end
 
 -- Read the activation and the canonical name together under the workflow lock,
 -- so an admission or release in flight finishes before the name is checked.
@@ -266,16 +280,14 @@ local function fence_key(fence: any): string
     }, "|")
 end
 
--- Count a spawn for the observed ownership state; a changed state starts over.
-local function start_attempt(runtime: Runtime, dataflow_id: string, fence: any): number
+-- The spawns made for the observed ownership state; a changed state starts over.
+local function start_budget(runtime: Runtime, dataflow_id: string, fence: any): StartAttempts
     local key = fence_key(fence)
     local attempts = runtime.starts[dataflow_id]
-    if attempts and attempts.fence == key then
-        attempts.count = attempts.count + 1
-        return attempts.count
-    end
-    runtime.starts[dataflow_id] = { fence = key, count = 1 }
-    return 1
+    if attempts and attempts.fence == key then return attempts end
+    local fresh: StartAttempts = { fence = key, count = 0, retry_at = 0 }
+    runtime.starts[dataflow_id] = fresh
+    return fresh
 end
 
 local function fail(dataflow_id: string, fence: any, reason: string, message: string): (any?, string?)
@@ -368,15 +380,21 @@ function M.reconcile(runtime: Runtime, dataflow_id: string, options: ReconcileOp
             if fail_err then return nil, tostring(fail_err) end
             if failed and (failed.completed == true or failed.terminal == true) then return true, nil end
         elseif decision.kind == M.overseer_state.ACTION.SPAWN then
-            if start_attempt(runtime, dataflow_id, decision.fence) > MAX_STARTS then
-                runtime.starts[dataflow_id] = nil
+            local attempts = start_budget(runtime, dataflow_id, decision.fence)
+            if attempts.count >= MAX_STARTS then
+                -- The budget stays exhausted until the failure is durable and the
+                -- observed state changes.
                 local failed, fail_err = fail(dataflow_id, decision.fence, "orchestrator_start_failed", message)
                 if fail_err then return nil, tostring(fail_err) end
                 if failed and (failed.completed == true or failed.terminal == true) then return true, nil end
+            elseif M.clock() < attempts.retry_at then
+                return true, nil
             else
                 local pid, conflict, spawn_err = spawn_owner(
                     runtime, dataflow_id, activation, tonumber(decision.generation) or 1)
                 if pid then
+                    attempts.count = attempts.count + 1
+                    attempts.retry_at = M.clock() + M.start_retry_delay(attempts.count)
                     M.overseer_state.track(runtime.ownership, dataflow_id, pid)
                     -- A new orchestrator loads everything up to its generation.
                     runtime.woken[pid] = tonumber(decision.generation)
@@ -453,7 +471,8 @@ function M.reconcile_all(runtime: Runtime): (number?, string?)
         local ok, reconcile_err = M.reconcile(runtime, id)
         if not ok then log_flow("active activation reconciliation failed", id, reconcile_err) end
     end
-    -- A monitored process whose activation is no longer active is stopped.
+    -- A tracked dataflow whose activation is no longer active is reconciled too:
+    -- the holder of a terminal one is stopped.
     for _, id in ipairs(M.overseer_state.tracked(runtime.ownership)) do
         if not seen[id] then
             local ok, reconcile_err = M.reconcile(runtime, id)
@@ -511,17 +530,27 @@ function M.wake_at_column(db_type: any): string
     return "dataflow_wakes.wake_at"
 end
 
-function M.next_pending_wake(): (any?, string?)
+-- The nearest pending wake, or the nearest one after a given time.
+function M.next_pending_wake(after: string?): (any?, string?)
     local db, db_err = M.sql.get(tostring(M.consts.APP_DB))
     if db_err then return nil, tostring(db_err) end
     local db_type, type_err = db:type()
     if type_err then db:release(); return nil, tostring(type_err) end
+    local bound = ""
+    local params: { any } = {}
+    if after ~= nil then
+        bound = " AND dataflow_wakes.wake_at > ?"
+        if db_type == M.sql.type.POSTGRES or db_type == "postgres" then
+            bound = " AND dataflow_wakes.wake_at > $1"
+        end
+        params = { after }
+    end
     local rows, query_err = db:query(
         "SELECT dataflow_id, wake_key, " .. M.wake_at_column(db_type) .. [[ AS wake_at
         FROM dataflow_wakes
-        WHERE activation_generation IS NULL
+        WHERE activation_generation IS NULL]] .. bound .. [[
         ORDER BY dataflow_wakes.wake_at ASC, dataflow_id ASC, wake_key ASC LIMIT 1
-    ]])
+    ]], params)
     db:release()
     if query_err then return nil, tostring(query_err) end
     return rows and rows[1] or nil, nil
@@ -529,15 +558,6 @@ end
 
 function M.notify(payload: any?): (boolean?, string?)
     return M.process.send(NAME, TOPIC, payload or {})
-end
-
--- A timer for the nearest pending wake, or due = true when it is already due.
-function M.arm_wake(wake: any): (any?, boolean)
-    local wait_ns = select(1, duration_until(tostring(wake and wake.wake_at or "")))
-    if wait_ns == nil then return nil, false end
-    if wait_ns <= 0 then return nil, true end
-    local timer = M.time.after(wait_ns)
-    return timer, false
 end
 
 local function reconcile_or_log(runtime: Runtime, operation: (Runtime) -> (any?, string?))
@@ -554,6 +574,58 @@ local function reconcile_or_log(runtime: Runtime, operation: (Runtime) -> (any?,
     end
 end
 
+-- Promote the wakes that are already due, then arm a timer for the nearest wake
+-- that is not. A due wake that cannot be promoted never hides a later one; it is
+-- retried on the next event or safety pass.
+function M.wake_timer(runtime: Runtime): any?
+    local nearest, nearest_err = M.next_pending_wake()
+    if nearest_err then
+        if not schema_not_ready(nearest_err) then
+            logger:warn("could not inspect nearest dataflow wake", { error = tostring(nearest_err) })
+        end
+        return nil
+    end
+    if not nearest then return nil end
+    local wait_ns = select(1, duration_until(tostring(nearest.wake_at)))
+    if wait_ns ~= nil and wait_ns > 0 then return M.time.after(wait_ns) end
+    reconcile_or_log(runtime, runtime.bootstrapped and M.promote_due or M.bootstrap)
+    local upcoming, upcoming_err = M.next_pending_wake(now_value())
+    if upcoming_err or not upcoming then return nil end
+    local upcoming_ns = select(1, duration_until(tostring(upcoming.wake_at)))
+    if upcoming_ns == nil or upcoming_ns <= 0 then return nil end
+    return M.time.after(upcoming_ns)
+end
+
+-- Spawn again for every dataflow whose start retry is due, then arm a timer for
+-- the nearest one that is not.
+function M.retry_starts(runtime: Runtime): (boolean?, string?)
+    local now = M.clock()
+    local due: { string } = {}
+    for dataflow_id, attempts in pairs(runtime.starts) do
+        if attempts.count > 0 and attempts.count < MAX_STARTS and attempts.retry_at <= now then
+            table.insert(due, dataflow_id)
+        end
+    end
+    for _, dataflow_id in ipairs(due) do
+        local ok, reconcile_err = M.reconcile(runtime, dataflow_id)
+        if not ok then log_flow("orchestrator start retry failed", dataflow_id, reconcile_err) end
+    end
+    return true, nil
+end
+
+local function start_retry_timer(runtime: Runtime): any?
+    local now = M.clock()
+    local nearest: number? = nil
+    for _, attempts in pairs(runtime.starts) do
+        if attempts.count > 0 and attempts.count < MAX_STARTS and attempts.retry_at > now and
+            (nearest == nil or attempts.retry_at < nearest) then
+            nearest = attempts.retry_at
+        end
+    end
+    if nearest == nil then return nil end
+    return M.time.after(nearest - now)
+end
+
 function M.run(_args: any)
     local registered, register_err = M.process.registry.register(NAME)
     if not registered then error("overseer registration failed: " .. tostring(register_err)) end
@@ -564,23 +636,14 @@ function M.run(_args: any)
     local events = M.process.events()
 
     while true do
-        local wake_timer: any = nil
-        local wake, wake_err = M.next_pending_wake()
-        if not wake_err and wake then
-            local timer, due = M.arm_wake(wake)
-            if due then
-                -- Promote a wake that is already due now; one that still cannot
-                -- be promoted waits for the next event or safety pass.
-                reconcile_or_log(runtime, runtime.bootstrapped and M.promote_due or M.bootstrap)
-            end
-            wake_timer = timer
-        elseif wake_err and not schema_not_ready(wake_err) then
-            logger:warn("could not inspect nearest dataflow wake", { error = tostring(wake_err) })
-        end
+        M.retry_starts(runtime)
+        local wake_timer = M.wake_timer(runtime)
+        local retry_timer = start_retry_timer(runtime)
 
         local safety_timer = M.time.after(SAFETY_INTERVAL)
         local cases = { inbox:case_receive(), events:case_receive(), safety_timer:case_receive() }
         if wake_timer then table.insert(cases, wake_timer:case_receive()) end
+        if retry_timer then table.insert(cases, retry_timer:case_receive()) end
 
         local result = M.channel.select(cases)
         if not result.ok then break end
@@ -594,6 +657,8 @@ function M.run(_args: any)
             end
         elseif result.channel == wake_timer then
             reconcile_or_log(runtime, runtime.bootstrapped and M.promote_due or M.bootstrap)
+        elseif result.channel == retry_timer then
+            M.retry_starts(runtime)
         elseif result.channel == inbox then
             local message = result.value
             local topic = message and tostring(message:topic()) or ""

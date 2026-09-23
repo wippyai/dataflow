@@ -1164,6 +1164,28 @@ local function define_tests()
                 test.eq(rows[1].status, ops.STATUS.RUNNING)
             end)
 
+            it("deletes a workflow together with its activation and wakes", function()
+                local resources = setup_test_resources()
+                local tx = get_test_transaction()
+                local timestamp = time.now():format(time.RFC3339NANO)
+                test.not_nil(select(1, activation_repo.request_activation_tx(
+                    tx, resources.dataflow_id, {}, timestamp)))
+                test.not_nil(select(1, activation_repo.activate_for_signal_tx(
+                    tx, resources.dataflow_id, "signal:" .. uuid.v7(), timestamp, timestamp)))
+
+                local _, delete_err = ops.execute(tx, resources.dataflow_id, nil, {
+                    type = ops.COMMAND_TYPES.DELETE_WORKFLOW,
+                    payload = {},
+                })
+                test.is_nil(delete_err)
+                for _, table_name in ipairs({ "dataflow_activations", "dataflow_wakes", "dataflows" }) do
+                    local rows, query_err = txq(tx, "SELECT COUNT(*) AS total FROM " .. table_name ..
+                        " WHERE dataflow_id = ?", { resources.dataflow_id })
+                    test.is_nil(query_err)
+                    test.eq(tonumber(rows[1].total), 0, table_name)
+                end
+            end)
+
             it("passivates only for the owning token and marks its ownership released", function()
                 local resources = setup_test_resources()
                 local tx = get_test_transaction()

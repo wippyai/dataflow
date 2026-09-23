@@ -135,6 +135,7 @@ local function run_tests()
         local activations: { [string]: any } = {}
         local workflows: { [string]: any } = {}
         local locked_read_errors: { string } = {}
+        local clock: { now: number } = { now = 0 }
 
         test.before_each(function()
             originals = {
@@ -146,11 +147,14 @@ local function run_tests()
                 sql = overseer.sql,
                 with_tx = overseer.with_tx,
                 pending_due = overseer.pending_due,
+                clock = overseer.clock,
             }
             observed = captures()
             activations = {} :: { [string]: any }
             workflows = {} :: { [string]: any }
             locked_read_errors = {} :: { string }
+            clock.now = 0
+            overseer.clock = function(): number return clock.now end
             overseer.process = process_mock(observed)
             overseer.execution_frame = {
                 reconstruct = function(actor_id, actor_context)
@@ -582,23 +586,34 @@ local function run_tests()
             test.eq(runtime.ownership.by_dataflow["successor"], "pid-successor")
         end)
 
-        test.it("bounds restarts of an orchestrator that exits before admission", function()
+        local function exit_before_admission(runtime, id: string)
+            local latest = observed.spawns[#observed.spawns]
+            observed.owners["dataflow." .. id] = nil
+            local handled, exit_err = overseer.handle_exit(runtime, {
+                kind = overseer.process.event.EXIT,
+                from = latest.pid,
+                result = { error = "not allowed: app:db" },
+            })
+            test.is_nil(exit_err)
+            test.is_true(handled)
+        end
+
+        test.it("spaces restarts of an orchestrator that exits before admission, then fails it", function()
             activations.unstartable = activation("unstartable", 2)
             workflows.unstartable = workflow("unstartable")
             local runtime = overseer.new_runtime(CURRENT_EPOCH)
             test.is_true(select(1, overseer.reconcile(runtime, "unstartable")))
-            for _ = 1, 5 do
-                local latest = observed.spawns[#observed.spawns]
-                observed.owners["dataflow.unstartable"] = nil
-                local handled, exit_err = overseer.handle_exit(runtime, {
-                    kind = overseer.process.event.EXIT,
-                    from = latest.pid,
-                    result = { error = "not allowed: app:db" },
-                })
-                test.is_nil(exit_err)
-                test.is_true(handled)
+            local limit = overseer.MAX_STARTS
+            for attempt = 1, limit do
+                exit_before_admission(runtime, "unstartable")
+                if attempt < limit then
+                    test.eq(#observed.spawns, attempt, "a restart waits for its retry time")
+                    clock.now = clock.now + overseer.start_retry_delay(attempt)
+                    test.is_true(select(1, overseer.retry_starts(runtime)))
+                    test.eq(#observed.spawns, attempt + 1)
+                end
             end
-            test.eq(#observed.spawns, 3)
+            test.eq(#observed.spawns, limit)
             local failures = completed_failures()
             test.eq(#failures, 1)
             test.eq(failures[1].failure.reason, "orchestrator_start_failed")
@@ -606,16 +621,46 @@ local function run_tests()
             test.eq(failures[1].fence.generation, 2)
         end)
 
+        test.it("keeps an exhausted start budget until its failure is persisted", function()
+            activations.stuck = activation("stuck", 1)
+            workflows.stuck = workflow("stuck")
+            local runtime = overseer.new_runtime(CURRENT_EPOCH)
+            test.is_true(select(1, overseer.reconcile(runtime, "stuck")))
+            for attempt = 1, overseer.MAX_STARTS - 1 do
+                exit_before_admission(runtime, "stuck")
+                clock.now = clock.now + overseer.start_retry_delay(attempt)
+                test.is_true(select(1, overseer.retry_starts(runtime)))
+            end
+            local fail_activation = overseer.commit.fail_activation
+            local attempts = 0
+            overseer.commit.fail_activation = function(id, fence, failure)
+                attempts = attempts + 1
+                if attempts <= 2 then return nil, "database is locked" end
+                return fail_activation(id, fence, failure)
+            end
+            observed.owners["dataflow.stuck"] = nil
+            local _, exit_err = overseer.handle_exit(runtime, {
+                kind = overseer.process.event.EXIT, from = observed.spawns[#observed.spawns].pid,
+                result = { error = "not allowed: app:db" },
+            })
+            test.contains(tostring(exit_err), "database is locked")
+            local _, retry_err = overseer.reconcile(runtime, "stuck")
+            test.contains(tostring(retry_err), "database is locked")
+            test.is_true(select(1, overseer.reconcile(runtime, "stuck")))
+            test.eq(#observed.spawns, overseer.MAX_STARTS)
+            test.eq(#completed_failures(), 1)
+            test.eq(attempts, 3)
+        end)
+
         test.it("restarts an orchestrator that exited before admission once it can start", function()
             activations.flaky = activation("flaky", 1)
             workflows.flaky = workflow("flaky")
             local runtime = overseer.new_runtime(CURRENT_EPOCH)
             test.is_true(select(1, overseer.reconcile(runtime, "flaky")))
-            observed.owners["dataflow.flaky"] = nil
-            test.is_true(select(1, overseer.handle_exit(runtime, {
-                kind = overseer.process.event.EXIT, from = observed.spawns[1].pid,
-                result = { error = "transient start failure" },
-            })))
+            exit_before_admission(runtime, "flaky")
+            test.eq(#observed.spawns, 1)
+            clock.now = clock.now + overseer.start_retry_delay(1)
+            test.is_true(select(1, overseer.retry_starts(runtime)))
             test.eq(#observed.spawns, 2)
             admit(activations.flaky, "t-flaky", tostring(observed.spawns[2].pid))
             test.not_nil(select(1, overseer.safety_reconcile(runtime)))
@@ -676,15 +721,59 @@ local function run_tests()
             test.eq(observed.spawns[1].args.activation_generation, 9)
         end)
 
-        test.it("arms a timer only for a wake that is not yet due", function()
-            local past = overseer.time.now():add(-1 * overseer.time.SECOND):format(overseer.time.RFC3339NANO)
-            local future = overseer.time.now():add(60 * overseer.time.SECOND):format(overseer.time.RFC3339NANO)
-            local due_timer, due = overseer.arm_wake({ wake_at = past })
-            test.is_nil(due_timer)
-            test.is_true(due)
-            local timer, pending = overseer.arm_wake({ wake_at = future })
-            test.not_nil(timer)
-            test.is_false(pending)
+        test.it("arms the service loop for the next future wake behind a due one", function()
+            local now = overseer.time.now()
+            local due = { dataflow_id = "orphan", wake_key = "yield:due",
+                wake_at = now:add(-1 * overseer.time.SECOND):format(overseer.time.RFC3339NANO) }
+            local next_wake = { dataflow_id = "valid", wake_key = "yield:next",
+                wake_at = now:add(overseer.time.SECOND):format(overseer.time.RFC3339NANO) }
+            local promotions = 0
+            local timers: { any } = {}
+            local selected: { number } = {}
+            local real_time = overseer.time
+            local originals_loop = {
+                next_pending_wake = overseer.next_pending_wake,
+                promote_due = overseer.promote_due,
+                load_runtime_epoch = overseer.load_runtime_epoch,
+                channel = overseer.channel,
+                time = overseer.time,
+            }
+            overseer.next_pending_wake = function(after: string?)
+                if after then return next_wake, nil end
+                return due, nil
+            end
+            overseer.promote_due = function()
+                promotions = promotions + 1
+                return 0, nil
+            end
+            overseer.load_runtime_epoch = function() return CURRENT_EPOCH, nil end
+            overseer.time = setmetatable({
+                after = function(duration)
+                    table.insert(timers, duration)
+                    return { case_receive = function() return "timer" end }, nil
+                end,
+            }, { __index = real_time })
+            overseer.channel = {
+                select = function(cases)
+                    table.insert(selected, #cases)
+                    return { ok = false }
+                end,
+            }
+            overseer.process.registry.register = function() return true, nil end
+            overseer.process.inbox = function() return { case_receive = function() return "inbox" end } end
+            overseer.process.events = function() return { case_receive = function() return "events" end } end
+
+            local ok, run_err = pcall(overseer.run, {})
+            for key, value in pairs(originals_loop) do overseer[key] = value end
+            test.is_true(ok, tostring(run_err))
+            test.eq(selected[1], 4, "inbox, events, safety and the next wake")
+            local wake_timer = nil
+            for _, duration in ipairs(timers) do
+                if type(duration) == "number" then wake_timer = duration end
+            end
+            local armed = test.not_nil(wake_timer) :: number
+            test.is_true(armed > 0 and armed <= 1000000000)
+            test.is_true(promotions >= 1)
         end)
 
         test.it("recognizes missing SQLite and PostgreSQL migration state", function()

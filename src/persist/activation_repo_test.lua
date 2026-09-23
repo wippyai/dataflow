@@ -544,26 +544,6 @@ local function define_tests()
             test.is_nil(wake_generation(id, wake_key))
         end)
 
-        test.it("discards the wakes of a dataflow that no longer exists during due promotion", function()
-            local id = create_dataflow(consts.STATUS.WAITING)
-            local wake_key = "yield:" .. uuid.v7()
-            local db = test.not_nil(select(1, sql.get("app:db"))) :: any
-            test.is_nil(select(2, sql.builder.insert("dataflow_wakes"):set_map({
-                dataflow_id = id,
-                wake_key = wake_key,
-                wake_at = now(-1),
-            }):run_with(db):exec()))
-            test.is_nil(select(2, sql.builder.delete("dataflows"):where("dataflow_id = ?", id):run_with(db):exec()))
-            db:release()
-
-            local result = test.not_nil(select(1, transaction(function(tx)
-                return activation_repo.activate_due_tx(tx, id, wake_key, now())
-            end))) :: any
-            test.is_false(result.promoted)
-            test.is_true(result.missing)
-            test.eq(wake_count(id), 0)
-        end)
-
         test.it("converges terminal activation and every stale wake during due promotion", function()
             local id = create_dataflow(consts.STATUS.RUNNING)
             test.not_nil(select(1, transaction(function(tx)
