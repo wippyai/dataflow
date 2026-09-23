@@ -1,4 +1,5 @@
 local test = require("test")
+local uuid = require("uuid")
 local overseer: any = require("overseer")
 local CURRENT_EPOCH = "runtime-current"
 
@@ -232,7 +233,6 @@ local function run_tests()
             test.eq(spawn.source, overseer.consts.ORCHESTRATOR)
             test.eq(spawn.host, overseer.consts.HOST_ID)
             test.eq(spawn.args.activation_generation, 3)
-            test.eq(spawn.args.runtime_epoch, CURRENT_EPOCH)
             test.eq(spawn.args.init_func_id, "app:init")
             test.eq(spawn.actor, "restored:actor:boot")
             test.eq(spawn.scope, "scope:actor:boot")
@@ -270,7 +270,7 @@ local function run_tests()
             test.is_true(ok)
             test.eq(#observed.spawns, 0)
             test.eq(#observed.failures, 0)
-            test.eq(overseer.overseer_state.pid_for(runtime.ownership, "monitored"), "pid-monitored")
+            test.eq(runtime.ownership.by_dataflow["monitored"], "pid-monitored")
         end)
 
         test.it("spawns the successor at once when a released owner's EXIT is still pending", function()
@@ -297,7 +297,7 @@ local function run_tests()
             test.is_true(handled)
             test.eq(#observed.spawns, 2)
             test.eq(#observed.failures, 0)
-            test.eq(overseer.overseer_state.pid_for(runtime.ownership, "handoff"), observed.spawns[2].pid)
+            test.eq(runtime.ownership.by_dataflow["handoff"], observed.spawns[2].pid)
         end)
 
         test.it("waits for a released owner that still holds the name, then spawns on its EXIT", function()
@@ -494,11 +494,13 @@ local function run_tests()
             test.eq(#observed.failures, 0)
         end)
 
-        test.it("promotes an exact due wake once and nudges the acquired owner", function()
+        test.it("promotes an exact due wake once and wakes the live owner", function()
             local due = activation("due", 6)
             due.promoted = true
+            admit(due, "t-due", "pid-due")
             activations.due = due
             workflows.due = workflow("due")
+            observed.owners["dataflow.due"] = "pid-due"
             local calls = 0
             overseer.pending_due = function()
                 return { { dataflow_id = "due", wake_key = "yield:one", wake_at = "2026-07-24T00:00:00Z" } }, nil
@@ -518,11 +520,149 @@ local function run_tests()
             test.is_nil(second_err)
             test.eq(first, 1)
             test.eq(second, 0)
-            test.eq(#observed.spawns, 1)
+            test.eq(#observed.spawns, 0)
             test.eq(#observed.sends, 1)
+            test.eq(observed.sends[1].pid, "pid-due")
             test.eq(observed.sends[1].topic, overseer.consts.MESSAGE_TOPIC.WAKE)
-            test.eq(observed.sends[1].payload.wake_key, "yield:one")
             test.eq(observed.sends[1].payload.generation, 6)
+        end)
+
+        test.it("wakes a live owner once per durable generation, across restarts", function()
+            activations.quiet = activation("quiet", 1)
+            admit(activations.quiet, "t-quiet", "pid-quiet")
+            workflows.quiet = workflow("quiet")
+            observed.owners["dataflow.quiet"] = "pid-quiet"
+            -- A signal committed, but its producer died before sending COMMIT.
+            advance(activations.quiet)
+
+            local runtime = overseer.new_runtime(CURRENT_EPOCH)
+            test.is_true(select(1, overseer.handle_activation_hint(runtime, { dataflow_id = "quiet" })))
+            test.not_nil(select(1, overseer.safety_reconcile(runtime)))
+            test.eq(#observed.sends, 1)
+            advance(activations.quiet)
+            test.not_nil(select(1, overseer.safety_reconcile(runtime)))
+            test.not_nil(select(1, overseer.bootstrap(overseer.new_runtime(CURRENT_EPOCH))))
+            test.eq(#observed.sends, 3)
+            local generations = { 2, 3, 3 }
+            for index, sent in ipairs(observed.sends) do
+                test.eq(sent.pid, "pid-quiet")
+                test.eq(sent.topic, overseer.consts.MESSAGE_TOPIC.WAKE)
+                test.eq(sent.payload.generation, generations[index])
+            end
+            test.eq(#observed.spawns, 0)
+        end)
+
+        test.it("leaves a released owner in its unregister window to exit on its own", function()
+            activations.window = activation("window", 1)
+            admit(activations.window, "t-window", "pid-window")
+            release(activations.window)
+            workflows.window = workflow("window", overseer.consts.STATUS.WAITING)
+            observed.owners["dataflow.window"] = "pid-window"
+            local ok, err = overseer.reconcile(overseer.new_runtime(CURRENT_EPOCH), "window")
+            test.is_nil(err)
+            test.is_true(ok)
+            test.eq(#observed.cancels, 0)
+            test.eq(#observed.terminates, 0)
+        end)
+
+        test.it("never cancels an unadmitted name holder that a later request admits", function()
+            activations.successor = activation("successor", 1)
+            admit(activations.successor, "t-old", "pid-old")
+            release(activations.successor)
+            workflows.successor = workflow("successor", overseer.consts.STATUS.WAITING)
+            observed.owners["dataflow.successor"] = "pid-successor"
+            local runtime = overseer.new_runtime(CURRENT_EPOCH)
+            test.is_true(select(1, overseer.reconcile(runtime, "successor")))
+
+            advance(activations.successor)
+            admit(activations.successor, "t-successor", "pid-successor")
+            test.is_true(select(1, overseer.reconcile(runtime, "successor")))
+            test.eq(#observed.cancels, 0)
+            test.eq(#observed.failures, 0)
+            test.eq(runtime.ownership.by_dataflow["successor"], "pid-successor")
+        end)
+
+        test.it("bounds restarts of an orchestrator that exits before admission", function()
+            activations.unstartable = activation("unstartable", 2)
+            workflows.unstartable = workflow("unstartable")
+            local runtime = overseer.new_runtime(CURRENT_EPOCH)
+            test.is_true(select(1, overseer.reconcile(runtime, "unstartable")))
+            for _ = 1, 5 do
+                local latest = observed.spawns[#observed.spawns]
+                observed.owners["dataflow.unstartable"] = nil
+                local handled, exit_err = overseer.handle_exit(runtime, {
+                    kind = overseer.process.event.EXIT,
+                    from = latest.pid,
+                    result = { error = "not allowed: app:db" },
+                })
+                test.is_nil(exit_err)
+                test.is_true(handled)
+            end
+            test.eq(#observed.spawns, 3)
+            local failures = completed_failures()
+            test.eq(#failures, 1)
+            test.eq(failures[1].failure.reason, "orchestrator_start_failed")
+            test.eq(failures[1].failure.message, "not allowed: app:db")
+            test.eq(failures[1].fence.generation, 2)
+        end)
+
+        test.it("restarts an orchestrator that exited before admission once it can start", function()
+            activations.flaky = activation("flaky", 1)
+            workflows.flaky = workflow("flaky")
+            local runtime = overseer.new_runtime(CURRENT_EPOCH)
+            test.is_true(select(1, overseer.reconcile(runtime, "flaky")))
+            observed.owners["dataflow.flaky"] = nil
+            test.is_true(select(1, overseer.handle_exit(runtime, {
+                kind = overseer.process.event.EXIT, from = observed.spawns[1].pid,
+                result = { error = "transient start failure" },
+            })))
+            test.eq(#observed.spawns, 2)
+            admit(activations.flaky, "t-flaky", tostring(observed.spawns[2].pid))
+            test.not_nil(select(1, overseer.safety_reconcile(runtime)))
+            test.eq(#observed.spawns, 2)
+            test.eq(#observed.failures, 0)
+        end)
+
+        test.it("fails a running owner whose process dies between observation and monitoring", function()
+            activations.vanishing = activation("vanishing", 3)
+            admit(activations.vanishing, "t-vanishing", "pid-vanishing")
+            workflows.vanishing = workflow("vanishing")
+            observed.owners["dataflow.vanishing"] = "pid-vanishing"
+            overseer.process.monitor = function(pid)
+                table.insert(observed.monitors, tostring(pid))
+                observed.owners["dataflow.vanishing"] = nil
+                return nil, "process not found"
+            end
+            local ok, err = overseer.reconcile(overseer.new_runtime(CURRENT_EPOCH), "vanishing")
+            test.is_nil(err)
+            test.is_true(ok)
+            local failures = completed_failures()
+            test.eq(#failures, 1)
+            test.eq(failures[1].failure.reason, "runtime_owner_lost")
+            test.eq(#observed.spawns, 0)
+        end)
+
+        test.it("retries failure persistence on the next reconcile after a write error", function()
+            activations.persist = activation("persist", 4)
+            admit(activations.persist, "t-persist", "pid-gone")
+            workflows.persist = workflow("persist")
+            local fail_activation = overseer.commit.fail_activation
+            local attempts = 0
+            overseer.commit.fail_activation = function(id, fence, failure)
+                attempts = attempts + 1
+                if attempts == 1 then return nil, "database is locked" end
+                return fail_activation(id, fence, failure)
+            end
+            local runtime = overseer.new_runtime(CURRENT_EPOCH)
+            local first, first_err = overseer.reconcile(runtime, "persist")
+            test.is_nil(first)
+            test.contains(tostring(first_err), "database is locked")
+            advance(activations.persist)
+            test.is_true(select(1, overseer.reconcile(runtime, "persist")))
+            local failures = completed_failures()
+            test.eq(#failures, 1)
+            test.eq(failures[1].generation, 5)
+            test.eq(#observed.spawns, 0)
         end)
 
         test.it("recovers an activation whose notification was lost on the safety scan", function()
@@ -553,4 +693,168 @@ local function run_tests()
     end)
 end
 
-return { run_tests = test.run_cases(run_tests) }
+local function run_durable_tests()
+    test.describe("Dataflow overseer on durable ownership records", function()
+        local originals
+        local observed
+        local created: { string } = {}
+        -- The runtime's own overseer reconciles these rows too. Holding their
+        -- canonical names keeps it to monitoring this process, while the
+        -- overseer under test observes the scripted registry.
+        local live_process = overseer.process
+
+        local function now(): string
+            return overseer.time.now():format(overseer.time.RFC3339NANO)
+        end
+
+        local function create_dataflow(): string
+            local id = uuid.v7()
+            local db = test.not_nil(select(1, overseer.sql.get("app:db"))) :: any
+            local _, insert_err = overseer.sql.builder.insert("dataflows"):set_map({
+                dataflow_id = id,
+                actor_id = "overseer-durable-test",
+                type = "overseer-durable-test",
+                status = overseer.consts.STATUS.RUNNING,
+                metadata = "{}",
+                created_at = now(),
+                updated_at = now(),
+            }):run_with(db):exec()
+            db:release()
+            test.is_nil(insert_err)
+            test.is_true(select(1, live_process.registry.register("dataflow." .. id)))
+            table.insert(created, id)
+            return id
+        end
+
+        local function request(id: string): number
+            local activation = test.not_nil(select(1, overseer.commit.request_activation(
+                id, {}, { notify = false }))) :: any
+            return tonumber(activation.generation) or 0
+        end
+
+        local function admit(id: string, token: string, pid: string, runtime_epoch: string?)
+            local admitted = test.not_nil(select(1, overseer.commit.admit_owner(id, 1, {
+                token = token, pid = pid, runtime_epoch = runtime_epoch or CURRENT_EPOCH,
+            }))) :: any
+            test.is_true(admitted.admitted)
+        end
+
+        local function passivate(id: string, token: string, generation: number)
+            local result = test.not_nil(select(1, overseer.commit.execute(id, nil, { {
+                type = overseer.consts.COMMAND_TYPES.PASSIVATE_WORKFLOW,
+                payload = {
+                    activation_generation = generation,
+                    owner = { token = token, phase = overseer.consts.OWNER_PHASE.RUNNING },
+                },
+            } }, { publish = false, owner_token = token }))) :: any
+            test.is_true(result.results[1].released)
+        end
+
+        local function row(id: string): any
+            return test.not_nil(select(1, overseer.activation_repo.get(id)))
+        end
+
+        test.before_each(function()
+            originals = {
+                process = overseer.process,
+                execution_frame = overseer.execution_frame,
+                commit = overseer.commit,
+            }
+            observed = captures()
+            overseer.process = process_mock(observed)
+            local durable_commit = overseer.commit
+            overseer.commit = setmetatable({
+                fail_activation = function(id, fence, failure)
+                    local result, err = durable_commit.fail_activation(id, fence, failure)
+                    table.insert(observed.failures, {
+                        dataflow_id = id, fence = fence, failure = failure,
+                        completed = result ~= nil and result.completed == true,
+                    })
+                    return result, err
+                end,
+            }, { __index = durable_commit })
+            overseer.execution_frame = {
+                reconstruct = function(actor_id)
+                    table.insert(observed.reconstructions, { actor_id = actor_id })
+                    return "restored:" .. tostring(actor_id), "scope", nil
+                end,
+            }
+        end)
+
+        test.after_each(function()
+            for key, value in pairs(originals) do overseer[key] = value end
+        end)
+
+        test.after_all(function()
+            local db = test.not_nil(select(1, overseer.sql.get("app:db"))) :: any
+            for _, id in ipairs(created) do
+                overseer.sql.builder.delete("dataflows"):where("dataflow_id = ?", id):run_with(db):exec()
+                live_process.registry.unregister("dataflow." .. id)
+            end
+            db:release()
+        end)
+
+        test.it("never cancels a name holder that a later request admits", function()
+            local id = create_dataflow()
+            request(id)
+            admit(id, "t-old", "pid-old")
+            passivate(id, "t-old", 1)
+            observed.owners["dataflow." .. id] = "pid-successor"
+            local runtime = overseer.new_runtime(CURRENT_EPOCH)
+            test.is_true(select(1, overseer.reconcile(runtime, id)))
+
+            test.eq(request(id), 2)
+            admit(id, "t-successor", "pid-successor")
+            test.is_true(select(1, overseer.reconcile(runtime, id)))
+            test.eq(#observed.cancels, 0)
+            test.eq(#observed.terminates, 0)
+            test.eq(#observed.spawns, 0)
+            test.eq(observed.sends[#observed.sends].pid, "pid-successor")
+            test.eq(observed.sends[#observed.sends].payload.generation, 2)
+            test.eq(row(id).owner_token, "t-successor")
+            test.eq(row(id).owner_phase, "running")
+        end)
+
+        test.it("fails a dead running owner of this runtime at the latest request", function()
+            local id = create_dataflow()
+            request(id)
+            admit(id, "t-dead", "pid-dead")
+            test.eq(request(id), 2)
+            local runtime = overseer.new_runtime(CURRENT_EPOCH)
+            test.is_true(select(1, overseer.reconcile(runtime, id)))
+            test.eq(#observed.spawns, 0)
+            local failed = row(id)
+            test.is_false(failed.desired_active)
+            test.eq(failed.generation, 2)
+            test.eq(failed.owner_phase, "released")
+            local workflow = test.not_nil(select(1, overseer.dataflow_repo.get(id))) :: any
+            test.eq(workflow.status, overseer.consts.STATUS.COMPLETED_FAILURE)
+        end)
+
+        test.it("replaces a released owner or an owner of an earlier runtime exactly once", function()
+            local released = create_dataflow()
+            request(released)
+            admit(released, "t-released", "pid-released")
+            passivate(released, "t-released", 1)
+            test.eq(request(released), 2)
+            local rebooted = create_dataflow()
+            request(rebooted)
+            admit(rebooted, "t-rebooted", "pid-rebooted", "runtime-before")
+
+            local runtime = overseer.new_runtime(CURRENT_EPOCH)
+            for _ = 1, 2 do
+                test.is_true(select(1, overseer.reconcile(runtime, released)))
+                test.is_true(select(1, overseer.reconcile(runtime, rebooted)))
+            end
+            test.eq(#observed.spawns, 2)
+            test.eq(observed.spawns[1].args.activation_generation, 2)
+            test.eq(observed.spawns[2].args.activation_generation, 1)
+            test.eq(#observed.failures, 0)
+        end)
+    end)
+end
+
+return { run_tests = test.run_cases(function()
+    run_tests()
+    run_durable_tests()
+end) }

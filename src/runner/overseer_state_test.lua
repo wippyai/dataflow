@@ -73,17 +73,25 @@ local function run_tests()
             end
         end)
 
-        test.it("stops a name holder of a terminal or inactive activation and otherwise does nothing", function()
-            for _, state in ipairs({
-                { status = "failed" },
-                { desired_active = false, status = "waiting" },
+        test.it("stops the name holder of a terminal activation", function()
+            local named = observe({ status = "failed" })
+            named.registered_pid = "pid-old"
+            local stop = decide(named)
+            test.eq(stop.kind, overseer.ACTION.STOP)
+            test.eq(stop.pid, "pid-old")
+            test.eq(decide(observe({ status = "failed" })).kind, overseer.ACTION.NONE)
+        end)
+
+        test.it("leaves the name holder of an inactive activation to exit on its own", function()
+            for _, holder in ipairs({
+                { owner_token = "t1", owner_phase = "released", owner_epoch = CURRENT_EPOCH },
+                {},
             }) do
-                local named = observe(state)
-                named.registered_pid = "pid-old"
-                local stop = decide(named)
-                test.eq(stop.kind, overseer.ACTION.STOP)
-                test.eq(stop.pid, "pid-old")
-                test.eq(decide(observe(state)).kind, overseer.ACTION.NONE)
+                local named = observe(holder)
+                named.desired_active = false
+                named.status = "waiting"
+                named.registered_pid = "pid-holder"
+                test.eq(decide(named).kind, overseer.ACTION.NONE)
             end
         end)
 
@@ -91,11 +99,11 @@ local function run_tests()
             local state = overseer.new()
             overseer.track(state, "df", "pid-1")
             overseer.track(state, "df", "pid-2")
-            test.eq(overseer.pid_for(state, "df"), "pid-2")
+            test.eq(state.by_dataflow["df"], "pid-2")
             test.eq(overseer.forget_pid(state, "pid-1"), "df")
-            test.eq(overseer.pid_for(state, "df"), "pid-2", "a late EXIT leaves the current owner tracked")
+            test.eq(state.by_dataflow["df"], "pid-2", "a late EXIT leaves the current owner tracked")
             test.eq(overseer.forget_pid(state, "pid-2"), "df")
-            test.is_nil(overseer.pid_for(state, "df"))
+            test.is_nil(state.by_dataflow["df"])
             test.is_nil(overseer.forget_pid(state, "pid-unknown"))
         end)
     end)

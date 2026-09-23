@@ -1,12 +1,16 @@
 -- Pure decisions for the Dataflow overseer.
 --
--- The activation row carries the ownership record, written only by the
--- orchestrator: owner_token (one orchestrator incarnation), owner_epoch (its
--- runtime) and owner_phase (running or released). The canonical name
--- dataflow.<id> is held by at most one process. From one locked observation of
--- both, the overseer decides without remembering earlier decisions:
---   - terminal or inactive: stop whoever holds the name;
---   - a name holder: monitor it;
+-- The activation row carries the ownership record: owner_token (one
+-- orchestrator incarnation), owner_epoch (its runtime) and owner_phase. Only an
+-- orchestrator admits itself as the running owner; a completion releases it,
+-- whether the orchestrator's own or the overseer's failure fenced by the
+-- observed owner. The canonical name dataflow.<id> is held by at most one
+-- process. From one locked observation of both, the overseer decides without
+-- remembering earlier decisions:
+--   - terminal: stop whoever holds the name;
+--   - inactive: nothing; a released owner exits by itself and any other holder
+--     is refused admission, or admitted if a newer request arrives first;
+--   - a name holder: monitor and wake it;
 --   - a running owner of this runtime without the name: it died, so fail the
 --     activation fenced by its token, which covers every newer request;
 --   - otherwise (never owned, released, or owned in an earlier runtime): spawn.
@@ -72,20 +76,24 @@ function M.decide(observation: Observation): Decision
     local pid = observation.registered_pid
     if pid == "" then pid = nil end
 
-    if is_terminal(observation.status) or observation.desired_active ~= true then
+    if is_terminal(observation.status) then
         if pid then
-            return {
-                kind = M.ACTION.STOP,
-                reason = is_terminal(observation.status) and "terminal_owner_stop" or "inactive_owner_stop",
-                dataflow_id = id,
-                pid = pid,
-            }
+            return { kind = M.ACTION.STOP, reason = "terminal_owner_stop", dataflow_id = id, pid = pid }
         end
-        return { kind = M.ACTION.NONE, reason = "not_active", dataflow_id = id }
+        return { kind = M.ACTION.NONE, reason = "terminal", dataflow_id = id }
+    end
+    if observation.desired_active ~= true then
+        return { kind = M.ACTION.NONE, reason = "inactive", dataflow_id = id }
     end
 
     if pid then
-        return { kind = M.ACTION.MONITOR, reason = "registered_owner", dataflow_id = id, pid = pid }
+        return {
+            kind = M.ACTION.MONITOR,
+            reason = "registered_owner",
+            dataflow_id = id,
+            generation = observation.generation,
+            pid = pid,
+        }
     end
 
     if observation.owner_phase == OWNER_RUNNING and observation.owner_token ~= nil and
@@ -135,10 +143,6 @@ function M.forget_dataflow(state: State, dataflow_id: string)
     local pid = state.by_dataflow[dataflow_id]
     if pid then state.by_pid[pid] = nil end
     state.by_dataflow[dataflow_id] = nil
-end
-
-function M.pid_for(state: State, dataflow_id: string): string?
-    return state.by_dataflow[dataflow_id]
 end
 
 function M.tracked(state: State): { string }

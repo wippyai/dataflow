@@ -170,6 +170,7 @@ entries:
       group: Workflow
       comment: Proves boot recovery, terminal runtime failure, exact wakes, and canonical adoption.
     source: file://overseer_test.lua
+    modules: [uuid]
     imports:
       test: wippy.test:test
       overseer: userspace.dataflow.runner:overseer

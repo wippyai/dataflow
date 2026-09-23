@@ -31,33 +31,18 @@ type OwnershipState = {
     by_dataflow: { [string]: string },
 }
 
-type Fence = {
-    token: string?,
-    phase: string?,
-    generation: number?,
-}
-
-type Decision = {
-    kind: string,
-    reason: string,
-    dataflow_id: string,
-    generation: number?,
-    pid: string?,
-    fence: Fence?,
+-- Spawns made for one observed ownership state that never led to an admission.
+type StartAttempts = {
+    fence: string,
+    count: number,
 }
 
 type Runtime = {
     ownership: OwnershipState,
-    nudges: { [string]: Nudge },
+    starts: { [string]: StartAttempts },
+    woken: { [string]: number },
     bootstrapped: boolean,
     epoch: string?,
-}
-
-type Nudge = {
-    dataflow_id: string,
-    generation: number,
-    wake_key: string?,
-    wake_at: string?,
 }
 
 type Observation = {
@@ -178,7 +163,8 @@ end
 function M.new_runtime(epoch: string?): Runtime
     return {
         ownership = M.overseer_state.new() :: OwnershipState,
-        nudges = {},
+        starts = {},
+        woken = {},
         bootstrapped = false,
         epoch = epoch,
     }
@@ -198,13 +184,22 @@ end
 
 M.load_runtime_epoch = load_runtime_epoch
 
-local function deliver_nudge(runtime: Runtime, dataflow_id: string, pid: string): (boolean?, string?)
-    local nudge = runtime.nudges[dataflow_id]
-    if not nudge then return true, nil end
-    local ok, sent, send_err = pcall(M.process.send, pid, M.consts.MESSAGE_TOPIC.WAKE, nudge)
-    if not ok or not sent then return nil, not ok and tostring(sent) or tostring(send_err) end
-    runtime.nudges[dataflow_id] = nil
-    return true, nil
+-- A live owner absorbs newer requests. Waking it once for each durable
+-- generation it has not been woken for makes it reload pending work, so no
+-- request depends on a message whose sender may have died after committing.
+local function wake_owner(runtime: Runtime, dataflow_id: string, pid: string, generation: number?)
+    if not generation then return end
+    local woken = runtime.woken[pid]
+    if woken and woken >= generation then return end
+    local ok, sent, send_err = pcall(M.process.send, pid, M.consts.MESSAGE_TOPIC.WAKE, {
+        dataflow_id = dataflow_id,
+        generation = generation,
+    })
+    if not ok or not sent then
+        log_flow("owner wake delivery failed", dataflow_id, not ok and sent or send_err)
+        return
+    end
+    runtime.woken[pid] = generation
 end
 
 local function failure_message(event: any): string
@@ -219,6 +214,9 @@ local function failure_message(event: any): string
 end
 
 local MAX_RECONCILE_PASSES = 4
+-- Spawns allowed for one observed ownership state; an orchestrator that exits
+-- before admitting itself leaves that state unchanged.
+local MAX_STARTS = 3
 
 -- Read the activation and the canonical name together under the workflow lock,
 -- so an admission or release in flight finishes before the name is checked.
@@ -252,18 +250,35 @@ local function stop_owner(pid: string): (boolean?, string?)
     return true, nil
 end
 
-local function monitor_owner(runtime: Runtime, dataflow_id: string, pid: string): boolean
+local function monitor_owner(runtime: Runtime, dataflow_id: string, pid: string, generation: number?): boolean
     local ok, monitored, monitor_err = pcall(M.process.monitor, pid)
     local monitor_ok = ok and (monitored == true or
         is_already_monitoring(monitored) or is_already_monitoring(monitor_err))
     if not monitor_ok then return false end
     M.overseer_state.track(runtime.ownership, dataflow_id, pid)
-    local delivered, delivery_err = deliver_nudge(runtime, dataflow_id, pid)
-    if not delivered then log_flow("owner nudge delivery failed", dataflow_id, delivery_err) end
+    wake_owner(runtime, dataflow_id, pid, generation)
     return true
 end
 
-local function fail(dataflow_id: string, fence: Fence, reason: string, message: string): (any?, string?)
+local function fence_key(fence: any): string
+    return table.concat({
+        tostring(fence.token or ""), tostring(fence.phase or ""), tostring(fence.generation or ""),
+    }, "|")
+end
+
+-- Count a spawn for the observed ownership state; a changed state starts over.
+local function start_attempt(runtime: Runtime, dataflow_id: string, fence: any): number
+    local key = fence_key(fence)
+    local attempts = runtime.starts[dataflow_id]
+    if attempts and attempts.fence == key then
+        attempts.count = attempts.count + 1
+        return attempts.count
+    end
+    runtime.starts[dataflow_id] = { fence = key, count = 1 }
+    return 1
+end
+
+local function fail(dataflow_id: string, fence: any, reason: string, message: string): (any?, string?)
     return M.commit.fail_activation(dataflow_id, fence, {
         source = "dataflow.overseer",
         reason = reason,
@@ -324,44 +339,55 @@ function M.reconcile(runtime: Runtime, dataflow_id: string, options: ReconcileOp
             M.overseer_state.forget_dataflow(runtime.ownership, dataflow_id)
             return true, nil
         end
-        local decision = M.overseer_state.decide({
+        local decision: any = M.overseer_state.decide({
             dataflow_id = dataflow_id,
             status = observed.status,
             desired_active = activation.desired_active == true,
             generation = tonumber(activation.generation),
-            owner_token = activation.owner_token,
-            owner_phase = activation.owner_phase,
-            owner_epoch = activation.owner_epoch,
+            owner_token = activation.owner_token and tostring(activation.owner_token) or nil,
+            owner_phase = activation.owner_phase and tostring(activation.owner_phase) or nil,
+            owner_epoch = activation.owner_epoch and tostring(activation.owner_epoch) or nil,
             registered_pid = observed.registered_pid,
             runtime_epoch = runtime.epoch,
-        }) :: Decision
+        })
+        if decision.kind ~= M.overseer_state.ACTION.SPAWN and
+            decision.kind ~= M.overseer_state.ACTION.MONITOR then
+            runtime.starts[dataflow_id] = nil
+        end
 
         if decision.kind == M.overseer_state.ACTION.NONE then
-            runtime.nudges[dataflow_id] = nil
             return true, nil
         elseif decision.kind == M.overseer_state.ACTION.STOP then
-            runtime.nudges[dataflow_id] = nil
             return stop_owner(tostring(decision.pid))
         elseif decision.kind == M.overseer_state.ACTION.MONITOR then
-            if monitor_owner(runtime, dataflow_id, tostring(decision.pid)) then return true, nil end
+            if monitor_owner(runtime, dataflow_id, tostring(decision.pid), tonumber(decision.generation)) then
+                return true, nil
+            end
         elseif decision.kind == M.overseer_state.ACTION.FAIL then
-            local failed, fail_err = fail(dataflow_id, decision.fence :: Fence, decision.reason, message)
+            local failed, fail_err = fail(dataflow_id, decision.fence, tostring(decision.reason), message)
             if fail_err then return nil, tostring(fail_err) end
             if failed and (failed.completed == true or failed.terminal == true) then return true, nil end
         elseif decision.kind == M.overseer_state.ACTION.SPAWN then
-            local pid, conflict, spawn_err = spawn_owner(
-                runtime, dataflow_id, activation, tonumber(decision.generation) or 1)
-            if pid then
-                M.overseer_state.track(runtime.ownership, dataflow_id, pid)
-                local delivered, delivery_err = deliver_nudge(runtime, dataflow_id, pid)
-                if not delivered then log_flow("owner nudge delivery failed", dataflow_id, delivery_err) end
-                return true, nil
-            end
-            if not conflict then
-                local failed, fail_err = fail(dataflow_id, decision.fence :: Fence,
-                    "orchestrator_spawn_failed", tostring(spawn_err))
+            if start_attempt(runtime, dataflow_id, decision.fence) > MAX_STARTS then
+                runtime.starts[dataflow_id] = nil
+                local failed, fail_err = fail(dataflow_id, decision.fence, "orchestrator_start_failed", message)
                 if fail_err then return nil, tostring(fail_err) end
                 if failed and (failed.completed == true or failed.terminal == true) then return true, nil end
+            else
+                local pid, conflict, spawn_err = spawn_owner(
+                    runtime, dataflow_id, activation, tonumber(decision.generation) or 1)
+                if pid then
+                    M.overseer_state.track(runtime.ownership, dataflow_id, pid)
+                    -- A new orchestrator loads everything up to its generation.
+                    runtime.woken[pid] = tonumber(decision.generation)
+                    return true, nil
+                end
+                if not conflict then
+                    local failed, fail_err = fail(dataflow_id, decision.fence,
+                        "orchestrator_spawn_failed", tostring(spawn_err))
+                    if fail_err then return nil, tostring(fail_err) end
+                    if failed and (failed.completed == true or failed.terminal == true) then return true, nil end
+                end
             end
         else
             return nil, "unknown overseer decision " .. tostring(decision.kind)
@@ -405,25 +431,12 @@ function M.promote_due(runtime: Runtime): (number?, string?)
             log_flow("due wake promotion failed", tostring(row.dataflow_id), activation_err)
         elseif activation and activation.promoted then
             promoted = promoted + 1
-            local promoted_generation = tonumber(activation.generation)
-            if not promoted_generation then
-                log_flow("promoted activation has invalid generation",
-                    tostring(row.dataflow_id), "generation is missing")
-                goto continue_due
-            end
-            runtime.nudges[tostring(row.dataflow_id)] = {
-                dataflow_id = tostring(row.dataflow_id),
-                generation = promoted_generation,
-                wake_key = tostring(row.wake_key),
-                wake_at = row.wake_at and tostring(row.wake_at) or nil,
-            }
             local ok, reconcile_err = M.reconcile(runtime, tostring(row.dataflow_id))
             if not ok then
                 log_flow("promoted activation reconciliation failed",
                     tostring(row.dataflow_id), reconcile_err)
             end
         end
-        ::continue_due::
     end
     return promoted, nil
 end
@@ -482,6 +495,7 @@ end
 function M.handle_exit(runtime: Runtime, event: any): (boolean?, string?)
     local pid = event and event.from and tostring(event.from) or nil
     if not pid then return true, nil end
+    runtime.woken[pid] = nil
     local dataflow_id = M.overseer_state.forget_pid(runtime.ownership, pid)
     if not dataflow_id then return true, nil end
     return M.reconcile(runtime, dataflow_id, { message = failure_message(event) })
