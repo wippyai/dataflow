@@ -676,6 +676,17 @@ local function run_tests()
             test.eq(observed.spawns[1].args.activation_generation, 9)
         end)
 
+        test.it("arms a timer only for a wake that is not yet due", function()
+            local past = overseer.time.now():add(-1 * overseer.time.SECOND):format(overseer.time.RFC3339NANO)
+            local future = overseer.time.now():add(60 * overseer.time.SECOND):format(overseer.time.RFC3339NANO)
+            local due_timer, due = overseer.arm_wake({ wake_at = past })
+            test.is_nil(due_timer)
+            test.is_true(due)
+            local timer, pending = overseer.arm_wake({ wake_at = future })
+            test.not_nil(timer)
+            test.is_false(pending)
+        end)
+
         test.it("recognizes missing SQLite and PostgreSQL migration state", function()
             test.is_true(overseer.schema_not_ready("no such table: dataflow_activations"))
             test.is_true(overseer.schema_not_ready('relation "dataflow_wakes" does not exist'))
@@ -788,7 +799,9 @@ local function run_durable_tests()
         test.after_all(function()
             local db = test.not_nil(select(1, overseer.sql.get("app:db"))) :: any
             for _, id in ipairs(created) do
-                overseer.sql.builder.delete("dataflows"):where("dataflow_id = ?", id):run_with(db):exec()
+                for _, table_name in ipairs({ "dataflow_wakes", "dataflow_activations", "dataflows" }) do
+                    overseer.sql.builder.delete(table_name):where("dataflow_id = ?", id):run_with(db):exec()
+                end
                 live_process.registry.unregister("dataflow." .. id)
             end
             db:release()

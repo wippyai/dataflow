@@ -94,12 +94,16 @@ local function define_tests()
             return tonumber(rows and rows[1] and rows[1].total) or 0
         end
 
+        -- SQLite connections do not enforce the cascading foreign keys, so the
+        -- dependent rows are removed with their dataflow explicitly.
         test.after_all(function()
             local db = test.not_nil(select(1, sql.get("app:db"))) :: any
             for _, id in ipairs(created) do
-                sql.builder.delete("dataflows")
-                    :where("dataflow_id = ?", id)
-                    :run_with(db):exec()
+                for _, table_name in ipairs({ "dataflow_wakes", "dataflow_activations", "dataflows" }) do
+                    sql.builder.delete(table_name)
+                        :where("dataflow_id = ?", id)
+                        :run_with(db):exec()
+                end
             end
             db:release()
         end)
@@ -538,6 +542,26 @@ local function define_tests()
             test.is_false(result.due)
             test.is_nil(select(1, activation_repo.get(id)))
             test.is_nil(wake_generation(id, wake_key))
+        end)
+
+        test.it("discards the wakes of a dataflow that no longer exists during due promotion", function()
+            local id = create_dataflow(consts.STATUS.WAITING)
+            local wake_key = "yield:" .. uuid.v7()
+            local db = test.not_nil(select(1, sql.get("app:db"))) :: any
+            test.is_nil(select(2, sql.builder.insert("dataflow_wakes"):set_map({
+                dataflow_id = id,
+                wake_key = wake_key,
+                wake_at = now(-1),
+            }):run_with(db):exec()))
+            test.is_nil(select(2, sql.builder.delete("dataflows"):where("dataflow_id = ?", id):run_with(db):exec()))
+            db:release()
+
+            local result = test.not_nil(select(1, transaction(function(tx)
+                return activation_repo.activate_due_tx(tx, id, wake_key, now())
+            end))) :: any
+            test.is_false(result.promoted)
+            test.is_true(result.missing)
+            test.eq(wake_count(id), 0)
         end)
 
         test.it("converges terminal activation and every stale wake during due promotion", function()

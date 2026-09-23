@@ -518,6 +518,15 @@ function M.notify(payload: any?): (boolean?, string?)
     return M.process.send(NAME, TOPIC, payload or {})
 end
 
+-- A timer for the nearest pending wake, or due = true when it is already due.
+function M.arm_wake(wake: any): (any?, boolean)
+    local wait_ns = select(1, duration_until(tostring(wake and wake.wake_at or "")))
+    if wait_ns == nil then return nil, false end
+    if wait_ns <= 0 then return nil, true end
+    local timer = M.time.after(wait_ns)
+    return timer, false
+end
+
 local function reconcile_or_log(runtime: Runtime, operation: (Runtime) -> (any?, string?))
     local ok, err = operation(runtime)
     if not ok and err then
@@ -542,20 +551,23 @@ function M.run(_args: any)
     local events = M.process.events()
 
     while true do
-        local safety_timer = M.time.after(SAFETY_INTERVAL)
-        local wake_timer = nil
-        local cases = { inbox:case_receive(), events:case_receive(), safety_timer:case_receive() }
-
+        local wake_timer: any = nil
         local wake, wake_err = M.next_pending_wake()
         if not wake_err and wake then
-            local wait_ns = select(1, duration_until(tostring(wake.wake_at)))
-            if wait_ns ~= nil then
-                wake_timer = M.time.after(wait_ns)
-                table.insert(cases, wake_timer:case_receive())
+            local timer, due = M.arm_wake(wake)
+            if due then
+                -- Promote a wake that is already due now; one that still cannot
+                -- be promoted waits for the next event or safety pass.
+                reconcile_or_log(runtime, runtime.bootstrapped and M.promote_due or M.bootstrap)
             end
+            wake_timer = timer
         elseif wake_err and not schema_not_ready(wake_err) then
             logger:warn("could not inspect nearest dataflow wake", { error = tostring(wake_err) })
         end
+
+        local safety_timer = M.time.after(SAFETY_INTERVAL)
+        local cases = { inbox:case_receive(), events:case_receive(), safety_timer:case_receive() }
+        if wake_timer then table.insert(cases, wake_timer:case_receive()) end
 
         local result = M.channel.select(cases)
         if not result.ok then break end
