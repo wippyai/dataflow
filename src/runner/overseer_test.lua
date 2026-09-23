@@ -783,6 +783,115 @@ local function run_tests()
             }
         end
 
+        local function wake_row(id: string, offset_ms: number): any
+            return {
+                dataflow_id = id,
+                wake_key = "yield:" .. id,
+                wake_at = clock.now:add(offset_ms * overseer.time.MILLISECOND):format(overseer.time.RFC3339NANO),
+            }
+        end
+
+        -- Pending rows in deadline order; promotion removes a row.
+        local function wake_table(rows: { any }): { [string]: boolean }
+            local promoted: { [string]: boolean } = {}
+            overseer.pending_wakes = function(limit: number)
+                local page = {}
+                for _, row in ipairs(rows) do
+                    if not promoted[row.wake_key] and #page < limit then table.insert(page, row) end
+                end
+                return page, nil
+            end
+            overseer.activation_repo.activate_due_tx = function(_tx, _id, key)
+                promoted[key] = true
+                return { promoted = false, already_promoted = true }, nil
+            end
+            return promoted
+        end
+
+        test.it("continues draining due wakes without a pause after a full settle", function()
+            local rows: { any } = {}
+            for index = 1, 850 do table.insert(rows, wake_row("backlog-" .. index, -1000)) end
+            local promoted = wake_table(rows)
+            local selects = run_service({
+                function(channels: any): any
+                    return { ok = true, channel = channels.deadline }
+                end,
+            })
+            local continuation = test.not_nil(selects[1].deadline) :: number
+            test.is_true(continuation <= 1000000, "the next pass is armed at once")
+            local count = 0
+            for _ in pairs(promoted) do count = count + 1 end
+            test.eq(count, 850)
+        end)
+
+        test.it("retries an excluded wake on the safety deadline despite continuous deadlines", function()
+            local rows: { any } = { wake_row("excluded", -1000) }
+            for index = 1, 60 do table.insert(rows, wake_row("tick-" .. index, index * 1000)) end
+            local promoted = wake_table(rows)
+            local accept = overseer.activation_repo.activate_due_tx
+            local failed = { once = false }
+            overseer.activation_repo.activate_due_tx = function(tx, id, key)
+                if key == "yield:excluded" and not failed.once then
+                    failed.once = true
+                    return nil, "database is locked"
+                end
+                return accept(tx, id, key)
+            end
+            local steps: { (any) -> any } = {}
+            for _ = 1, 60 do
+                table.insert(steps, function(channels: any): any
+                    clock.now = clock.now:add(overseer.time.SECOND)
+                    return { ok = true, channel = channels.deadline }
+                end)
+            end
+            local at_retry = { ticks = nil :: number? }
+            overseer.activation_repo.activate_due_tx = (function(inner)
+                return function(tx, id, key)
+                    if key == "yield:excluded" and failed.once and at_retry.ticks == nil then
+                        local ticks = 0
+                        for name in pairs(promoted) do
+                            if name ~= "yield:excluded" then ticks = ticks + 1 end
+                        end
+                        at_retry.ticks = ticks
+                    end
+                    return inner(tx, id, key)
+                end
+            end)(overseer.activation_repo.activate_due_tx)
+            run_service(steps)
+            test.is_true(promoted["yield:excluded"], "the excluded wake is retried")
+            local ticks = test.not_nil(at_retry.ticks) :: number
+            test.is_true(ticks <= 31, "retried by the safety deadline, after " .. ticks .. " deadline events")
+        end)
+
+        test.it("settles a wake that appears while an earlier promotion advances the clock", function()
+            local rows: { any } = { wake_row("first", -1000) }
+            local promoted = wake_table(rows)
+            local accept = overseer.activation_repo.activate_due_tx
+            overseer.activation_repo.activate_due_tx = function(tx, id, key)
+                if key == "yield:first" then
+                    clock.now = clock.now:add(2 * overseer.time.SECOND)
+                    table.insert(rows, wake_row("appeared", -500))
+                end
+                return accept(tx, id, key)
+            end
+            local selects = run_service({})
+            test.is_true(promoted["yield:first"])
+            test.is_true(promoted["yield:appeared"], "the next pass promotes it before the loop blocks")
+            test.eq(selects[1].spawns, 0)
+        end)
+
+        test.it("never lets a page of malformed deadlines hide a valid wake", function()
+            local rows: { any } = {}
+            for index = 1, 120 do
+                table.insert(rows, { dataflow_id = "bad-" .. index, wake_key = "yield:bad-" .. index,
+                    wake_at = "0000-bad-" .. string.format("%03d", index) })
+            end
+            table.insert(rows, wake_row("valid", -1000))
+            local promoted = wake_table(rows)
+            run_service({})
+            test.is_true(promoted["yield:valid"])
+        end)
+
         test.it("promotes a wake that fell due while the loop was promoting an earlier one", function()
             local promoted: { [string]: boolean } = {}
             local due_row = { dataflow_id = "a", wake_key = "yield:a",
@@ -805,7 +914,8 @@ local function run_tests()
             local selects = run_service({})
             test.is_true(promoted["yield:a"])
             test.is_true(promoted["yield:b"], "B is promoted before the loop blocks")
-            test.is_nil(selects[1].deadline)
+            local armed = test.not_nil(selects[1].deadline) :: number
+            test.is_true(armed > 20 * 1000000000, "only the safety deadline remains")
         end)
 
         test.it("skips an unpromotable due wake until the next event without hiding a later one", function()
@@ -877,7 +987,7 @@ local function run_tests()
                 end,
                 function(channels)
                     table.insert(marks, reads())
-                    clock.now = clock.now:add(60 * overseer.time.SECOND)
+                    clock.now = clock.now:add(10 * overseer.time.SECOND)
                     return { ok = true, channel = channels.inbox, value = hint("unrelated") }
                 end,
                 function(channels)

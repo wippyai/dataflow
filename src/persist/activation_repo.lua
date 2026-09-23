@@ -1,5 +1,6 @@
 local sql = require("sql")
 local json = require("json")
+local time = require("time")
 local consts = require("dataflow_consts")
 
 local activation_repo = {}
@@ -643,6 +644,11 @@ function activation_repo.register_yield_wake_tx(tx, dataflow_id, yield_id, wake_
     if type(yield_id) ~= "string" or yield_id == "" then return nil, "yield_id is required" end
     valid, validation_err = validate_timestamp(wake_at, "wake_at")
     if not valid then return nil, validation_err end
+    -- The overseer schedules wakes by this deadline; SQLite stores it as text
+    -- and would otherwise accept a value no clock can reach.
+    local _, parse_err = time.parse(time.RFC3339NANO, wake_at)
+    if parse_err then _, parse_err = time.parse(time.RFC3339, wake_at) end
+    if parse_err then return nil, "yield deadline must be an RFC 3339 time: " .. tostring(wake_at) end
 
     local result, write_err = tx_execute(tx, [[
         INSERT INTO dataflow_wakes(dataflow_id, wake_key, wake_at, activation_generation)

@@ -8,7 +8,7 @@ entries:
       private: true
       comment: Generation-fenced desired activation state for durable orchestrator lives.
     source: file://activation_repo.lua
-    modules: [sql, json]
+    modules: [sql, json, time]
     imports:
       dataflow_consts: userspace.dataflow:consts
 

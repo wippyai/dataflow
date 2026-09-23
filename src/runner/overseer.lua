@@ -23,7 +23,7 @@ local M = {
 
 local NAME = "dataflow.overseer"
 local TOPIC = "dataflow.activation.changed"
-local SAFETY_INTERVAL = "30s"
+local SAFETY_INTERVAL_NS = 30000000000
 local SCAN_LIMIT = 100
 
 type OwnershipState = {
@@ -596,9 +596,11 @@ local function earliest(current: any?, candidate: any): any
 end
 
 -- Act on every wake and start retry that is due, then return the earliest
--- deadline still ahead. A due item whose processing makes no progress is
--- recorded in `attempted` and skipped until the next event or safety pass, so
--- it neither hides later deadlines nor makes the loop spin.
+-- deadline still ahead. A due item whose processing makes no progress, or whose
+-- deadline cannot be read, is recorded in `attempted` and skipped until the next
+-- event or safety pass, so it neither hides later deadlines nor makes the loop
+-- spin. When the pass budget runs out while work remains, the next deadline is
+-- now: draining continues on the next iteration, after pending events.
 function M.settle(runtime: Runtime, attempted: { [string]: boolean }): any?
     local ahead: any? = nil
     for _ = 1, MAX_SETTLE_PASSES do
@@ -622,6 +624,7 @@ function M.settle(runtime: Runtime, attempted: { [string]: boolean }): any?
                 if deadline == nil then
                     attempted[key] = true
                     log_flow("pending wake has an invalid deadline", tostring(row.dataflow_id), row.wake_at)
+                    progressed = true
                 elseif M.now():before(deadline) then
                     ahead = earliest(ahead, deadline)
                     break
@@ -658,7 +661,7 @@ function M.settle(runtime: Runtime, attempted: { [string]: boolean }): any?
 
         if not progressed then return ahead end
     end
-    return ahead
+    return M.now()
 end
 
 function M.run(_args: any)
@@ -671,21 +674,27 @@ function M.run(_args: any)
     local events = M.process.events()
 
     local attempted: { [string]: boolean } = {}
+    -- The safety pass runs on an absolute schedule, so a stream of deadline
+    -- events cannot postpone it; it also retries every excluded item.
+    local next_safety_at = M.now():add(SAFETY_INTERVAL_NS)
     while true do
-        -- One deadline computation: everything overdue is processed first, then
-        -- a single timer waits for the earliest deadline still ahead.
-        local deadline: any? = nil
-        if runtime.bootstrapped then deadline = M.settle(runtime, attempted) end
-        local deadline_timer: any = nil
-        if deadline ~= nil then
-            local wait_ns = deadline:sub(M.now()):nanoseconds()
-            if wait_ns < 1 then wait_ns = 1 end
-            deadline_timer = M.time.after(wait_ns)
+        if not M.now():before(next_safety_at) then
+            attempted = {}
+            reconcile_or_log(runtime, runtime.bootstrapped and M.safety_reconcile or M.bootstrap)
+            next_safety_at = M.now():add(SAFETY_INTERVAL_NS)
         end
 
-        local safety_timer = M.time.after(SAFETY_INTERVAL)
-        local cases = { inbox:case_receive(), events:case_receive(), safety_timer:case_receive() }
-        if deadline_timer then table.insert(cases, deadline_timer:case_receive()) end
+        -- One deadline computation: everything overdue is processed first, then
+        -- a single timer waits for the earliest deadline still ahead.
+        local deadline = next_safety_at
+        if runtime.bootstrapped then
+            local ahead = M.settle(runtime, attempted)
+            if ahead ~= nil then deadline = earliest(deadline, ahead) end
+        end
+        local wait_ns = deadline:sub(M.now()):nanoseconds()
+        if wait_ns < 1 then wait_ns = 1 end
+        local deadline_timer = M.time.after(wait_ns)
+        local cases = { inbox:case_receive(), events:case_receive(), deadline_timer:case_receive() }
 
         local result = M.channel.select(cases)
         if not result.ok then break end
@@ -716,8 +725,6 @@ function M.run(_args: any)
             elseif topic == TOPIC then
                 reconcile_or_log(runtime, M.promote_due)
             end
-        elseif result.channel ~= deadline_timer then
-            reconcile_or_log(runtime, runtime.bootstrapped and M.safety_reconcile or M.bootstrap)
         end
     end
     return { status = "shutdown" }
