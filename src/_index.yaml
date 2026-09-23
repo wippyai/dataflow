@@ -270,6 +270,8 @@ entries:
         path: ".meta.target_db"
       - entry: userspace.dataflow.migrations:10_add_activation_ownership
         path: ".meta.target_db"
+      - entry: userspace.dataflow.migrations:11_remove_orphaned_activation_rows
+        path: ".meta.target_db"
       - entry: userspace.dataflow.runner:overseer.service
         path: ".lifecycle.depends_on +="
       - entry: userspace.dataflow.env:retention_db

@@ -13,6 +13,10 @@ pg_port="${DATAFLOW_PG_PORT:-5432}"
 pg_database="${DATAFLOW_PG_DATABASE:-dataflow_restart_test}"
 pg_username="${DATAFLOW_PG_USERNAME:-dataflow}"
 pg_password="${DATAFLOW_PG_PASSWORD:-dataflow}"
+# With DATAFLOW_RESTART_FROM set to a git ref, the first runtime runs that
+# older release and the second runtime upgrades its database in place.
+from_ref="${DATAFLOW_RESTART_FROM:-}"
+phase1_dir="$test_dir"
 
 case "$dialect" in
     sqlite|postgres) ;;
@@ -68,7 +72,7 @@ start_runtime() {
             --set "vars.postgres_password=$pg_password" >"$runtime_log" 2>&1 &
     else
         wippy run -s --profile sqlite --profile "$restart_profile" \
-            --set vars.sqlite_file=./.wippy/restart-proof.db >"$runtime_log" 2>&1 &
+            --set "vars.sqlite_file=$db_file" >"$runtime_log" 2>&1 &
     fi
     runtime_pid=$!
 }
@@ -82,7 +86,16 @@ if [ "$dialect" = "postgres" ]; then
         -h "$pg_host" -p "$pg_port" -U "$pg_username" "$pg_database"
 fi
 
-cd "$test_dir"
+if [ -n "$from_ref" ]; then
+    old_root="$test_dir/.wippy/restart-from"
+    rm -rf "$old_root"
+    mkdir -p "$old_root"
+    git -C "$repo_dir" archive "$from_ref" | tar -x -C "$old_root"
+    (cd "$old_root/test" && wippy install >/dev/null)
+    phase1_dir="$old_root/test"
+fi
+
+cd "$phase1_dir"
 start_runtime restart_create "$phase1_log"
 
 phase1=""
@@ -168,6 +181,10 @@ while [ "$attempts" -lt 100 ]; do
 done
 [ "$rolling_refilled" = "1" ] || { echo "rolling window did not refill before the slow iteration completed" >&2; exit 1; }
 
+# The first runtime's probe can race its migrations and leave an unstarted
+# workflow behind; only workflows created after the restart are duplicates.
+workflows_before_restart=$(query "SELECT COUNT(*) FROM dataflows;")
+
 stop_runtime "$runtime_pid"
 runtime_pid=""
 
@@ -181,6 +198,18 @@ preserved=$(query "
 ")
 [ "$preserved" = "1" ] || { echo "graceful runtime shutdown destroyed active intent" >&2; exit 1; }
 
+orphan_id=""
+if [ -n "$from_ref" ] && [ "$dialect" = "sqlite" ]; then
+    # Releases before the activation ownership record deleted workflows without
+    # their activation row on SQLite, which does not enforce the cascade.
+    orphan_id="00000000-0000-7000-8000-000000000001"
+    query "INSERT INTO dataflow_activations(dataflow_id, generation, desired_active, requested_at, updated_at)
+        VALUES ('$orphan_id', 1, 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+        INSERT INTO dataflow_wakes(dataflow_id, wake_key, wake_at)
+        VALUES ('$orphan_id', 'yield:orphan', '2026-01-01T00:00:00Z');"
+fi
+
+cd "$test_dir"
 start_runtime restart_observe "$phase2_log"
 
 second_epoch=""
@@ -268,6 +297,20 @@ yield_result_rows=$(query "
 }
 
 workflow_count=$(query "SELECT COUNT(*) FROM dataflows;")
-[ "$workflow_count" = "1" ] || { echo "restart created duplicate workflows: $workflow_count" >&2; exit 1; }
+[ "$workflow_count" = "$workflows_before_restart" ] || {
+    echo "restart created duplicate workflows: $workflows_before_restart -> $workflow_count" >&2
+    exit 1
+}
 
-echo "$dialect restart proof passed: $dataflow_id $first_epoch -> $second_epoch"
+ownership=$(query "SELECT owner_phase || '|' || CASE WHEN owner_token IS NULL THEN 'none' ELSE 'token' END
+    || '|' || CASE WHEN owner_pid IS NULL THEN 'none' ELSE 'pid' END
+    FROM dataflow_activations WHERE dataflow_id = '$dataflow_id';")
+[ "$ownership" = "released|token|pid" ] || { echo "recovered workflow has unexpected ownership: $ownership" >&2; exit 1; }
+
+if [ -n "$orphan_id" ]; then
+    orphans=$(query "SELECT (SELECT COUNT(*) FROM dataflow_activations WHERE dataflow_id = '$orphan_id')
+        + (SELECT COUNT(*) FROM dataflow_wakes WHERE dataflow_id = '$orphan_id');")
+    [ "$orphans" = "0" ] || { echo "upgrade left activation or wake rows of a deleted workflow" >&2; exit 1; }
+fi
+
+echo "$dialect restart proof passed${from_ref:+ from $from_ref}: $dataflow_id $first_epoch -> $second_epoch"
