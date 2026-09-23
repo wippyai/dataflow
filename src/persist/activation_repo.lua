@@ -11,6 +11,12 @@ local TERMINAL_STATUS = {
     [consts.STATUS.TERMINATED] = true,
 }
 
+local PHASE = {
+    RUNNING = "running",
+    RELEASED = "released",
+}
+activation_repo.OWNER_PHASE = PHASE
+
 local TERMINAL_VALUES = {
     consts.STATUS.COMPLETED_SUCCESS,
     consts.STATUS.COMPLETED_FAILURE,
@@ -150,6 +156,9 @@ local function normalize_row(row: any)
         generation = tonumber(row.generation),
         desired_active = row.desired_active == true or tonumber(row.desired_active) == 1,
         owner_epoch = row.owner_epoch and tostring(row.owner_epoch) or nil,
+        owner_token = row.owner_token and tostring(row.owner_token) or nil,
+        owner_pid = row.owner_pid and tostring(row.owner_pid) or nil,
+        owner_phase = row.owner_phase and tostring(row.owner_phase) or nil,
         launch_args = launch_args,
         requested_at = tostring(row.requested_at),
         updated_at = tostring(row.updated_at),
@@ -189,6 +198,7 @@ end
 local function get_tx(tx, dataflow_id)
     local rows, query_err = tx_query(tx, [[
         SELECT dataflow_id, generation, desired_active, owner_epoch,
+               owner_token, owner_pid, owner_phase,
                launch_args, requested_at, updated_at
         FROM dataflow_activations WHERE dataflow_id = ? LIMIT 1
     ]], { dataflow_id })
@@ -244,7 +254,6 @@ local function advance_activation_tx(tx, dataflow_id, launch_args: any, now_valu
         ON CONFLICT(dataflow_id) DO UPDATE SET
             generation = dataflow_activations.generation + 1,
             desired_active = excluded.desired_active,
-            owner_epoch = NULL,
             launch_args = %s,
             requested_at = excluded.requested_at,
             updated_at = excluded.updated_at
@@ -417,14 +426,56 @@ function activation_repo.activate_due_tx(tx, dataflow_id, wake_key, now_value)
     return { changed = false, terminal = false, promoted = false, due = false }, nil
 end
 
-function activation_repo.release_if_generation_tx(tx, dataflow_id, generation, now_value)
+-- An ownership fence compares the owner columns with the values a writer
+-- observed: an absent token or phase matches a row without one.
+local function owner_fence_sql(fence: any, params: { any }): string
+    local clauses = {}
+    if fence.owner_token ~= nil then
+        table.insert(clauses, "owner_token = ?")
+        table.insert(params, fence.owner_token)
+    else
+        table.insert(clauses, "owner_token IS NULL")
+    end
+    if fence.owner_phase ~= nil then
+        table.insert(clauses, "owner_phase = ?")
+        table.insert(params, fence.owner_phase)
+    else
+        table.insert(clauses, "owner_phase IS NULL")
+    end
+    if fence.generation ~= nil then
+        table.insert(clauses, "generation = ?")
+        table.insert(params, fence.generation)
+    end
+    return table.concat(clauses, " AND ")
+end
+
+local function validate_fence(fence: any): (boolean?, string?)
+    if type(fence) ~= "table" then return nil, "ownership fence is required" end
+    if fence.owner_token ~= nil and (type(fence.owner_token) ~= "string" or fence.owner_token == "") then
+        return nil, "owner_token must be a non-empty string"
+    end
+    if fence.owner_phase ~= nil and fence.owner_phase ~= PHASE.RUNNING and
+        fence.owner_phase ~= PHASE.RELEASED then
+        return nil, "owner_phase must be running or released"
+    end
+    if fence.generation ~= nil then
+        local generation = tonumber(fence.generation)
+        if not generation or generation < 1 or generation % 1 ~= 0 then
+            return nil, "generation must be a positive integer"
+        end
+    end
+    return true, nil
+end
+
+-- Release the active request when the ownership fence still holds: marks the
+-- owner released and the activation inactive. A fence that no longer matches
+-- reports whether ownership changed or only the generation advanced.
+function activation_repo.release_owner_tx(tx, dataflow_id, fence, now_value)
     if not tx then return nil, "transaction is required" end
     local valid, validation_err = validate_id(dataflow_id)
     if not valid then return nil, validation_err end
-    generation = tonumber(generation)
-    if not generation or generation < 1 or generation % 1 ~= 0 then
-        return nil, "generation must be a positive integer"
-    end
+    valid, validation_err = validate_fence(fence)
+    if not valid then return nil, validation_err end
     valid, validation_err = validate_timestamp(now_value, "updated_at")
     if not valid then return nil, validation_err end
 
@@ -436,82 +487,122 @@ function activation_repo.release_if_generation_tx(tx, dataflow_id, generation, n
         return terminal, nil
     end
 
+    local params: { any } = { false, PHASE.RELEASED, now_value, dataflow_id, true }
+    local predicate = owner_fence_sql(fence, params)
     local result, update_err = tx_execute(tx, [[
         UPDATE dataflow_activations
-        SET desired_active = ?, launch_args = NULL, updated_at = ?
-        WHERE dataflow_id = ? AND generation = ? AND desired_active = ?
-          AND EXISTS (
-              SELECT 1 FROM dataflows
-              WHERE dataflow_id = ? AND status NOT IN (?, ?, ?, ?)
-          )
-    ]], {
-        false, now_value, dataflow_id, generation, true, dataflow_id,
-        TERMINAL_VALUES[1], TERMINAL_VALUES[2], TERMINAL_VALUES[3], TERMINAL_VALUES[4],
-    })
+        SET desired_active = ?, owner_phase = ?, launch_args = NULL, updated_at = ?
+        WHERE dataflow_id = ? AND desired_active = ? AND ]] .. predicate, params)
     if update_err then return nil, "failed to release activation: " .. tostring(update_err) end
-    if result and (result.rows_affected or 0) > 0 then
-        return { changed = true, released = true, generation = generation, terminal = false }, nil
-    end
 
     local current, current_err = get_tx(tx, dataflow_id)
     if current_err then return nil, current_err end
+    if result and (result.rows_affected or 0) > 0 then
+        return {
+            changed = true,
+            released = true,
+            terminal = false,
+            generation = current and current.generation or fence.generation,
+        }, nil
+    end
     return {
         changed = false,
         released = false,
         terminal = false,
         generation = current and current.generation or nil,
+        owner_changed = current == nil or current.owner_token ~= fence.owner_token or
+            current.owner_phase ~= fence.owner_phase,
     }, nil
 end
 
--- Fence process ownership before spawn. A generation can be claimed only from
--- the exact epoch observed by the overseer. The write happens before process
--- creation, so an overseer crash between claim and spawn is classified as a
--- same-runtime loss rather than retried into a process flood.
-function activation_repo.claim_epoch_tx(
-    tx, dataflow_id, generation, observed_epoch, runtime_epoch, now_value)
+-- Admit an orchestrator that already holds the canonical name as the owner of
+-- the current request, before it mutates anything. Admission is refused for a
+-- terminal or inactive activation, a request older than the one the process
+-- was started for, and while another owner of the same runtime is running. The
+-- same token is admitted again, so an unacknowledged admission can be retried.
+function activation_repo.admit_owner_tx(tx, dataflow_id, min_generation, owner, now_value)
     if not tx then return nil, "transaction is required" end
     local valid, validation_err = validate_id(dataflow_id)
     if not valid then return nil, validation_err end
-    generation = tonumber(generation)
-    if not generation or generation < 1 or generation % 1 ~= 0 then
-        return nil, "generation must be a positive integer"
+    min_generation = tonumber(min_generation)
+    if not min_generation or min_generation < 1 or min_generation % 1 ~= 0 then
+        return nil, "min_generation must be a positive integer"
     end
-    if type(runtime_epoch) ~= "string" or runtime_epoch == "" then
-        return nil, "runtime_epoch is required"
+    if type(owner) ~= "table" then return nil, "owner is required" end
+    for _, field in ipairs({ "token", "pid", "runtime_epoch" }) do
+        if type(owner[field]) ~= "string" or owner[field] == "" then
+            return nil, "owner " .. field .. " is required"
+        end
     end
     valid, validation_err = validate_timestamp(now_value, "updated_at")
     if not valid then return nil, validation_err end
 
     local status, status_err = activation_repo.lock_workflow_tx(tx, dataflow_id)
     if status_err then return nil, status_err end
-    local terminal = terminal_result_from_status(status)
-    if terminal then
-        terminal.claimed = false
-        return terminal, nil
+    local found, current_err = get_tx(tx, dataflow_id)
+    if current_err then return nil, current_err end
+    if not found then
+        return {
+            dataflow_id = dataflow_id,
+            admitted = false,
+            refused = TERMINAL_STATUS[status] and "terminal" or "inactive",
+        }, nil
+    end
+    local current = found :: any
+
+    local refused: string? = nil
+    if TERMINAL_STATUS[status] then
+        refused = "terminal"
+    elseif current.owner_token == owner.token and current.owner_phase == PHASE.RUNNING then
+        refused = nil
+    elseif current.desired_active ~= true then
+        refused = "inactive"
+    elseif current.generation < min_generation then
+        refused = "stale"
+    elseif current.owner_phase == PHASE.RUNNING and current.owner_epoch == owner.runtime_epoch then
+        refused = "owned"
+    end
+    if refused then
+        current.admitted = false
+        current.refused = refused
+        return current, nil
+    end
+    if current.owner_token == owner.token then
+        current.admitted = true
+        return current, nil
     end
 
-    local epoch_predicate = "owner_epoch IS NULL"
-    local params = { runtime_epoch, now_value, dataflow_id, generation, true }
-    if observed_epoch ~= nil then
-        if type(observed_epoch) ~= "string" or observed_epoch == "" then
-            return nil, "observed_epoch must be nil or a non-empty string"
-        end
-        epoch_predicate = "owner_epoch = ?"
-        table.insert(params, observed_epoch)
-    end
     local result, update_err = tx_execute(tx, [[
         UPDATE dataflow_activations
-        SET owner_epoch = ?, updated_at = ?
-        WHERE dataflow_id = ? AND generation = ? AND desired_active = ?
-          AND ]] .. epoch_predicate, params)
-    if update_err then return nil, "failed to claim activation epoch: " .. tostring(update_err) end
+        SET owner_token = ?, owner_pid = ?, owner_epoch = ?, owner_phase = ?, updated_at = ?
+        WHERE dataflow_id = ? AND generation = ?
+    ]], { owner.token, owner.pid, owner.runtime_epoch, PHASE.RUNNING, now_value,
+        dataflow_id, current.generation })
+    if update_err then return nil, "failed to admit owner: " .. tostring(update_err) end
+    if not result or (result.rows_affected or 0) ~= 1 then return nil, "owner admission was not recorded" end
+    current.owner_token = owner.token
+    current.owner_pid = owner.pid
+    current.owner_epoch = owner.runtime_epoch
+    current.owner_phase = PHASE.RUNNING
+    current.admitted = true
+    return current, nil
+end
 
+-- Fence an orchestrator-owned transaction: the token must still own the
+-- activation as a running owner. Takes the workflow lock first.
+function activation_repo.verify_owner_tx(tx, dataflow_id, owner_token)
+    if not tx then return nil, "transaction is required" end
+    local valid, validation_err = validate_id(dataflow_id)
+    if not valid then return nil, validation_err end
+    if type(owner_token) ~= "string" or owner_token == "" then return nil, "owner_token is required" end
+    local _, status_err = activation_repo.lock_workflow_tx(tx, dataflow_id)
+    if status_err then return nil, status_err end
     local current, current_err = get_tx(tx, dataflow_id)
     if current_err then return nil, current_err end
-    if not current then return nil, "activation row missing after epoch claim" end
-    current.claimed = result ~= nil and (result.rows_affected or 0) == 1
-    current.terminal = false
-    return current, nil
+    if not current or current.owner_token ~= owner_token or current.owner_phase ~= PHASE.RUNNING then
+        return nil, "orchestrator ownership lost"
+    end
+    return true, nil
 end
 
 function activation_repo.consume_wake_tx(tx, dataflow_id, wake_key, generation)
@@ -579,6 +670,19 @@ function activation_repo.disable_terminal_tx(tx, dataflow_id, now_value)
     return cleanup_terminal_tx(tx, dataflow_id, status, now_value)
 end
 
+-- Read the activation after taking the workflow lock, so a transaction holding
+-- it (an admission or a release) finishes first.
+function activation_repo.read_locked_tx(tx, dataflow_id)
+    if not tx then return nil, "transaction is required" end
+    local valid, validation_err = validate_id(dataflow_id)
+    if not valid then return nil, validation_err end
+    local status, status_err = activation_repo.lock_workflow_tx(tx, dataflow_id)
+    if status_err then return nil, status_err end
+    local activation, activation_err = get_tx(tx, dataflow_id)
+    if activation_err then return nil, activation_err end
+    return { activation = activation, status = status }, nil
+end
+
 function activation_repo.get(dataflow_id)
     local valid, id_err = validate_id(dataflow_id)
     if not valid then return nil, id_err end
@@ -586,6 +690,7 @@ function activation_repo.get(dataflow_id)
     if db_err then return nil, db_err end
     local rows, query_err = db_query(db, [[
         SELECT dataflow_id, generation, desired_active, owner_epoch,
+               owner_token, owner_pid, owner_phase,
                launch_args, requested_at, updated_at
         FROM dataflow_activations WHERE dataflow_id = ? LIMIT 1
     ]], { dataflow_id })
@@ -598,8 +703,9 @@ function activation_repo.list_active()
     local db, db_err = sql.get(consts.APP_DB)
     if db_err then return nil, db_err end
     local rows, query_err = db_query(db, [[
-        SELECT a.dataflow_id, a.generation, a.desired_active, a.owner_epoch, a.launch_args,
-               a.requested_at, a.updated_at
+        SELECT a.dataflow_id, a.generation, a.desired_active, a.owner_epoch,
+               a.owner_token, a.owner_pid, a.owner_phase,
+               a.launch_args, a.requested_at, a.updated_at
         FROM dataflow_activations a
         JOIN dataflows d ON d.dataflow_id = a.dataflow_id
         WHERE a.desired_active = ? AND d.status NOT IN (?, ?, ?, ?)

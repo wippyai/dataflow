@@ -27,40 +27,29 @@ local SAFETY_INTERVAL = "30s"
 local SCAN_LIMIT = 100
 local RUNTIME_EPOCH_ENV = "userspace.dataflow.env:runtime_epoch"
 
-type OwnerReference = {
-    dataflow_id: string,
-    generation: number,
-}
-
-type OwnershipRecord = {
-    dataflow_id: string,
-    generation: number,
-    phase: string,
-    pid: string?,
-    claim_required: boolean,
-    claim_from_epoch: string?,
-    candidate_pid: string?,
-}
-
 type OwnershipState = {
-    by_dataflow: { [string]: OwnershipRecord },
     by_pid: { [string]: string },
+    by_dataflow: { [string]: string },
+}
+
+type Fence = {
+    token: string?,
+    phase: string?,
+    generation: number?,
 }
 
 type Decision = {
     kind: string,
     reason: string,
-    dataflow_id: string?,
+    dataflow_id: string,
     generation: number?,
     pid: string?,
-    message: string?,
-    observed_epoch: string?,
+    fence: Fence?,
 }
 
 type Runtime = {
     ownership: OwnershipState,
     nudges: { [string]: Nudge },
-    known: { [string]: boolean },
     bootstrapped: boolean,
     epoch: string?,
 }
@@ -72,15 +61,10 @@ type Nudge = {
     wake_at: string?,
 }
 
-type Activation = {
-    dataflow_id: string?,
-    generation: number?,
-    desired_active: boolean?,
-    owner_epoch: string?,
-    launch_args: table?,
-    promoted: boolean?,
-    requested_at: string?,
-    updated_at: string?,
+type Observation = {
+    activation: any,
+    status: string?,
+    registered_pid: string?,
 }
 
 type Workflow = {
@@ -96,11 +80,8 @@ type WakeRow = {
     wake_at: string,
 }
 
-local TERMINAL_STATUS = {
-    [consts.STATUS.COMPLETED_SUCCESS] = true,
-    [consts.STATUS.COMPLETED_FAILURE] = true,
-    [consts.STATUS.CANCELLED] = true,
-    [consts.STATUS.TERMINATED] = true,
+type ReconcileOptions = {
+    message: string?,
 }
 
 local function schema_not_ready(err: any): boolean
@@ -160,10 +141,6 @@ local function call_with_tx(fn: (any) -> (any?, string?)): (any?, string?)
     return M.with_tx(fn)
 end
 
-local function is_terminal(status: string?): boolean
-    return TERMINAL_STATUS[tostring(status or "")] == true
-end
-
 local function log_flow(message: string, dataflow_id: string, err: any)
     logger:warn(message, {
         dataflow_id = dataflow_id,
@@ -193,18 +170,6 @@ local function lookup_owner(dataflow_id: string): (string?, string?)
     return pid and tostring(pid) or nil, nil
 end
 
-local function apply_transition(
-    runtime: Runtime,
-    next_state: OwnershipState?,
-    decision: Decision?,
-    err: any
-): (Decision?, string?)
-    if err then return nil, tostring(err) end
-    if not next_state or not decision then return nil, "overseer transition returned no result" end
-    runtime.ownership = next_state :: OwnershipState
-    return decision :: Decision, nil
-end
-
 local function clone_launch_args(value: { [string]: any }?): { [string]: any }
     local result: { [string]: any } = {}
     for key, item in pairs(value or {}) do result[key] = item end
@@ -215,7 +180,6 @@ function M.new_runtime(epoch: string?): Runtime
     return {
         ownership = M.overseer_state.new() :: OwnershipState,
         nudges = {},
-        known = {},
         bootstrapped = false,
         epoch = epoch,
     }
@@ -255,264 +219,157 @@ local function failure_message(event: any): string
     return "active orchestrator exited before reaching a durable terminal or waiting state"
 end
 
-function M.drive_decision(runtime: Runtime, initial: Decision?): (boolean?, string?)
-    local decision = initial
-    for _ = 1, 10 do
-        if not decision or decision.kind == M.overseer_state.ACTION.NONE then
-            if decision and decision.reason == "owner_monitored" and decision.pid then
-                local owner = M.overseer_state.owner_for_pid(
-                    runtime.ownership, decision.pid) :: OwnerReference?
-                if owner then
-                    local delivered, delivery_err = deliver_nudge(
-                        runtime, owner.dataflow_id, decision.pid)
-                    if not delivered then
-                        log_flow("owner nudge delivery failed", owner.dataflow_id, delivery_err)
-                    end
-                end
-            end
+local MAX_RECONCILE_PASSES = 4
+
+-- Read the activation and the canonical name together under the workflow lock,
+-- so an admission or release in flight finishes before the name is checked.
+local function observe(dataflow_id: string): (Observation?, string?)
+    local observed, observe_err = call_with_tx(function(tx)
+        local locked, locked_err = M.activation_repo.read_locked_tx(tx, dataflow_id)
+        if locked_err then return nil, tostring(locked_err) end
+        local pid, lookup_err = lookup_owner(dataflow_id)
+        if lookup_err then return nil, "canonical owner lookup failed: " .. lookup_err end
+        return {
+            activation = locked and locked.activation or nil,
+            status = locked and locked.status or nil,
+            registered_pid = pid,
+        }, nil
+    end)
+    if observe_err then return nil, tostring(observe_err) end
+    return observed :: Observation, nil
+end
+
+local function stop_owner(pid: string): (boolean?, string?)
+    local cancel_ok, cancelled, cancel_err = pcall(M.process.cancel, pid, "5s")
+    if cancel_ok and cancelled == true then return true, nil end
+    local cancel_failure = cancel_ok and cancel_err or cancelled
+    if is_not_found(cancel_failure) then return true, nil end
+    local terminate_ok, terminated, terminate_err = pcall(M.process.terminate, pid)
+    local terminate_failure = terminate_ok and terminate_err or terminated
+    if (not terminate_ok or terminated ~= true) and not is_not_found(terminate_failure) then
+        return nil, "failed to stop orchestrator: " .. tostring(
+            terminate_err or terminated or cancel_err or cancelled)
+    end
+    return true, nil
+end
+
+local function monitor_owner(runtime: Runtime, dataflow_id: string, pid: string): boolean
+    local ok, monitored, monitor_err = pcall(M.process.monitor, pid)
+    local monitor_ok = ok and (monitored == true or
+        is_already_monitoring(monitored) or is_already_monitoring(monitor_err))
+    if not monitor_ok then return false end
+    M.overseer_state.track(runtime.ownership, dataflow_id, pid)
+    local delivered, delivery_err = deliver_nudge(runtime, dataflow_id, pid)
+    if not delivered then log_flow("owner nudge delivery failed", dataflow_id, delivery_err) end
+    return true
+end
+
+local function fail(dataflow_id: string, fence: Fence, reason: string, message: string): (any?, string?)
+    return M.commit.fail_activation(dataflow_id, fence, {
+        source = "dataflow.overseer",
+        reason = reason,
+        message = message,
+        failed_at = now_value(),
+    })
+end
+
+-- Spawn the canonical orchestrator for the observed request. Returns the
+-- spawned pid, or a name conflict marker, or the reason spawning is impossible.
+local function spawn_owner(
+    runtime: Runtime,
+    dataflow_id: string,
+    activation: any,
+    generation: number
+): (string?, boolean, string?)
+    local raw_workflow, workflow_err = M.dataflow_repo.get(dataflow_id)
+    if workflow_err or not raw_workflow then
+        return nil, false, "durable spawn state unavailable: " .. tostring(workflow_err or "missing row")
+    end
+    local workflow = raw_workflow :: Workflow
+    local actor, scope, frame_err = M.execution_frame.reconstruct(workflow.actor_id, workflow.actor_context)
+    if frame_err or not actor or not scope then
+        return nil, false, "execution frame reconstruction failed: " .. tostring(
+            frame_err or "missing actor or scope")
+    end
+    local launch_args: { [string]: any }? = nil
+    if type(activation.launch_args) == "table" then
+        launch_args = activation.launch_args :: { [string]: any }
+    end
+    local args = clone_launch_args(launch_args)
+    args.dataflow_id = dataflow_id
+    args.activation_generation = generation
+    args.runtime_epoch = runtime.epoch
+    local spawn_ok, spawn_pid, spawn_err = pcall(function()
+        return M.process.with_context({})
+            :with_name("dataflow." .. dataflow_id)
+            :with_actor(actor)
+            :with_scope(scope)
+            :spawn_monitored(tostring(M.consts.ORCHESTRATOR), tostring(M.consts.HOST_ID), args)
+    end)
+    if spawn_ok and spawn_pid then return tostring(spawn_pid), false, nil end
+    local failure = spawn_ok and spawn_err or spawn_pid
+    local registered_pid = select(1, lookup_owner(dataflow_id))
+    if registered_pid then return nil, true, nil end
+    return nil, false, "orchestrator spawn failed: " .. tostring(failure or "spawn returned no PID")
+end
+
+-- Converge one dataflow on its durable ownership record. Every pass starts
+-- from a fresh locked observation; nothing decided earlier is needed.
+function M.reconcile(runtime: Runtime, dataflow_id: string, options: ReconcileOptions?): (boolean?, string?)
+    if not runtime.epoch then return nil, "runtime epoch is unavailable" end
+    local message = options and options.message or "active orchestrator disappeared during runtime"
+    for _ = 1, MAX_RECONCILE_PASSES do
+        local observed, observe_err = observe(dataflow_id)
+        if observe_err or not observed then return nil, tostring(observe_err) end
+        local activation = observed.activation
+        if not activation then
+            M.overseer_state.forget_dataflow(runtime.ownership, dataflow_id)
             return true, nil
         end
+        local decision = M.overseer_state.decide({
+            dataflow_id = dataflow_id,
+            status = observed.status,
+            desired_active = activation.desired_active == true,
+            generation = tonumber(activation.generation),
+            owner_token = activation.owner_token,
+            owner_phase = activation.owner_phase,
+            owner_epoch = activation.owner_epoch,
+            registered_pid = observed.registered_pid,
+            runtime_epoch = runtime.epoch,
+        }) :: Decision
 
-        local dataflow_id = decision.dataflow_id
-        local generation = decision.generation
-        if not dataflow_id or not generation then return nil, "decision identity is missing" end
-
-        if decision.kind == M.overseer_state.ACTION.INSPECT_OWNER then
-            local pid, lookup_err = lookup_owner(dataflow_id)
-            if lookup_err then return nil, "canonical owner lookup failed: " .. lookup_err end
-            decision = select(1, apply_transition(runtime,
-                M.overseer_state.on_owner_observation(runtime.ownership, {
-                    dataflow_id = dataflow_id,
-                    generation = generation,
-                    registered_pid = pid,
-                    message = decision.message,
-                })))
-
-        elseif decision.kind == M.overseer_state.ACTION.CLAIM then
-            if not runtime.epoch then return nil, "runtime epoch is unavailable" end
-            local claimed, claim_err = call_with_tx(function(tx)
-                local result, err = M.activation_repo.claim_epoch_tx(
-                    tx, dataflow_id, generation, decision.observed_epoch,
-                    runtime.epoch, now_value())
-                return result, err and tostring(err) or nil
-            end)
-            if claim_err then return nil, tostring(claim_err) end
-            decision = select(1, apply_transition(runtime,
-                M.overseer_state.on_claim_observation(runtime.ownership, {
-                    dataflow_id = dataflow_id,
-                    generation = generation,
-                    claimed = claimed ~= nil and claimed.claimed == true,
-                })))
-
-        elseif decision.kind == M.overseer_state.ACTION.REFRESH then
-            local current, current_err = M.activation_repo.get(dataflow_id)
-            local workflow, workflow_err = M.dataflow_repo.get(dataflow_id)
-            if current_err or workflow_err then
-                return nil, tostring(current_err or workflow_err)
-            end
-            if not current then return true, nil end
-            return M.reconcile_activation(runtime, current, workflow)
-
-        elseif decision.kind == M.overseer_state.ACTION.MONITOR then
-            if not decision.pid then return nil, "monitor decision has no PID" end
-            local ok, monitored, monitor_err = pcall(M.process.monitor, decision.pid)
-            local monitor_ok = ok and (monitored == true or
-                is_already_monitoring(monitored) or is_already_monitoring(monitor_err))
-            local registered_pid = nil
-            if not monitor_ok then registered_pid = select(1, lookup_owner(dataflow_id)) end
-            decision = select(1, apply_transition(runtime,
-                M.overseer_state.on_monitor_observation(runtime.ownership, {
-                    dataflow_id = dataflow_id,
-                    generation = generation,
-                    pid = decision.pid,
-                    monitor_ok = monitor_ok,
-                    registered_pid = registered_pid,
-                    error = not ok and tostring(monitored) or tostring(monitor_err or "monitor failed"),
-                })))
-
+        if decision.kind == M.overseer_state.ACTION.NONE then
+            runtime.nudges[dataflow_id] = nil
+            return true, nil
         elseif decision.kind == M.overseer_state.ACTION.STOP then
-            if not decision.pid then return nil, "stop decision has no PID" end
-            local registered_pid, lookup_err = lookup_owner(dataflow_id)
-            if lookup_err then return nil, "terminal owner lookup failed: " .. lookup_err end
-            if not registered_pid then
-                decision = nil
-                goto continue_decision
-            end
-            local target_pid = registered_pid
-            local cancel_ok, cancelled, cancel_err = pcall(M.process.cancel, target_pid, "5s")
-            if not cancel_ok or cancelled ~= true then
-                local cancel_failure = cancel_ok and cancel_err or cancelled
-                if is_not_found(cancel_failure) then
-                    decision = nil
-                else
-                    local terminate_ok, terminated, terminate_err = pcall(
-                        M.process.terminate, target_pid)
-                    local terminate_failure = terminate_ok and terminate_err or terminated
-                    if (not terminate_ok or terminated ~= true) and
-                        not is_not_found(terminate_failure) then
-                        return nil, "failed to stop terminal orchestrator: " .. tostring(
-                            terminate_err or terminated or cancel_err or cancelled)
-                    end
-                    decision = nil
-                end
-            else
-                decision = nil
-            end
-
-        elseif decision.kind == M.overseer_state.ACTION.SPAWN then
-            local activation, activation_err = M.activation_repo.get(dataflow_id)
-            local workflow, workflow_err = M.dataflow_repo.get(dataflow_id)
-            if activation_err or workflow_err or not activation or not workflow then
-                decision = select(1, apply_transition(runtime,
-                    M.overseer_state.on_spawn_observation(runtime.ownership, {
-                        dataflow_id = dataflow_id,
-                        generation = generation,
-                        error = "durable spawn state unavailable: " .. tostring(
-                            activation_err or workflow_err or "missing row"),
-                    })))
-            elseif activation.desired_active ~= true or
-                tonumber(activation.generation) ~= generation or is_terminal(workflow.status) then
-                decision = select(1, apply_transition(runtime,
-                    M.overseer_state.on_activation(runtime.ownership, {
-                        dataflow_id = dataflow_id,
-                        generation = tonumber(activation.generation) or generation,
-                        desired_active = activation.desired_active == true,
-                        status = tostring(workflow.status),
-                        owner_epoch = activation.owner_epoch and
-                            tostring(activation.owner_epoch) or nil,
-                        runtime_epoch = runtime.epoch,
-                    })))
-            else
-                local actor, scope, frame_err = M.execution_frame.reconstruct(
-                    workflow.actor_id, workflow.actor_context)
-                if frame_err or not actor or not scope then
-                    decision = select(1, apply_transition(runtime,
-                        M.overseer_state.on_spawn_observation(runtime.ownership, {
-                            dataflow_id = dataflow_id,
-                            generation = generation,
-                            error = "execution frame reconstruction failed: " .. tostring(
-                                frame_err or "missing actor or scope"),
-                        })))
-                else
-                    local args = clone_launch_args(activation.launch_args :: { [string]: any }?)
-                    args.dataflow_id = dataflow_id
-                    args.activation_generation = generation
-                    local spawn_ok, spawn_pid, spawn_err = pcall(function()
-                        return M.process.with_context({})
-                            :with_name("dataflow." .. dataflow_id)
-                            :with_actor(actor)
-                            :with_scope(scope)
-                            :spawn_monitored(tostring(M.consts.ORCHESTRATOR), tostring(M.consts.HOST_ID), args)
-                    end)
-                    if not spawn_ok then
-                        spawn_err = tostring(spawn_pid)
-                        spawn_pid = nil
-                    end
-                    local registered_pid = select(1, lookup_owner(dataflow_id))
-                    decision = select(1, apply_transition(runtime,
-                        M.overseer_state.on_spawn_observation(runtime.ownership, {
-                            dataflow_id = dataflow_id,
-                            generation = generation,
-                            spawn_pid = spawn_pid and tostring(spawn_pid) or nil,
-                            registered_pid = registered_pid,
-                            error = spawn_pid and nil or tostring(spawn_err or "spawn returned no PID"),
-                        })))
-                end
-            end
-
+            runtime.nudges[dataflow_id] = nil
+            return stop_owner(tostring(decision.pid))
+        elseif decision.kind == M.overseer_state.ACTION.MONITOR then
+            if monitor_owner(runtime, dataflow_id, tostring(decision.pid)) then return true, nil end
         elseif decision.kind == M.overseer_state.ACTION.FAIL then
-            local failure, failure_err = M.commit.fail_activation(dataflow_id, generation, {
-                source = "dataflow.overseer",
-                reason = decision.reason,
-                message = decision.message,
-                failed_at = now_value(),
-            })
-            if failure_err then return nil, failure_err end
-            decision = select(1, apply_transition(runtime,
-                M.overseer_state.on_failed(runtime.ownership, {
-                    dataflow_id = dataflow_id,
-                    generation = generation,
-                })))
-            if failure and failure.completed ~= true then
-                local current, current_err = M.activation_repo.get(dataflow_id)
-                local workflow, workflow_err = M.dataflow_repo.get(dataflow_id)
-                if current_err or workflow_err then
-                    return nil, tostring(current_err or workflow_err)
-                end
-                if current then
-                    local reconciled, reconcile_err = M.reconcile_activation(runtime, current, workflow)
-                    if not reconciled then return nil, reconcile_err end
-                end
+            local failed, fail_err = fail(dataflow_id, decision.fence :: Fence, decision.reason, message)
+            if fail_err then return nil, tostring(fail_err) end
+            if failed and (failed.completed == true or failed.terminal == true) then return true, nil end
+        elseif decision.kind == M.overseer_state.ACTION.SPAWN then
+            local pid, conflict, spawn_err = spawn_owner(
+                runtime, dataflow_id, activation, tonumber(decision.generation) or 1)
+            if pid then
+                M.overseer_state.track(runtime.ownership, dataflow_id, pid)
+                local delivered, delivery_err = deliver_nudge(runtime, dataflow_id, pid)
+                if not delivered then log_flow("owner nudge delivery failed", dataflow_id, delivery_err) end
+                return true, nil
+            end
+            if not conflict then
+                local failed, fail_err = fail(dataflow_id, decision.fence :: Fence,
+                    "orchestrator_spawn_failed", tostring(spawn_err))
+                if fail_err then return nil, tostring(fail_err) end
+                if failed and (failed.completed == true or failed.terminal == true) then return true, nil end
             end
         else
             return nil, "unknown overseer decision " .. tostring(decision.kind)
         end
-        ::continue_decision::
     end
-    return nil, "overseer decision chain exceeded safety bound"
-end
-
-function M.reconcile_activation(
-    runtime: Runtime,
-    raw_activation: any,
-    raw_workflow: any?,
-    nudge: Nudge?
-): (boolean?, string?)
-    if type(raw_activation) ~= "table" then return nil, "activation must be a table" end
-    local normalized_launch_args: table? = nil
-    if type(raw_activation.launch_args) == "table" then
-        normalized_launch_args = raw_activation.launch_args :: table
-    end
-    local activation: Activation = {
-        dataflow_id = raw_activation.dataflow_id and
-            tostring(raw_activation.dataflow_id) or nil,
-        generation = tonumber(raw_activation.generation),
-        desired_active = raw_activation.desired_active == true,
-        owner_epoch = raw_activation.owner_epoch and tostring(raw_activation.owner_epoch) or nil,
-        launch_args = normalized_launch_args,
-        promoted = raw_activation.promoted == true,
-        requested_at = raw_activation.requested_at and
-            tostring(raw_activation.requested_at) or nil,
-        updated_at = raw_activation.updated_at and tostring(raw_activation.updated_at) or nil,
-    }
-    local workflow: Workflow? = nil
-    if type(raw_workflow) == "table" then
-        workflow = {
-            dataflow_id = raw_workflow.dataflow_id and tostring(raw_workflow.dataflow_id) or nil,
-            actor_id = raw_workflow.actor_id and tostring(raw_workflow.actor_id) or nil,
-            actor_context = raw_workflow.actor_context,
-            status = raw_workflow.status and tostring(raw_workflow.status) or nil,
-        }
-    end
-    local dataflow_id = tostring(activation.dataflow_id or "")
-    local generation = tonumber(activation.generation)
-    if dataflow_id == "" or not generation then return nil, "activation identity is invalid" end
-    if not runtime.epoch then return nil, "runtime epoch is unavailable" end
-    runtime.known[dataflow_id] = true
-
-    local current = M.overseer_state.owner_for_dataflow(runtime.ownership, dataflow_id)
-    if activation.desired_active == true and (not current or generation > current.generation) then
-        runtime.nudges[dataflow_id] = nudge or {
-            dataflow_id = dataflow_id,
-            generation = generation,
-        }
-    elseif activation.desired_active ~= true or (workflow and is_terminal(workflow.status)) then
-        runtime.nudges[dataflow_id] = nil
-    end
-
-    local next_state, next_decision, transition_err = M.overseer_state.on_activation(
-        runtime.ownership, {
-        dataflow_id = dataflow_id,
-        generation = generation,
-        desired_active = activation.desired_active == true,
-        status = workflow and tostring(workflow.status) or nil,
-        owner_epoch = activation.owner_epoch and tostring(activation.owner_epoch) or nil,
-        runtime_epoch = runtime.epoch,
-    })
-    local decision, state_err = apply_transition(
-        runtime, next_state, next_decision, transition_err)
-    if state_err then return nil, state_err end
-    return M.drive_decision(runtime, decision)
+    return nil, "ownership of " .. dataflow_id .. " did not settle"
 end
 
 local function pending_due(now: string, limit: number): ({ WakeRow }?, string?)
@@ -556,13 +413,13 @@ function M.promote_due(runtime: Runtime): (number?, string?)
                     tostring(row.dataflow_id), "generation is missing")
                 goto continue_due
             end
-            local ok, reconcile_err = M.reconcile_activation(
-                runtime, activation :: Activation, nil, {
+            runtime.nudges[tostring(row.dataflow_id)] = {
                 dataflow_id = tostring(row.dataflow_id),
                 generation = promoted_generation,
                 wake_key = tostring(row.wake_key),
                 wake_at = row.wake_at and tostring(row.wake_at) or nil,
-            })
+            }
+            local ok, reconcile_err = M.reconcile(runtime, tostring(row.dataflow_id))
             if not ok then
                 log_flow("promoted activation reconciliation failed",
                     tostring(row.dataflow_id), reconcile_err)
@@ -576,37 +433,20 @@ end
 function M.reconcile_all(runtime: Runtime): (number?, string?)
     local active, list_err = M.activation_repo.list_active()
     if list_err then return nil, tostring(list_err) end
-    local active_ids: { [string]: boolean } = {}
+    local seen: { [string]: boolean } = {}
     local active_count = 0
     for _, activation in ipairs(active or {}) do
         active_count = active_count + 1
         local id = tostring(activation.dataflow_id)
-        active_ids[id] = true
-        local ok, reconcile_err = M.reconcile_activation(runtime, activation)
+        seen[id] = true
+        local ok, reconcile_err = M.reconcile(runtime, id)
         if not ok then log_flow("active activation reconciliation failed", id, reconcile_err) end
     end
-
-    local inactive_ids = {}
-    for dataflow_id in pairs(runtime.known) do
-        if not active_ids[dataflow_id] then table.insert(inactive_ids, dataflow_id) end
-    end
-    for _, dataflow_id in ipairs(inactive_ids) do
-        local owner = M.overseer_state.owner_for_dataflow(runtime.ownership, dataflow_id)
-        if owner then
-            local activation, activation_err = M.activation_repo.get(dataflow_id)
-            local workflow, workflow_err = M.dataflow_repo.get(dataflow_id)
-            if activation_err or workflow_err then
-                log_flow("inactive activation reconciliation failed", dataflow_id,
-                    activation_err or workflow_err)
-            else
-                local snapshot = activation or {
-                    dataflow_id = dataflow_id,
-                    generation = owner.generation,
-                    desired_active = false,
-                }
-                local ok, reconcile_err = M.reconcile_activation(runtime, snapshot, workflow)
-                if not ok then log_flow("inactive state application failed", dataflow_id, reconcile_err) end
-            end
+    -- A monitored process whose activation is no longer active is stopped.
+    for _, id in ipairs(M.overseer_state.tracked(runtime.ownership)) do
+        if not seen[id] then
+            local ok, reconcile_err = M.reconcile(runtime, id)
+            if not ok then log_flow("inactive activation reconciliation failed", id, reconcile_err) end
         end
     end
     return active_count, nil
@@ -632,12 +472,7 @@ function M.handle_activation_hint(runtime: Runtime, payload: any): (boolean?, st
         payload.dataflow_id == "" then
         return nil, "activation hint identity is invalid"
     end
-    local activation, activation_err = M.activation_repo.get(payload.dataflow_id)
-    if activation_err then return nil, tostring(activation_err) end
-    if not activation then return nil, "activation row is missing" end
-    local workflow, workflow_err = M.dataflow_repo.get(payload.dataflow_id)
-    if workflow_err then return nil, tostring(workflow_err) end
-    return M.reconcile_activation(runtime, activation, workflow)
+    return M.reconcile(runtime, payload.dataflow_id)
 end
 
 function M.safety_reconcile(runtime: Runtime): (number?, string?)
@@ -648,42 +483,10 @@ end
 
 function M.handle_exit(runtime: Runtime, event: any): (boolean?, string?)
     local pid = event and event.from and tostring(event.from) or nil
-    local owner = pid and M.overseer_state.owner_for_pid(runtime.ownership, pid) or nil
-    if not owner or not pid then return true, nil end
-
-    local activation, activation_err = M.activation_repo.get(owner.dataflow_id)
-    local workflow, workflow_err = M.dataflow_repo.get(owner.dataflow_id)
-    if activation_err or workflow_err then return nil, tostring(activation_err or workflow_err) end
-
-    local generation = activation and tonumber(activation.generation) or nil
-    if generation and generation ~= owner.generation then
-        local next_state, next_decision, transition_err = M.overseer_state.on_exit(
-            runtime.ownership, {
-            pid = pid,
-            generation = owner.generation,
-            desired_active = false,
-            status = workflow and tostring(workflow.status) or nil,
-        })
-        local _, remove_err = apply_transition(
-            runtime, next_state, next_decision, transition_err)
-        if remove_err then return nil, remove_err end
-        return M.reconcile_activation(runtime, activation, workflow)
-    end
-
-    local desired_active = activation ~= nil and activation.desired_active == true and
-        workflow ~= nil and not is_terminal(workflow.status)
-    local next_state, next_decision, transition_err = M.overseer_state.on_exit(
-        runtime.ownership, {
-        pid = pid,
-        generation = owner.generation,
-        desired_active = desired_active,
-        status = workflow and tostring(workflow.status) or nil,
-        message = failure_message(event),
-    })
-    local decision, state_err = apply_transition(
-        runtime, next_state, next_decision, transition_err)
-    if state_err then return nil, state_err end
-    return M.drive_decision(runtime, decision)
+    if not pid then return true, nil end
+    local dataflow_id = M.overseer_state.forget_pid(runtime.ownership, pid)
+    if not dataflow_id then return true, nil end
+    return M.reconcile(runtime, dataflow_id, { message = failure_message(event) })
 end
 
 function M.next_pending_wake(): (any?, string?)

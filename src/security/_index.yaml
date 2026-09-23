@@ -163,6 +163,24 @@ entries:
         - env.get
       effect: allow
 
+  - name: epoch_reader
+    kind: registry.entry
+    meta:
+      comment: Module-owned authority of the runtime epoch reader function; it reads nothing else.
+
+  - name: epoch_reader.runtime_epoch
+    kind: security.policy
+    meta:
+      comment: Reads only the module-owned in-memory full-runtime boot epoch.
+    groups:
+      - userspace.dataflow.security:epoch_reader
+    policy:
+      resources:
+        - userspace.dataflow.env:runtime_epoch
+      actions:
+        - env.get
+      effect: allow
+
   - name: retention
     kind: registry.entry
     meta:

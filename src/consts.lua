@@ -4,6 +4,7 @@ local consts = {}
 consts.HOST_ID = "app:processes"
 consts.APP_DB = "app:db"
 consts.ORCHESTRATOR = "userspace.dataflow.runner:orchestrator"
+consts.RUNTIME_EPOCH_READER = "userspace.dataflow.runner:runtime_epoch"
 
 -- Topic constants for actor state transitions
 consts.TOPIC = {

@@ -123,6 +123,47 @@ entries:
       test: wippy.test:test
     method: run_tests
 
+  - name: restricted_caller_test
+    kind: function.lua
+    meta:
+      type: test
+      suite: "01_runtime_failure"
+      comment: Proves a caller without the module-owned runtime epoch permission runs workflows synchronously and through the overseer.
+    source: file://restricted_caller_test.lua
+    modules: [uuid, time, env, funcs, security]
+    imports:
+      client: userspace.dataflow:client
+      consts: userspace.dataflow:consts
+      test: wippy.test:test
+    method: run_tests
+
+  - name: restricted_caller_probe
+    kind: function.lua
+    meta:
+      test_only: true
+      comment: Creates and runs a workflow as the restricted caller of restricted_caller_test.
+    source: file://restricted_caller_test.lua
+    modules: [uuid, time, env, funcs, security]
+    imports:
+      client: userspace.dataflow:client
+      consts: userspace.dataflow:consts
+      test: wippy.test:test
+    method: probe
+
+  - name: caller_without_runtime_epoch
+    kind: security.policy
+    meta:
+      test_only: true
+      comment: Grants a restricted test caller everything except the module-owned runtime epoch.
+    policy:
+      resources: '*'
+      actions: '*'
+      effect: allow
+      conditions:
+        - field: resource
+          operator: ne
+          value: userspace.dataflow.env:runtime_epoch
+
   - name: db
     kind: db.sql.sqlite
     meta:

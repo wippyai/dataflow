@@ -1164,6 +1164,140 @@ local function define_tests()
                 test.eq(rows[1].status, ops.STATUS.RUNNING)
             end)
 
+            it("passivates only for the owning token and marks its ownership released", function()
+                local resources = setup_test_resources()
+                local tx = get_test_transaction()
+                local timestamp = time.now():format(time.RFC3339NANO)
+                test.not_nil(select(1, activation_repo.request_activation_tx(
+                    tx, resources.dataflow_id, {}, timestamp)))
+                local admitted = test.not_nil(select(1, activation_repo.admit_owner_tx(
+                    tx, resources.dataflow_id, 1,
+                    { token = "owner-a", pid = "pid-a", runtime_epoch = "runtime-a" }, timestamp))) :: any
+                test.is_true(admitted.admitted)
+                local _, running_err = tx:execute(rebind(
+                    "UPDATE dataflows SET status = ? WHERE dataflow_id = ?", tx:db_type()),
+                    { ops.STATUS.RUNNING, resources.dataflow_id })
+                test.is_nil(running_err)
+
+                local foreign, foreign_err = ops.execute(tx, resources.dataflow_id, nil, {
+                    type = ops.COMMAND_TYPES.PASSIVATE_WORKFLOW,
+                    payload = {
+                        activation_generation = 1,
+                        owner = { token = "owner-b", phase = "running" },
+                    },
+                })
+                test.is_nil(foreign_err)
+                test.is_false(foreign.results[1].released)
+                test.is_true(foreign.results[1].owner_changed)
+
+                local result, err = ops.execute(tx, resources.dataflow_id, nil, {
+                    type = ops.COMMAND_TYPES.PASSIVATE_WORKFLOW,
+                    payload = {
+                        activation_generation = 1,
+                        owner = { token = "owner-a", phase = "running" },
+                    },
+                })
+                test.is_nil(err)
+                test.is_true(result.results[1].released)
+                local rows, query_err = txq(tx, [[
+                    SELECT owner_token, owner_phase, desired_active FROM dataflow_activations
+                    WHERE dataflow_id = ?
+                ]], { resources.dataflow_id })
+                test.is_nil(query_err)
+                test.eq(rows[1].owner_token, "owner-a")
+                test.eq(rows[1].owner_phase, "released")
+                test.is_false(db_bool(rows[1].desired_active))
+            end)
+
+            it("removes only the captured signal wakes in the releasing passivation", function()
+                local resources = setup_test_resources()
+                local tx = get_test_transaction()
+                local timestamp = time.now():format(time.RFC3339NANO)
+                local activation, activation_err = activation_repo.request_activation_tx(
+                    tx, resources.dataflow_id, {}, timestamp)
+                test.is_nil(activation_err)
+                test.eq(activation.generation, 1)
+                local _, running_err = tx:execute(rebind(
+                    "UPDATE dataflows SET status = ? WHERE dataflow_id = ?", tx:db_type()),
+                    { ops.STATUS.RUNNING, resources.dataflow_id })
+                test.is_nil(running_err)
+                for _, wake_key in ipairs({ "signal:captured", "signal:uncaptured", "yield:deadline" }) do
+                    local _, wake_err = tx:execute(rebind([[
+                        INSERT INTO dataflow_wakes(dataflow_id, wake_key, wake_at, activation_generation)
+                        VALUES (?, ?, ?, ?)
+                    ]], tx:db_type()), { resources.dataflow_id, wake_key, "2099-01-01T00:00:00Z", 1 })
+                    test.is_nil(wake_err)
+                end
+
+                local result, err = ops.execute(tx, resources.dataflow_id, nil, {
+                    type = ops.COMMAND_TYPES.PASSIVATE_WORKFLOW,
+                    payload = { activation_generation = 1, signal_wake_keys = { "signal:captured" } },
+                })
+                test.is_nil(err)
+                test.is_true(result.results[1].released)
+
+                local wakes, wake_query_err = txq(tx, [[
+                    SELECT wake_key FROM dataflow_wakes WHERE dataflow_id = ? ORDER BY wake_key
+                ]], { resources.dataflow_id })
+                test.is_nil(wake_query_err)
+                test.eq(#wakes, 2)
+                test.eq(wakes[1].wake_key, "signal:uncaptured")
+                test.eq(wakes[2].wake_key, "yield:deadline")
+            end)
+
+            it("keeps captured signal wakes when a concurrent signal wins the passivation fence", function()
+                local resources = setup_test_resources()
+                local tx = get_test_transaction()
+                local timestamp = time.now():format(time.RFC3339NANO)
+                local _, activation_err = activation_repo.request_activation_tx(
+                    tx, resources.dataflow_id, {}, timestamp)
+                test.is_nil(activation_err)
+                local _, running_err = tx:execute(rebind(
+                    "UPDATE dataflows SET status = ? WHERE dataflow_id = ?", tx:db_type()),
+                    { ops.STATUS.RUNNING, resources.dataflow_id })
+                test.is_nil(running_err)
+                local _, captured_err = tx:execute(rebind([[
+                    INSERT INTO dataflow_wakes(dataflow_id, wake_key, wake_at, activation_generation)
+                    VALUES (?, ?, ?, ?)
+                ]], tx:db_type()), { resources.dataflow_id, "signal:captured", timestamp, 1 })
+                test.is_nil(captured_err)
+                local signal, signal_err = activation_repo.activate_for_signal_tx(
+                    tx, resources.dataflow_id, "signal:concurrent", timestamp, timestamp)
+                test.is_nil(signal_err)
+                test.eq(signal.generation, 2)
+
+                local result, err = ops.execute(tx, resources.dataflow_id, nil, {
+                    type = ops.COMMAND_TYPES.PASSIVATE_WORKFLOW,
+                    payload = { activation_generation = 1, signal_wake_keys = { "signal:captured" } },
+                })
+                test.is_nil(err)
+                test.is_false(result.results[1].released)
+                test.eq(result.results[1].current_generation, 2)
+
+                local wakes, wake_query_err = txq(tx, [[
+                    SELECT wake_key FROM dataflow_wakes WHERE dataflow_id = ? ORDER BY wake_key
+                ]], { resources.dataflow_id })
+                test.is_nil(wake_query_err)
+                test.eq(#wakes, 2)
+                test.eq(wakes[1].wake_key, "signal:captured")
+                test.eq(wakes[2].wake_key, "signal:concurrent")
+            end)
+
+            it("rejects passivation cleanup of a wake that is not a signal wake", function()
+                local resources = setup_test_resources()
+                local tx = get_test_transaction()
+                local _, activation_err = activation_repo.request_activation_tx(
+                    tx, resources.dataflow_id, {}, time.now():format(time.RFC3339NANO))
+                test.is_nil(activation_err)
+
+                local result, err = ops.execute(tx, resources.dataflow_id, nil, {
+                    type = ops.COMMAND_TYPES.PASSIVATE_WORKFLOW,
+                    payload = { activation_generation = 1, signal_wake_keys = { "yield:deadline" } },
+                })
+                test.is_nil(result)
+                test.contains(tostring(err), "signal wake")
+            end)
+
             it("serializes terminal cleanup before later signal activation", function()
                 local resources = setup_test_resources()
                 local tx = get_test_transaction()

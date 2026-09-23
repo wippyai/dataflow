@@ -104,6 +104,9 @@ local function define_tests()
             }
             runtime.commit = {
                 get_pending_commits = function(_dataflow_id: string): ({ string }?, string?) return {}, nil end,
+                admit_owner = function(): (any, string?)
+                    return { generation = 1, desired_active = true, admitted = true }, nil
+                end,
             }
             runtime.overseer = {
                 notify = function(): (boolean, string?) return true, nil end,
@@ -170,6 +173,7 @@ local function define_tests()
             local result = orchestrator.run({
                 dataflow_id = "failure-reason-workflow",
                 activation_generation = 1,
+                runtime_epoch = "runtime-test",
             }, runtime) :: any
 
             test.is_false(result.success)

@@ -90,30 +90,53 @@ function commit.request_activation(dataflow_id, launch_args, options)
     return activation, nil
 end
 
--- Terminalize an activation only if the generation that lost its runtime owner
--- still owns the workflow. A newer start/signal generation wins the fence and
--- is never failed by a stale EXIT event.
-function commit.fail_activation(dataflow_id, generation, failure)
+-- Record an orchestrator start as the owner of the current request (see
+-- activation_repo.admit_owner_tx). owner = { token, pid, runtime_epoch }.
+function commit.admit_owner(dataflow_id, min_generation, owner)
+    local db, db_err = get_db()
+    if db_err then return nil, db_err end
+    local tx, begin_err = db:begin()
+    if begin_err then
+        db:release()
+        return nil, "Failed to begin transaction: " .. tostring(begin_err)
+    end
+    local admission, admit_err = activation_repo.admit_owner_tx(
+        tx, dataflow_id, min_generation, owner, commit._get_current_timestamp())
+    if admit_err then
+        tx:rollback()
+        db:release()
+        return nil, admit_err
+    end
+    local _, commit_err = tx:commit()
+    if commit_err then
+        tx:rollback()
+        db:release()
+        return nil, "Failed to commit owner admission: " .. tostring(commit_err)
+    end
+    db:release()
+    return admission, nil
+end
+
+-- Terminalize an activation only while the ownership the overseer observed
+-- still holds. fence = { token, phase, generation }: a running owner's token
+-- alone covers every newer request; any other fence names one generation.
+function commit.fail_activation(dataflow_id, fence, failure)
     if type(dataflow_id) ~= "string" or dataflow_id == "" then
         return nil, "Dataflow ID is required"
     end
-    generation = tonumber(generation)
-    if not generation or generation < 1 or generation % 1 ~= 0 then
-        return nil, "Activation generation must be a positive integer"
-    end
+    if type(fence) ~= "table" then return nil, "Ownership fence is required" end
     if type(failure) ~= "table" then return nil, "Failure details are required" end
 
-    local commands: { any } = {
-        {
-            type = ops.COMMAND_TYPES.COMPLETE_WORKFLOW,
-            payload = {
-                activation_generation = generation,
-                status = consts.STATUS.COMPLETED_FAILURE,
-                metadata = { runtime_failure = failure },
-                merge_metadata = true,
-            },
-        },
+    local payload: { [string]: any } = {
+        status = consts.STATUS.COMPLETED_FAILURE,
+        metadata = { runtime_failure = failure },
+        merge_metadata = true,
+        activation_generation = fence.generation,
     }
+    if fence.token ~= nil or fence.phase ~= nil then
+        payload.owner = { token = fence.token, phase = fence.phase }
+    end
+    local commands: { any } = { { type = ops.COMMAND_TYPES.COMPLETE_WORKFLOW, payload = payload } }
     local execute: any = commit.execute
     local result, execute_err = execute(dataflow_id, uuid.v7(), commands)
     if execute_err then return nil, execute_err end
@@ -476,7 +499,9 @@ end
 -- @param dataflow_id (string): ID of the dataflow to operate on
 -- @param op_id (string): Operation ID (generated if nil)
 -- @param commands (table): Array of command tables
--- @param options (table): Optional parameters
+-- @param options (table): Optional parameters: publish (boolean) and
+--   owner_token (string), which fences the batch to the orchestrator that owns
+--   the activation
 -- @return (table, string): Result of operations and error message if failed
 function commit.execute(dataflow_id, op_id, commands, options)
     if not dataflow_id then
@@ -512,6 +537,15 @@ function commit.execute(dataflow_id, op_id, commands, options)
     if err_tx then
         db:release()
         return nil, "Failed to begin transaction: " .. err_tx
+    end
+
+    if options.owner_token ~= nil then
+        local _, owner_err = activation_repo.verify_owner_tx(tx, dataflow_id, options.owner_token)
+        if owner_err then
+            tx:rollback()
+            db:release()
+            return nil, tostring(owner_err)
+        end
     end
 
     -- Execute the operations
