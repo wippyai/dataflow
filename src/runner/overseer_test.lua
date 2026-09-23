@@ -135,7 +135,7 @@ local function run_tests()
         local activations: { [string]: any } = {}
         local workflows: { [string]: any } = {}
         local locked_read_errors: { string } = {}
-        local clock: { now: number } = { now = 0 }
+        local clock: { now: any } = { now = overseer.time.now() }
 
         test.before_each(function()
             originals = {
@@ -147,14 +147,16 @@ local function run_tests()
                 sql = overseer.sql,
                 with_tx = overseer.with_tx,
                 pending_due = overseer.pending_due,
-                clock = overseer.clock,
+                now = overseer.now,
+                pending_wakes = overseer.pending_wakes,
             }
             observed = captures()
             activations = {} :: { [string]: any }
             workflows = {} :: { [string]: any }
             locked_read_errors = {} :: { string }
-            clock.now = 0
-            overseer.clock = function(): number return clock.now end
+            clock.now = overseer.time.now()
+            overseer.now = function(): any return clock.now end
+            overseer.pending_wakes = function() return {}, nil end
             overseer.process = process_mock(observed)
             overseer.execution_frame = {
                 reconstruct = function(actor_id, actor_context)
@@ -608,8 +610,8 @@ local function run_tests()
                 exit_before_admission(runtime, "unstartable")
                 if attempt < limit then
                     test.eq(#observed.spawns, attempt, "a restart waits for its retry time")
-                    clock.now = clock.now + overseer.start_retry_delay(attempt)
-                    test.is_true(select(1, overseer.retry_starts(runtime)))
+                    clock.now = clock.now:add(overseer.start_retry_delay(attempt))
+                    overseer.settle(runtime, {})
                     test.eq(#observed.spawns, attempt + 1)
                 end
             end
@@ -619,6 +621,7 @@ local function run_tests()
             test.eq(failures[1].failure.reason, "orchestrator_start_failed")
             test.eq(failures[1].failure.message, "not allowed: app:db")
             test.eq(failures[1].fence.generation, 2)
+            test.is_nil(runtime.starts["unstartable"], "a durable start failure retires the budget")
         end)
 
         test.it("keeps an exhausted start budget until its failure is persisted", function()
@@ -628,8 +631,8 @@ local function run_tests()
             test.is_true(select(1, overseer.reconcile(runtime, "stuck")))
             for attempt = 1, overseer.MAX_STARTS - 1 do
                 exit_before_admission(runtime, "stuck")
-                clock.now = clock.now + overseer.start_retry_delay(attempt)
-                test.is_true(select(1, overseer.retry_starts(runtime)))
+                clock.now = clock.now:add(overseer.start_retry_delay(attempt))
+                overseer.settle(runtime, {})
             end
             local fail_activation = overseer.commit.fail_activation
             local attempts = 0
@@ -659,8 +662,8 @@ local function run_tests()
             test.is_true(select(1, overseer.reconcile(runtime, "flaky")))
             exit_before_admission(runtime, "flaky")
             test.eq(#observed.spawns, 1)
-            clock.now = clock.now + overseer.start_retry_delay(1)
-            test.is_true(select(1, overseer.retry_starts(runtime)))
+            clock.now = clock.now:add(overseer.start_retry_delay(1))
+            overseer.settle(runtime, {})
             test.eq(#observed.spawns, 2)
             admit(activations.flaky, "t-flaky", tostring(observed.spawns[2].pid))
             test.not_nil(select(1, overseer.safety_reconcile(runtime)))
@@ -721,59 +724,172 @@ local function run_tests()
             test.eq(observed.spawns[1].args.activation_generation, 9)
         end)
 
-        test.it("arms the service loop for the next future wake behind a due one", function()
-            local now = overseer.time.now()
-            local due = { dataflow_id = "orphan", wake_key = "yield:due",
-                wake_at = now:add(-1 * overseer.time.SECOND):format(overseer.time.RFC3339NANO) }
-            local next_wake = { dataflow_id = "valid", wake_key = "yield:next",
-                wake_at = now:add(overseer.time.SECOND):format(overseer.time.RFC3339NANO) }
-            local promotions = 0
-            local timers: { any } = {}
-            local selected: { number } = {}
+        -- Drives the real service loop. Each scripted step answers one select;
+        -- a step receives the timers armed for that iteration.
+        local function run_service(steps: { (any) -> any }): { any }
             local real_time = overseer.time
-            local originals_loop = {
-                next_pending_wake = overseer.next_pending_wake,
-                promote_due = overseer.promote_due,
-                load_runtime_epoch = overseer.load_runtime_epoch,
-                channel = overseer.channel,
+            local saved = {
                 time = overseer.time,
+                channel = overseer.channel,
+                load_runtime_epoch = overseer.load_runtime_epoch,
             }
-            overseer.next_pending_wake = function(after: string?)
-                if after then return next_wake, nil end
-                return due, nil
-            end
-            overseer.promote_due = function()
-                promotions = promotions + 1
-                return 0, nil
-            end
+            local inbox_channel = { case_receive = function() return "inbox" end }
+            local events_channel = { case_receive = function() return "events" end }
+            local armed: { any } = {}
+            local selects: { any } = {}
+            overseer.process.registry.register = function() return true, nil end
+            overseer.process.inbox = function() return inbox_channel end
+            overseer.process.events = function() return events_channel end
             overseer.load_runtime_epoch = function() return CURRENT_EPOCH, nil end
             overseer.time = setmetatable({
                 after = function(duration)
-                    table.insert(timers, duration)
-                    return { case_receive = function() return "timer" end }, nil
+                    local timer: any = {}
+                    timer.case_receive = function() return timer end
+                    table.insert(armed, { duration = duration, channel = timer })
+                    return timer, nil
                 end,
             }, { __index = real_time })
             overseer.channel = {
-                select = function(cases)
-                    table.insert(selected, #cases)
-                    return { ok = false }
+                select = function()
+                    local deadline_timer = nil
+                    for _, timer in ipairs(armed) do
+                        if timer.duration ~= "30s" then deadline_timer = timer end
+                    end
+                    local step = steps[#selects + 1]
+                    table.insert(selects, {
+                        spawns = #observed.spawns,
+                        deadline = deadline_timer and deadline_timer.duration or nil,
+                    })
+                    armed = {}
+                    if not step then return { ok = false } end
+                    return step({
+                        inbox = inbox_channel,
+                        events = events_channel,
+                        deadline = deadline_timer and deadline_timer.channel or nil,
+                    })
                 end,
             }
-            overseer.process.registry.register = function() return true, nil end
-            overseer.process.inbox = function() return { case_receive = function() return "inbox" end } end
-            overseer.process.events = function() return { case_receive = function() return "events" end } end
-
             local ok, run_err = pcall(overseer.run, {})
-            for key, value in pairs(originals_loop) do overseer[key] = value end
+            for key, value in pairs(saved) do overseer[key] = value end
             test.is_true(ok, tostring(run_err))
-            test.eq(selected[1], 4, "inbox, events, safety and the next wake")
-            local wake_timer = nil
-            for _, duration in ipairs(timers) do
-                if type(duration) == "number" then wake_timer = duration end
+            return selects
+        end
+
+        local function hint(id: string): any
+            local payload = { dataflow_id = id }
+            return {
+                topic = function() return overseer.TOPIC end,
+                payload = function() return { data = function() return payload end } end,
+            }
+        end
+
+        test.it("promotes a wake that fell due while the loop was promoting an earlier one", function()
+            local promoted: { [string]: boolean } = {}
+            local due_row = { dataflow_id = "a", wake_key = "yield:a",
+                wake_at = clock.now:add(-1 * overseer.time.SECOND):format(overseer.time.RFC3339NANO) }
+            local next_row = { dataflow_id = "b", wake_key = "yield:b",
+                wake_at = clock.now:add(1500 * overseer.time.MILLISECOND):format(overseer.time.RFC3339NANO) }
+            overseer.pending_wakes = function()
+                -- The query is slow: B's deadline passes while it runs.
+                clock.now = clock.now:add(2 * overseer.time.SECOND)
+                local rows = {}
+                for _, row in ipairs({ due_row, next_row }) do
+                    if not promoted[row.wake_key] then table.insert(rows, row) end
+                end
+                return rows, nil
             end
-            local armed = test.not_nil(wake_timer) :: number
+            overseer.activation_repo.activate_due_tx = function(_tx, _id, key)
+                promoted[key] = true
+                return { promoted = false, already_promoted = true }, nil
+            end
+            local selects = run_service({})
+            test.is_true(promoted["yield:a"])
+            test.is_true(promoted["yield:b"], "B is promoted before the loop blocks")
+            test.is_nil(selects[1].deadline)
+        end)
+
+        test.it("skips an unpromotable due wake until the next event without hiding a later one", function()
+            local stuck = { dataflow_id = "stuck", wake_key = "yield:stuck",
+                wake_at = clock.now:add(-1 * overseer.time.SECOND):format(overseer.time.RFC3339NANO) }
+            local later = { dataflow_id = "later", wake_key = "yield:later",
+                wake_at = clock.now:add(overseer.time.SECOND):format(overseer.time.RFC3339NANO) }
+            overseer.pending_wakes = function() return { stuck, later }, nil end
+            local attempts = 0
+            overseer.activation_repo.activate_due_tx = function()
+                attempts = attempts + 1
+                return nil, "database is locked"
+            end
+            local counts: { number } = {}
+            local selects = run_service({
+                function(channels: any): any
+                    table.insert(counts, attempts)
+                    return { ok = true, channel = channels.inbox, value = hint("unrelated") }
+                end,
+                function(_channels: any): any
+                    table.insert(counts, attempts)
+                    return { ok = false }
+                end,
+            })
+            test.eq(counts[1], 1)
+            test.eq(counts[2], 2)
+            local armed = test.not_nil(selects[1].deadline) :: number
             test.is_true(armed > 0 and armed <= 1000000000)
-            test.is_true(promotions >= 1)
+        end)
+
+        test.it("spawns a start retry that fell due while the loop inspected wakes", function()
+            activations.retry = activation("retry", 1)
+            workflows.retry = workflow("retry")
+            local slow = { enabled = false }
+            overseer.pending_wakes = function()
+                if slow.enabled then clock.now = clock.now:add(2 * overseer.time.SECOND) end
+                return {}, nil
+            end
+            local selects = run_service({
+                function(channels)
+                    local first = observed.spawns[1]
+                    observed.owners["dataflow.retry"] = nil
+                    slow.enabled = true
+                    return { ok = true, channel = channels.events, value = {
+                        kind = overseer.process.event.EXIT, from = first.pid,
+                        result = { error = "not allowed: app:db" },
+                    } }
+                end,
+            })
+            test.eq(selects[1].spawns, 1)
+            test.eq(selects[2].spawns, 2, "the retry is spawned before the loop blocks again")
+        end)
+
+        test.it("retires the start budget once the orchestrator is admitted", function()
+            activations.admitted = activation("admitted", 1)
+            workflows.admitted = workflow("admitted")
+            local function reads(): number
+                local count = 0
+                for _, id in ipairs(observed.locked_reads) do
+                    if id == "admitted" then count = count + 1 end
+                end
+                return count
+            end
+            local marks: { number } = {}
+            run_service({
+                function(channels)
+                    admit(activations.admitted, "t-admitted", tostring(observed.spawns[1].pid))
+                    return { ok = true, channel = channels.inbox, value = hint("admitted") }
+                end,
+                function(channels)
+                    table.insert(marks, reads())
+                    clock.now = clock.now:add(60 * overseer.time.SECOND)
+                    return { ok = true, channel = channels.inbox, value = hint("unrelated") }
+                end,
+                function(channels)
+                    return { ok = true, channel = channels.inbox, value = hint("unrelated") }
+                end,
+                function(channels)
+                    table.insert(marks, reads())
+                    return { ok = true, channel = channels.inbox, value = hint("unrelated") }
+                end,
+            })
+            test.eq(#observed.spawns, 1)
+            test.eq(marks[2], marks[1], "an admitted owner is not reconciled for unrelated events")
         end)
 
         test.it("recognizes missing SQLite and PostgreSQL migration state", function()
