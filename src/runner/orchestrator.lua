@@ -13,7 +13,6 @@ local orchestrator = {
     commit = require("commit"),
     activation_repo = require("activation_repo"),
     execution_frame = require("execution_frame"),
-    wake_repo = require("wake_repo"),
     overseer = require("overseer"),
 }
 
@@ -29,7 +28,6 @@ type Runtime = {
     commit: any,
     activation_repo: any,
     execution_frame: any,
-    wake_repo: any,
     overseer: any,
 }
 
@@ -44,6 +42,7 @@ type OrchestratorState = {
     scope: any,
     on_complete_id: string?,
     activation_generation: number,
+    owner_token: string,
     running: boolean,
     exit_result: any,
     final_status: string?,
@@ -201,6 +200,7 @@ local function persist_fenced_failure(
             type = consts.COMMAND_TYPES.COMPLETE_WORKFLOW,
             payload = {
                 activation_generation = state.activation_generation,
+                owner = { token = state.owner_token, phase = consts.OWNER_PHASE.RUNNING },
                 status = consts.STATUS.COMPLETED_FAILURE,
                 metadata = { error = failure_message },
             },
@@ -365,6 +365,75 @@ local function load_startup_pending_commits(state: OrchestratorState)
     return true
 end
 
+local function passivation_projection(result: any): any
+    local results = result and result.results or nil
+    if type(results) ~= "table" then return nil end
+    for _, projection in ipairs(results) do
+        if type(projection) == "table" and projection.released ~= nil then return projection end
+    end
+    return nil
+end
+
+---Release the owned activation. A newer request keeps this owner running; a
+---committed release ends this life: it gives up the canonical name and exits.
+---@return boolean continue Whether this life keeps running
+---@return boolean reschedule Whether a newer generation must be scheduled now
+local function passivate(state: OrchestratorState): (boolean, boolean)
+    local wake_keys = state.workflow_state:unclaimed_signal_wake_keys()
+    state.workflow_state:queue_commands({
+        type = consts.COMMAND_TYPES.PASSIVATE_WORKFLOW,
+        payload = {
+            activation_generation = state.activation_generation,
+            owner = { token = state.owner_token, phase = consts.OWNER_PHASE.RUNNING },
+            signal_wake_keys = wake_keys,
+        },
+    })
+    local result, persist_err = state.workflow_state:persist()
+    if persist_err then
+        -- The release may have committed; the overseer resolves it from the
+        -- durable ownership record once this life has exited.
+        state.running = false
+        state.exit_result = {
+            success = false,
+            dataflow_id = state.dataflow_id,
+            error = "Failed to persist waiting status: " .. tostring(persist_err),
+        }
+        return false, false
+    end
+
+    local projection = passivation_projection(result)
+    if not projection or projection.released ~= true then
+        if projection and projection.terminal == true then
+            return stop_for_existing_terminal(state, projection), false
+        end
+        local _, generation_err = adopt_projection_generation(state, projection)
+        if generation_err then
+            state.running = false
+            state.exit_result = {
+                success = false,
+                dataflow_id = state.dataflow_id,
+                error = generation_err,
+            }
+            return false, false
+        end
+        return true, true
+    end
+
+    state.workflow_state:release_signal_wake_keys(wake_keys)
+    -- NODE_YIELD projected its deadline atomically; the passivation leaves it
+    -- untouched so a concurrent NODE_SIGNAL replacement survives.
+    state.runtime.process.registry.unregister("dataflow." .. state.dataflow_id)
+    state.runtime.overseer.notify()
+    state.running = false
+    state.exit_result = {
+        success = true,
+        pending = true,
+        passivated = true,
+        dataflow_id = state.dataflow_id,
+    }
+    return false, false
+end
+
 ---Call scheduler and handle the result immediately
 ---@param state table Orchestrator state
 ---@return boolean continue Whether to continue processing
@@ -407,36 +476,8 @@ local function call_scheduler_and_handle(state: OrchestratorState)
             end
             -- re-enter the loop: yield satisfied, state changed, re-schedule
         elseif decision.type == state.runtime.scheduler.DECISION_TYPE.PASSIVATE then
-            state.workflow_state:queue_commands({
-                type = consts.COMMAND_TYPES.PASSIVATE_WORKFLOW,
-                payload = { activation_generation = state.activation_generation },
-            })
-            local passivate_result, status_err = state.workflow_state:persist()
-            if status_err then
-                state.running = false
-                state.exit_result = {
-                    success = false,
-                    dataflow_id = state.dataflow_id,
-                    error = "Failed to persist waiting status: " .. tostring(status_err),
-                }
-                return false
-            end
-
-            local projection = passivate_result and passivate_result.results and passivate_result.results[1] or nil
-            if not projection or projection.released ~= true then
-                if projection and projection.terminal == true then
-                    return stop_for_existing_terminal(state, projection)
-                end
-                local _, generation_err = adopt_projection_generation(state, projection)
-                if generation_err then
-                    state.running = false
-                    state.exit_result = {
-                        success = false,
-                        dataflow_id = state.dataflow_id,
-                        error = generation_err,
-                    }
-                    return false
-                end
+            local continue, reschedule = passivate(state)
+            if reschedule then
                 -- A start, signal, or due deadline advanced the durable
                 -- generation while this life was deciding to park. The failed
                 -- CAS is the handoff: reload durable work and schedule again
@@ -444,32 +485,7 @@ local function call_scheduler_and_handle(state: OrchestratorState)
                 state.reschedule_requested = true
                 goto continue_scheduler
             end
-            local unclaimed_wakes = {}
-            if type(state.workflow_state.take_unclaimed_signal_wake_keys) == "function" then
-                unclaimed_wakes = state.workflow_state:take_unclaimed_signal_wake_keys()
-            end
-            for _, wake_key in ipairs(unclaimed_wakes) do
-                local _, cleanup_err = state.runtime.wake_repo.remove(state.dataflow_id, wake_key)
-                if cleanup_err then
-                    logger:warn("unclaimed signal wake cleanup failed", {
-                        dataflow_id = state.dataflow_id,
-                        wake_key = wake_key,
-                        error = tostring(cleanup_err),
-                    })
-                end
-            end
-            -- NODE_YIELD projected its deadline atomically. Do not rewrite the
-            -- wake here: a concurrent NODE_SIGNAL may already have replaced it
-            -- with an immediate wake between this decision and persistence.
-            state.runtime.overseer.notify()
-            state.running = false
-            state.exit_result = {
-                success = true,
-                pending = true,
-                passivated = true,
-                dataflow_id = state.dataflow_id,
-            }
-            return false
+            return continue
         else
             return true
         end
@@ -662,6 +678,7 @@ function handle_complete_workflow(state: OrchestratorState, payload: any)
         type = consts.COMMAND_TYPES.COMPLETE_WORKFLOW,
         payload = {
             activation_generation = state.activation_generation,
+            owner = { token = state.owner_token, phase = consts.OWNER_PHASE.RUNNING },
             status = final_status,
             metadata = { error = not success and detailed_error or nil }
         }
@@ -698,7 +715,8 @@ function handle_complete_workflow(state: OrchestratorState, payload: any)
         -- re-evaluation cannot act on in-memory outcomes that never persisted;
         -- completion is only decided without live node processes, so a reload
         -- orphans nothing.
-        local fresh_state, fresh_err = state.runtime.workflow_state.new(state.dataflow_id)
+        local fresh_state, fresh_err = state.runtime.workflow_state.new(
+            state.dataflow_id, { owner_token = state.owner_token })
         local loaded = nil
         if fresh_state then
             loaded, fresh_err = fresh_state:load_state()
@@ -1159,6 +1177,42 @@ local function duplicate_owner_result(dataflow_id)
     }
 end
 
+-- Admit this process as the owner of the current request. An admission whose
+-- outcome is unknown is resolved by rereading the token it would have written.
+local function admit_owner(
+    runtime: Runtime,
+    dataflow_id: string,
+    min_generation: number,
+    pid: string
+): (any?, string?)
+    -- The orchestrator entry carries the epoch reader group, so the epoch is
+    -- read with module authority on both the spawned and the synchronous path.
+    local runtime_epoch, epoch_err = runtime.overseer.load_runtime_epoch()
+    if epoch_err or not runtime_epoch then
+        return nil, "Dataflow runtime epoch is unavailable: " .. tostring(epoch_err or "not ready")
+    end
+    local token = uuid.v7()
+    local admission, admission_err = runtime.commit.admit_owner(dataflow_id, min_generation, {
+        token = token,
+        pid = pid,
+        runtime_epoch = runtime_epoch,
+    })
+    if not admission_err and admission then
+        admission.owner_token = token
+        return admission, nil
+    end
+    local current, current_err = runtime.activation_repo.get(dataflow_id)
+    if current_err then
+        return nil, "Orchestrator admission outcome unknown: " .. tostring(admission_err) ..
+            "; " .. tostring(current_err)
+    end
+    if current and current.owner_token == token and current.owner_phase == consts.OWNER_PHASE.RUNNING then
+        current.admitted = true
+        return current, nil
+    end
+    return nil, "Orchestrator admission failed: " .. tostring(admission_err)
+end
+
 ---Main orchestrator function
 ---@param args table Arguments containing dataflow_id and optional init_func_id
 ---@return table result Orchestration result with success/error
@@ -1173,7 +1227,6 @@ local function run(args, runtime_override: any?)
         commit = bound.commit,
         activation_repo = bound.activation_repo,
         execution_frame = bound.execution_frame,
-        wake_repo = bound.wake_repo,
         overseer = bound.overseer,
     }
     local dataflow_id_raw = args and args.dataflow_id
@@ -1233,12 +1286,63 @@ local function run(args, runtime_override: any?)
     end
     runtime.process.set_options({ trap_links = true, upgradable = false })
 
-    local ws, ws_err = runtime.workflow_state.new(dataflow_id)
-    if ws_err then
-        return { success = false, error = "Failed to create workflow state: " .. ws_err }
+    -- Holding the name, become the durable owner of the current request before
+    -- anything is loaded or written; every later write is fenced by the token.
+    local admission, admission_err = admit_owner(
+        runtime, dataflow_id, activation_generation, tostring(self_pid))
+    if admission_err or not admission then
+        runtime.process.registry.unregister(process_name)
+        return {
+            success = false,
+            dataflow_id = dataflow_id,
+            error = tostring(admission_err or "admission returned no result"),
+        }
     end
-    if not ws then
-        return { success = false, dataflow_id = dataflow_id, error = "Failed to create workflow state" }
+    if admission.admitted ~= true then
+        runtime.process.registry.unregister(process_name)
+        if admission.refused == "terminal" then
+            local _, cleanup_err = runtime.commit.disable_terminal_activation(dataflow_id)
+            if cleanup_err then
+                return {
+                    success = false,
+                    dataflow_id = dataflow_id,
+                    error = "Failed to disable stale terminal activation: " .. tostring(cleanup_err),
+                }
+            end
+            return {
+                success = true,
+                dataflow_id = dataflow_id,
+                message = "Dataflow already in terminal state",
+            }
+        end
+        if admission.refused == "owned" then
+            return {
+                success = false,
+                dataflow_id = dataflow_id,
+                error = "The running owner of this workflow in the current runtime lost its canonical " ..
+                    "name; the overseer resolves the activation",
+            }
+        end
+        return {
+            success = true,
+            pending = true,
+            dataflow_id = dataflow_id,
+            message = "Stale or inactive workflow activation",
+        }
+    end
+    -- A newer request may have won before this process started; the owner
+    -- adopts it rather than exiting into a false owner loss.
+    activation_generation = tonumber(admission.generation) or activation_generation
+    local owner_token = tostring(admission.owner_token)
+
+    local ws, ws_err = runtime.workflow_state.new(dataflow_id, { owner_token = owner_token })
+    if ws_err or not ws then
+        runtime.process.registry.unregister(process_name)
+        return {
+            success = false,
+            dataflow_id = dataflow_id,
+            error = "Failed to create workflow state: " .. tostring(ws_err or "no state returned"),
+        }
     end
     local workflow_state = ws :: any
 
@@ -1254,6 +1358,7 @@ local function run(args, runtime_override: any?)
         scope = nil,
         on_complete_id = nil,
         activation_generation = activation_generation,
+        owner_token = owner_token,
         running = true,
         exit_result = nil,
         runtime = runtime,
@@ -1283,7 +1388,7 @@ local function run(args, runtime_override: any?)
                 error = "Failed to disable stale terminal activation: " .. tostring(cleanup_err),
             }
         end
-        runtime.process.registry.unregister("dataflow." .. dataflow_id)
+        runtime.process.registry.unregister(process_name)
         return {
             success = true,
             dataflow_id = dataflow_id,
@@ -1291,31 +1396,7 @@ local function run(args, runtime_override: any?)
         }
     end
 
-    -- A process may start after a newer activation generation has already won.
-    -- The canonical named process owns that handoff: adopt a newer durable
-    -- fence before executing rather than exiting and creating a false runtime
-    -- owner loss. A generation older than the spawn request is invalid.
-    local activation, activation_err = runtime.activation_repo.get(dataflow_id)
-    if activation_err then
-        return {
-            success = false,
-            dataflow_id = dataflow_id,
-            error = "Failed to load workflow activation: " .. tostring(activation_err),
-        }
-    end
-    local durable_generation = activation and tonumber(activation.generation) or nil
-    if not activation or activation.desired_active ~= true or not durable_generation or
-        durable_generation < activation_generation then
-        runtime.process.registry.unregister("dataflow." .. dataflow_id)
-        return {
-            success = true,
-            pending = true,
-            dataflow_id = dataflow_id,
-            message = "Stale or inactive workflow activation",
-        }
-    end
-    activation_generation = durable_generation
-    local durable_launch_args = type(activation.launch_args) == "table" and activation.launch_args or nil
+    local durable_launch_args = type(admission.launch_args) == "table" and admission.launch_args or nil
     if durable_launch_args then
         if type(durable_launch_args.init_func_id) == "string" then
             init_func_id = durable_launch_args.init_func_id
@@ -1324,7 +1405,6 @@ local function run(args, runtime_override: any?)
             args.on_complete = durable_launch_args.on_complete
         end
     end
-    state.activation_generation = activation_generation
 
     -- The spawn path is already monitored atomically. This notification lets
     -- a synchronous client-owned invocation be adopted by the same overseer;

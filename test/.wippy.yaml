@@ -100,8 +100,6 @@ override:
   "userspace.dataflow.persist:node_reader_test:security.policies": [app:test_policy]
   "userspace.dataflow.persist:ops_test:security.actor.id": dataflow.test
   "userspace.dataflow.persist:ops_test:security.policies": [app:test_policy]
-  "userspace.dataflow.persist:wake_repo_test:security.actor.id": dataflow.test
-  "userspace.dataflow.persist:wake_repo_test:security.policies": [app:test_policy]
   "userspace.dataflow.runner:orchestrator_completion_flush_test:security.actor.id": dataflow.test
   "userspace.dataflow.runner:orchestrator_completion_flush_test:security.policies": [app:test_policy]
   "userspace.dataflow.runner:orchestrator_process_event_test:security.actor.id": dataflow.test

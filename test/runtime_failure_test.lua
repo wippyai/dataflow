@@ -54,10 +54,15 @@ local function run_tests()
 
             local process_name = "dataflow." .. dataflow_id
             local owner_pid = nil
+            -- The orchestrator registers the name before it admits itself; only an
+            -- admitted owner's death is a runtime ownership loss.
             test.is_true(wait_until(function()
                 owner_pid = process.registry.lookup(process_name)
-                return owner_pid ~= nil
-            end, 3000), "canonical orchestrator became observable")
+                if owner_pid == nil then return false end
+                local owned = activation_repo.get(dataflow_id)
+                return owned ~= nil and owned.owner_pid == tostring(owner_pid) and
+                    owned.owner_phase == consts.OWNER_PHASE.RUNNING
+            end, 3000), "canonical orchestrator was admitted as the owner")
 
             local terminated, terminate_err = process.terminate(
                 test.not_nil(owner_pid) :: string)

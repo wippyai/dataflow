@@ -1130,6 +1130,18 @@ end
 
 handlers[constants.COMMAND_TYPES.UPDATE_WORKFLOW] = update_workflow
 
+-- payload.owner = { token, phase } names the ownership the writer holds; an
+-- absent owner matches an activation that was never owned.
+local function ownership_fence(payload: any, generation: number?): (any?, string?)
+    local owner = payload.owner
+    if owner ~= nil and type(owner) ~= "table" then return nil, "owner must be a table" end
+    return {
+        owner_token = owner and owner.token or nil,
+        owner_phase = owner and owner.phase or nil,
+        generation = generation,
+    }, nil
+end
+
 handlers[constants.COMMAND_TYPES.PASSIVATE_WORKFLOW] = function(tx, dataflow_id, op_id, command)
     if not dataflow_id or dataflow_id == "" then
         return nil, "Workflow ID is required"
@@ -1141,9 +1153,21 @@ handlers[constants.COMMAND_TYPES.PASSIVATE_WORKFLOW] = function(tx, dataflow_id,
     if not generation or generation < 1 or generation % 1 ~= 0 then
         return nil, "Activation generation must be a positive integer"
     end
+    -- Signal wakes whose NODE_SIGNAL the releasing owner applied without a
+    -- waiting yield. They are removed only together with a successful release.
+    local signal_wake_keys = payload.signal_wake_keys or {}
+    if type(signal_wake_keys) ~= "table" then return nil, "signal_wake_keys must be an array" end
+    for _, wake_key in ipairs(signal_wake_keys) do
+        if type(wake_key) ~= "string" or not wake_key:match("^signal:.+") then
+            return nil, "Passivation may only remove signal wake keys: " .. tostring(wake_key)
+        end
+    end
+
+    local fence, fence_err = ownership_fence(payload, generation)
+    if fence_err then return nil, fence_err end
 
     local now_ts = time.now():format(time.RFC3339NANO)
-    local release, release_err = activation_repo.release_if_generation_tx(tx, wf_id, generation, now_ts)
+    local release, release_err = activation_repo.release_owner_tx(tx, wf_id, fence, now_ts)
     if release_err then return nil, "Failed to release activation: " .. tostring(release_err) end
     if not release.released then
         return {
@@ -1166,6 +1190,14 @@ handlers[constants.COMMAND_TYPES.PASSIVATE_WORKFLOW] = function(tx, dataflow_id,
         return nil, "Workflow not found while passivating"
     end
 
+    for _, wake_key in ipairs(signal_wake_keys) do
+        local _, wake_err = sql.builder.delete("dataflow_wakes")
+            :where("dataflow_id = ?", wf_id)
+            :where("wake_key = ?", wake_key)
+            :run_with(tx):exec()
+        if wake_err then return nil, "Failed to remove applied signal wake: " .. tostring(wake_err) end
+    end
+
     return {
         dataflow_id = wf_id,
         changes_made = true,
@@ -1184,17 +1216,24 @@ handlers[constants.COMMAND_TYPES.COMPLETE_WORKFLOW] = function(tx, dataflow_id, 
     end
     local payload = command.payload or {}
     local wf_id = payload.dataflow_id or dataflow_id
-    local generation = tonumber(payload.activation_generation)
-    if not generation or generation < 1 or generation % 1 ~= 0 then
-        return nil, "Activation generation must be a positive integer"
+    -- A running owner's token alone fences its failure at whatever generation
+    -- is current; every other completion is fenced to one generation.
+    local generation = nil
+    if payload.activation_generation ~= nil or not (type(payload.owner) == "table" and payload.owner.token) then
+        generation = tonumber(payload.activation_generation)
+        if not generation or generation < 1 or generation % 1 ~= 0 then
+            return nil, "Activation generation must be a positive integer"
+        end
     end
     local status = payload.status
     local terminal = status == constants.STATUS.COMPLETED_SUCCESS or
         status == constants.STATUS.COMPLETED_FAILURE
     if not terminal then return nil, "Completion status must be completed or failed" end
+    local fence, fence_err = ownership_fence(payload, generation)
+    if fence_err then return nil, fence_err end
 
     local now_ts = time.now():format(time.RFC3339NANO)
-    local release, release_err = activation_repo.release_if_generation_tx(tx, wf_id, generation, now_ts)
+    local release, release_err = activation_repo.release_owner_tx(tx, wf_id, fence, now_ts)
     if release_err then return nil, "Failed to fence workflow completion: " .. tostring(release_err) end
     if not release.released then
         return {
@@ -1206,6 +1245,7 @@ handlers[constants.COMMAND_TYPES.COMPLETE_WORKFLOW] = function(tx, dataflow_id, 
             current_generation = release.generation,
         }
     end
+    generation = release.generation
 
     local update_result, update_err = update_workflow(
         tx, dataflow_id, op_id, {
@@ -1238,6 +1278,14 @@ handlers[constants.COMMAND_TYPES.DELETE_WORKFLOW] = function(tx, dataflow_id, op
         :exec()
     if wake_err then return nil, "Failed to clear deleted dataflow wake: " .. tostring(wake_err) end
     local wake_index_changed = (wake_result.rows_affected or 0) > 0
+
+    -- Dependents are removed explicitly: SQLite connections do not enforce the
+    -- cascading foreign keys.
+    local _, activation_err = sql.builder.delete("dataflow_activations")
+        :where("dataflow_id = ?", wf_id_to_delete)
+        :run_with(tx)
+        :exec()
+    if activation_err then return nil, "Failed to delete dataflow activation: " .. tostring(activation_err) end
 
     local delete_query = sql.builder.delete("dataflows")
         :where("dataflow_id = ?", wf_id_to_delete)

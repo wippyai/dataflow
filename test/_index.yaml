@@ -123,6 +123,64 @@ entries:
       test: wippy.test:test
     method: run_tests
 
+  - name: restricted_caller_test
+    kind: function.lua
+    meta:
+      type: test
+      suite: "01_runtime_failure"
+      comment: Proves a caller without the module-owned runtime epoch permission runs workflows synchronously and through the overseer.
+    source: file://restricted_caller_test.lua
+    modules: [uuid, time, env, funcs, security]
+    imports:
+      client: userspace.dataflow:client
+      consts: userspace.dataflow:consts
+      test: wippy.test:test
+    method: run_tests
+
+  - name: restricted_caller_probe
+    kind: function.lua
+    meta:
+      test_only: true
+      comment: Creates and runs a workflow as the restricted caller of restricted_caller_test.
+    source: file://restricted_caller_test.lua
+    modules: [uuid, time, env, funcs, security]
+    imports:
+      client: userspace.dataflow:client
+      consts: userspace.dataflow:consts
+      test: wippy.test:test
+    method: probe
+
+  - name: existing_caller_services
+    kind: security.policy
+    meta:
+      test_only: true
+      comment: An existing Dataflow consumer scope. It reads no environment variables and calls only the functions granted by existing_caller_functions.
+    policy:
+      resources: '*'
+      actions: '*'
+      effect: allow
+      conditions:
+        - field: action
+          operator: ne
+          value: env.get
+        - field: action
+          operator: ne
+          value: funcs.call
+
+  - name: existing_caller_functions
+    kind: security.policy
+    meta:
+      test_only: true
+      comment: The functions an existing Dataflow consumer calls to run the restricted caller workflow.
+    policy:
+      resources:
+        - app:restricted_caller_probe
+        - userspace.dataflow.runner:orchestrator
+        - userspace.dataflow.node.func:test_func
+      actions:
+        - funcs.call
+      effect: allow
+
   - name: db
     kind: db.sql.sqlite
     meta:

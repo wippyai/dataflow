@@ -14,10 +14,11 @@ DATAFLOW_PG_DATABASE ?= dataflow_test
 DATAFLOW_PG_USERNAME ?= dataflow
 DATAFLOW_PG_PASSWORD ?= dataflow
 WIPPY ?= wippy
+UPGRADE_FROM ?= v0.7.19
 TESTS ?=
 PUBLISH_DRY_RUN_TOKEN ?= wpy_ci_dry_run_0123456789abcdef0123456789abcdef
 
-.PHONY: test test-sqlite test-postgres test-restart-sqlite test-restart-postgres test-static lint install verify-lock verify-package clean
+.PHONY: test test-sqlite test-postgres test-restart-sqlite test-restart-postgres test-upgrade-sqlite test-upgrade-postgres test-static lint install verify-lock verify-package clean
 
 test: test-sqlite
 
@@ -40,6 +41,21 @@ test-restart-postgres: test-static
 	DATAFLOW_PG_HOST=$(DATAFLOW_PG_HOST) \
 	DATAFLOW_PG_PORT=$(DATAFLOW_PG_PORT) \
 	DATAFLOW_PG_DATABASE=$(DATAFLOW_PG_DATABASE)_restart \
+	DATAFLOW_PG_USERNAME=$(DATAFLOW_PG_USERNAME) \
+	DATAFLOW_PG_PASSWORD=$(DATAFLOW_PG_PASSWORD) \
+	./scripts/restart-proof.sh
+
+# Upgrade proofs start the first runtime on an older release ($(UPGRADE_FROM))
+# and need its modules installed, so they are not part of the default test.
+test-upgrade-sqlite: test-static
+	DATAFLOW_RESTART_FROM=$(UPGRADE_FROM) ./scripts/restart-proof.sh
+
+test-upgrade-postgres: test-static
+	DATAFLOW_RESTART_FROM=$(UPGRADE_FROM) \
+	DATAFLOW_RESTART_DIALECT=postgres \
+	DATAFLOW_PG_HOST=$(DATAFLOW_PG_HOST) \
+	DATAFLOW_PG_PORT=$(DATAFLOW_PG_PORT) \
+	DATAFLOW_PG_DATABASE=$(DATAFLOW_PG_DATABASE)_upgrade \
 	DATAFLOW_PG_USERNAME=$(DATAFLOW_PG_USERNAME) \
 	DATAFLOW_PG_PASSWORD=$(DATAFLOW_PG_PASSWORD) \
 	./scripts/restart-proof.sh

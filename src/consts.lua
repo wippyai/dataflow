@@ -4,6 +4,13 @@ local consts = {}
 consts.HOST_ID = "app:processes"
 consts.APP_DB = "app:db"
 consts.ORCHESTRATOR = "userspace.dataflow.runner:orchestrator"
+consts.RUNTIME_EPOCH_ENV = "userspace.dataflow.env:runtime_epoch"
+
+-- Phases of the orchestrator ownership record on an activation.
+consts.OWNER_PHASE = {
+    RUNNING = "running",
+    RELEASED = "released",
+}
 
 -- Topic constants for actor state transitions
 consts.TOPIC = {

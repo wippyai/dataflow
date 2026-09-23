@@ -1105,6 +1105,45 @@ local function define_tests()
             end)
         end)
 
+        describe("Ownership fence", function()
+            it("persists only while its owner token owns the activation", function()
+                test_ctx.tx:rollback()
+                test_ctx.tx = nil
+                local dataflow_id = uuid.v7()
+                local now_ts: string = time.now():format(time.RFC3339NANO)
+                local _, create_err = test_ctx.db:execute(rebind([[
+                    INSERT INTO dataflows (
+                        dataflow_id, actor_id, type, status, metadata, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ]], test_ctx.db:type()), {
+                    dataflow_id, test_ctx.actor_id, "test_workflow", "active", "{}", now_ts, now_ts,
+                })
+                test.is_nil(create_err)
+                test.not_nil(select(1, commit.request_activation(dataflow_id, {}, { notify = false })))
+                test.is_true((test.not_nil(select(1, commit.admit_owner(dataflow_id, 1, {
+                    token = "owner-a", pid = "pid-a", runtime_epoch = "runtime-a",
+                }))) :: any).admitted)
+
+                local function update(token: string): string?
+                    local ws = test.not_nil(select(1, workflow_state.new(dataflow_id, {
+                        owner_token = token,
+                    }))) :: any
+                    ws:queue_commands({
+                        type = consts.COMMAND_TYPES.UPDATE_WORKFLOW,
+                        payload = { metadata = { writer = token } },
+                    })
+                    local _, persist_err = ws:persist()
+                    return persist_err
+                end
+                test.contains(tostring(update("owner-b")), "ownership lost")
+                test.is_nil(update("owner-a"))
+
+                local _, cleanup_err = test_ctx.db:execute(rebind(
+                    "DELETE FROM dataflows WHERE dataflow_id = ?", test_ctx.db:type()), { dataflow_id })
+                test.is_nil(cleanup_err)
+            end)
+        end)
+
         describe("State Updates from Results", function()
             it("does not clean a signal wake before its durable commit is applied", function()
                 local ws = workflow_state.new(test_ctx.dataflow_id) :: any
@@ -1112,7 +1151,7 @@ local function define_tests()
                 local wake_key = "signal:" .. signal_data_id
 
                 ws:observe_signal_wake(wake_key)
-                test.eq(#ws:take_unclaimed_signal_wake_keys(), 0,
+                test.eq(#ws:unclaimed_signal_wake_keys(), 0,
                     "mailbox observation alone cannot acknowledge the durable wake")
 
                 ws:_update_state_from_results({
@@ -1128,10 +1167,25 @@ local function define_tests()
                         },
                     } },
                 })
-                local applied = ws:take_unclaimed_signal_wake_keys()
+                local applied = ws:unclaimed_signal_wake_keys()
                 test.eq(#applied, 1)
                 test.eq(applied[1], wake_key,
                     "only an applied, unmatched signal can become a cleanup candidate")
+            end)
+
+            it("forgets only the signal wakes a committed passivation removed", function()
+                local ws = workflow_state.new(test_ctx.dataflow_id) :: any
+                ws.pending_signal_wake_keys["signal:captured"] = true
+                local captured = ws:unclaimed_signal_wake_keys()
+                test.eq(#captured, 1)
+                test.eq(#ws:unclaimed_signal_wake_keys(), 1,
+                    "capturing keys for a passivation attempt keeps them until it commits")
+
+                ws.pending_signal_wake_keys["signal:later"] = true
+                ws:release_signal_wake_keys(captured)
+                local remaining = ws:unclaimed_signal_wake_keys()
+                test.eq(#remaining, 1)
+                test.eq(remaining[1], "signal:later")
             end)
 
             it("replays a consumed signal when its replacement re-yields in the same owner", function()

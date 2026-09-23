@@ -1286,6 +1286,94 @@ local function define_tests()
                 test.not_nil(result)
                 test.eq(count_process_messages("dataflow.overseer", "dataflow.activation.changed"), 1)
             end)
+
+            it("applies an owner-fenced batch only while its token owns the activation", function()
+                if test_ctx.tx then test_ctx.tx:rollback(); test_ctx.tx = nil end
+                if test_ctx.db then test_ctx.db:release(); test_ctx.db = nil end
+                local dataflow_id = create_isolated_dataflow()
+                test.not_nil(select(1, commit.request_activation(dataflow_id, {}, { notify = false })))
+                local admitted, admit_err = commit.admit_owner(dataflow_id, 1, {
+                    token = "owner-a", pid = "pid-a", runtime_epoch = "runtime-a",
+                })
+                test.is_nil(admit_err)
+                test.is_true((test.not_nil(admitted) :: any).admitted)
+
+                local function set_status(status: string, owner_token: string): (any, string?)
+                    return commit.execute(dataflow_id, nil, { {
+                        type = ops.COMMAND_TYPES.UPDATE_WORKFLOW,
+                        payload = { dataflow_id = dataflow_id, status = status },
+                    } }, { publish = false, owner_token = owner_token })
+                end
+                local foreign, foreign_err = set_status(consts.STATUS.RUNNING, "owner-b")
+                test.is_nil(foreign)
+                test.contains(tostring(foreign_err), "ownership lost")
+                local function status(): string
+                    local db = test.not_nil(select(1, sql.get("app:db"))) :: any
+                    local rows, query_err = db:query(rebind(
+                        "SELECT status FROM dataflows WHERE dataflow_id = ?", db:type()), { dataflow_id })
+                    db:release()
+                    test.is_nil(query_err)
+                    test.eq(#rows, 1)
+                    return tostring(rows[1].status)
+                end
+                test.eq(status(), "active")
+
+                local owned, owned_err = set_status(consts.STATUS.RUNNING, "owner-a")
+                test.is_nil(owned_err)
+                test.not_nil(owned)
+                test.eq(status(), consts.STATUS.RUNNING)
+            end)
+
+            it("rejects an owner-fenced write after the workflow was cancelled", function()
+                if test_ctx.tx then test_ctx.tx:rollback(); test_ctx.tx = nil end
+                if test_ctx.db then test_ctx.db:release(); test_ctx.db = nil end
+                local dataflow_id = create_isolated_dataflow()
+                test.not_nil(select(1, commit.request_activation(dataflow_id, {}, { notify = false })))
+                test.is_true((test.not_nil(select(1, commit.admit_owner(dataflow_id, 1, {
+                    token = "owner-a", pid = "pid-a", runtime_epoch = "runtime-a",
+                }))) :: any).admitted)
+                local _, cancel_err = commit.execute(dataflow_id, nil, { {
+                    type = ops.COMMAND_TYPES.UPDATE_WORKFLOW,
+                    payload = { dataflow_id = dataflow_id, status = consts.STATUS.CANCELLED },
+                } }, { publish = false })
+                test.is_nil(cancel_err)
+
+                local revived, revive_err = commit.execute(dataflow_id, nil, { {
+                    type = ops.COMMAND_TYPES.UPDATE_WORKFLOW,
+                    payload = { dataflow_id = dataflow_id, status = consts.STATUS.RUNNING },
+                } }, { publish = false, owner_token = "owner-a" })
+                test.is_nil(revived)
+                test.contains(tostring(revive_err), "not active")
+                local db = test.not_nil(select(1, sql.get("app:db"))) :: any
+                local rows, query_err = db:query(rebind(
+                    "SELECT status FROM dataflows WHERE dataflow_id = ?", db:type()), { dataflow_id })
+                db:release()
+                test.is_nil(query_err)
+                test.eq(#rows, 1)
+                test.eq(rows[1].status, consts.STATUS.CANCELLED)
+            end)
+
+            it("fails an activation only while the observed owner still holds it", function()
+                if test_ctx.tx then test_ctx.tx:rollback(); test_ctx.tx = nil end
+                if test_ctx.db then test_ctx.db:release(); test_ctx.db = nil end
+                local dataflow_id = create_isolated_dataflow()
+                test.not_nil(select(1, commit.request_activation(dataflow_id, {}, { notify = false })))
+                test.is_true((test.not_nil(select(1, commit.admit_owner(dataflow_id, 1, {
+                    token = "owner-a", pid = "pid-a", runtime_epoch = "runtime-a",
+                }))) :: any).admitted)
+                test.not_nil(select(1, commit.request_activation(dataflow_id, {}, { notify = false })))
+
+                local stale, stale_err = commit.fail_activation(dataflow_id,
+                    { token = "owner-b", phase = "running" }, { reason = "runtime_owner_lost" })
+                test.is_nil(stale_err)
+                test.is_false((test.not_nil(stale) :: any).completed)
+
+                local failed, failed_err = commit.fail_activation(dataflow_id,
+                    { token = "owner-a", phase = "running" }, { reason = "runtime_owner_lost" })
+                test.is_nil(failed_err)
+                test.is_true((test.not_nil(failed) :: any).completed)
+                test.eq((test.not_nil(failed) :: any).current_generation, 2)
+            end)
         end)
 
         describe("Edge Cases and Error Handling", function()

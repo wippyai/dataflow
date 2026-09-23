@@ -118,6 +118,8 @@ local function make_restart_metadata(previous_status, extra)
     return metadata
 end
 
+-- options.owner_token fences every write of this state to the orchestrator
+-- that owns the activation.
 function workflow_state.new(dataflow_id, options)
     if not dataflow_id or dataflow_id == "" then
         return nil, "Dataflow ID is required"
@@ -418,7 +420,10 @@ function methods:_prune_duplicate_routed_data()
         return nil
     end
 
-    local result, err = commit.execute(self.dataflow_id, uuid.v7(), cleanup_commands, { publish = false })
+    local result, err = commit.execute(self.dataflow_id, uuid.v7(), cleanup_commands, {
+        publish = false,
+        owner_token = self.options.owner_token,
+    })
     if err then
         return "Failed to prune duplicate routed data: " .. err
     end
@@ -539,7 +544,10 @@ function methods:_reset_running_nodes()
     self:_propagate_reset_to_dependents(reset_commands)
 
     if #reset_commands > 0 then
-        local result, err = commit.execute(self.dataflow_id, uuid.v7(), reset_commands, { publish = false })
+        local result, err = commit.execute(self.dataflow_id, uuid.v7(), reset_commands, {
+            publish = false,
+            owner_token = self.options.owner_token,
+        })
         if err then
             return "Failed to reset RUNNING nodes: " .. err
         end
@@ -1432,11 +1440,17 @@ function methods:observe_signal_wake(_wake_key)
     return self
 end
 
-function methods:take_unclaimed_signal_wake_keys()
+function methods:unclaimed_signal_wake_keys()
     local keys = {}
     for wake_key in pairs(self.pending_signal_wake_keys) do table.insert(keys, wake_key) end
-    self.pending_signal_wake_keys = {}
+    table.sort(keys)
     return keys
+end
+
+-- Called after a passivation that removed these durable wake rows commits.
+function methods:release_signal_wake_keys(keys)
+    for _, wake_key in ipairs(keys or {}) do self.pending_signal_wake_keys[wake_key] = nil end
+    return self
 end
 
 function methods:set_input_requirements(node_id, requirements)
@@ -1484,7 +1498,10 @@ function methods:persist()
     end
 
     local op_id = uuid.v7()
-    local result, err = commit.execute(self.dataflow_id, op_id, self.queued_commands, { publish = true })
+    local result, err = commit.execute(self.dataflow_id, op_id, self.queued_commands, {
+        publish = true,
+        owner_token = self.options.owner_token,
+    })
 
     if err then
         return nil, "Failed to persist commands: " .. err

@@ -83,8 +83,10 @@ local function define_tests()
                     end,
                 },
                 execution_frame = execution_frame,
-                wake_repo = { remove = function(): (boolean, nil) return true, nil end },
-                overseer = { notify = function(): (boolean, nil) return true, nil end },
+                overseer = {
+                    notify = function(): (boolean, nil) return true, nil end,
+                    load_runtime_epoch = function(): (string?, string?) return "runtime-test", nil end,
+                },
                 funcs = {
                     new = function(): any
                         local executor: any = {}
