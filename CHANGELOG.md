@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## [0.7.19](https://github.com/wippyai/dataflow/compare/v0.7.18...v0.7.19) (2026-09-23)
+
+
+### Bug Fixes
+
+* **agent:** resolve tool_calling from one default in the agent node ([#82](https://github.com/wippyai/dataflow/issues/82)) ([1e31422](https://github.com/wippyai/dataflow/commit/1e314229d75c2337df5fe098505ed2a359d39728))
+
 ## [0.7.18](https://github.com/wippyai/dataflow/compare/v0.7.17...v0.7.18) (2026-09-22)
 
 ### Bug Fixes
