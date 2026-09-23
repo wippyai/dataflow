@@ -501,13 +501,26 @@ function M.handle_exit(runtime: Runtime, event: any): (boolean?, string?)
     return M.reconcile(runtime, dataflow_id, { message = failure_message(event) })
 end
 
+-- The wake deadline as RFC 3339 text at the precision it is stored with. The
+-- PostgreSQL driver renders TIMESTAMPTZ values without fractional seconds, so
+-- the deadline is formatted in SQL; SQLite stores the text as written.
+function M.wake_at_column(db_type: any): string
+    if db_type == M.sql.type.POSTGRES or db_type == "postgres" then
+        return [[to_char(dataflow_wakes.wake_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')]]
+    end
+    return "dataflow_wakes.wake_at"
+end
+
 function M.next_pending_wake(): (any?, string?)
     local db, db_err = M.sql.get(tostring(M.consts.APP_DB))
     if db_err then return nil, tostring(db_err) end
-    local rows, query_err = db:query([[
-        SELECT dataflow_id, wake_key, wake_at FROM dataflow_wakes
+    local db_type, type_err = db:type()
+    if type_err then db:release(); return nil, tostring(type_err) end
+    local rows, query_err = db:query(
+        "SELECT dataflow_id, wake_key, " .. M.wake_at_column(db_type) .. [[ AS wake_at
+        FROM dataflow_wakes
         WHERE activation_generation IS NULL
-        ORDER BY wake_at ASC, dataflow_id ASC, wake_key ASC LIMIT 1
+        ORDER BY dataflow_wakes.wake_at ASC, dataflow_id ASC, wake_key ASC LIMIT 1
     ]])
     db:release()
     if query_err then return nil, tostring(query_err) end

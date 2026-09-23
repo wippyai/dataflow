@@ -807,6 +807,32 @@ local function run_durable_tests()
             db:release()
         end)
 
+        test.it("reads a pending wake deadline at full precision on the live dialect", function()
+            local db = test.not_nil(select(1, overseer.sql.get("app:db"))) :: any
+            local tx = test.not_nil(select(1, db:begin())) :: any
+            local id = uuid.v7()
+            local _, flow_err = overseer.sql.builder.insert("dataflows"):set_map({
+                dataflow_id = id, actor_id = "overseer-durable-test", type = "overseer-durable-test",
+                status = overseer.consts.STATUS.WAITING, metadata = "{}", created_at = now(), updated_at = now(),
+            }):run_with(tx):exec()
+            test.is_nil(flow_err)
+            local _, wake_err = overseer.sql.builder.insert("dataflow_wakes"):set_map({
+                dataflow_id = id, wake_key = "yield:precision", wake_at = "2099-01-01T00:00:00.123456Z",
+            }):run_with(tx):exec()
+            test.is_nil(wake_err)
+            local db_type = select(1, tx:db_type())
+            local placeholder = "?"
+            if db_type == "postgres" then placeholder = "$1" end
+            local rows, query_err = tx:query("SELECT " .. overseer.wake_at_column(db_type) ..
+                " AS wake_at FROM dataflow_wakes WHERE dataflow_id = " .. placeholder, { id })
+            tx:rollback()
+            db:release()
+            test.is_nil(query_err)
+            local deadline = test.not_nil(select(1, overseer.time.parse(
+                overseer.time.RFC3339NANO, tostring(rows[1].wake_at)))) :: any
+            test.eq(deadline:utc():format(overseer.time.RFC3339NANO), "2099-01-01T00:00:00.123456Z")
+        end)
+
         test.it("never cancels a name holder that a later request admits", function()
             local id = create_dataflow()
             request(id)
