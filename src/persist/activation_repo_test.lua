@@ -5,6 +5,15 @@ local time = require("time")
 local activation_repo = require("activation_repo")
 local consts = require("dataflow_consts")
 
+local function rebind(query: string, db_type: any): string
+    if db_type ~= sql.type.POSTGRES and db_type ~= "postgres" then return query end
+    local index = 0
+    return (query:gsub("%?", function()
+        index = index + 1
+        return "$" .. index
+    end))
+end
+
 local function define_tests()
     test.describe("Dataflow activation repository", function()
         local created = {}
@@ -253,14 +262,16 @@ local function define_tests()
             end))) :: any
             test.is_false(stale.released)
             test.eq(stale.generation, 2)
-            test.is_false(stale.owner_changed)
 
             local foreign = test.not_nil(select(1, transaction(function(tx)
                 return activation_repo.release_owner_tx(tx, id,
                     { owner_token = "t2", owner_phase = "running", generation = 2 }, now(4))
             end))) :: any
             test.is_false(foreign.released)
-            test.is_true(foreign.owner_changed)
+            local owned = test.not_nil(select(1, activation_repo.get(id))) :: any
+            test.eq(owned.owner_token, "t1")
+            test.eq(owned.owner_phase, "running")
+            test.is_true(owned.desired_active)
 
             local released = test.not_nil(select(1, transaction(function(tx)
                 return activation_repo.release_owner_tx(tx, id,
@@ -327,6 +338,83 @@ local function define_tests()
                 return activation_repo.verify_owner_tx(tx, id, "t1")
             end)
             test.contains(tostring(released_err), "ownership lost")
+        end)
+
+        test.it("rejects owner writes once the workflow is terminal or the request inactive", function()
+            local id = create_dataflow(consts.STATUS.RUNNING)
+            test.not_nil(select(1, transaction(function(tx)
+                return activation_repo.request_activation_tx(tx, id, {}, now())
+            end)))
+            test.is_true((test.not_nil(select(1, transaction(function(tx)
+                return activation_repo.admit_owner_tx(tx, id, 1, owner("t1", "runtime-a"), now(1))
+            end))) :: any).admitted)
+
+            local db = test.not_nil(select(1, sql.get("app:db"))) :: any
+            local _, inactive_err = db:execute(rebind(
+                "UPDATE dataflow_activations SET desired_active = ? WHERE dataflow_id = ?", db:type()),
+                { false, id })
+            test.is_nil(inactive_err)
+            local _, inactive_write = transaction(function(tx)
+                return activation_repo.verify_owner_tx(tx, id, "t1")
+            end)
+            test.contains(tostring(inactive_write), "not active")
+
+            local _, active_err = db:execute(rebind(
+                "UPDATE dataflow_activations SET desired_active = ? WHERE dataflow_id = ?", db:type()),
+                { true, id })
+            test.is_nil(active_err)
+            local _, cancel_err = db:execute(rebind(
+                "UPDATE dataflows SET status = ? WHERE dataflow_id = ?", db:type()),
+                { consts.STATUS.CANCELLED, id })
+            db:release()
+            test.is_nil(cancel_err)
+            test.not_nil(select(1, transaction(function(tx)
+                return activation_repo.disable_terminal_tx(tx, id, now(2))
+            end)))
+            local _, terminal_write = transaction(function(tx)
+                return activation_repo.verify_owner_tx(tx, id, "t1")
+            end)
+            test.contains(tostring(terminal_write), "not active")
+        end)
+
+        test.it("re-admits the same token only as a running owner of an active request", function()
+            local id = create_dataflow(consts.STATUS.RUNNING)
+            test.not_nil(select(1, transaction(function(tx)
+                return activation_repo.request_activation_tx(tx, id, {}, now())
+            end)))
+            test.is_true((test.not_nil(select(1, transaction(function(tx)
+                return activation_repo.admit_owner_tx(tx, id, 1, owner("t1", "runtime-a"), now(1))
+            end))) :: any).admitted)
+            local db = test.not_nil(select(1, sql.get("app:db"))) :: any
+            local _, inactive_err = db:execute(rebind(
+                "UPDATE dataflow_activations SET desired_active = ? WHERE dataflow_id = ?", db:type()),
+                { false, id })
+            db:release()
+            test.is_nil(inactive_err)
+            local inactive = test.not_nil(select(1, transaction(function(tx)
+                return activation_repo.admit_owner_tx(tx, id, 1, owner("t1", "runtime-a"), now(2))
+            end))) :: any
+            test.is_false(inactive.admitted)
+            test.eq(inactive.refused, "inactive")
+
+            test.not_nil(select(1, transaction(function(tx)
+                return activation_repo.request_activation_tx(tx, id, {}, now(3))
+            end)))
+            test.is_true((test.not_nil(select(1, transaction(function(tx)
+                return activation_repo.release_owner_tx(tx, id,
+                    { owner_token = "t1", owner_phase = "running", generation = 2 }, now(4))
+            end))) :: any).released)
+            test.not_nil(select(1, transaction(function(tx)
+                return activation_repo.request_activation_tx(tx, id, {}, now(5))
+            end)))
+            local readmitted = test.not_nil(select(1, transaction(function(tx)
+                return activation_repo.admit_owner_tx(tx, id, 3, owner("t1", "runtime-a"), now(6))
+            end))) :: any
+            test.is_true(readmitted.admitted)
+            test.eq(readmitted.owner_phase, "running")
+            test.is_true(select(1, transaction(function(tx)
+                return activation_repo.verify_owner_tx(tx, id, "t1")
+            end)))
         end)
 
         test.it("advances only when a newly inserted signal wake wins", function()

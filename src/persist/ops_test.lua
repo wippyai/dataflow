@@ -1188,7 +1188,12 @@ local function define_tests()
                 })
                 test.is_nil(foreign_err)
                 test.is_false(foreign.results[1].released)
-                test.is_true(foreign.results[1].owner_changed)
+                local owned, owned_err = txq(tx, [[
+                    SELECT owner_phase, desired_active FROM dataflow_activations WHERE dataflow_id = ?
+                ]], { resources.dataflow_id })
+                test.is_nil(owned_err)
+                test.eq(owned[1].owner_phase, "running")
+                test.is_true(db_bool(owned[1].desired_active))
 
                 local result, err = ops.execute(tx, resources.dataflow_id, nil, {
                     type = ops.COMMAND_TYPES.PASSIVATE_WORKFLOW,

@@ -469,7 +469,7 @@ end
 
 -- Release the active request when the ownership fence still holds: marks the
 -- owner released and the activation inactive. A fence that no longer matches
--- reports whether ownership changed or only the generation advanced.
+-- reports the current generation.
 function activation_repo.release_owner_tx(tx, dataflow_id, fence, now_value)
     if not tx then return nil, "transaction is required" end
     local valid, validation_err = validate_id(dataflow_id)
@@ -510,16 +510,15 @@ function activation_repo.release_owner_tx(tx, dataflow_id, fence, now_value)
         released = false,
         terminal = false,
         generation = current and current.generation or nil,
-        owner_changed = current == nil or current.owner_token ~= fence.owner_token or
-            current.owner_phase ~= fence.owner_phase,
     }, nil
 end
 
 -- Admit an orchestrator that already holds the canonical name as the owner of
 -- the current request, before it mutates anything. Admission is refused for a
 -- terminal or inactive activation, a request older than the one the process
--- was started for, and while another owner of the same runtime is running. The
--- same token is admitted again, so an unacknowledged admission can be retried.
+-- was started for, and while another owner of the same runtime is running. A
+-- running owner's own token is admitted again without a write, so an
+-- unacknowledged admission can be retried.
 function activation_repo.admit_owner_tx(tx, dataflow_id, min_generation, owner, now_value)
     if not tx then return nil, "transaction is required" end
     local valid, validation_err = validate_id(dataflow_id)
@@ -550,16 +549,16 @@ function activation_repo.admit_owner_tx(tx, dataflow_id, min_generation, owner, 
     end
     local current = found :: any
 
+    local running_self = current.owner_token == owner.token and current.owner_phase == PHASE.RUNNING
     local refused: string? = nil
     if TERMINAL_STATUS[status] then
         refused = "terminal"
-    elseif current.owner_token == owner.token and current.owner_phase == PHASE.RUNNING then
-        refused = nil
     elseif current.desired_active ~= true then
         refused = "inactive"
     elseif current.generation < min_generation then
         refused = "stale"
-    elseif current.owner_phase == PHASE.RUNNING and current.owner_epoch == owner.runtime_epoch then
+    elseif current.owner_phase == PHASE.RUNNING and current.owner_epoch == owner.runtime_epoch and
+        not running_self then
         refused = "owned"
     end
     if refused then
@@ -567,7 +566,7 @@ function activation_repo.admit_owner_tx(tx, dataflow_id, min_generation, owner, 
         current.refused = refused
         return current, nil
     end
-    if current.owner_token == owner.token then
+    if running_self then
         current.admitted = true
         return current, nil
     end
@@ -588,19 +587,23 @@ function activation_repo.admit_owner_tx(tx, dataflow_id, min_generation, owner, 
     return current, nil
 end
 
--- Fence an orchestrator-owned transaction: the token must still own the
--- activation as a running owner. Takes the workflow lock first.
+-- Fence an orchestrator-owned transaction: the token must still own an active
+-- request of a non-terminal workflow as a running owner. Takes the workflow
+-- lock first, so a cancellation or release committed before is observed.
 function activation_repo.verify_owner_tx(tx, dataflow_id, owner_token)
     if not tx then return nil, "transaction is required" end
     local valid, validation_err = validate_id(dataflow_id)
     if not valid then return nil, validation_err end
     if type(owner_token) ~= "string" or owner_token == "" then return nil, "owner_token is required" end
-    local _, status_err = activation_repo.lock_workflow_tx(tx, dataflow_id)
+    local status, status_err = activation_repo.lock_workflow_tx(tx, dataflow_id)
     if status_err then return nil, status_err end
     local current, current_err = get_tx(tx, dataflow_id)
     if current_err then return nil, current_err end
     if not current or current.owner_token ~= owner_token or current.owner_phase ~= PHASE.RUNNING then
         return nil, "orchestrator ownership lost"
+    end
+    if TERMINAL_STATUS[status] or current.desired_active ~= true then
+        return nil, "orchestrator ownership lost: activation is not active"
     end
     return true, nil
 end

@@ -1176,7 +1176,6 @@ handlers[constants.COMMAND_TYPES.PASSIVATE_WORKFLOW] = function(tx, dataflow_id,
             op_id = op_id,
             released = false,
             terminal = release.terminal == true,
-            owner_changed = release.owner_changed == true,
             current_generation = release.generation,
         }
     end
@@ -1243,7 +1242,6 @@ handlers[constants.COMMAND_TYPES.COMPLETE_WORKFLOW] = function(tx, dataflow_id, 
             op_id = op_id,
             completed = false,
             terminal = release.terminal == true,
-            owner_changed = release.owner_changed == true,
             current_generation = release.generation,
         }
     end

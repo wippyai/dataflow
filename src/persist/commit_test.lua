@@ -1324,6 +1324,35 @@ local function define_tests()
                 test.eq(status(), consts.STATUS.RUNNING)
             end)
 
+            it("rejects an owner-fenced write after the workflow was cancelled", function()
+                if test_ctx.tx then test_ctx.tx:rollback(); test_ctx.tx = nil end
+                if test_ctx.db then test_ctx.db:release(); test_ctx.db = nil end
+                local dataflow_id = create_isolated_dataflow()
+                test.not_nil(select(1, commit.request_activation(dataflow_id, {}, { notify = false })))
+                test.is_true((test.not_nil(select(1, commit.admit_owner(dataflow_id, 1, {
+                    token = "owner-a", pid = "pid-a", runtime_epoch = "runtime-a",
+                }))) :: any).admitted)
+                local _, cancel_err = commit.execute(dataflow_id, nil, { {
+                    type = ops.COMMAND_TYPES.UPDATE_WORKFLOW,
+                    payload = { dataflow_id = dataflow_id, status = consts.STATUS.CANCELLED },
+                } }, { publish = false })
+                test.is_nil(cancel_err)
+
+                local revived, revive_err = commit.execute(dataflow_id, nil, { {
+                    type = ops.COMMAND_TYPES.UPDATE_WORKFLOW,
+                    payload = { dataflow_id = dataflow_id, status = consts.STATUS.RUNNING },
+                } }, { publish = false, owner_token = "owner-a" })
+                test.is_nil(revived)
+                test.contains(tostring(revive_err), "not active")
+                local db = test.not_nil(select(1, sql.get("app:db"))) :: any
+                local rows, query_err = db:query(rebind(
+                    "SELECT status FROM dataflows WHERE dataflow_id = ?", db:type()), { dataflow_id })
+                db:release()
+                test.is_nil(query_err)
+                test.eq(#rows, 1)
+                test.eq(rows[1].status, consts.STATUS.CANCELLED)
+            end)
+
             it("fails an activation only while the observed owner still holds it", function()
                 if test_ctx.tx then test_ctx.tx:rollback(); test_ctx.tx = nil end
                 if test_ctx.db then test_ctx.db:release(); test_ctx.db = nil end
