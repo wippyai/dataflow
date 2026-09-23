@@ -25,7 +25,6 @@ local NAME = "dataflow.overseer"
 local TOPIC = "dataflow.activation.changed"
 local SAFETY_INTERVAL = "30s"
 local SCAN_LIMIT = 100
-local RUNTIME_EPOCH_ENV = "userspace.dataflow.env:runtime_epoch"
 
 type OwnershipState = {
     by_pid: { [string]: string },
@@ -186,7 +185,7 @@ function M.new_runtime(epoch: string?): Runtime
 end
 
 local function load_runtime_epoch(): (string?, string?)
-    local value, err = env.get(RUNTIME_EPOCH_ENV)
+    local value, err = env.get(M.consts.RUNTIME_EPOCH_ENV)
     -- The service can start before the migrations-ready bootloader. A missing
     -- value is expected readiness state, not an operational failure.
     if err then
@@ -298,7 +297,6 @@ local function spawn_owner(
     local args = clone_launch_args(launch_args)
     args.dataflow_id = dataflow_id
     args.activation_generation = generation
-    args.runtime_epoch = runtime.epoch
     local spawn_ok, spawn_pid, spawn_err = pcall(function()
         return M.process.with_context({})
             :with_name("dataflow." .. dataflow_id)

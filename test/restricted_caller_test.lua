@@ -4,7 +4,6 @@ local time = require("time")
 local client = require("client")
 local consts = require("consts")
 
-local RUNTIME_EPOCH_ENV = "userspace.dataflow.env:runtime_epoch"
 
 local function wait_until(predicate: () -> boolean, timeout_ms: number): boolean
     local attempts = math.ceil(timeout_ms / 50)
@@ -18,7 +17,7 @@ end
 -- Runs as the restricted caller: it may use Dataflow but cannot read the
 -- module-owned runtime epoch.
 local function probe(args: any): any
-    local _, epoch_err = env.get(RUNTIME_EPOCH_ENV)
+    local _, epoch_err = env.get(consts.RUNTIME_EPOCH_ENV)
     local c, client_err = client.new()
     if not c then return { error = tostring(client_err) } end
     local node_id = uuid.v7()
@@ -70,16 +69,10 @@ end
 local function run_tests()
     test.describe("Dataflow under a restricted caller scope", function()
         local function restricted_scope(): any
-            local policy = test.not_nil(select(1, security.policy("app:caller_without_runtime_epoch")))
-            return test.not_nil(select(1, security.new_scope({ policy })))
+            local services = test.not_nil(select(1, security.policy("app:existing_caller_services")))
+            local functions = test.not_nil(select(1, security.policy("app:existing_caller_functions")))
+            return test.not_nil(select(1, security.new_scope({ services, functions })))
         end
-
-        test.it("reads the runtime epoch through the module-owned reader without caller env access", function()
-            local read, read_err = funcs.new():with_scope(restricted_scope())
-                :call("userspace.dataflow.runner:runtime_epoch")
-            test.is_nil(read_err)
-            test.not_nil((test.not_nil(read) :: any).epoch)
-        end)
 
         for _, mode in ipairs({ "execute", "start" }) do
             test.it("runs a workflow to completion through " .. mode, function()
@@ -88,7 +81,7 @@ local function run_tests()
                 test.is_nil(err)
                 local observed = test.not_nil(result) :: any
                 test.is_nil(observed.error)
-                test.is_true(observed.epoch_denied, "the caller scope cannot read the runtime epoch")
+                test.is_true(observed.epoch_denied, "the caller scope reads no module environment")
                 test.eq(observed.status, consts.STATUS.COMPLETED_SUCCESS)
             end)
         end

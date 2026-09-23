@@ -20,7 +20,9 @@ M.ACTION = {
     SPAWN = "spawn",
 }
 
-local OWNER_RUNNING = "running"
+local consts = require("consts")
+
+local OWNER_RUNNING = consts.OWNER_PHASE.RUNNING
 
 local TERMINAL_STATUS = {
     completed = true,

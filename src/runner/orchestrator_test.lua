@@ -211,13 +211,7 @@ local function harness(options: HarnessOptions?): any
                 local executor: any = {}
                 executor.with_actor = function(self: any): any return self end
                 executor.with_scope = function(self: any): any return self end
-                executor.call = function(_self: any, id: string): (any, nil)
-                    if id == consts.RUNTIME_EPOCH_READER then
-                        record("epoch_reader")
-                        return { epoch = "runtime-test" }, nil
-                    end
-                    return {}, nil
-                end
+                executor.call = function(): (any, nil) return {}, nil end
                 return executor
             end,
         },
@@ -225,6 +219,10 @@ local function harness(options: HarnessOptions?): any
             notify = function(): (boolean, nil)
                 record("notify")
                 return true, nil
+            end,
+            load_runtime_epoch = function(): (string?, string?)
+                record("epoch")
+                return "runtime-test", nil
             end,
         },
     }
@@ -236,11 +234,6 @@ local function run(runtime: any, args: any?): any
     for key, value in pairs(args or {}) do call_args[key] = value end
     call_args.dataflow_id = call_args.dataflow_id or "workflow-1"
     call_args.activation_generation = call_args.activation_generation or 1
-    if call_args.runtime_epoch == false then
-        call_args.runtime_epoch = nil
-    else
-        call_args.runtime_epoch = call_args.runtime_epoch or "runtime-spawn"
-    end
     return orchestrator.run(call_args, runtime)
 end
 
@@ -389,21 +382,19 @@ local function define_tests()
                 activation = { generation = 3, desired_active = true },
             }), { activation_generation = 2 })
             test.is_true(result.success)
-            test.eq(table.concat(since(trace, "register"), " ", 1, 4),
-                "register admit:3:runtime-spawn:admitted state:true load_state")
+            test.eq(table.concat(since(trace, "register"), " ", 1, 5),
+                "register epoch admit:3:runtime-test:admitted state:true load_state")
         end)
 
-        it("reads the runtime epoch through the module reader when started synchronously", function()
+        it("reads the runtime epoch under its own authority, however it was started", function()
             local trace: { string } = {}
-            local result = run(harness({ trace = trace }), { runtime_epoch = false })
+            local result = run(harness({ trace = trace }), { runtime_epoch = "caller-supplied" })
             test.is_true(result.success)
-            local admitted = since(trace, "epoch_reader")
-            test.eq(admitted[2], "admit:1:runtime-test:admitted")
+            test.eq(since(trace, "epoch")[2], "admit:1:runtime-test:admitted")
         end)
 
         it("leaves before loading state when admission is refused", function()
             for _, case in ipairs({
-                { refused = "owned", message = "already running" },
                 { refused = "stale", message = "Stale" },
                 { refused = "inactive", message = "Stale" },
             }) do
@@ -414,6 +405,12 @@ local function define_tests()
                 test.is_false(contains(trace, "load_state"))
                 test.is_true(contains(trace, "unregister"))
             end
+            local owned_trace: { string } = {}
+            local owned = run(harness({ trace = owned_trace, admission_refused = "owned" }))
+            test.is_false(owned.success)
+            test.contains(owned.error, "lost its canonical name")
+            test.is_false(contains(owned_trace, "load_state"))
+            test.is_true(contains(owned_trace, "unregister"))
             local terminal_trace: { string } = {}
             local terminal = run(harness({ trace = terminal_trace, admission_refused = "terminal" }))
             test.is_true(terminal.success)
@@ -425,8 +422,8 @@ local function define_tests()
             local trace: { string } = {}
             local result = run(harness({ trace = trace, admission_error = "connection reset" }))
             test.is_true(result.success)
-            test.eq(table.concat(since(trace, "admit:1:runtime-spawn:admitted"), " ", 1, 4),
-                "admit:1:runtime-spawn:admitted reread state:true load_state")
+            test.eq(table.concat(since(trace, "admit:1:runtime-test:admitted"), " ", 1, 4),
+                "admit:1:runtime-test:admitted reread state:true load_state")
 
             local lost: { string } = {}
             local refused = run(harness({
@@ -435,6 +432,14 @@ local function define_tests()
             test.is_false(refused.success)
             test.contains(refused.error, "admission")
             test.is_false(contains(lost, "load_state"))
+            test.is_true(contains(lost, "unregister"))
+        end)
+
+        it("gives up the canonical name when its workflow state cannot be created", function()
+            local trace: { string } = {}
+            local result = run(harness({ trace = trace, state_error = "repository unavailable" }))
+            test.is_false(result.success)
+            test.eq(since(trace, "state:true")[2], "unregister")
         end)
 
         it("releases ownership, then gives up the name and exits", function()
@@ -476,7 +481,7 @@ local function define_tests()
 
         it("stops without further work when its ownership was lost or the release is uncertain", function()
             for _, persisted in ipairs({
-                { value = { results = { { released = false, owner_changed = true, current_generation = 1 } } } },
+                { error = "Failed to persist commands: orchestrator ownership lost" },
                 { error = "Failed to persist commands: connection reset" },
             }) do
                 local trace: { string } = {}

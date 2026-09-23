@@ -166,7 +166,7 @@ entries:
   - name: epoch_reader
     kind: registry.entry
     meta:
-      comment: Module-owned authority of the runtime epoch reader function; it reads nothing else.
+      comment: Module-owned authority merged into every orchestrator so it reads the runtime epoch; it grants nothing else.
 
   - name: epoch_reader.runtime_epoch
     kind: security.policy

@@ -150,19 +150,36 @@ entries:
       test: wippy.test:test
     method: probe
 
-  - name: caller_without_runtime_epoch
+  - name: existing_caller_services
     kind: security.policy
     meta:
       test_only: true
-      comment: Grants a restricted test caller everything except the module-owned runtime epoch.
+      comment: An existing Dataflow consumer scope. It reads no environment variables and calls only the functions granted by existing_caller_functions.
     policy:
       resources: '*'
       actions: '*'
       effect: allow
       conditions:
-        - field: resource
+        - field: action
           operator: ne
-          value: userspace.dataflow.env:runtime_epoch
+          value: env.get
+        - field: action
+          operator: ne
+          value: funcs.call
+
+  - name: existing_caller_functions
+    kind: security.policy
+    meta:
+      test_only: true
+      comment: The functions an existing Dataflow consumer calls to run the restricted caller workflow.
+    policy:
+      resources:
+        - app:restricted_caller_probe
+        - userspace.dataflow.runner:orchestrator
+        - userspace.dataflow.node.func:test_func
+      actions:
+        - funcs.call
+      effect: allow
 
   - name: db
     kind: db.sql.sqlite

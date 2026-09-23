@@ -57,8 +57,6 @@ type ParkArmState = {
     scope: any,
 }
 
-local OWNER_RUNNING = "running"
-
 local TERMINAL_STATUS = {
     [consts.STATUS.COMPLETED_SUCCESS] = true,
     [consts.STATUS.COMPLETED_FAILURE] = true,
@@ -169,19 +167,6 @@ local function stop_for_existing_terminal(state: OrchestratorState, projection: 
     return false
 end
 
--- Another orchestrator owns the activation, or this one already released it:
--- this life must not write or schedule anything further.
-local function stop_for_lost_ownership(state: OrchestratorState)
-    state.running = false
-    state.exit_result = {
-        success = false,
-        dataflow_id = state.dataflow_id,
-        error = "Orchestrator ownership lost",
-    }
-    state.final_status = nil
-    return false
-end
-
 local function adopt_projection_generation(state: OrchestratorState, projection: any)
     local current_generation = projection and tonumber(
         projection.current_generation or projection.generation)
@@ -215,7 +200,7 @@ local function persist_fenced_failure(
             type = consts.COMMAND_TYPES.COMPLETE_WORKFLOW,
             payload = {
                 activation_generation = state.activation_generation,
-                owner = { token = state.owner_token, phase = OWNER_RUNNING },
+                owner = { token = state.owner_token, phase = consts.OWNER_PHASE.RUNNING },
                 status = consts.STATUS.COMPLETED_FAILURE,
                 metadata = { error = failure_message },
             },
@@ -248,9 +233,6 @@ local function persist_fenced_failure(
         end
         if projection and projection.terminal == true then
             return stop_for_existing_terminal(state, projection), false
-        end
-        if projection and projection.owner_changed == true then
-            return stop_for_lost_ownership(state), false
         end
 
         local _, generation_err = adopt_projection_generation(state, projection)
@@ -402,7 +384,7 @@ local function passivate(state: OrchestratorState): (boolean, boolean)
         type = consts.COMMAND_TYPES.PASSIVATE_WORKFLOW,
         payload = {
             activation_generation = state.activation_generation,
-            owner = { token = state.owner_token, phase = OWNER_RUNNING },
+            owner = { token = state.owner_token, phase = consts.OWNER_PHASE.RUNNING },
             signal_wake_keys = wake_keys,
         },
     })
@@ -423,9 +405,6 @@ local function passivate(state: OrchestratorState): (boolean, boolean)
     if not projection or projection.released ~= true then
         if projection and projection.terminal == true then
             return stop_for_existing_terminal(state, projection), false
-        end
-        if projection and projection.owner_changed == true then
-            return stop_for_lost_ownership(state), false
         end
         local _, generation_err = adopt_projection_generation(state, projection)
         if generation_err then
@@ -699,7 +678,7 @@ function handle_complete_workflow(state: OrchestratorState, payload: any)
         type = consts.COMMAND_TYPES.COMPLETE_WORKFLOW,
         payload = {
             activation_generation = state.activation_generation,
-            owner = { token = state.owner_token, phase = OWNER_RUNNING },
+            owner = { token = state.owner_token, phase = consts.OWNER_PHASE.RUNNING },
             status = final_status,
             metadata = { error = not success and detailed_error or nil }
         }
@@ -720,9 +699,6 @@ function handle_complete_workflow(state: OrchestratorState, payload: any)
     if not projection or projection.completed ~= true then
         if projection and projection.terminal == true then
             return stop_for_existing_terminal(state, projection), false
-        end
-        if projection and projection.owner_changed == true then
-            return stop_for_lost_ownership(state), false
         end
         local _, generation_err = adopt_projection_generation(state, projection)
         if generation_err then
@@ -1201,30 +1177,19 @@ local function duplicate_owner_result(dataflow_id)
     }
 end
 
--- The overseer passes the runtime epoch with a spawn; a synchronous caller's
--- scope may not read it, so that path asks the module-owned reader.
-local function runtime_epoch_for(runtime: Runtime, args: any): (string?, string?)
-    local provided = args and args.runtime_epoch
-    if type(provided) == "string" and provided ~= "" then return provided, nil end
-    local read, read_err = runtime.funcs.new():call(consts.RUNTIME_EPOCH_READER)
-    if read_err then return nil, tostring(read_err) end
-    local epoch = type(read) == "table" and read.epoch or nil
-    if type(epoch) ~= "string" or epoch == "" then return nil, "runtime epoch is not ready" end
-    return epoch, nil
-end
-
 -- Admit this process as the owner of the current request. An admission whose
 -- outcome is unknown is resolved by rereading the token it would have written.
 local function admit_owner(
     runtime: Runtime,
-    args: any,
     dataflow_id: string,
     min_generation: number,
     pid: string
 ): (any?, string?)
-    local runtime_epoch, epoch_err = runtime_epoch_for(runtime, args)
+    -- The orchestrator entry carries the epoch reader group, so the epoch is
+    -- read with module authority on both the spawned and the synchronous path.
+    local runtime_epoch, epoch_err = runtime.overseer.load_runtime_epoch()
     if epoch_err or not runtime_epoch then
-        return nil, "Dataflow runtime epoch is unavailable: " .. tostring(epoch_err)
+        return nil, "Dataflow runtime epoch is unavailable: " .. tostring(epoch_err or "not ready")
     end
     local token = uuid.v7()
     local admission, admission_err = runtime.commit.admit_owner(dataflow_id, min_generation, {
@@ -1241,7 +1206,7 @@ local function admit_owner(
         return nil, "Orchestrator admission outcome unknown: " .. tostring(admission_err) ..
             "; " .. tostring(current_err)
     end
-    if current and current.owner_token == token and current.owner_phase == OWNER_RUNNING then
+    if current and current.owner_token == token and current.owner_phase == consts.OWNER_PHASE.RUNNING then
         current.admitted = true
         return current, nil
     end
@@ -1324,8 +1289,9 @@ local function run(args, runtime_override: any?)
     -- Holding the name, become the durable owner of the current request before
     -- anything is loaded or written; every later write is fenced by the token.
     local admission, admission_err = admit_owner(
-        runtime, args, dataflow_id, activation_generation, tostring(self_pid))
+        runtime, dataflow_id, activation_generation, tostring(self_pid))
     if admission_err or not admission then
+        runtime.process.registry.unregister(process_name)
         return {
             success = false,
             dataflow_id = dataflow_id,
@@ -1349,7 +1315,14 @@ local function run(args, runtime_override: any?)
                 message = "Dataflow already in terminal state",
             }
         end
-        if admission.refused == "owned" then return duplicate_owner_result(dataflow_id) end
+        if admission.refused == "owned" then
+            return {
+                success = false,
+                dataflow_id = dataflow_id,
+                error = "The running owner of this workflow in the current runtime lost its canonical " ..
+                    "name; the overseer resolves the activation",
+            }
+        end
         return {
             success = true,
             pending = true,
@@ -1363,11 +1336,13 @@ local function run(args, runtime_override: any?)
     local owner_token = tostring(admission.owner_token)
 
     local ws, ws_err = runtime.workflow_state.new(dataflow_id, { owner_token = owner_token })
-    if ws_err then
-        return { success = false, error = "Failed to create workflow state: " .. ws_err }
-    end
-    if not ws then
-        return { success = false, dataflow_id = dataflow_id, error = "Failed to create workflow state" }
+    if ws_err or not ws then
+        runtime.process.registry.unregister(process_name)
+        return {
+            success = false,
+            dataflow_id = dataflow_id,
+            error = "Failed to create workflow state: " .. tostring(ws_err or "no state returned"),
+        }
     end
     local workflow_state = ws :: any
 

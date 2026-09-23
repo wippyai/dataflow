@@ -110,6 +110,7 @@ local function define_tests()
             }
             runtime.overseer = {
                 notify = function(): (boolean, string?) return true, nil end,
+                load_runtime_epoch = function(): (string?, string?) return "runtime-test", nil end,
             }
             runtime.activation_repo = {
                 get = function()
@@ -173,7 +174,6 @@ local function define_tests()
             local result = orchestrator.run({
                 dataflow_id = "failure-reason-workflow",
                 activation_generation = 1,
-                runtime_epoch = "runtime-test",
             }, runtime) :: any
 
             test.is_false(result.success)

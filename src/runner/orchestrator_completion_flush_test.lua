@@ -83,7 +83,10 @@ local function define_tests()
                     end,
                 },
                 execution_frame = execution_frame,
-                overseer = { notify = function(): (boolean, nil) return true, nil end },
+                overseer = {
+                    notify = function(): (boolean, nil) return true, nil end,
+                    load_runtime_epoch = function(): (string?, string?) return "runtime-test", nil end,
+                },
                 funcs = {
                     new = function(): any
                         local executor: any = {}
@@ -197,7 +200,6 @@ local function define_tests()
             local result = orchestrator.run({
                 dataflow_id = dataflow_id,
                 activation_generation = probes.generation,
-                runtime_epoch = "runtime-test",
             }, runtime) :: any
 
             test.is_true(probes.aborted, "exit-batch transaction abort was exercised")
@@ -225,7 +227,6 @@ local function define_tests()
             local result = orchestrator.run({
                 dataflow_id = dataflow_id,
                 activation_generation = stale_generation,
-                runtime_epoch = "runtime-test",
             }, runtime) :: any
 
             test.is_true(probes.aborted, "exit-batch transaction abort was exercised")

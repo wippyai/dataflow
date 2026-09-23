@@ -11,11 +11,7 @@ local TERMINAL_STATUS = {
     [consts.STATUS.TERMINATED] = true,
 }
 
-local PHASE = {
-    RUNNING = "running",
-    RELEASED = "released",
-}
-activation_repo.OWNER_PHASE = PHASE
+local PHASE = consts.OWNER_PHASE
 
 local TERMINAL_VALUES = {
     consts.STATUS.COMPLETED_SUCCESS,
