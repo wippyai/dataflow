@@ -129,7 +129,9 @@ local function define_tests()
         end)
 
         local function get_test_transaction()
-            return test_ctx.tx
+            local tx = test_ctx.tx
+            assert(tx, "test transaction is not open")
+            return tx
         end
 
         local function setup_test_resources()
@@ -696,9 +698,10 @@ local function define_tests()
                 test.is_nil(err)
                 test.not_nil(result)
                 test.is_true(result.changes_made)
-                test.not_nil(result.commit_ids)
-                test.eq(#result.commit_ids, 1)
-                test.eq(result.commit_ids[1], commit_id)
+                local commit_ids = result.commit_ids
+                assert(commit_ids, "commit_ids missing from result")
+                test.eq(#commit_ids, 1)
+                test.eq(commit_ids[1], commit_id)
 
                 test.eq(#result.results, 2)
             end)

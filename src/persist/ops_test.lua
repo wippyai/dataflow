@@ -63,7 +63,9 @@ local function define_tests()
         end)
 
         local function get_test_transaction()
-            return test_ctx.tx
+            local tx = test_ctx.tx
+            assert(tx, "test transaction is not open")
+            return tx
         end
 
         local function setup_test_resources()
