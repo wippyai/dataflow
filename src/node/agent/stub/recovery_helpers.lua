@@ -135,6 +135,8 @@ function helpers.get_metrics(scenario_id)
         lifecycle_prompt_seen = tonumber(helpers.get_metric(scenario_id, "lifecycle_prompt_seen", 0)) or 0,
         lifecycle_last_iteration = tonumber(helpers.get_metric(scenario_id, "lifecycle_last_iteration", 0)) or 0,
         finish_offered = tonumber(helpers.get_metric(scenario_id, "finish_offered", 0)) or 0,
+        tool_choice_any = tonumber(helpers.get_metric(scenario_id, "tool_choice_any", 0)) or 0,
+        tool_choice_fallback_auto = tonumber(helpers.get_metric(scenario_id, "tool_choice_fallback_auto", 0)) or 0,
         step1_effect = tonumber(helpers.get_metric(scenario_id,
             "effect_applied:" .. helpers.call_id(scenario_id, 1), 0)) or 0,
         step2_effect = tonumber(helpers.get_metric(scenario_id,

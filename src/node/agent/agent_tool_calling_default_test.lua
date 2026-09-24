@@ -57,7 +57,7 @@ local function define_tests()
 
         -- A hand-built node config that declares an exit_schema and leaves
         -- tool_calling unset, as configs written outside the flow builder do.
-        local function create_workflow()
+        local function create_workflow(tool_calling: string?)
             local node_id = uuid.v7()
             local input_id = uuid.v7()
             local node_input_id = uuid.v7()
@@ -80,6 +80,7 @@ local function define_tests()
                             agent = "userspace.dataflow.node.agent.stub:recovery_test_agent",
                             arena = {
                                 prompt = "Finish with a structured answer.",
+                                tool_calling = tool_calling,
                                 max_iterations = 3,
                                 exit_schema = {
                                     type = "object",
@@ -147,6 +148,27 @@ local function define_tests()
             test.eq(#outputs, 1, "workflow output produced")
             test.eq(as_table((outputs[1] :: any).content).answer, "finished:" .. workflow.scenario_id,
                 "the output is the finish tool's arguments")
+        end)
+
+        it("asks for a forced tool call and permits the auto fallback in any mode", function()
+            local workflow = create_workflow("any")
+
+            c:start(workflow.dataflow_id)
+
+            test.eq(wait_terminal(workflow.dataflow_id), consts.STATUS.COMPLETED_SUCCESS, "the node completes")
+            test.eq(metric(workflow.scenario_id, "tool_choice_any"), 1, "the request still asks for a forced tool call")
+            test.eq(metric(workflow.scenario_id, "tool_choice_fallback_auto"), 1,
+                "the node, which enforces completion through finish, permits the auto fallback")
+        end)
+
+        it("permits no fallback when the arena itself runs in auto mode", function()
+            local workflow = create_workflow("auto")
+
+            c:start(workflow.dataflow_id)
+
+            test.eq(wait_terminal(workflow.dataflow_id), consts.STATUS.COMPLETED_SUCCESS, "the node completes")
+            test.eq(metric(workflow.scenario_id, "tool_choice_any"), 0, "auto mode forces nothing")
+            test.eq(metric(workflow.scenario_id, "tool_choice_fallback_auto"), 0, "auto mode has nothing to fall back from")
         end)
     end)
 end

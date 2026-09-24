@@ -196,6 +196,13 @@ local function handler(contract_args)
     -- and answers in plain text otherwise, so a node that withholds the finish
     -- tool never receives a terminal call.
     if scenario.mode == "finish_when_offered" then
+        if contract_args.tool_choice == "any" then
+            helpers.bump_metric(scenario.scenario_id, "tool_choice_any", 1)
+        end
+        local options = contract_args.options or {}
+        if options.tool_choice_fallback == "auto" then
+            helpers.bump_metric(scenario.scenario_id, "tool_choice_fallback_auto", 1)
+        end
         if offers_tool(contract_args, "finish") then
             helpers.bump_metric(scenario.scenario_id, "finish_offered", 1)
             return {
