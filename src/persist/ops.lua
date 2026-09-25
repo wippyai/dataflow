@@ -1226,17 +1226,39 @@ end
 
 handlers[constants.COMMAND_TYPES.DELETE_WORKFLOW] = function(tx, dataflow_id, op_id, command)
     if not dataflow_id or dataflow_id == "" then
-        return nil, "Workflow ID is required"
+        return nil, errors.new({ message = "Workflow ID is required", kind = errors.INVALID })
     end
 
     local payload = command.payload or {}
     local wf_id_to_delete = payload.dataflow_id or dataflow_id
+    if type(wf_id_to_delete) ~= "string" or wf_id_to_delete == "" then
+        return nil, errors.new({ message = "Workflow ID is required", kind = errors.INVALID })
+    end
+
+    -- Lock the parent before inspecting evidence or deleting any child rows.
+    -- A workflow consumer may still need the admission or terminal result.
+    local _, lock_err = activation_repo.lock_workflow_tx(tx, wf_id_to_delete)
+    if lock_err then return nil, lock_err end
+    local evidence_rows, evidence_err = sql.builder.select("admission_key", "terminal_ack_at")
+        :from("dataflow_activations")
+        :where("dataflow_id = ?", wf_id_to_delete)
+        :limit(1)
+        :run_with(tx)
+        :query()
+    if evidence_err then return nil, evidence_err end
+    local evidence = evidence_rows and evidence_rows[1]
+    if evidence and evidence.admission_key ~= nil and evidence.terminal_ack_at == nil then
+        return nil, errors.new({
+            message = "Workflow admission evidence has not been acknowledged",
+            kind = errors.CONFLICT,
+        })
+    end
 
     local wake_result, wake_err = sql.builder.delete("dataflow_wakes")
         :where("dataflow_id = ?", wf_id_to_delete)
         :run_with(tx)
         :exec()
-    if wake_err then return nil, "Failed to clear deleted dataflow wake: " .. tostring(wake_err) end
+    if wake_err then return nil, wake_err end
     local wake_index_changed = (wake_result.rows_affected or 0) > 0
 
     local delete_query = sql.builder.delete("dataflows")
@@ -1246,11 +1268,11 @@ handlers[constants.COMMAND_TYPES.DELETE_WORKFLOW] = function(tx, dataflow_id, op
     local result_exec, err_exec = executor:exec()
 
     if err_exec then
-        return nil, "Failed to delete dataflow: " .. err_exec
+        return nil, err_exec
     end
 
     if result_exec.rows_affected == 0 then
-        return nil, "Workflow not found"
+        return nil, errors.new({ message = "Workflow not found", kind = errors.NOT_FOUND })
     end
 
     return {
@@ -1316,6 +1338,7 @@ function ops.execute(tx, dataflow_id, op_id, commands)
         local result, err_handler = handler(tx, dataflow_id, op_id, command)
 
         if err_handler then
+            if type(err_handler) == "userdata" then return nil, err_handler end
             return nil, "Error executing command at index " .. i .. ": " .. err_handler
         end
 

@@ -1,0 +1,17 @@
+version: "1.0"
+namespace: userspace.dataflow.client
+
+entries:
+  - name: admission
+    kind: library.lua
+    source: file://admission.lua
+    modules: [time]
+    imports:
+      dataflow_consts: userspace.dataflow:consts
+
+  - name: lifecycle
+    kind: library.lua
+    source: file://lifecycle.lua
+    modules: [uuid, time]
+    imports:
+      dataflow_consts: userspace.dataflow:consts

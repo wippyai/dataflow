@@ -10,6 +10,8 @@ entries:
     source: file://activation_repo.lua
     modules: [sql, json]
     imports:
+      activation_operations: userspace.dataflow.persist.activation:operations
+      activation_evidence: userspace.dataflow.persist.activation:evidence
       dataflow_consts: userspace.dataflow:consts
 
   - name: activation_repo_test
