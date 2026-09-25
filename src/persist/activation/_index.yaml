@@ -1,0 +1,11 @@
+version: "1.0"
+namespace: userspace.dataflow.persist.activation
+
+entries:
+  - name: operations
+    kind: library.lua
+    source: file://operations.lua
+
+  - name: evidence
+    kind: library.lua
+    source: file://evidence.lua

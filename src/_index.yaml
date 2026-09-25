@@ -29,11 +29,30 @@ entries:
       - security
       - funcs
     imports:
+      activation_repo: userspace.dataflow.persist:activation_repo
       commit: userspace.dataflow.persist:commit
       dataflow_consts: userspace.dataflow:consts
       data_reader: userspace.dataflow.persist:data_reader
       dataflow_repo: userspace.dataflow.persist:dataflow_repo
       execution_frame: userspace.dataflow:execution_frame
+      client_admission: userspace.dataflow.client:admission
+      client_lifecycle: userspace.dataflow.client:lifecycle
+
+  - name: activation_evidence_test
+    kind: function.lua
+    meta:
+      name: Dataflow Admission Evidence Tests
+      type: test
+      group: Workflow
+    source: file://activation_evidence_test.lua
+    modules: [sql, uuid, time]
+    imports:
+      activation_repo: userspace.dataflow.persist:activation_repo
+      client: userspace.dataflow:client
+      dataflow_consts: userspace.dataflow:consts
+      ops: userspace.dataflow.persist:ops
+      test: wippy.test:test
+    method: run_tests
 
   # userspace.dataflow:child_output_test
   - name: child_output_test

@@ -198,3 +198,14 @@ entries:
     imports:
       migration: wippy.migration:migration
     method: migrate
+
+  - name: 10_admission_evidence
+    kind: function.lua
+    meta:
+      type: migration
+      target_db: app:db
+      depends_on: [ns:wippy.migration]
+      timestamp: "2026-09-25T17:00:05Z"
+    source: file://10_admission_evidence.lua
+    imports: {migration: wippy.migration:migration}
+    method: migrate
