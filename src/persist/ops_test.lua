@@ -1379,7 +1379,8 @@ local function define_tests()
                 local result, err = ops.execute(tx, fake_dataflow_id, nil, delete_command)
 
                 test.is_nil(result)
-                test.contains(err, "Workflow not found")
+                test.is_true(errors.is(err, errors.NOT_FOUND))
+                test.eq(err:message(), "dataflow not found")
             end)
 
             it("should delete a specific dataflow when provided in command", function()
