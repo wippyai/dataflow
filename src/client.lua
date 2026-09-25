@@ -6,6 +6,7 @@ local consts = require("dataflow_consts")
 local function get_default_deps()
     return {
         dataflow_repo = require("dataflow_repo"),
+        activation_repo = require("activation_repo"),
         commit = require("commit"),
         data_reader = require("data_reader"),
         process = process,
@@ -412,6 +413,57 @@ function methods:start(dataflow_id, options)
     end
 
     return dataflow_id, nil
+end
+
+-- Admission calls use one durable key for the lifetime of a workflow run.
+-- The repository serializes them with ordinary activation and terminal writes.
+function methods:ensure_activation(dataflow_id, admission_key)
+    if type(dataflow_id) ~= "string" or dataflow_id == "" then
+        return nil, "dataflow_id is required"
+    end
+    if type(admission_key) ~= "string" or admission_key == "" then
+        return nil, "admission_key is required"
+    end
+    local current, current_err = self._deps.activation_repo.get_activation_evidence(
+        dataflow_id, admission_key)
+    if current_err then return nil, current_err end
+    if current.state == "absent" then return current, nil end
+    local workflow, ownership_err = self:_owned_workflow(dataflow_id)
+    if not workflow then return nil, ownership_err end
+    if not TERMINAL_STATUS[workflow.status] then
+        workflow, ownership_err = self:_ensure_workflow_context(workflow)
+        if not workflow then return nil, ownership_err end
+    end
+    local evidence, err = self._deps.activation_repo.ensure_activation(
+        dataflow_id, admission_key, time.now():format(time.RFC3339NANO))
+    if err then return nil, err end
+    if evidence.state == "activated" or evidence.state == "running" then
+        local _, notify_err = self._deps.commit.notify_activation(dataflow_id, evidence.generation)
+        if notify_err then return nil, notify_err end
+    end
+    return evidence, nil
+end
+
+function methods:get_activation_evidence(dataflow_id, admission_key)
+    if type(dataflow_id) ~= "string" or dataflow_id == "" then
+        return nil, "dataflow_id is required"
+    end
+    if type(admission_key) ~= "string" or admission_key == "" then
+        return nil, "admission_key is required"
+    end
+    local evidence, err = self._deps.activation_repo.get_activation_evidence(
+        dataflow_id, admission_key)
+    if err or evidence.state == "absent" then return evidence, err end
+    local workflow, ownership_err = self:_owned_workflow(dataflow_id)
+    if not workflow then return nil, ownership_err end
+    return evidence, nil
+end
+
+function methods:ack_terminal(dataflow_id, admission_key, generation)
+    local workflow, ownership_err = self:_owned_workflow(dataflow_id)
+    if not workflow then return nil, ownership_err end
+    return self._deps.activation_repo.ack_terminal(
+        dataflow_id, admission_key, generation, time.now():format(time.RFC3339NANO))
 end
 
 -- Cancel workflow

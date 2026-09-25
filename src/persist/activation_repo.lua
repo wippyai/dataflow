@@ -153,6 +153,12 @@ local function normalize_row(row: any)
         launch_args = launch_args,
         requested_at = tostring(row.requested_at),
         updated_at = tostring(row.updated_at),
+        admission_key = row.admission_key and tostring(row.admission_key) or nil,
+        ever_activated = row.ever_activated == true or tonumber(row.ever_activated) == 1,
+        terminal_status = row.terminal_status and tostring(row.terminal_status) or nil,
+        terminal_outcome_json = row.terminal_outcome_json,
+        terminal_generation = row.terminal_generation and tonumber(row.terminal_generation) or nil,
+        terminal_ack_at = row.terminal_ack_at and tostring(row.terminal_ack_at) or nil,
     }, nil
 end
 
@@ -189,7 +195,8 @@ end
 local function get_tx(tx, dataflow_id)
     local rows, query_err = tx_query(tx, [[
         SELECT dataflow_id, generation, desired_active, owner_epoch,
-               launch_args, requested_at, updated_at
+               launch_args, requested_at, updated_at, admission_key, ever_activated,
+               terminal_status, terminal_outcome_json, terminal_generation, terminal_ack_at
         FROM dataflow_activations WHERE dataflow_id = ? LIMIT 1
     ]], { dataflow_id })
     if query_err then return nil, query_err end
@@ -207,11 +214,27 @@ end
 -- owns both durable activation intent and its wake index, so converge them in
 -- the same transaction before returning the terminal observation.
 local function cleanup_terminal_tx(tx, dataflow_id, status, now_value)
+    local flow_rows, flow_err = tx_query(tx,
+        "SELECT metadata FROM dataflows WHERE dataflow_id = ?", { dataflow_id })
+    if flow_err then return nil, "failed to read terminal outcome: " .. tostring(flow_err) end
+    local outcome = flow_rows and flow_rows[1] and flow_rows[1].metadata or nil
+    if type(outcome) == "table" then
+        local encoded, encode_err = json.encode(outcome)
+        if encode_err then return nil, "failed to encode terminal outcome: " .. tostring(encode_err) end
+        outcome = encoded
+    end
     local activation_result, activation_err = tx_execute(tx, [[
         UPDATE dataflow_activations
-        SET desired_active = ?, launch_args = NULL, updated_at = ?
-        WHERE dataflow_id = ? AND (desired_active = ? OR launch_args IS NOT NULL)
-    ]], { false, now_value, dataflow_id, true })
+        SET desired_active = ?, launch_args = NULL, updated_at = ?,
+            terminal_status = CASE WHEN admission_key IS NOT NULL
+                THEN COALESCE(terminal_status, ?) ELSE terminal_status END,
+            terminal_outcome_json = CASE WHEN admission_key IS NOT NULL
+                THEN COALESCE(terminal_outcome_json, ?) ELSE terminal_outcome_json END,
+            terminal_generation = CASE WHEN admission_key IS NOT NULL
+                THEN COALESCE(terminal_generation, generation) ELSE terminal_generation END
+        WHERE dataflow_id = ? AND (desired_active = ? OR launch_args IS NOT NULL
+            OR (admission_key IS NOT NULL AND terminal_status IS NULL))
+    ]], { false, now_value, status, outcome or sql.as.null(), dataflow_id, true })
     if activation_err then return nil, "failed to disable terminal activation: " .. tostring(activation_err) end
 
     local wake_result, wake_err = tx_execute(tx,
@@ -586,12 +609,167 @@ function activation_repo.get(dataflow_id)
     if db_err then return nil, db_err end
     local rows, query_err = db_query(db, [[
         SELECT dataflow_id, generation, desired_active, owner_epoch,
-               launch_args, requested_at, updated_at
+               launch_args, requested_at, updated_at, admission_key, ever_activated,
+               terminal_status, terminal_outcome_json, terminal_generation, terminal_ack_at
         FROM dataflow_activations WHERE dataflow_id = ? LIMIT 1
     ]], { dataflow_id })
     db:release()
     if query_err then return nil, query_err end
     return normalize_row(rows and rows[1] or nil)
+end
+
+local function admission_key_valid(key)
+    return type(key) == "string" and key ~= ""
+end
+
+local function evidence_from_row(row, status, key)
+    if not row then
+        return { state = TERMINAL_STATUS[status] and "terminal" or "created",
+            admission_key = key, ever_activated = false,
+            terminal_status = TERMINAL_STATUS[status] and status or nil }, nil
+    end
+    local outcome = row.terminal_outcome_json
+    if type(outcome) == "string" and outcome ~= "" then
+        local decoded, err = json.decode(outcome)
+        if err then return nil, "invalid terminal outcome: " .. tostring(err) end
+        outcome = decoded
+    end
+    local state = "activated"
+    if TERMINAL_STATUS[status] or row.terminal_status then
+        state = row.terminal_status and "terminal" or "unknown"
+    elseif status == consts.STATUS.RUNNING then state = "running" end
+    return {
+        state = state, admission_key = key, generation = row.generation,
+        ever_activated = row.ever_activated, terminal_status = row.terminal_status,
+        terminal_outcome = outcome, terminal_generation = row.terminal_generation,
+        terminal_ack_at = row.terminal_ack_at,
+    }, nil
+end
+
+local function transaction(fn)
+    local db, db_err = sql.get(consts.APP_DB)
+    if db_err then return nil, db_err end
+    local tx, begin_err = db:begin()
+    if begin_err then db:release(); return nil, begin_err end
+    local value, operation_err = fn(tx)
+    if operation_err then tx:rollback(); db:release(); return nil, operation_err end
+    local committed, commit_err = tx:commit()
+    if not committed or commit_err then
+        tx:rollback(); db:release()
+        return nil, commit_err or "transaction did not commit"
+    end
+    db:release()
+    return value, nil
+end
+
+function activation_repo.ensure_activation(dataflow_id, admission_key, now_value)
+    local valid, id_err = validate_id(dataflow_id)
+    if not valid then return nil, id_err end
+    if not admission_key_valid(admission_key) then return nil, "admission_key is required" end
+    valid, id_err = validate_timestamp(now_value, "requested_at")
+    if not valid then return nil, id_err end
+    return transaction(function(tx)
+        local status, lock_err = activation_repo.lock_workflow_tx(tx, dataflow_id)
+        if lock_err == "dataflow not found" then
+            return { state = "absent", admission_key = admission_key,
+                ever_activated = false }, nil
+        end
+        if lock_err then return nil, lock_err end
+        local row, row_err = get_tx(tx, dataflow_id)
+        if row_err then return nil, row_err end
+        if row and row.admission_key and row.admission_key ~= admission_key then
+            return nil, "CONFLICT: dataflow has another admission key"
+        end
+        if not row and TERMINAL_STATUS[status] then
+            return evidence_from_row(nil, status, admission_key)
+        end
+        if not row then
+            local result, insert_err = tx_execute(tx, [[
+                INSERT INTO dataflow_activations(dataflow_id,generation,desired_active,
+                    owner_epoch,launch_args,requested_at,updated_at,admission_key,ever_activated)
+                VALUES (?,1,?,NULL,NULL,?,?,?,?)
+            ]], { dataflow_id, true, now_value, now_value, admission_key, true })
+            if insert_err then return nil, insert_err end
+            if not result or (result.rows_affected or 0) ~= 1 then
+                return nil, "activation insert made no change"
+            end
+        elseif not row.admission_key then
+            local _, update_err = tx_execute(tx, [[
+                UPDATE dataflow_activations
+                SET admission_key = ?, ever_activated = ?, updated_at = ?
+                WHERE dataflow_id = ? AND admission_key IS NULL
+            ]], { admission_key, true, now_value, dataflow_id })
+            if update_err then return nil, update_err end
+        end
+        if TERMINAL_STATUS[status] then
+            local _, cleanup_err = cleanup_terminal_tx(tx, dataflow_id, status, now_value)
+            if cleanup_err then return nil, cleanup_err end
+        end
+        row, row_err = get_tx(tx, dataflow_id)
+        if row_err then return nil, row_err end
+        return evidence_from_row(row, status, admission_key)
+    end)
+end
+
+function activation_repo.get_activation_evidence(dataflow_id, admission_key)
+    local valid, id_err = validate_id(dataflow_id)
+    if not valid then return nil, id_err end
+    if not admission_key_valid(admission_key) then return nil, "admission_key is required" end
+    local db, db_err = sql.get(consts.APP_DB)
+    if db_err then return nil, db_err end
+    local rows, query_err = db_query(db, [[
+        SELECT d.status, a.dataflow_id, a.generation, a.desired_active,
+            a.owner_epoch, a.launch_args, a.requested_at, a.updated_at,
+            a.admission_key, a.ever_activated, a.terminal_status,
+            a.terminal_outcome_json, a.terminal_generation, a.terminal_ack_at
+        FROM dataflows d LEFT JOIN dataflow_activations a ON a.dataflow_id = d.dataflow_id
+        WHERE d.dataflow_id = ? LIMIT 1
+    ]], { dataflow_id })
+    db:release()
+    if query_err then return nil, query_err end
+    local joined = rows and rows[1] or nil
+    if not joined then return { state = "absent", admission_key = admission_key,
+        ever_activated = false }, nil end
+    if joined.admission_key and tostring(joined.admission_key) ~= admission_key then
+        return nil, "CONFLICT: dataflow has another admission key"
+    end
+    local row, row_err = normalize_row(joined.dataflow_id and joined or nil)
+    if row_err then return nil, row_err end
+    return evidence_from_row(row, tostring(joined.status), admission_key)
+end
+
+function activation_repo.ack_terminal(dataflow_id, admission_key, generation, now_value)
+    local valid, id_err = validate_id(dataflow_id)
+    if not valid then return nil, id_err end
+    if not admission_key_valid(admission_key) then return nil, "admission_key is required" end
+    generation = tonumber(generation)
+    if not generation or generation < 1 or generation % 1 ~= 0 then
+        return nil, "generation must be a positive integer"
+    end
+    valid, id_err = validate_timestamp(now_value, "terminal_ack_at")
+    if not valid then return nil, id_err end
+    return transaction(function(tx)
+        local _, lock_err = activation_repo.lock_workflow_tx(tx, dataflow_id)
+        if lock_err then return nil, lock_err end
+        local row, row_err = get_tx(tx, dataflow_id)
+        if row_err then return nil, row_err end
+        if not row or row.admission_key ~= admission_key or
+            row.terminal_generation ~= generation then
+            return nil, "CONFLICT: terminal admission or generation differs"
+        end
+        if not row.terminal_status then return nil, "terminal evidence is unavailable" end
+        if not row.terminal_ack_at then
+            local _, update_err = tx_execute(tx, [[
+                UPDATE dataflow_activations SET terminal_ack_at = ?
+                WHERE dataflow_id = ? AND admission_key = ?
+                    AND terminal_generation = ? AND terminal_ack_at IS NULL
+            ]], { now_value, dataflow_id, admission_key, generation })
+            if update_err then return nil, update_err end
+            row, row_err = get_tx(tx, dataflow_id)
+            if row_err then return nil, row_err end
+        end
+        return { acknowledged = true, terminal_ack_at = row.terminal_ack_at }, nil
+    end)
 end
 
 function activation_repo.list_active()
