@@ -475,6 +475,22 @@ function prompt_builder:build_prompt(system_prompt, initial_input)
         end
     end
 
+    -- A ROLLING BREAKPOINT ON THE HISTORY TAIL.
+    --
+    -- The prompt is rebuilt from the stored actions and observations on every step, and
+    -- only the system prompt and the initial input were marked. Every tool call and
+    -- result was therefore sent uncached on every step, so a long agent run re-processed
+    -- its whole growing history each time (measured: 6k -> 104k uncached prompt tokens per
+    -- step across a 26-step run). Marking the end of the history lets the next step read
+    -- everything up to here from cache and pay only for what it adds.
+    --
+    -- Safe with the Claude mapper's 4-breakpoint cap: collapse_cache_positions keeps the
+    -- system markers and the MOST RECENT message markers, so this one is never the one
+    -- dropped. Providers without explicit caching ignore markers.
+    if #history_items > 0 then
+        builder:add_cache_marker("history_tail")
+    end
+
     return builder, nil
 end
 
