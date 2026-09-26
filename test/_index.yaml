@@ -2,6 +2,44 @@ version: "1.0"
 namespace: app
 
 entries:
+  - name: lifecycle_behavior_trait
+    kind: registry.entry
+    meta:
+      type: agent.trait
+      name: Lifecycle Behavior Test Trait
+      test_only: true
+    data:
+      behaviors:
+        - id: durable_context
+          kind: memory
+          handles: [activate, before_step, checkpoint]
+          handlers:
+            lifecycle: app:lifecycle_test_binding
+            checkpoint: app:checkpoint_test_binding
+          checkpoint:
+            token_threshold: 1200
+            max_memory_chars: 2000
+
+  - name: legacy_lifecycle_trait
+    kind: registry.entry
+    meta:
+      type: agent.trait
+      name: Legacy Lifecycle Test Trait
+      test_only: true
+    data:
+      bindings:
+        lifecycle:
+          - id: legacy_lifecycle
+            contract: wippy.agent:lifecycle
+            binding: app:legacy_lifecycle_test_binding
+            phases: [deactivate]
+            priority: 200
+        checkpoint:
+          - id: legacy_checkpoint
+            contract: wippy.agent:checkpoint
+            binding: app:legacy_checkpoint_test_binding
+            priority: 200
+
   - name: prepare_postgres_session_dependencies
     kind: function.lua
     meta:

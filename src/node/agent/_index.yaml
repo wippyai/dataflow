@@ -286,6 +286,20 @@ entries:
       test: wippy.test:test
     method: run_tests
 
+  - name: lifecycle_behavior_test
+    kind: function.lua
+    meta:
+      name: Published agent behavior compatibility
+      type: test
+      comment: Registry trait behaviors must compile into lifecycle and checkpoint bindings.
+      group: Workflow / Agent Node
+    source: file://lifecycle_behavior_test.lua
+    imports:
+      compiler: wippy.agent.compiler:compiler
+      traits: wippy.agent.discovery:traits
+      test: wippy.test:test
+    method: run_tests
+
   - name: node_context_test
     kind: function.lua
     meta:
