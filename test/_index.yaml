@@ -212,7 +212,7 @@ entries:
     meta:
       description: LLM dependency configuration for testing
     component: "wippy/llm"
-    version: "*"
+    version: ">=v0.5.2"
     parameters:
       - name: wippy.llm:process_host
         value: app:processes
