@@ -2120,18 +2120,21 @@ local function run(args)
             payload = function(phase: string, descriptor: table): table
                 local switching = phase == lifecycle_runtime.PHASE.DEACTIVATE
                 local lifecycle_reason = switching and REASON.AGENT_SWITCH or REASON.AGENT_LOADED
+                local options = {
+                    reason = lifecycle_reason,
+                    outcome = {
+                        state = OUTCOME.CONTINUES,
+                        reason = lifecycle_reason
+                    }
+                }
+                if not switching then
+                    options.refs = refs
+                end
                 return {
                     agent_id = descriptor.id,
                     model_name = descriptor.model,
                     iteration = active_iteration,
-                    options = {
-                        reason = lifecycle_reason,
-                        refs = switching and nil or refs,
-                        outcome = {
-                            state = OUTCOME.CONTINUES,
-                            reason = lifecycle_reason
-                        }
-                    }
+                    options = options
                 }
             end
         })

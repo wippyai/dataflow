@@ -111,6 +111,8 @@ function helpers.reset_metrics(scenario_id)
     helpers.set_metric(scenario_id, "lifecycle_before_step", 0)
     helpers.set_metric(scenario_id, "lifecycle_after_step", 0)
     helpers.set_metric(scenario_id, "lifecycle_deactivate", 0)
+    helpers.set_metric(scenario_id, "lifecycle_switch_deactivate", 0)
+    helpers.set_metric(scenario_id, "lifecycle_switch_deactivate_refs_present", 0)
     helpers.set_metric(scenario_id, "lifecycle_prompt_seen", 0)
     helpers.set_metric(scenario_id, "lifecycle_last_iteration", 0)
     helpers.set_metric(scenario_id, "finish_offered", 0)
@@ -132,6 +134,10 @@ function helpers.get_metrics(scenario_id)
         lifecycle_before_step = tonumber(helpers.get_metric(scenario_id, "lifecycle_before_step", 0)) or 0,
         lifecycle_after_step = tonumber(helpers.get_metric(scenario_id, "lifecycle_after_step", 0)) or 0,
         lifecycle_deactivate = tonumber(helpers.get_metric(scenario_id, "lifecycle_deactivate", 0)) or 0,
+        lifecycle_switch_deactivate = tonumber(
+            helpers.get_metric(scenario_id, "lifecycle_switch_deactivate", 0)) or 0,
+        lifecycle_switch_deactivate_refs_present = tonumber(
+            helpers.get_metric(scenario_id, "lifecycle_switch_deactivate_refs_present", 0)) or 0,
         lifecycle_prompt_seen = tonumber(helpers.get_metric(scenario_id, "lifecycle_prompt_seen", 0)) or 0,
         lifecycle_last_iteration = tonumber(helpers.get_metric(scenario_id, "lifecycle_last_iteration", 0)) or 0,
         finish_offered = tonumber(helpers.get_metric(scenario_id, "finish_offered", 0)) or 0,

@@ -134,6 +134,9 @@ local function define_tests()
             test.is_nil(metrics_err)
             test.eq(metrics.lifecycle_activate, 2, "initial and restored trait activate")
             test.eq(metrics.lifecycle_deactivate, 2, "overlay removal and terminal exit deactivate")
+            test.eq(metrics.lifecycle_switch_deactivate, 1, "old trait deactivates on overlay switch")
+            test.eq(metrics.lifecycle_switch_deactivate_refs_present, 0,
+                "switch deactivation receives no new activation refs")
             test.eq(metrics.lifecycle_before_step, 3, "trait active for turns one, three, and four")
             test.eq(metrics.lifecycle_after_step, 3, "trait active for turns one, three, and four")
             local prompt_metrics, prompt_metrics_err = funcs.new():call(

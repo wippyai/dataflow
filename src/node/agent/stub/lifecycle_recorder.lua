@@ -9,6 +9,12 @@ local function handler(payload)
     local metric_name = "lifecycle_" .. phase
 
     helpers.bump_metric(scenario_id, metric_name, 1)
+    if phase == "deactivate" and payload.reason == "agent_switch" then
+        helpers.bump_metric(scenario_id, "lifecycle_switch_deactivate", 1)
+        if payload.refs ~= nil then
+            helpers.bump_metric(scenario_id, "lifecycle_switch_deactivate_refs_present", 1)
+        end
+    end
     if tonumber(host.iteration) then
         helpers.set_metric(scenario_id, "lifecycle_last_iteration", tonumber(host.iteration))
     end
