@@ -633,6 +633,9 @@ local function define_tests()
 
             local messages = rebuilt_prompt:get_messages()
 
+            test.eq(messages[#messages].role, "cache_marker",
+                "prompt ends with a history_tail cache marker so the next step reads the history from cache")
+
             local assistant_message = find_message_by_role(messages, "assistant")
             test.not_nil(assistant_message, "assistant message exists")
             local assistant_metadata = assistant_message.metadata or {}
