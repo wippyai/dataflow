@@ -84,7 +84,10 @@ local function handler(contract_args)
     helpers.bump_metric(scenario.scenario_id, "llm_calls", 1)
     for _, message in ipairs(messages or {}) do
         local text = message.content and message.content[1] and message.content[1].text
-        if type(text) == "string" and string.find(text, "lifecycle-start:" .. tostring(scenario.scenario_id), 1, true) then
+        if type(text) == "string" and (
+            string.find(text, "lifecycle-start:" .. tostring(scenario.scenario_id), 1, true)
+            or (scenario.mode == "lifecycle_overlay" and string.find(text, "lifecycle-start:", 1, true))
+        ) then
             helpers.bump_metric(scenario.scenario_id, "lifecycle_prompt_seen", 1)
             break
         end
@@ -134,6 +137,21 @@ local function handler(contract_args)
             )
         end
 
+        return final_response(scenario.scenario_id, scenario.mode, result_count, base_prompt or 9, 4)
+    end
+
+    if scenario.mode == "lifecycle_overlay" then
+        local lifecycle_trait = "userspace.dataflow.node.agent.stub:lifecycle_test_trait"
+        if result_count < 2 then
+            return tool_call_response(scenario.scenario_id, result_count + 1, scenario.tool_delay_ms,
+                base_prompt or 13, 8, "recovery_control_tool", {
+                    overlay_traits = result_count == 0 and {} or { lifecycle_trait }
+                })
+        end
+        if result_count == 2 then
+            return tool_call_response(scenario.scenario_id, 3, scenario.tool_delay_ms,
+                base_prompt or 13, 8, "recovery_tool")
+        end
         return final_response(scenario.scenario_id, scenario.mode, result_count, base_prompt or 9, 4)
     end
 

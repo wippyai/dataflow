@@ -179,6 +179,7 @@ entries:
       prompt_builder: userspace.dataflow.node.agent:prompt_builder
       tool_caller: wippy.agent.tools:caller
       lifecycle_runtime: wippy.agent:lifecycle_runtime
+      lifecycle_controller: wippy.agent:lifecycle_controller
       checkpoint_runtime: wippy.agent:checkpoint_runtime
     method: run
 
@@ -293,10 +294,17 @@ entries:
       type: test
       comment: Registry trait behaviors must compile into lifecycle and checkpoint bindings.
       group: Workflow / Agent Node
+      timeout: "120s"
     source: file://lifecycle_behavior_test.lua
+    modules:
+      - uuid
+      - time
+      - funcs
     imports:
       compiler: wippy.agent.compiler:compiler
       traits: wippy.agent.discovery:traits
+      client: userspace.dataflow:client
+      consts: userspace.dataflow:consts
       test: wippy.test:test
     method: run_tests
 

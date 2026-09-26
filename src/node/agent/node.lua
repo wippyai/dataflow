@@ -7,6 +7,7 @@ local node_sdk = require("node_sdk")
 local agent_context = require("agent_context")
 local tool_caller = require("tool_caller")
 local lifecycle_runtime = require("lifecycle_runtime")
+local lifecycle_controller = require("lifecycle_controller")
 local checkpoint_runtime = require("checkpoint_runtime")
 local prompt_builder = require("prompt_builder")
 local control_handler = require("control_handler")
@@ -2057,80 +2058,84 @@ local function run(args)
         active_agent = nil,
     }
 
+    local function dispatch_lifecycle(active_agent: any, phase: string, payload: any): (table?, string?)
+        return apply_agent_lifecycle(
+            active_agent,
+            phase,
+            n,
+            payload.agent_id,
+            payload.model_name,
+            payload.iteration,
+            config.run_context_binding,
+            payload.options :: table?
+        )
+    end
+
     local function deactivate_active_agent(reason: string?, outcome: table?, active_iteration: number?)
         if not lifecycle_state.active_agent_id then
             return nil
         end
 
-        local active_agent = lifecycle_state.active_agent or agent_instance
-        local _, lifecycle_err = apply_agent_lifecycle(
-            active_agent,
-            lifecycle_runtime.PHASE.DEACTIVATE,
-            n,
-            lifecycle_state.active_agent_id,
-            lifecycle_state.active_model,
-            active_iteration or iteration,
-            config.run_context_binding,
-            {
-                reason = reason or REASON.DATAFLOW_FINISHED,
-                outcome = outcome or {
-                    state = OUTCOME.COMPLETED,
-                    reason = reason or REASON.DATAFLOW_FINISHED
+        local _, lifecycle_err = lifecycle_controller.deactivate(lifecycle_state, {
+            dispatch = dispatch_lifecycle,
+            fallback = not lifecycle_state.active_agent and {
+                id = lifecycle_state.active_agent_id,
+                model = lifecycle_state.active_model,
+                agent = agent_instance,
+            } or nil,
+            payload = function(_phase: string, descriptor: table): table
+                return {
+                    agent_id = descriptor.id,
+                    model_name = descriptor.model,
+                    iteration = active_iteration or iteration,
+                    options = {
+                        reason = reason or REASON.DATAFLOW_FINISHED,
+                        outcome = outcome or {
+                            state = OUTCOME.COMPLETED,
+                            reason = reason or REASON.DATAFLOW_FINISHED
+                        }
+                    }
                 }
-            }
-        )
-
-        if not lifecycle_err then
-            lifecycle_state.active_agent_id = nil
-            lifecycle_state.active_model = nil
-            lifecycle_state.active_agent = nil
-        end
-
+            end
+        })
         return lifecycle_err
     end
 
     local function activate_current_agent(active_iteration: number, refs: table?): (table?, string?)
-        local same_agent = lifecycle_state.active_agent_id == agent_id and lifecycle_state.active_model == model_name
-        if same_agent then
-            lifecycle_state.active_agent = agent_instance
-            return { applied = 0, skipped = 0 }, nil
-        end
-
-        if lifecycle_state.active_agent_id then
-            local deactivate_err = deactivate_active_agent(REASON.AGENT_SWITCH, {
-                state = OUTCOME.CONTINUES,
-                reason = REASON.AGENT_SWITCH
-            }, active_iteration)
-            if deactivate_err then
-                return nil, deactivate_err
-            end
-        end
-
-        local result, lifecycle_err = apply_agent_lifecycle(
-            agent_instance,
-            lifecycle_runtime.PHASE.ACTIVATE,
-            n,
-            agent_id,
-            model_name,
-            active_iteration,
-            config.run_context_binding,
-            {
-                reason = REASON.AGENT_LOADED,
-                refs = refs,
-                outcome = {
-                    state = OUTCOME.CONTINUES,
-                    reason = REASON.AGENT_LOADED
+        local result, lifecycle_err = lifecycle_controller.activate(lifecycle_state, {
+            id = agent_id,
+            model = model_name,
+            agent = agent_instance,
+            -- A _control trait overlay can change lifecycle bindings without
+            -- changing the agent ID or model. The controller snapshots this
+            -- value so a recompiled but unchanged overlay does not reactivate.
+            variant = agent_ctx.active_traits,
+        }, {
+            dispatch = dispatch_lifecycle,
+            fallback = lifecycle_state.active_agent_id and not lifecycle_state.active_agent and {
+                id = lifecycle_state.active_agent_id,
+                model = lifecycle_state.active_model,
+                agent = agent_instance,
+            } or nil,
+            payload = function(phase: string, descriptor: table): table
+                local switching = phase == lifecycle_runtime.PHASE.DEACTIVATE
+                local lifecycle_reason = switching and REASON.AGENT_SWITCH or REASON.AGENT_LOADED
+                return {
+                    agent_id = descriptor.id,
+                    model_name = descriptor.model,
+                    iteration = active_iteration,
+                    options = {
+                        reason = lifecycle_reason,
+                        refs = switching and nil or refs,
+                        outcome = {
+                            state = OUTCOME.CONTINUES,
+                            reason = lifecycle_reason
+                        }
+                    }
                 }
-            }
-        )
-        if lifecycle_err then
-            return result, lifecycle_err
-        end
-
-        lifecycle_state.active_agent_id = agent_id
-        lifecycle_state.active_model = model_name
-        lifecycle_state.active_agent = agent_instance
-        return result, nil
+            end
+        })
+        return (result and result.activation) :: table?, lifecycle_err
     end
 
     local function fail_with_lifecycle(payload: table, message: string, reason: string?, active_iteration: number?)

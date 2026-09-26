@@ -7,6 +7,13 @@ local function handler(input)
         return nil, "scenario_id is required"
     end
 
+    if type(input.overlay_traits) == "table" then
+        return {
+            accepted = true,
+            _control = { config = { traits = input.overlay_traits } }
+        }
+    end
+
     local child_node_id = uuid.v7()
     return {
         accepted = true,
