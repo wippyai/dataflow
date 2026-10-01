@@ -371,14 +371,14 @@ entries:
     meta:
       description: "Agent framework for agent node execution"
     component: "wippy/agent"
-    version: ">=v0.4.12"
+    version: ">=v0.5.1"
 
   - name: dep.wippy.llm
     kind: ns.dependency
     meta:
       description: "LLM interface for prompt building"
     component: "wippy/llm"
-    version: ">=v0.5.2"
+    version: ">=v0.5.3"
 
   - name: dep.wippy.session
     kind: ns.dependency

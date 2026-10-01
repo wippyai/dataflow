@@ -195,7 +195,21 @@ local function handler(contract_args)
     -- finish_when_offered: calls the finish tool as soon as the request offers it
     -- and answers in plain text otherwise, so a node that withholds the finish
     -- tool never receives a terminal call.
-    if scenario.mode == "finish_when_offered" then
+    if scenario.mode == "finish_when_offered" or scenario.mode == "finish_after_text" then
+        if contract_args.tool_choice == "any" then
+            helpers.bump_metric(scenario.scenario_id, "tool_choice_any", 1)
+        end
+        if contract_args.tool_choice == "auto" then
+            helpers.bump_metric(scenario.scenario_id, "tool_choice_auto", 1)
+        end
+        local options = contract_args.options or {}
+        if options.tool_choice_fallback == "auto" then
+            helpers.bump_metric(scenario.scenario_id, "tool_choice_fallback_auto", 1)
+        end
+        if scenario.mode == "finish_after_text"
+            and helpers.get_metric(scenario.scenario_id, "llm_calls", 0) == 1 then
+            return final_response(scenario.scenario_id, scenario.mode, result_count, base_prompt or 9, 4)
+        end
         if offers_tool(contract_args, "finish") then
             helpers.bump_metric(scenario.scenario_id, "finish_offered", 1)
             return {

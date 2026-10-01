@@ -2272,6 +2272,12 @@ local function run(args)
         append_lifecycle_messages(prompt, before_result)
 
         local step_options = { tool_call = tool_calling, context = run_session_context }
+        -- "any" is enforced here: the arena answers a text-only turn with feedback
+        -- and completes only through the finish tool. A model that cannot be
+        -- forced may therefore be asked with "auto" (see the llm model_profile).
+        if tool_calling == agent_consts.TOOL_CALLING.ANY then
+            step_options.tool_call_fallback = "auto"
+        end
         local agent_result, step_err = agent_instance:step(prompt, step_options)
         if step_err then
             return fail_with_lifecycle({
