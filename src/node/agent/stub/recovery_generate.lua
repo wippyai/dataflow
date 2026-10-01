@@ -119,10 +119,12 @@ local function handler(contract_args)
             }
         end
 
-        local expected = { [first_id] = 0, [second_id] = 0, [third_id] = 0, [sibling_id] = 0 }
+        local expected: {[string]: number} = { [first_id] = 0, [second_id] = 0, [third_id] = 0, [sibling_id] = 0 }
         for _, message in ipairs(messages) do
-            if message.role == "function_result" and expected[message.function_call_id] ~= nil then
-                expected[message.function_call_id] = expected[message.function_call_id] + 1
+            local id = message.function_call_id
+            if message.role == "function_result" and type(id) == "string" then
+                local count = expected[id]
+                if count ~= nil then expected[id] = count + 1 end
             end
         end
         for id, count in pairs(expected) do
