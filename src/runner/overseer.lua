@@ -259,7 +259,8 @@ function M.drive_decision(runtime: Runtime, initial: Decision?): (boolean?, stri
     local decision = initial
     for _ = 1, 10 do
         if not decision or decision.kind == M.overseer_state.ACTION.NONE then
-            if decision and decision.reason == "owner_monitored" and decision.pid then
+            if decision and (decision.reason == "owner_monitored" or
+                decision.reason == "existing_owner_verified") and decision.pid then
                 local owner = M.overseer_state.owner_for_pid(
                     runtime.ownership, decision.pid) :: OwnerReference?
                 if owner then
