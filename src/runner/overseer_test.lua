@@ -264,6 +264,53 @@ local function run_tests()
             test.eq(observed.monitors[1], "pid-existing")
         end)
 
+        test.it("nudges an existing owner for each signal generation without monitoring it again", function()
+            activations.burst = activation("burst", 1)
+            workflows.burst = workflow("burst")
+            local runtime = overseer.new_runtime(CURRENT_EPOCH)
+            test.is_true(select(1, overseer.reconcile_activation(runtime, activations.burst)))
+            local pid = observed.spawns[1].pid
+
+            for generation = 2, 11 do
+                activations.burst.generation = generation
+                local ok, err = overseer.reconcile_activation(runtime, activations.burst)
+                test.is_nil(err)
+                test.is_true(ok)
+                test.eq(#observed.sends, generation, "each new generation wakes the owner")
+                test.eq(observed.sends[generation].pid, pid)
+                test.eq(observed.sends[generation].topic, overseer.consts.MESSAGE_TOPIC.WAKE)
+                test.eq(observed.sends[generation].payload.generation, generation)
+                test.is_nil(runtime.nudges.burst, "delivered nudge is removed")
+            end
+
+            test.is_true(select(1, overseer.reconcile_activation(runtime, activations.burst)))
+            test.is_true(select(1, overseer.reconcile_activation(runtime, activation("burst", 10))))
+            test.eq(#observed.sends, 11, "duplicate and stale generations do not send another nudge")
+            test.eq(#observed.spawns, 1)
+            test.eq(#observed.monitors, 1)
+            test.eq(#observed.failures, 0)
+        end)
+
+        test.it("retries an undelivered nudge after verifying the existing owner", function()
+            activations.retry_nudge = activation("retry_nudge", 1)
+            workflows.retry_nudge = workflow("retry_nudge")
+            local runtime = overseer.new_runtime(CURRENT_EPOCH)
+            local send = overseer.process.send
+            overseer.process.send = function() return nil, "mailbox unavailable" end
+
+            test.is_true(select(1, overseer.reconcile_activation(runtime, activations.retry_nudge)))
+            test.not_nil(runtime.nudges.retry_nudge, "failed delivery keeps the nudge")
+            overseer.process.send = send
+
+            local ok, err = overseer.reconcile_activation(runtime, activations.retry_nudge)
+            test.is_nil(err)
+            test.is_true(ok)
+            test.eq(#observed.sends, 1)
+            test.eq(observed.sends[1].payload.generation, 1)
+            test.is_nil(runtime.nudges.retry_nudge)
+            test.eq(#observed.monitors, 1)
+        end)
+
         test.it("accepts the idempotent monitor result from spawn_monitored", function()
             activations.monitored = activation("monitored", 1)
             workflows.monitored = workflow("monitored")
