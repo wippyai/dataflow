@@ -157,16 +157,20 @@ local function define_tests()
             it("10 wrong signals then 1 correct", function()
                 local sid = "correct-after-wrong-" .. uuid.v7()
                 local df_id = make_signal_wf(sid)
-                c:start(df_id)
+                local _, start_err = c:start(df_id)
+                test.is_nil(start_err, "workflow starts before noise")
                 test.is_true(wait_running(df_id), "waiting before noise")
 
                 for i = 1, 10 do
-                    c:signal(df_id, "wrong-" .. i, { nope = i })
+                    local _, signal_err = c:signal(df_id, "wrong-" .. i, { nope = i })
+                    test.is_nil(signal_err, "wrong signal " .. i .. " is accepted")
                 end
                 test.is_true(wait_running(df_id), "still waiting")
 
-                c:signal(df_id, sid, { correct = true })
-                test.is_true(wait_complete(df_id), "correct signal works after noise")
+                local _, signal_err = c:signal(df_id, sid, { correct = true })
+                test.is_nil(signal_err, "correct signal is accepted")
+                test.is_true(wait_complete(df_id),
+                    "correct signal works after noise; status=" .. tostring(c:get_status(df_id)))
             end)
         end)
 
