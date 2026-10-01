@@ -120,6 +120,10 @@ local function run_tests()
                 sql = overseer.sql,
                 with_tx = overseer.with_tx,
                 pending_due = overseer.pending_due,
+                bootstrap = overseer.bootstrap,
+                next_pending_wake = overseer.next_pending_wake,
+                time = overseer.time,
+                channel = overseer.channel,
             }
             observed = captures()
             activations = {} :: { [string]: any }
@@ -186,6 +190,36 @@ local function run_tests()
 
         test.after_each(function()
             for key, value in pairs(originals) do overseer[key] = value end
+        end)
+
+        test.it("never arms a zero-duration timer for an overdue wake", function()
+            local wake_duration = nil
+            local timer = { case_receive = function() return {} end }
+            overseer.process.registry.register = function() return true, nil end
+            overseer.process.inbox = function() return timer end
+            overseer.process.events = function() return timer end
+            overseer.bootstrap = function() return true, nil end
+            overseer.next_pending_wake = function()
+                return { wake_at = "2000-01-01T00:00:00Z" }, nil
+            end
+            overseer.time = {
+                parse = originals.time.parse,
+                now = originals.time.now,
+                RFC3339 = originals.time.RFC3339,
+                RFC3339NANO = originals.time.RFC3339NANO,
+                after = function(duration)
+                    if type(duration) == "number" then
+                        wake_duration = duration
+                        test.is_true(duration > 0, "time.after rejects zero and negative durations")
+                    end
+                    return timer
+                end,
+            }
+            overseer.channel = { select = function() return { ok = false } end }
+
+            overseer.run({})
+
+            test.not_nil(wake_duration, "the due wake still schedules immediate reconciliation")
         end)
 
         test.it("recovers each durable boot activation once under its frozen actor and scope", function()

@@ -228,6 +228,7 @@ entries:
     imports:
       test: wippy.test:test
       wake_repo: userspace.dataflow.persist:wake_repo
+      overseer: userspace.dataflow.runner:overseer
     method: run_tests
 
   # userspace.dataflow.persist:node_reader
