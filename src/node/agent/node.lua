@@ -1465,8 +1465,28 @@ local function process_tool_results(n, tool_results, iteration, exit_tool_name, 
     local final_result = nil
 
     if exit_tool_name and agent_result.tool_calls then
+        local finish_seen = false
         for _, original_tool_call in ipairs(agent_result.tool_calls) do
             if original_tool_call.name == exit_tool_name then
+                -- Only the first finish decides completion. Every later finish
+                -- still needs a result, or a rejected turn cannot be sent again.
+                if finish_seen then
+                    n:data(agent_consts.DATA_TYPE.AGENT_OBSERVATION,
+                        "Call " .. exit_tool_name .. " once with all required outputs; additional calls in this turn are ignored.", {
+                            key = iteration .. "_exit_duplicate_" .. original_tool_call.id,
+                            content_type = consts.CONTENT_TYPE.TEXT,
+                            node_id = n.node_id,
+                            metadata = {
+                                iteration = iteration,
+                                is_error = true,
+                                tool_call_id = original_tool_call.id,
+                                tool_name = original_tool_call.name,
+                                exit_validation = true
+                            }
+                        })
+                    goto next_exit_call
+                end
+                finish_seen = true
                 local exit_arguments = original_tool_call.arguments
 
                 if arena_config.exit_func_id then
@@ -1512,8 +1532,8 @@ local function process_tool_results(n, tool_results, iteration, exit_tool_name, 
                         final_result = exit_arguments
                     end
                 end
-                break
             end
+            ::next_exit_call::
         end
     end
 

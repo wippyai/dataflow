@@ -94,6 +94,60 @@ local function handler(contract_args)
     -- prompt token count above the checkpoint threshold deterministically
     local base_prompt = tonumber(scenario.prompt_tokens) or nil
 
+    -- Exercise the real persisted-history path: reject the first finish, then
+    -- refuse the next request unless every call in that turn has one result.
+    if scenario.mode == "multiple_finish_then_retry" then
+        local first_id = helpers.call_id(scenario.scenario_id, "finish-first")
+        local second_id = helpers.call_id(scenario.scenario_id, "finish-second")
+        local third_id = helpers.call_id(scenario.scenario_id, "finish-third")
+        local sibling_id = helpers.call_id(scenario.scenario_id, 1)
+        if helpers.get_metric(scenario.scenario_id, "llm_calls", 0) == 1 then
+            return {
+                success = true,
+                result = {
+                    content = "",
+                    tool_calls = {
+                        { id = first_id, name = "finish", arguments = {} },
+                        { id = sibling_id, name = "recovery_tool", arguments = { scenario_id = scenario.scenario_id } },
+                        { id = second_id, name = "finish", arguments = { answer = "must-not-win" } },
+                        { id = third_id, name = "finish", arguments = {} }
+                    }
+                },
+                finish_reason = "tool_call",
+                tokens = response_tokens(13, 8),
+                metadata = {}
+            }
+        end
+
+        local expected = { [first_id] = 0, [second_id] = 0, [third_id] = 0, [sibling_id] = 0 }
+        for _, message in ipairs(messages) do
+            if message.role == "function_result" and expected[message.function_call_id] ~= nil then
+                expected[message.function_call_id] = expected[message.function_call_id] + 1
+            end
+        end
+        for id, count in pairs(expected) do
+            if count ~= 1 then
+                return nil, "unpaired tool call in reconstructed request: " .. id .. " (results=" .. count .. ")"
+            end
+        end
+        return {
+            success = true,
+            result = {
+                content = "",
+                tool_calls = {
+                    {
+                        id = helpers.call_id(scenario.scenario_id, "finish-retry"),
+                        name = "finish",
+                        arguments = { answer = "retried:" .. scenario.scenario_id }
+                    }
+                }
+            },
+            finish_reason = "tool_call",
+            tokens = response_tokens(15, 4),
+            metadata = {}
+        }
+    end
+
     if scenario.mode == "failing_tool_then_final" then
         if result_count == 0 then
             return tool_call_response(scenario.scenario_id, 1, scenario.tool_delay_ms, base_prompt or 13, 8, "recovery_tool", {

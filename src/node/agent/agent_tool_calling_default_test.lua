@@ -82,6 +82,8 @@ local function define_tests()
                             arena = {
                                 prompt = "Finish with a structured answer.",
                                 tool_calling = tool_calling,
+                                tools = scenario_mode == "multiple_finish_then_retry"
+                                    and { "userspace.dataflow.node.agent.stub:recovery_tool" } or nil,
                                 max_iterations = 3,
                                 exit_schema = {
                                     type = "object",
@@ -149,6 +151,25 @@ local function define_tests()
             test.eq(#outputs, 1, "workflow output produced")
             test.eq(as_table((outputs[1] :: any).content).answer, "finished:" .. workflow.scenario_id,
                 "the output is the finish tool's arguments")
+        end)
+
+        it("pairs every finish and sibling result before retrying a rejected completion", function()
+            local workflow = create_workflow("any", nil, "multiple_finish_then_retry")
+            c:start(workflow.dataflow_id)
+
+            test.eq(wait_terminal(workflow.dataflow_id), consts.STATUS.COMPLETED_SUCCESS,
+                "the provider accepts the fully paired retry history")
+            test.eq(metric(workflow.scenario_id, "llm_calls"), 2, "the rejected turn is followed by one retry")
+            test.eq(metric(workflow.scenario_id, "tool_attempts"), 1, "the ordinary sibling executes once")
+
+            local outputs = data_reader.with_dataflow(workflow.dataflow_id)
+                :with_data_types(consts.DATA_TYPE.WORKFLOW_OUTPUT)
+                :with_data_keys("result")
+                :fetch_options({ replace_references = true })
+                :all() or {}
+            test.eq(#outputs, 1)
+            test.eq(as_table((outputs[1] :: any).content).answer, "retried:" .. workflow.scenario_id,
+                "a later finish in the rejected turn cannot prematurely complete the workflow")
         end)
 
         it("asks for a forced tool call and permits the auto fallback in any mode", function()
