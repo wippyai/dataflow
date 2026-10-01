@@ -57,7 +57,7 @@ local function define_tests()
 
         -- A hand-built node config that declares an exit_schema and leaves
         -- tool_calling unset, as configs written outside the flow builder do.
-        local function create_workflow(tool_calling: string?)
+        local function create_workflow(tool_calling: string?, model: string?, scenario_mode: string?)
             local node_id = uuid.v7()
             local input_id = uuid.v7()
             local node_input_id = uuid.v7()
@@ -78,6 +78,7 @@ local function define_tests()
                         status = consts.STATUS.PENDING,
                         config = {
                             agent = "userspace.dataflow.node.agent.stub:recovery_test_agent",
+                            model = model,
                             arena = {
                                 prompt = "Finish with a structured answer.",
                                 tool_calling = tool_calling,
@@ -104,7 +105,7 @@ local function define_tests()
                     payload = {
                         data_id = input_id,
                         data_type = consts.DATA_TYPE.WORKFLOW_INPUT,
-                        content = { scenario_id = scenario_id, mode = "finish_when_offered" },
+                        content = { scenario_id = scenario_id, mode = scenario_mode or "finish_when_offered" },
                         content_type = consts.CONTENT_TYPE.JSON
                     }
                 },
@@ -159,6 +160,23 @@ local function define_tests()
             test.eq(metric(workflow.scenario_id, "tool_choice_any"), 1, "the request still asks for a forced tool call")
             test.eq(metric(workflow.scenario_id, "tool_choice_fallback_auto"), 1,
                 "the node, which enforces completion through finish, permits the auto fallback")
+        end)
+
+        it("falls back through the published LLM route but does not complete on a text-only turn", function()
+            local workflow = create_workflow("any", "recovery-auto-test-model", "finish_after_text")
+
+            c:start(workflow.dataflow_id)
+
+            test.eq(wait_terminal(workflow.dataflow_id), consts.STATUS.COMPLETED_SUCCESS,
+                "the node completes through the finish tool")
+            test.eq(metric(workflow.scenario_id, "llm_calls"), 2,
+                "the first text-only turn must not complete an any-mode arena")
+            test.eq(metric(workflow.scenario_id, "tool_choice_any"), 0,
+                "the LLM must never send forced choice to a route that rejects it")
+            test.eq(metric(workflow.scenario_id, "tool_choice_auto"), 2,
+                "the published LLM converts both forced requests to auto")
+            test.eq(metric(workflow.scenario_id, "finish_offered"), 1,
+                "the second turn finishes through the tool")
         end)
 
         it("permits no fallback when the arena itself runs in auto mode", function()

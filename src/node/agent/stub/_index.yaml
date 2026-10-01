@@ -225,6 +225,18 @@ entries:
   providers:
   - id: userspace.dataflow.node.agent.stub:recovery_provider
     provider_model: recovery-test-model
+- name: recovery_auto_model
+  kind: registry.entry
+  meta:
+    name: recovery-auto-test-model
+    type: llm.model
+    title: Auto Tool Choice Test Model
+    comment: Model route that rejects forced tool choice
+    test_only: true
+  providers:
+  - id: userspace.dataflow.node.agent.stub:recovery_provider
+    provider_model: recovery-test-model
+    forced_tool_choice: false
 - name: recovery_test_agent
   kind: registry.entry
   meta:

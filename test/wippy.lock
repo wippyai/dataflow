@@ -11,8 +11,8 @@ modules:
     - name: wippy/dataflow
       version: 0.0.0
     - name: wippy/llm
-      version: 0.5.2
-      hash: b231cddd2ed7bdd6987fe84ced821f21102a6c4f092ca3f2c269039c27c93c05
+      version: 0.5.3
+      hash: 5e2044b7e016d0350d3ac6676c6ca2ff5caf80773a8adcd579658a04b3255502
     - name: wippy/migration
       version: 0.3.18
       hash: e00cad6706bb95f556aeab5318a04e55d3884c027b09f6340fc4e7d69c905a17

@@ -72,7 +72,7 @@ local function run_tests()
             activation = test.not_nil(activation) :: any
             test.is_false(activation.desired_active)
             local failed_generation = activation.generation
-            test.is_nil(process.registry.lookup(process_name))
+            test.is_nil((process.registry.lookup(process_name)))
 
             local restarted, restart_err = c:start(dataflow_id)
             test.is_nil(restarted)
@@ -85,7 +85,7 @@ local function run_tests()
             test.eq(after.generation, failed_generation)
             test.is_false(after.desired_active)
             test.eq(c:get_status(dataflow_id), consts.STATUS.COMPLETED_FAILURE)
-            test.is_nil(process.registry.lookup(process_name))
+            test.is_nil((process.registry.lookup(process_name)))
         end)
     end)
 end

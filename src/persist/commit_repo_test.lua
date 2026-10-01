@@ -185,21 +185,21 @@ local function define_tests()
                     test_ctx.dataflow_id,
                     { test = true }
                 )
-                test.not_nil(string.find(err1 :: string, "Commit ID is required", 1, true))
+                test.not_nil((string.find(err1 :: string, "Commit ID is required", 1, true)))
 
                 local _, err2 = commit_repo.create(
                     uuid.v7(),
                     nil,
                     { test = true }
                 )
-                test.not_nil(string.find(err2 :: string, "Dataflow ID is required", 1, true))
+                test.not_nil((string.find(err2 :: string, "Dataflow ID is required", 1, true)))
 
                 local _, err3 = commit_repo.create(
                     uuid.v7(),
                     test_ctx.dataflow_id,
                     nil
                 )
-                test.not_nil(string.find(err3 :: string, "Payload is required", 1, true))
+                test.not_nil((string.find(err3 :: string, "Payload is required", 1, true)))
             end)
         end)
 
@@ -238,7 +238,7 @@ local function define_tests()
 
             it("should return error for non-existent commit ID", function()
                 local _, err = commit_repo.get(uuid.v7())
-                test.not_nil(string.find(err :: string, "Commit not found", 1, true))
+                test.not_nil((string.find(err :: string, "Commit not found", 1, true)))
             end)
 
             it("should list commits for a dataflow", function()
