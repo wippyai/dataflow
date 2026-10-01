@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## [0.7.22](https://github.com/wippyai/dataflow/compare/v0.7.21...v0.7.22) (2026-10-01)
+
+
+### Bug Fixes
+
+* **agent:** answer duplicate finish calls before retrying ([#97](https://github.com/wippyai/dataflow/issues/97)) ([e0ad163](https://github.com/wippyai/dataflow/commit/e0ad16375738053d1cd31555236b3ef22cbc101e))
+* wake the existing workflow owner after signal activation ([#95](https://github.com/wippyai/dataflow/issues/95)) ([4534b0e](https://github.com/wippyai/dataflow/commit/4534b0e1ad0a08d3ce726b338775ce8d64c2dd13))
+
 ## [0.7.21](https://github.com/wippyai/dataflow/compare/v0.7.20...v0.7.21) (2026-10-01)
 
 
