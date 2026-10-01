@@ -1,4 +1,4 @@
-version: "0.7.19" # x-release-please-version
+version: "0.7.20" # x-release-please-version
 namespace: userspace.dataflow
 
 entries:
@@ -378,7 +378,7 @@ entries:
     meta:
       description: "LLM interface for prompt building"
     component: "wippy/llm"
-    version: "*"
+    version: ">=v0.5.2"
 
   - name: dep.wippy.session
     kind: ns.dependency

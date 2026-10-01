@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## [0.7.20](https://github.com/wippyai/dataflow/compare/v0.7.19...v0.7.20) (2026-09-26)
+
+
+### Features
+
+* **agent:** cache the agent's history with a rolling history_tail marker ([#90](https://github.com/wippyai/dataflow/issues/90)) ([85427b2](https://github.com/wippyai/dataflow/commit/85427b29b1edf5eb055a6e1007169e1ac3921436))
+
 ## [0.7.19](https://github.com/wippyai/dataflow/compare/v0.7.18...v0.7.19) (2026-09-23)
 
 

@@ -475,6 +475,20 @@ function prompt_builder:build_prompt(system_prompt, initial_input)
         end
     end
 
+    -- A ROLLING BREAKPOINT ON THE HISTORY TAIL.
+    --
+    -- The prompt is rebuilt from the stored actions and observations on every step, and
+    -- only the system prompt and the initial input were marked. Every tool call and
+    -- result was therefore sent uncached on every step. Marking the end of the history
+    -- lets a supported provider reuse the unchanged prefix on the next step. The new
+    -- suffix is a cache write; changed or expired prefixes can still miss.
+    --
+    -- Provider mappers deduplicate and cap breakpoints while reserving a slot for the
+    -- latest eligible history boundary. Providers without explicit caching ignore markers.
+    if #history_items > 0 then
+        builder:add_cache_marker("history_tail")
+    end
+
     return builder, nil
 end
 
