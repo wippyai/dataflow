@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## [0.7.21](https://github.com/wippyai/dataflow/compare/v0.7.20...v0.7.21) (2026-10-01)
+
+
+### Features
+
+* **agent:** permit the auto tool-choice fallback in any mode ([#88](https://github.com/wippyai/dataflow/issues/88)) ([7ac4ef8](https://github.com/wippyai/dataflow/commit/7ac4ef85f07c089d2630fb1276c649ea80e0d376))
+
 ## [0.7.20](https://github.com/wippyai/dataflow/compare/v0.7.19...v0.7.20) (2026-09-26)
 
 
