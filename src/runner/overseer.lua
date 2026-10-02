@@ -61,6 +61,7 @@ type Runtime = {
     ownership: OwnershipState,
     nudges: { [string]: Nudge },
     known: { [string]: boolean },
+    pending_exits: { [string]: any },
     bootstrapped: boolean,
     epoch: string?,
 }
@@ -216,6 +217,7 @@ function M.new_runtime(epoch: string?): Runtime
         ownership = M.overseer_state.new() :: OwnershipState,
         nudges = {},
         known = {},
+        pending_exits = {},
         bootstrapped = false,
         epoch = epoch,
     }
@@ -575,6 +577,12 @@ function M.promote_due(runtime: Runtime): (number?, string?)
 end
 
 function M.reconcile_all(runtime: Runtime): (number?, string?)
+    -- EXIT is a one-shot observation. If durable reads failed when it arrived,
+    -- retry it before inspecting names so a successful park is not forgotten.
+    for _, event in pairs(runtime.pending_exits) do
+        local handled, exit_err = M.handle_exit(runtime, event)
+        if not handled then log_flow("pending owner exit reconciliation failed", tostring(event.from), exit_err) end
+    end
     local active, list_err = M.activation_repo.list_active()
     if list_err then return nil, tostring(list_err) end
     local active_ids: { [string]: boolean } = {}
@@ -650,27 +658,37 @@ end
 function M.handle_exit(runtime: Runtime, event: any): (boolean?, string?)
     local pid = event and event.from and tostring(event.from) or nil
     local owner = pid and M.overseer_state.owner_for_pid(runtime.ownership, pid) or nil
-    if not owner or not pid then return true, nil end
+    if not owner or not pid then
+        if pid then runtime.pending_exits[pid] = nil end
+        return true, nil
+    end
+    runtime.pending_exits[pid] = event
 
     local activation, activation_err = M.activation_repo.get(owner.dataflow_id)
     local workflow, workflow_err = M.dataflow_repo.get(owner.dataflow_id)
     if activation_err or workflow_err then return nil, tostring(activation_err or workflow_err) end
 
     local generation = activation and tonumber(activation.generation) or nil
-    if generation and generation ~= owner.generation then
-        local next_state, next_decision, transition_err = M.overseer_state.on_exit(
-            runtime.ownership, {
-            pid = pid,
-            generation = owner.generation,
-            desired_active = false,
-            status = workflow and tostring(workflow.status) or nil,
-        })
-        local _, remove_err = apply_transition(
-            runtime, next_state, next_decision, transition_err)
-        if remove_err then return nil, remove_err end
-        return M.reconcile_activation(runtime, activation, workflow)
+    if generation and generation > owner.generation then
+        -- Advance the durable fence without forgetting the monitored PID.
+        -- A later signal is not evidence that an unexpected crash was safe.
+        local reconciled, reconcile_err = M.reconcile_activation(runtime, activation, workflow)
+        if not reconciled then return nil, reconcile_err end
+        owner = M.overseer_state.owner_for_pid(runtime.ownership, pid)
+        if not owner then
+            runtime.pending_exits[pid] = nil
+            return true, nil
+        end
     end
 
+    local result = event and event.result or nil
+    local value = result and result.value or nil
+    local released_generation: number? = nil
+    if result and result.error == nil and type(value) == "table" and
+        value.success == true and value.pending == true and value.passivated == true and
+        value.error == nil and value.dataflow_id == owner.dataflow_id then
+        released_generation = tonumber(value.activation_generation)
+    end
     local desired_active = activation ~= nil and activation.desired_active == true and
         workflow ~= nil and not is_terminal(workflow.status)
     local next_state, next_decision, transition_err = M.overseer_state.on_exit(
@@ -680,11 +698,16 @@ function M.handle_exit(runtime: Runtime, event: any): (boolean?, string?)
         desired_active = desired_active,
         status = workflow and tostring(workflow.status) or nil,
         message = failure_message(event),
+        released_generation = released_generation,
+        owner_epoch = activation and activation.owner_epoch and
+            tostring(activation.owner_epoch) or nil,
     })
     local decision, state_err = apply_transition(
         runtime, next_state, next_decision, transition_err)
     if state_err then return nil, state_err end
-    return M.drive_decision(runtime, decision)
+    local handled, drive_err = M.drive_decision(runtime, decision)
+    if handled then runtime.pending_exits[pid] = nil end
+    return handled, drive_err
 end
 
 function M.next_pending_wake(): (any?, string?)

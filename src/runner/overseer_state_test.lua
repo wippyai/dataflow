@@ -293,6 +293,53 @@ local function run_tests()
             test.eq(owner.phase, "failure_requested")
         end)
 
+        test.it("waits for a monitored owner's EXIT before classifying a missing name", function()
+            local state = acquire(activate(overseer.new(), "df-park", 1),
+                "df-park", 1, "pid-park")
+            state = select(1, on_activation(state, {
+                dataflow_id = "df-park", generation = 2, desired_active = true,
+                runtime_epoch = CURRENT_EPOCH,
+            }))
+            local waiting, decision = on_owner_observation(state, {
+                dataflow_id = "df-park", generation = 2,
+            })
+            decision = required(decision)
+            test.eq(decision.kind, overseer.ACTION.NONE)
+            test.eq(decision.reason, "awaiting_owner_exit")
+            test.eq(required(overseer.owner_for_pid(waiting, "pid-park")).generation, 2)
+
+            local released, inspect = on_exit(waiting, {
+                pid = "pid-park", generation = 2, desired_active = true,
+                released_generation = 1,
+            })
+            test.eq(required(inspect).kind, overseer.ACTION.INSPECT_OWNER)
+            local _, claim = on_owner_observation(released, {
+                dataflow_id = "df-park", generation = 2,
+            })
+            test.eq(required(claim).kind, overseer.ACTION.CLAIM)
+        end)
+
+        test.it("a missing monitored name still fails after an unexpected EXIT", function()
+            local state = acquire(activate(overseer.new(), "df-crash", 1),
+                "df-crash", 1, "pid-crash")
+            state = select(1, on_activation(state, {
+                dataflow_id = "df-crash", generation = 2, desired_active = true,
+                runtime_epoch = CURRENT_EPOCH,
+            }))
+            state = select(1, on_owner_observation(state, {
+                dataflow_id = "df-crash", generation = 2,
+            }))
+            local exited, inspect = on_exit(state, {
+                pid = "pid-crash", generation = 2, desired_active = true,
+            })
+            test.eq(required(inspect).kind, overseer.ACTION.INSPECT_OWNER)
+            local _, failure = on_owner_observation(exited, {
+                dataflow_id = "df-crash", generation = 2,
+            })
+            test.eq(required(failure).kind, overseer.ACTION.FAIL)
+            test.eq(required(failure).generation, 2)
+        end)
+
         test.it("fails spawn and monitor acquisition errors without a retry action", function()
             local state = activate(overseer.new(), "df-spawn-error", 1)
             local inspected = select(1, on_owner_observation(state, {

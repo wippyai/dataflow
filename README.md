@@ -43,6 +43,14 @@ error and abandons the tracked wait so a later signal cannot revive it.
 
 Existing `n:yield` behavior is unchanged.
 
+The overseer distinguishes a successful durable park from an unexpected owner
+exit using the canonical process's monitored EXIT result. Signals arriving
+between release and EXIT acquire the newer activation after that handoff.
+Temporary database read/claim errors are retried by the existing reconciliation
+loop without losing the EXIT result or replaying an unplanned crash. Unexpected
+owner loss still fails the workflow in the same runtime; this is not automatic
+crash recovery. Full-runtime restart recovery retains its existing epoch fence.
+
 ## Agent checkpoints
 
 Checkpoint options resolve as trait defaults, explicit `agent_options.checkpoint`,
