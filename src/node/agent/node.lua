@@ -112,57 +112,12 @@ local function merge_contexts(base_context: any, input_context: any): {[string]:
     return merged
 end
 
-local function deep_copy(value: any): any
-    if type(value) ~= "table" then
-        return value
-    end
-
-    local copied = {}
-    for key, item in pairs(value) do
-        copied[key] = deep_copy(item)
-    end
-    return copied
-end
-
-local function is_map(value: any): boolean
-    return type(value) == "table" and value[1] == nil
-end
-
-local function merge_maps(base: any, override: any): table
-    local merged = {}
-
-    if type(base) == "table" then
-        for key, value in pairs(base) do
-            merged[key] = deep_copy(value)
-        end
-    end
-
-    if type(override) == "table" then
-        for key, value in pairs(override) do
-            if is_map(merged[key]) and is_map(value) then
-                merged[key] = merge_maps(merged[key], value)
-            else
-                merged[key] = deep_copy(value)
-            end
-        end
-    end
-
-    return merged
-end
-
 local function resolve_agent_checkpoint_config(config: any, agent_instance: any): table?
     local agent_options = agent_instance and agent_instance.agent_options
     local agent_checkpoint = type(agent_options) == "table" and agent_options.checkpoint or nil
     local config_checkpoint = config and config.checkpoint
 
-    if type(agent_checkpoint) ~= "table"
-        and type(config_checkpoint) ~= "table" then
-        return nil
-    end
-
-    local merged = merge_maps(nil, agent_checkpoint)
-    merged = merge_maps(merged, config_checkpoint)
-    return merged
+    return checkpoint_runtime.resolve_options(agent_checkpoint, config_checkpoint)
 end
 
 type DelegateToolsConfig = {
@@ -942,7 +897,8 @@ local function maybe_checkpoint_history(n, config, session_context, agent_instan
                 retained_result_count = retained_result_count,
                 checkpoint_before_data_id = cut_before
             },
-            history = history_payload
+            history = history_payload,
+            options = checkpoint_cfg,
         })
         if runtime_err then
             return nil, "checkpoint binding failed: " .. error_message(runtime_err, "unknown"), true
@@ -976,7 +932,8 @@ local function maybe_checkpoint_history(n, config, session_context, agent_instan
                 history_count = #history_payload,
                 retained_result_count = retained_result_count,
                 checkpoint_before_data_id = cut_before,
-                history = history_payload
+                history = history_payload,
+                options = checkpoint_cfg,
             })
 
         if call_err then

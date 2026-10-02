@@ -253,6 +253,56 @@ entries:
 
     '
   tools: []
+- name: checkpoint_defaults_trait
+  kind: registry.entry
+  meta:
+    type: agent.trait
+    test_only: true
+  data:
+    behaviors:
+      working_context:
+        handles: [checkpoint]
+        checkpoint:
+          token_threshold: 100
+          function_id: userspace.dataflow.node.agent.stub:checkpoint_summarizer
+          max_memory_chars: 2000
+- name: checkpoint_override_agent
+  kind: registry.entry
+  meta:
+    type: agent.gen1
+    name: checkpoint-override-agent
+    test_only: true
+  model: recovery-test-model
+  prompt: Follow the deterministic scenario encoded in the user input.
+  traits: [userspace.dataflow.node.agent.stub:checkpoint_defaults_trait]
+  agent_options:
+    checkpoint:
+      token_threshold: 400
+      function_id: agent:missing_summarizer
+      max_tokens: 1000
+- name: strict_checkpoint_trait
+  kind: registry.entry
+  meta:
+    type: agent.trait
+    test_only: true
+  data:
+    behaviors:
+      working_context:
+        handles: [checkpoint]
+        strict: true
+        handlers:
+          checkpoint: agent:missing_checkpoint_binding
+- name: non_strict_checkpoint_trait
+  kind: registry.entry
+  meta:
+    type: agent.trait
+    test_only: true
+  data:
+    behaviors:
+      working_context:
+        handles: [checkpoint]
+        handlers:
+          checkpoint: agent:missing_checkpoint_binding
 - name: truncation_generate
   kind: function.lua
   meta:

@@ -48,11 +48,9 @@ entries:
       comment: Creates the external identity keys required by session migrations in the isolated PostgreSQL fixture.
     source: file://wait_for_boot.lua
     modules:
+      - env
       - sql
       - time
-    imports:
-      encryption_key_bootloader: wippy.bootloader.bootloaders:encryption_key
-      migration_bootloader: wippy.migration:migration_bootloader
     method: prepare_postgres_session_dependencies
 
   - name: restart_probe.create
@@ -113,11 +111,9 @@ entries:
       comment: Waits for bootloader to apply migrations before tests run
     source: file://wait_for_boot.lua
     modules:
+      - env
       - sql
       - time
-    imports:
-      encryption_key_bootloader: wippy.bootloader.bootloaders:encryption_key
-      migration_bootloader: wippy.migration:migration_bootloader
     method: run
 
   - name: overseer_scope_test

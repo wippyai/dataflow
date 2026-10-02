@@ -43,6 +43,20 @@ error and abandons the tracked wait so a later signal cannot revive it.
 
 Existing `n:yield` behavior is unchanged.
 
+## Agent checkpoints
+
+Checkpoint options resolve as trait defaults, explicit `agent_options.checkpoint`,
+then node `config.checkpoint` overrides. Maps merge recursively; lists replace,
+including an explicit empty list. `enabled = false` disables checkpointing.
+No checkpoint configuration means no implicit checkpointing; Dataflow retains
+its existing threshold rules (zero fires above zero, negative disables).
+
+Checkpoints run before the next model turn, after the preceding tool results
+have settled. Bindings run before the configured function fallback, and both
+receive the effective `options`; a strict binding failure never falls back.
+The host still owns marker persistence and the summary length cap. Checkpointing
+is conversation compaction, not durable long-term recall or a hard spending limit.
+
 
 [wippy-documentation]: https://docs.wippy.ai
 [releases-page]: https://github.com/wippyai/dataflow/releases
