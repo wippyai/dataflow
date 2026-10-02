@@ -81,6 +81,31 @@ local function queued_of_type(n, command_type)
 end
 
 local function define_tests()
+    describe("declarative behavior proposals", function()
+        it("rejects unsupported policies before queuing any commands", function()
+            local n = make_node({})
+            local result, err = control_handler.apply_behavior_controls({
+                { context = { session = { set = { key = "value" } } } },
+                { config = { stop = true } },
+            }, {}, n, 1)
+            test.is_nil(result)
+            test.not_nil(err)
+            test.eq(#n._queued_commands, 0)
+        end)
+
+        it("uses canonical context writes and persists a compact request", function()
+            local n = make_node({ session_context = { existing = "kept" } })
+            local result, err = control_handler.apply_behavior_controls({
+                { context = { session = { set = { project = "project-1" } } }, memory = { compact = true } }
+            }, {}, n, 1)
+            test.is_nil(err)
+            test.not_nil(result)
+            test.eq(n:metadata().session_context.existing, "kept")
+            test.eq(n:metadata().session_context.project, "project-1")
+            test.is_true(n:metadata().checkpoint_requested)
+        end)
+    end)
+
     describe("Agent Control Handler", function()
         describe("session context", function()
             it("merges set keys with existing session_context", function()
@@ -466,6 +491,25 @@ local function define_tests()
                 local cfg = n:config()
                 test.eq((cfg.active_traits or {})[1], "researcher", "traits persisted for recovery")
                 test.eq((cfg.active_tools or {})[1], "wippy.x:tool", "tools persisted for recovery")
+            end)
+
+            it("persists a replacement agent's default model instead of the old override", function()
+                local n = make_node({})
+                n:update_config({ agent = "agent:a", model = "model:old" })
+                local ctx, calls = mock_agent_ctx()
+                ctx.switch_to_agent = function(self, id)
+                    table.insert(calls.agent, id)
+                    self.current_model = "model:new_default"
+                    return true
+                end
+                local result, err = control_handler.apply_behavior_controls({
+                    { config = { agent = "agent:b" } },
+                }, ctx, n, 1)
+                test.is_nil(err)
+                test.not_nil(result)
+                test.eq(n:config().agent, "agent:b")
+                test.eq(n:config().model, "model:new_default",
+                    "recovery must load the same model as the live replacement agent")
             end)
 
             it("applies an agent switch before the trait/tool overlay in one directive", function()

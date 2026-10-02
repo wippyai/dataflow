@@ -6,6 +6,7 @@ local client = require("client")
 local consts = require("consts")
 local data_reader = require("data_reader")
 local sql = require("sql")
+local activation_repo = require("activation_repo")
 
 local WAIT = "3s"
 
@@ -222,9 +223,8 @@ local function define_tests()
                 time.sleep("300ms")
 
                 c:signal(df1, sid, { wf = 1 })
-                time.sleep("500ms")
-                test.eq(c:get_status(df1), consts.STATUS.COMPLETED_SUCCESS, "wf1 completed")
-                test.eq(c:get_status(df2), consts.STATUS.WAITING, "wf2 still waiting")
+                test.is_true(wait_complete(df1), "wf1 completed")
+                test.is_true(wait_status(df2, consts.STATUS.WAITING), "wf2 still waiting")
 
                 c:signal(df2, sid, { wf = 2 })
                 test.is_true(wait_complete(df2), "wf2 completed independently")
@@ -340,7 +340,18 @@ local function define_tests()
                 c:start(df_id)
                 time.sleep("300ms")
                 c:signal(df_id, "wrong-" .. sid, { timeout_deadline = "2099-01-01T00:00:00Z" })
-                time.sleep("1200ms")
+                local parked = false
+                for _ = 1, 50 do
+                    local activation, activation_err = activation_repo.get(df_id)
+                    test.is_nil(activation_err)
+                    if activation and activation.desired_active == false and
+                        process.registry.lookup("dataflow." .. df_id) == nil then
+                        parked = true
+                        break
+                    end
+                    time.sleep("100ms")
+                end
+                test.is_true(parked, "wrong signal activation released and its owner exited")
 
                 test.eq(c:get_status(df_id), consts.STATUS.WAITING, "wrong signal leaves wait parked")
                 local db = test.not_nil(select(1, sql.get("app:db"))) :: any

@@ -4,7 +4,8 @@
 -- owns an activation generation inside the current runtime. A missing owner is
 -- spawned while acquiring a newly observed generation (including boot). Once a
 -- generation has been observed, losing its owner is a terminal failure; it is
--- never restarted in the same runtime.
+-- never restarted in the same runtime. A successful, generation-fenced park
+-- is a handoff to durable work, not an owner loss.
 local M = {}
 
 type OwnershipRecord = {
@@ -74,6 +75,8 @@ type ExitInput = {
     status: string?,
     terminal: boolean?,
     message: string?,
+    released_generation: number?,
+    owner_epoch: string?,
 }
 
 type Decision = {
@@ -253,13 +256,25 @@ function M.on_activation(state: State, input: ActivationInput): (State, Decision
     assert(input.desired_active == true, "desired_active must be a boolean")
 
     if record and id.generation == record.generation then
-        if record.phase == "monitored" then
-            record.phase = "verification_requested"
+        if record.phase == "monitored" or record.phase == "verification_requested" or
+            record.phase == "acquisition_requested" then
+            if record.phase == "monitored" then record.phase = "verification_requested" end
             return next_state, {
                 kind = M.ACTION.INSPECT_OWNER,
                 reason = "verify_active_owner",
                 dataflow_id = id.dataflow_id,
                 generation = id.generation,
+            }, nil
+        end
+        if record.phase == "claim_requested" then
+            -- A failed transaction did not produce a claim observation. Retry
+            -- the same fenced CAS; never infer that an owner may be spawned.
+            return next_state, {
+                kind = M.ACTION.CLAIM,
+                reason = "retry_activation_claim",
+                dataflow_id = id.dataflow_id,
+                generation = id.generation,
+                observed_epoch = record.claim_from_epoch,
             }, nil
         end
         if record.phase == "failure_requested" then
@@ -356,9 +371,16 @@ function M.on_owner_observation(state: State, input: OwnerObservationInput): (St
     end
 
     if record.pid ~= nil then
-        unbind(next_state, record)
-        return next_state, fail(record, "runtime_owner_lost",
-            input.message or "active orchestrator disappeared during runtime"), nil
+        -- Name removal can precede the monitored EXIT. Keep the PID until
+        -- that event distinguishes a successful park from an unexpected loss.
+        -- In particular, a signal may have advanced the durable generation
+        -- after release but before the old owner's EXIT was delivered.
+        record.phase = "monitored"
+        return next_state, none("awaiting_owner_exit", {
+            dataflow_id = id.dataflow_id,
+            generation = id.generation,
+            pid = record.pid,
+        }), nil
     end
 
     if record.phase == "acquisition_requested" and record.claim_required then
@@ -500,6 +522,23 @@ function M.on_exit(state: State, input: ExitInput): (State, Decision, string?)
         return next_state, none(is_terminal(input) and "terminal_exit" or "inactive_exit"), nil
     end
     assert(input.desired_active == true, "desired_active must be a boolean")
+    local released = input.released_generation
+    if released and released >= 1 and released % 1 == 0 and released < record.generation then
+        -- Only the exited canonical owner can report this successful release.
+        -- The newer generation is durable work that arrived after its park.
+        -- Claim it even if the old, still-named PID had already claimed its
+        -- epoch: that PID has now exited and cannot execute the newer work.
+        record.phase = "acquisition_requested"
+        record.claim_required = true
+        record.claim_from_epoch = input.owner_epoch
+        record.candidate_pid = nil
+        return next_state, {
+            kind = M.ACTION.INSPECT_OWNER,
+            reason = "acquire_after_passivation",
+            dataflow_id = record.dataflow_id,
+            generation = record.generation,
+        }, nil
+    end
     record.phase = "verification_requested"
     return next_state, {
         kind = M.ACTION.INSPECT_OWNER,

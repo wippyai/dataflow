@@ -2,6 +2,7 @@ local json = require("json")
 local uuid = require("uuid")
 local agent_consts = require("agent_consts")
 local consts = require("consts")
+local behavior_controls = require("behavior_controls")
 
 local control_handler = {}
 
@@ -108,6 +109,11 @@ function control_handler.process_memory_operations(control, node_sdk, iteration)
     end
 
     local memory_changes = {}
+
+    if control.memory.compact == true then
+        node_sdk:update_metadata({ checkpoint_requested = true })
+        table.insert(memory_changes, { action = "compact" })
+    end
 
     if control.memory.add then
         for _, memory_item in ipairs(control.memory.add) do
@@ -382,7 +388,8 @@ function control_handler.apply_control_responses(control_responses, agent_contex
                 -- clear the persisted ones too so recovery does not re-apply a prior agent's
                 -- overlay to the new agent. A traits/tools change in the same directive runs
                 -- after this and overwrites the cleared value.
-                node_sdk:update_config({ agent = response.agent_change, active_traits = false, active_tools = false })
+                node_sdk:update_config({ agent = response.agent_change, model = agent_context.current_model,
+                    active_traits = false, active_tools = false })
             else
                 table.insert(changes_summary.errors,
                     string.format("Failed to change agent: %s", err or "unknown error"))
@@ -440,6 +447,30 @@ function control_handler.apply_control_responses(control_responses, agent_contex
     end
 
     return changes_summary, (#changes_summary.errors > 0) and table.concat(changes_summary.errors, "; ") or nil
+end
+
+-- Called by the node only after this round's observations and delegations have
+-- been persisted. Legacy tool directives retain the broader existing protocol.
+function control_handler.apply_behavior_controls(controls, agent_context, node_sdk, iteration)
+    local prepared, err = behavior_controls.prepare(controls)
+    if not prepared then return nil, err end
+    local responses = {}
+    for _, control in ipairs(prepared) do
+        if control.config then
+            local current = type(node_sdk.config) == "function" and node_sdk:config() or {}
+            local changes = {}
+            for key, value in pairs(control.config) do
+                local stored_key = key == "traits" and "active_traits" or (key == "tools" and "active_tools" or key)
+                if json.encode(current[stored_key]) ~= json.encode(value) then changes[key] = value end
+            end
+            control.config = next(changes) and changes or nil
+        end
+        local _, response = control_handler.process_control_directive({ _control = control }, node_sdk, iteration)
+        responses[#responses + 1] = response
+    end
+    local result, apply_err = control_handler.apply_control_responses(responses, agent_context, node_sdk)
+    if apply_err then return nil, apply_err end
+    return result
 end
 
 return control_handler

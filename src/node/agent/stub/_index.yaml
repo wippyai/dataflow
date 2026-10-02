@@ -157,6 +157,14 @@ entries:
       path)
   source: file://empty_memory_summarizer.lua
   method: handler
+- name: target_checkpoint_summarizer
+  kind: function.lua
+  meta:
+    test_only: true
+    comment: Asserts the committed switch target and checkpoint options
+  source: file://target_checkpoint_summarizer.lua
+  modules: [ctx]
+  method: handler
 - name: oversize_summarizer
   kind: function.lua
   meta:
@@ -204,6 +212,20 @@ entries:
         - after_step
         - deactivate
         priority: 10
+- name: behavior_compaction_trait
+  kind: registry.entry
+  meta:
+    type: agent.trait
+    name: Behavior Compaction Test Trait
+    test_only: true
+  data:
+    behaviors:
+    - id: compact_after_response
+      handles: [after_step]
+      handlers:
+        lifecycle: userspace.dataflow.node.agent.stub:lifecycle_recorder_binding
+      options:
+        propose_compaction: true
 - name: recovery_provider
   kind: registry.entry
   meta:
@@ -214,6 +236,32 @@ entries:
     test_only: true
   driver:
     id: userspace.dataflow.node.agent.stub:recovery_driver
+- name: behavior_switch_compact_trait
+  kind: registry.entry
+  meta:
+    type: agent.trait
+    test_only: true
+  data:
+    behaviors:
+    - id: switch_and_compact
+      handles: [after_step]
+      handlers:
+        lifecycle: userspace.dataflow.node.agent.stub:lifecycle_recorder_binding
+      options:
+        propose_compaction: true
+        switch_agent: userspace.dataflow.node.agent.stub:compact_target_agent
+- name: compact_target_agent
+  kind: registry.entry
+  meta:
+    type: agent.gen1
+    name: compact-target-agent
+    test_only: true
+  model: recovery-test-model
+  prompt: Follow the deterministic scenario encoded in the user input.
+  agent_options:
+    checkpoint:
+      function_id: userspace.dataflow.node.agent.stub:target_checkpoint_summarizer
+      max_tokens: 731
 - name: recovery_model
   kind: registry.entry
   meta:
@@ -253,6 +301,56 @@ entries:
 
     '
   tools: []
+- name: checkpoint_defaults_trait
+  kind: registry.entry
+  meta:
+    type: agent.trait
+    test_only: true
+  data:
+    behaviors:
+      working_context:
+        handles: [checkpoint]
+        checkpoint:
+          token_threshold: 100
+          function_id: userspace.dataflow.node.agent.stub:checkpoint_summarizer
+          max_memory_chars: 2000
+- name: checkpoint_override_agent
+  kind: registry.entry
+  meta:
+    type: agent.gen1
+    name: checkpoint-override-agent
+    test_only: true
+  model: recovery-test-model
+  prompt: Follow the deterministic scenario encoded in the user input.
+  traits: [userspace.dataflow.node.agent.stub:checkpoint_defaults_trait]
+  agent_options:
+    checkpoint:
+      token_threshold: 400
+      function_id: agent:missing_summarizer
+      max_tokens: 1000
+- name: strict_checkpoint_trait
+  kind: registry.entry
+  meta:
+    type: agent.trait
+    test_only: true
+  data:
+    behaviors:
+      working_context:
+        handles: [checkpoint]
+        strict: true
+        handlers:
+          checkpoint: agent:missing_checkpoint_binding
+- name: non_strict_checkpoint_trait
+  kind: registry.entry
+  meta:
+    type: agent.trait
+    test_only: true
+  data:
+    behaviors:
+      working_context:
+        handles: [checkpoint]
+        handlers:
+          checkpoint: agent:missing_checkpoint_binding
 - name: truncation_generate
   kind: function.lua
   meta:

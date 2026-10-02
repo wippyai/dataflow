@@ -8,6 +8,7 @@ local funcs = require("funcs")
 local agent_consts = require("agent_consts")
 local prompt_builder = require("prompt_builder")
 local prompt = require("prompt")
+local env = require("env")
 
 local function row_id(row)
     if type(row) ~= "table" then
@@ -166,7 +167,8 @@ local function define_tests()
             reset_metrics(scenario_id)
 
             local agent_config = {
-                agent = "userspace.dataflow.node.agent.stub:recovery_test_agent",
+                agent = opts.agent_id or "userspace.dataflow.node.agent.stub:recovery_test_agent",
+                active_traits = opts.active_traits,
                 show_tool_calls = false,
                 arena = {
                     prompt = "Execute the checkpoint stress scenario.",
@@ -198,7 +200,8 @@ local function define_tests()
                         status = consts.STATUS.PENDING,
                         config = agent_config,
                         metadata = {
-                            title = "Agent Checkpoint Test"
+                            title = "Agent Checkpoint Test",
+                            checkpoint_requested = opts.compact_requested,
                         }
                     }
                 },
@@ -313,6 +316,197 @@ local function define_tests()
 
             local metrics = get_metrics(workflow.scenario_id)
             test.eq(metrics.checkpoint_calls, 0, "checkpoint function never called")
+        end)
+
+        it("persists a behavior's final-response compaction without another model step", function()
+            local flow = create_workflow({
+                mode = "text_final",
+                active_traits = { "userspace.dataflow.node.agent.stub:behavior_compaction_trait" },
+                checkpoint = { function_id = "userspace.dataflow.node.agent.stub:checkpoint_summarizer" },
+            })
+            local _, start_err = c:start(flow.dataflow_id)
+            test.is_nil(start_err)
+            test.is_true(wait_complete(flow.dataflow_id), "final response completes")
+            local history = load_history(flow.dataflow_id, flow.node_id)
+            test.eq(count_checkpoint_markers(history), 1)
+            local marker = latest_checkpoint_marker(history)
+            test.not_nil(marker)
+            test.eq(marker.metadata.checkpoint_reason, "compaction_requested")
+            local metrics = get_metrics(flow.scenario_id)
+            test.eq(metrics.llm_calls, 1, "policy must not start another model continuation")
+            test.eq(metrics.tool_attempts, 0)
+        end)
+
+        it("consumes a persisted compact request without enabling threshold checkpoints", function()
+            local workflow = create_workflow({
+                compact_requested = true,
+                checkpoint = { function_id = "userspace.dataflow.node.agent.stub:checkpoint_summarizer" },
+            })
+            local _, start_err = c:start(workflow.dataflow_id)
+            test.is_nil(start_err)
+            test.is_true(wait_complete(workflow.dataflow_id))
+            local history = load_history(workflow.dataflow_id, workflow.node_id)
+            test.eq(count_checkpoint_markers(history), 1)
+            test.eq(get_metrics(workflow.scenario_id).checkpoint_calls, 1)
+            test.eq(latest_checkpoint_marker(history).metadata.checkpoint_reason, "compaction_requested")
+            local filtered = apply_latest_marker(history)
+            for _, row in ipairs(history) do
+                if is_structured_result_row(row) then
+                    local kept = false
+                    for _, remaining in ipairs(filtered) do
+                        if remaining.data_id == row.data_id then kept = true end
+                    end
+                    test.is_true(kept, "compaction preserves every structured tool result")
+                end
+            end
+        end)
+
+        it("uses the post-control agent's checkpoint provider even on a final response", function()
+            local flow = create_workflow({
+                mode = "text_final",
+                active_traits = { "userspace.dataflow.node.agent.stub:behavior_switch_compact_trait" },
+            })
+            local _, start_err = c:start(flow.dataflow_id)
+            test.is_nil(start_err)
+            test.is_true(wait_complete(flow.dataflow_id))
+            local history = load_history(flow.dataflow_id, flow.node_id)
+            test.eq(count_checkpoint_markers(history), 1,
+                "switch+compact must not lose its request on the old agent without a provider")
+            local metrics = get_metrics(flow.scenario_id)
+            test.eq(metrics.llm_calls, 1, "compaction must not add a model step")
+            local marker = latest_checkpoint_marker(history)
+            test.eq(marker.metadata.checkpoint_function_id,
+                "userspace.dataflow.node.agent.stub:target_checkpoint_summarizer")
+            test.eq(marker.content, "post-control target checkpoint",
+                "the provider asserts post-control identity and options")
+        end)
+
+        it("lets explicit agent options override trait checkpoint defaults", function()
+            local workflow = create_workflow({
+                agent_id = "userspace.dataflow.node.agent.stub:checkpoint_override_agent",
+                prompt_tokens = 200,
+            })
+            local _, start_err = c:start(workflow.dataflow_id)
+            test.is_nil(start_err)
+            test.is_true(wait_complete(workflow.dataflow_id), "agent threshold prevents the missing summarizer call")
+            local history = load_history(workflow.dataflow_id, workflow.node_id)
+            test.eq(count_checkpoint_markers(history), 0)
+            test.eq(get_metrics(workflow.scenario_id).checkpoint_calls, 0)
+        end)
+
+        it("lets host options override the compiled agent and reach the summarizer", function()
+            local workflow = create_workflow({
+                agent_id = "userspace.dataflow.node.agent.stub:checkpoint_override_agent",
+                prompt_tokens = 200,
+                checkpoint = {
+                    token_threshold = 50,
+                    function_id = "userspace.dataflow.node.agent.stub:checkpoint_summarizer",
+                    max_memory_chars = 40,
+                    max_tokens = 500,
+                },
+            })
+            local _, start_err = c:start(workflow.dataflow_id)
+            test.is_nil(start_err)
+            test.is_true(wait_complete(workflow.dataflow_id))
+            local history = load_history(workflow.dataflow_id, workflow.node_id)
+            local marker = latest_checkpoint_marker(history)
+            test.not_nil(marker)
+            test.is_true(#tostring(marker.content) <= 40, "host summary bound cannot be widened by the trait")
+            local metrics = get_metrics(workflow.scenario_id)
+            test.gt(metrics.checkpoint_calls, 0)
+            test.eq(metrics.last_checkpoint_max_tokens, 500)
+            test.eq(metrics.last_checkpoint_threshold, 50)
+        end)
+
+        it("lets the host disable a trait-configured checkpoint", function()
+            local workflow = create_workflow({
+                agent_id = "userspace.dataflow.node.agent.stub:checkpoint_override_agent",
+                prompt_tokens = 500,
+                checkpoint = { enabled = false },
+            })
+            local _, start_err = c:start(workflow.dataflow_id)
+            test.is_nil(start_err)
+            test.is_true(wait_complete(workflow.dataflow_id))
+            test.eq(get_metrics(workflow.scenario_id).checkpoint_calls, 0)
+            test.eq(count_checkpoint_markers(load_history(workflow.dataflow_id, workflow.node_id)), 0)
+        end)
+
+        it("does not fall back or write a marker after a strict binding failure", function()
+            local workflow = create_workflow({
+                active_traits = { "userspace.dataflow.node.agent.stub:strict_checkpoint_trait" },
+                prompt_tokens = 200,
+                checkpoint = {
+                    token_threshold = 100,
+                    function_id = "userspace.dataflow.node.agent.stub:checkpoint_summarizer",
+                },
+            })
+            local _, start_err = c:start(workflow.dataflow_id)
+            test.is_nil(start_err)
+            test.is_true(wait_failed(workflow.dataflow_id))
+            test.eq(get_metrics(workflow.scenario_id).checkpoint_calls, 0)
+            test.eq(count_checkpoint_markers(load_history(workflow.dataflow_id, workflow.node_id)), 0)
+        end)
+
+        it("uses effective options for function fallback after a non-strict binding failure", function()
+            local workflow = create_workflow({
+                active_traits = { "userspace.dataflow.node.agent.stub:non_strict_checkpoint_trait" },
+                prompt_tokens = 200,
+                checkpoint = {
+                    token_threshold = 100,
+                    function_id = "userspace.dataflow.node.agent.stub:checkpoint_summarizer",
+                    max_tokens = 500,
+                },
+            })
+            local _, start_err = c:start(workflow.dataflow_id)
+            test.is_nil(start_err)
+            test.is_true(wait_complete(workflow.dataflow_id))
+            local metrics = get_metrics(workflow.scenario_id)
+            test.gt(metrics.checkpoint_calls, 0)
+            test.eq(metrics.last_checkpoint_max_tokens, 500)
+            test.eq(metrics.last_checkpoint_threshold, 100)
+            test.gt(count_checkpoint_markers(load_history(workflow.dataflow_id, workflow.node_id)), 0)
+        end)
+
+        describe("binding failure without a function fallback", function()
+            before_all(function()
+                local fallback = env.get("userspace.dataflow.env:checkpoint_function_id")
+                test.is_true(fallback == nil or fallback == "", "fixture must have no default fallback")
+            end)
+
+            it("skips a non-strict failure with an observation and no marker", function()
+                local workflow = create_workflow({
+                    max_steps = 1,
+                    active_traits = { "userspace.dataflow.node.agent.stub:non_strict_checkpoint_trait" },
+                    prompt_tokens = 200,
+                    checkpoint = { token_threshold = 100 },
+                })
+                local _, start_err = c:start(workflow.dataflow_id)
+                test.is_nil(start_err)
+                test.is_true(wait_complete(workflow.dataflow_id), "non-strict checkpoint cannot fail the workflow")
+                local history = load_history(workflow.dataflow_id, workflow.node_id)
+                test.eq(count_checkpoint_markers(history), 0)
+                local skipped = false
+                for _, row in ipairs(history) do
+                    if row.metadata and row.metadata.checkpoint_skipped == true then
+                        test.contains(tostring(row.content), "no fallback function is configured")
+                        skipped = true
+                    end
+                end
+                test.is_true(skipped, "failed checkpoint leaves an audit observation")
+            end)
+
+            it("still fails when the host explicitly requires strict checkpointing", function()
+                local workflow = create_workflow({
+                    max_steps = 1,
+                    active_traits = { "userspace.dataflow.node.agent.stub:non_strict_checkpoint_trait" },
+                    prompt_tokens = 200,
+                    checkpoint = { token_threshold = 100, strict = true },
+                })
+                local _, start_err = c:start(workflow.dataflow_id)
+                test.is_nil(start_err)
+                test.is_true(wait_failed(workflow.dataflow_id))
+                test.eq(count_checkpoint_markers(load_history(workflow.dataflow_id, workflow.node_id)), 0)
+            end)
         end)
 
         it("checkpoint below threshold does not fire", function()
@@ -803,7 +997,7 @@ local function define_tests()
             test.eq(count_checkpoint_markers(history), 0, "no markers when tokens == threshold")
         end)
 
-        it("threshold zero - checkpoint fires on every turn above zero tokens", function()
+        it("small positive threshold fires when tokens exceed it", function()
             local workflow = create_workflow({
                 max_iterations = 4,
                 max_steps = 2,
@@ -819,6 +1013,25 @@ local function define_tests()
 
             local metrics = get_metrics(workflow.scenario_id)
             test.gt(metrics.checkpoint_calls, 0, "checkpoint fired at least once")
+        end)
+
+        it("zero token_threshold is treated as disabled", function()
+            local workflow = create_workflow({
+                max_iterations = 3,
+                max_steps = 2,
+                prompt_tokens = 500,
+                checkpoint = {
+                    token_threshold = 0,
+                    function_id = "userspace.dataflow.node.agent.stub:checkpoint_summarizer"
+                }
+            })
+
+            local _, start_err = c:start(workflow.dataflow_id)
+            test.is_nil(start_err)
+            test.is_true(wait_complete(workflow.dataflow_id), "completed")
+            test.eq(get_metrics(workflow.scenario_id).checkpoint_calls, 0, "zero threshold disables scheduling")
+            local history = load_history(workflow.dataflow_id, workflow.node_id)
+            test.eq(count_checkpoint_markers(history), 0, "disabled checkpoint writes no marker")
         end)
 
         it("token_threshold set but function_id missing - no checkpoint, no error", function()

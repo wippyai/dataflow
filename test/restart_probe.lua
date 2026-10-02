@@ -1,4 +1,5 @@
 local flow = require("flow")
+local funcs = require("funcs")
 
 local M = {}
 
@@ -13,6 +14,10 @@ local function hold_runtime()
 end
 
 function M.create()
+    -- Services may start while the dependency bootloader is still migrating.
+    -- Use the same canonical readiness check as the ordinary test harness.
+    local ready, readiness_err = funcs.call("app:wait_for_boot")
+    if readiness_err or not ready then error(readiness_err or "boot is not ready") end
     local template = (flow.template() :: any):func("userspace.dataflow.node.func:test_func")
     local dataflow_id, start_err = (flow.create() :: any)
         :with_input({

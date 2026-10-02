@@ -43,6 +43,7 @@ entries:
       - time
       - uuid
     imports:
+      behavior_controls: wippy.agent:behavior_controls
       agent_consts: userspace.dataflow.node.agent:consts
       consts: userspace.dataflow:consts
 
@@ -179,7 +180,9 @@ entries:
       prompt_builder: userspace.dataflow.node.agent:prompt_builder
       tool_caller: wippy.agent.tools:caller
       lifecycle_runtime: wippy.agent:lifecycle_runtime
+      lifecycle_controller: wippy.agent:lifecycle_controller
       checkpoint_runtime: wippy.agent:checkpoint_runtime
+      behavior_controls: wippy.agent:behavior_controls
     method: run
 
   # userspace.dataflow.node.agent:checkpoint
@@ -283,6 +286,27 @@ entries:
       consts: userspace.dataflow:consts
       data_reader: userspace.dataflow.persist:data_reader
       agent_consts: userspace.dataflow.node.agent:consts
+      test: wippy.test:test
+    method: run_tests
+
+  - name: lifecycle_behavior_test
+    kind: function.lua
+    meta:
+      name: Published agent behavior compatibility
+      type: test
+      comment: Registry trait behaviors must compile into lifecycle and checkpoint bindings.
+      group: Workflow / Agent Node
+      timeout: "120s"
+    source: file://lifecycle_behavior_test.lua
+    modules:
+      - uuid
+      - time
+      - funcs
+    imports:
+      compiler: wippy.agent.compiler:compiler
+      traits: wippy.agent.discovery:traits
+      client: userspace.dataflow:client
+      consts: userspace.dataflow:consts
       test: wippy.test:test
     method: run_tests
 
@@ -450,6 +474,7 @@ entries:
         - test
     source: file://agent_checkpoint_test.lua
     modules:
+      - env
       - time
       - uuid
       - funcs

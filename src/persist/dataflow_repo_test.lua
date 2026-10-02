@@ -268,22 +268,6 @@ local function define_tests()
                             config = '{"batch_size":100,"parallel":true,"features":["logging","metrics"]}',
                             metadata = '{"source":"json_test","tags":["test","config"]}'
                         }
-                    },
-                    {
-                        id = uuid.v7(),
-                        type = "invalid_json_config_node",
-                        params = {
-                            config = '{"invalid":json}',
-                            metadata = '{"invalid":metadata}'
-                        }
-                    },
-                    {
-                        id = uuid.v7(),
-                        type = "empty_string_config_node",
-                        params = {
-                            config = "",
-                            metadata = ""
-                        }
                     }
                 }
 
@@ -300,7 +284,7 @@ local function define_tests()
 
                 test.is_nil(err)
                 test.not_nil(nodes)
-                test.eq(#nodes, 5)
+                test.eq(#nodes, 3)
 
                 -- Sort nodes by type for predictable testing
                 table.sort(nodes, function(a, b) return a.type < b.type end)
@@ -376,43 +360,61 @@ local function define_tests()
                 test.is_nil(next(minimal_node.metadata))
             end)
 
-            it("should handle invalid JSON gracefully", function()
-                local nodes, err = dataflow_repo.get_nodes_for_dataflow(nodes_test_dataflow_id)
-                test.is_nil(err)
+            local function check_invalid_json(config, metadata)
+                -- PostgreSQL JSONB rejects these values at insertion. SQLite
+                -- TEXT permits them, so its repository reader must default to
+                -- empty tables. Exercise both contracts, not a skipped case.
+                local db, db_err = sql.get("app:db")
+                test.is_nil(db_err)
+                local db_type, type_err = db:type()
+                db:release()
+                test.is_nil(type_err)
+                local is_postgres = db_type == sql.type.POSTGRES
 
-                local invalid_node = nil
-                for _, node in ipairs(nodes) do
-                    if node.type == "invalid_json_config_node" then
-                        invalid_node = node
-                        break
+                -- Isolate each column so neither can hide the other's error.
+                for _, params in ipairs({ { config = config }, { metadata = metadata } }) do
+                    local node_id = uuid.v7()
+                    local inserted, insert_err = create_test_node(
+                        node_id, nodes_test_dataflow_id, "invalid_json_node", params)
+                    if is_postgres then
+                        test.is_nil(inserted)
+                        test.not_nil(insert_err)
+                        test.contains(tostring(insert_err), "invalid input syntax for type json")
+                    else
+                        test.is_nil(insert_err)
+                        test.is_true(inserted)
+                    end
+
+                    local nodes, read_err = dataflow_repo.get_nodes_for_dataflow(nodes_test_dataflow_id)
+                    test.is_nil(read_err)
+                    local found = nil
+                    for _, node in ipairs(nodes) do
+                        if node.node_id == node_id then found = node; break end
+                    end
+                    if is_postgres then
+                        test.is_nil(found, "a rejected JSONB insert must leave no row")
+                    else
+                        test.not_nil(found)
+                        test.is_table(found.config)
+                        test.is_nil(next(found.config))
+                        test.is_table(found.metadata)
+                        test.is_nil(next(found.metadata))
+                        local cleanup_db, cleanup_db_err = sql.get("app:db")
+                        test.is_nil(cleanup_db_err)
+                        local _, cleanup_err = sql.builder.delete("dataflow_nodes")
+                            :where("node_id = ?", node_id):run_with(cleanup_db):exec()
+                        cleanup_db:release()
+                        test.is_nil(cleanup_err)
                     end
                 end
+            end
 
-                test.not_nil(invalid_node)
-                -- Invalid JSON should default to empty table
-                test.is_table(invalid_node.config)
-                test.is_nil(next(invalid_node.config))
-                test.is_table(invalid_node.metadata)
-                test.is_nil(next(invalid_node.metadata))
+            it("should reject or safely read malformed JSON config and metadata", function()
+                check_invalid_json('{"invalid":json}', '{"invalid":metadata}')
             end)
 
-            it("should handle empty string config", function()
-                local nodes, err = dataflow_repo.get_nodes_for_dataflow(nodes_test_dataflow_id)
-                test.is_nil(err)
-
-                local empty_node = nil
-                for _, node in ipairs(nodes) do
-                    if node.type == "empty_string_config_node" then
-                        empty_node = node
-                        break
-                    end
-                end
-
-                test.not_nil(empty_node)
-                test.is_table(empty_node.config)
-                test.is_nil(next(empty_node.config))
-                test.is_table(empty_node.metadata)
-                test.is_nil(next(empty_node.metadata))
+            it("should reject or safely read empty JSON config and metadata", function()
+                check_invalid_json("", "")
             end)
 
             it("should return error for missing dataflow ID", function()
@@ -543,17 +545,22 @@ local function define_tests()
                 local _, create_err = create_test_dataflow(dataflow_id, actor_id, "legacy_context")
                 test.is_nil(create_err)
                 local first_context = '{"kind":"dataflow.execution_frame","version":1,"winner":1}'
+                -- JSONB can change whitespace/key order without changing the
+                -- captured identity. Compare complete canonical values.
+                local expected_context = json.encode((json.decode(first_context)))
                 local first, first_err = dataflow_repo.capture_context_if_empty(
                     dataflow_id, actor_id, first_context)
                 test.is_nil(first_err)
-                test.eq(first.actor_context, first_context)
+                local captured_context = json.encode((json.decode(first.actor_context)))
+                test.eq(captured_context, expected_context)
                 test.is_true(first.context_captured)
 
                 local second, second_err = dataflow_repo.capture_context_if_empty(
                     dataflow_id, actor_id,
                     '{"kind":"dataflow.execution_frame","version":1,"winner":2}')
                 test.is_nil(second_err)
-                test.eq(second.actor_context, first_context)
+                local preserved_context = json.encode((json.decode(second.actor_context)))
+                test.eq(preserved_context, expected_context)
                 test.is_false(second.context_captured)
             end)
 

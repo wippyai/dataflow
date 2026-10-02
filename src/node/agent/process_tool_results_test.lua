@@ -31,6 +31,117 @@ local function find_by_tool_call_id(recorded, tool_call_id)
 end
 
 local function define_tests()
+    describe("behavior policy settlement", function()
+        it("settles sibling outcomes before policies on a successful finish", function()
+            local n, recorded = make_recording_node()
+            n.update_metadata = function() end
+            n.yield = function() return true end
+            local complete, result, err = agent_node._test.finalize_iteration(
+                n, {}, {}, 1, 10, 0, "any", "finish",
+                { tool_calls = {
+                    { id = "finish", name = "finish", arguments = { answer = "done" } },
+                    { id = "sibling", name = "read", arguments = {} },
+                } }, {}, { sibling = { error = "read failed" } }, {}, {}, { {} }
+            )
+            test.is_nil(err)
+            test.is_true(complete)
+            test.eq((result or {}).answer, "done")
+            test.not_nil(find_by_tool_call_id(recorded, "sibling"))
+        end)
+
+        local function settle(persist_error)
+            local n, recorded = make_recording_node()
+            local metadata: table = {}
+            local events = {}
+            local persisted = 0
+            n.metadata = function() return metadata end
+            n.update_metadata = function(_, changes)
+                for key, value in pairs(changes) do metadata[key] = value end
+            end
+            n.update_config = function() events[#events + 1] = "config" end
+            n.yield = function()
+                if persist_error then return nil, persist_error end
+                persisted = #recorded
+                events[#events + 1] = "persist"
+                return true
+            end
+            local agent_ctx = { switch_to_model = function()
+                test.eq(persisted, 1, "failed tool outcome is durable before policy applies")
+                events[#events + 1] = "switch"
+                return true
+            end }
+            local complete, result, err = agent_node._test.finalize_iteration(
+                n, agent_ctx, {}, 1, 10, 0, "auto", nil,
+                { tool_calls = { { id = "failed-tool", name = "read", arguments = {} } } },
+                {}, { ["failed-tool"] = { error = "read failed" } }, {}, {},
+                { { config = { model = "model:recovery" }, context = { session = { set = { escalated = true } } } } }
+            )
+            return metadata, events, complete, result, err
+        end
+
+        it("records every outcome before policy switches and persists completion", function()
+            local metadata, events, _, _, err = settle(nil)
+            test.is_nil(err)
+            test.eq(events[1], "persist")
+            test.eq(events[2], "switch")
+            test.eq(events[#events], "persist")
+            test.is_true(metadata.session_context.escalated)
+            test.eq(metadata.behavior_pending, false)
+        end)
+
+        it("does not apply policies after a failed observation commit", function()
+            local metadata, events, _, _, err = settle("commit failed")
+            test.eq(err, "commit failed")
+            test.eq(#events, 0)
+            test.is_nil(metadata.session_context)
+            test.eq(metadata.behavior_pending.controls[1].config.model, "model:recovery")
+        end)
+
+        it("keeps a compact request when the host disables checkpointing or lacks a provider", function()
+            for _, config in ipairs({ { checkpoint = { enabled = false } }, { checkpoint = {} } }) do
+                local n = { metadata = function() return { checkpoint_requested = true } end }
+                local marker, err = agent_node._test.maybe_checkpoint_history(n, config, {}, {}, "app:agent", "model", 1)
+                test.is_nil(marker)
+                test.is_nil(err)
+            end
+        end)
+
+        it("recovers persisted proposals without re-executing resolved tools", function()
+            local metadata: table = { behavior_pending = {
+                iteration = 1, controls = {{ context = { session = { set = { recovered = true } } } }},
+            } }
+            local action = { content = { result = "done", tool_calls = {} },
+                metadata = { iteration = 1 }, content_type = "application/json" }
+            local selected
+            local query = {}
+            query.with_nodes = function(self) return self end
+            query.with_data_types = function(self, kind) selected = kind; return self end
+            query.order_by = function(self) return self end
+            query.all = function()
+                return selected == agent_consts.DATA_TYPE.AGENT_ACTION and { action } or {}
+            end
+            local yields = 0
+            local n = {
+                metadata = function() return metadata end,
+                query = function() return query end,
+                update_metadata = function(_, changes)
+                    for key, value in pairs(changes) do metadata[key] = value end
+                end,
+                yield = function() yields = yields + 1; return true end,
+            }
+            local caller = { execute = function() error("resolved tools must not re-execute") end }
+            local complete, result, _, err = agent_node._test.recover_persisted_action(
+                n, {}, {}, caller, {}, {}, 1, 10, 0, "auto", nil, false, "app:agent", "model:test"
+            )
+            test.is_nil(err)
+            test.is_true(complete)
+            test.eq(result, "done")
+            test.is_true(metadata.session_context.recovered)
+            test.eq(metadata.behavior_pending, false)
+            test.eq(yields, 1)
+        end)
+    end)
+
     describe("process_tool_results: exit validator rejection", function()
         for _, validation in ipairs({
             {
