@@ -34,6 +34,14 @@ local function handler(payload)
         }
     end
 
+    local options = ctx.get("options") or {}
+    if phase == "after_step" and options.propose_compaction == true then
+        return { _control = {
+            config = options.switch_agent and { agent = options.switch_agent } or nil,
+            memory = { compact = true },
+        } }
+    end
+
     return {
         metadata = {
             scenario_id = scenario_id,

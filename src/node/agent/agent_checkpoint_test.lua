@@ -200,7 +200,8 @@ local function define_tests()
                         status = consts.STATUS.PENDING,
                         config = agent_config,
                         metadata = {
-                            title = "Agent Checkpoint Test"
+                            title = "Agent Checkpoint Test",
+                            checkpoint_requested = opts.compact_requested,
                         }
                     }
                 },
@@ -315,6 +316,69 @@ local function define_tests()
 
             local metrics = get_metrics(workflow.scenario_id)
             test.eq(metrics.checkpoint_calls, 0, "checkpoint function never called")
+        end)
+
+        it("persists a behavior's final-response compaction without another model step", function()
+            local flow = create_workflow({
+                mode = "text_final",
+                active_traits = { "userspace.dataflow.node.agent.stub:behavior_compaction_trait" },
+                checkpoint = { function_id = "userspace.dataflow.node.agent.stub:checkpoint_summarizer" },
+            })
+            local _, start_err = c:start(flow.dataflow_id)
+            test.is_nil(start_err)
+            test.is_true(wait_complete(flow.dataflow_id), "final response completes")
+            local history = load_history(flow.dataflow_id, flow.node_id)
+            test.eq(count_checkpoint_markers(history), 1)
+            local marker = latest_checkpoint_marker(history)
+            test.not_nil(marker)
+            test.eq(marker.metadata.checkpoint_reason, "compaction_requested")
+            local metrics = get_metrics(flow.scenario_id)
+            test.eq(metrics.llm_calls, 1, "policy must not start another model continuation")
+            test.eq(metrics.tool_attempts, 0)
+        end)
+
+        it("consumes a persisted compact request without enabling threshold checkpoints", function()
+            local workflow = create_workflow({
+                compact_requested = true,
+                checkpoint = { function_id = "userspace.dataflow.node.agent.stub:checkpoint_summarizer" },
+            })
+            local _, start_err = c:start(workflow.dataflow_id)
+            test.is_nil(start_err)
+            test.is_true(wait_complete(workflow.dataflow_id))
+            local history = load_history(workflow.dataflow_id, workflow.node_id)
+            test.eq(count_checkpoint_markers(history), 1)
+            test.eq(get_metrics(workflow.scenario_id).checkpoint_calls, 1)
+            test.eq(latest_checkpoint_marker(history).metadata.checkpoint_reason, "compaction_requested")
+            local filtered = apply_latest_marker(history)
+            for _, row in ipairs(history) do
+                if is_structured_result_row(row) then
+                    local kept = false
+                    for _, remaining in ipairs(filtered) do
+                        if remaining.data_id == row.data_id then kept = true end
+                    end
+                    test.is_true(kept, "compaction preserves every structured tool result")
+                end
+            end
+        end)
+
+        it("uses the post-control agent's checkpoint provider even on a final response", function()
+            local flow = create_workflow({
+                mode = "text_final",
+                active_traits = { "userspace.dataflow.node.agent.stub:behavior_switch_compact_trait" },
+            })
+            local _, start_err = c:start(flow.dataflow_id)
+            test.is_nil(start_err)
+            test.is_true(wait_complete(flow.dataflow_id))
+            local history = load_history(flow.dataflow_id, flow.node_id)
+            test.eq(count_checkpoint_markers(history), 1,
+                "switch+compact must not lose its request on the old agent without a provider")
+            local metrics = get_metrics(flow.scenario_id)
+            test.eq(metrics.llm_calls, 1, "compaction must not add a model step")
+            local marker = latest_checkpoint_marker(history)
+            test.eq(marker.metadata.checkpoint_function_id,
+                "userspace.dataflow.node.agent.stub:target_checkpoint_summarizer")
+            test.eq(marker.content, "post-control target checkpoint",
+                "the provider asserts post-control identity and options")
         end)
 
         it("lets explicit agent options override trait checkpoint defaults", function()

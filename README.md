@@ -67,6 +67,23 @@ skipped checkpoint; an explicit host `strict = true` still fails the workflow.
 The host still owns marker persistence and the summary length cap. Checkpointing
 is conversation compaction, not durable long-term recall or a hard spending limit.
 
+Opt-in behavior `_control` proposals use the shared declarative subset:
+agent/model/trait/tool targets, session/public metadata, and `memory.compact`.
+Proposals are persisted with their iteration. Outcomes and delegations settle
+before policy application; effects and completion metadata are committed via
+the existing node transaction machinery. Recovery applies stored proposals
+without rerunning resolved tools. Replay is at-least-once, so external provider
+writes and lifecycle hooks must be idempotent using stable host refs.
+
+`memory.compact = true` persists a request that bypasses the token threshold,
+not an explicit disable or a missing provider. False is not cancellation.
+Requested compaction also runs when the final response ends the node, rather
+than depending on another model step. If a proposal also changes agent, model
+or overlays, compaction resolves the committed target's identity, provider and
+options, consistently with recovery. The provider still owns long-term memory
+storage, retention, retrieval and authorization. No behavior attachment means
+no new automatic policy/evaluator calls or loop thresholds.
+
 
 [wippy-documentation]: https://docs.wippy.ai
 [releases-page]: https://github.com/wippyai/dataflow/releases

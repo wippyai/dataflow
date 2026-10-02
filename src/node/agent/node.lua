@@ -9,6 +9,7 @@ local tool_caller = require("tool_caller")
 local lifecycle_runtime = require("lifecycle_runtime")
 local lifecycle_controller = require("lifecycle_controller")
 local checkpoint_runtime = require("checkpoint_runtime")
+local behavior_controls = require("behavior_controls")
 local prompt_builder = require("prompt_builder")
 local control_handler = require("control_handler")
 local delegation_handler = require("delegation_handler")
@@ -774,12 +775,14 @@ local function maybe_checkpoint_history(n, config, session_context, agent_instan
     end
 
     local threshold = tonumber(checkpoint_cfg.token_threshold)
+    local compact_requested = (n:metadata() or {}).checkpoint_requested == true
     local func_id = checkpoint_cfg.function_id
     if type(func_id) ~= "string" or func_id == "" then
         func_id = default_checkpoint_function_id()
     end
     local has_binding = has_checkpoint_bindings(agent_instance)
-    if not threshold or threshold <= 0 or (not has_binding and (type(func_id) ~= "string" or func_id == "")) then
+    if (not compact_requested and (not threshold or threshold <= 0)) or
+        (not has_binding and (type(func_id) ~= "string" or func_id == "")) then
         return nil, nil
     end
 
@@ -815,7 +818,7 @@ local function maybe_checkpoint_history(n, config, session_context, agent_instan
     local action_metadata = latest_action.metadata or {}
     local turn_tokens = action_metadata.tokens or {}
     local prompt_tokens = tonumber(turn_tokens.prompt_tokens) or 0
-    if prompt_tokens <= threshold then
+    if not compact_requested and prompt_tokens <= threshold then
         return nil, nil
     end
 
@@ -827,6 +830,7 @@ local function maybe_checkpoint_history(n, config, session_context, agent_instan
     local latest_marker = find_latest_checkpoint_marker(history_rows)
     if latest_marker
        and tostring((latest_marker.metadata or {}).checkpoint_before_data_id or "") == cut_before then
+        if compact_requested then n:update_metadata({ checkpoint_requested = false }) end
         return nil, nil
     end
 
@@ -877,7 +881,7 @@ local function maybe_checkpoint_history(n, config, session_context, agent_instan
         local runtime_result, runtime_err = checkpoint_runtime.create(agent_instance.bindings, {
             host = host,
             agent = agent,
-            reason = "token_threshold_exceeded",
+            reason = compact_requested and "compaction_requested" or "token_threshold_exceeded",
             selector = {
                 mode = "since_checkpoint"
             },
@@ -965,6 +969,7 @@ local function maybe_checkpoint_history(n, config, session_context, agent_instan
     local marker_metadata = {
         iteration = checkpoint_iteration,
         checkpoint_marker = true,
+        checkpoint_reason = compact_requested and "compaction_requested" or "token_threshold_exceeded",
         checkpoint_at_prompt_tokens = prompt_tokens,
         checkpoint_before_data_id = cut_before,
         checkpoint_history_count = #history_payload,
@@ -986,6 +991,7 @@ local function maybe_checkpoint_history(n, config, session_context, agent_instan
         node_id = n.node_id,
         metadata = marker_metadata
     })
+    if compact_requested then n:update_metadata({ checkpoint_requested = false }) end
 
     return {
         data_id = marker_data_id,
@@ -1418,7 +1424,7 @@ local function exit_schema_violation(schema: any, arguments: any): string?
 end
 
 local function process_tool_results(n, tool_results, iteration, exit_tool_name, agent_result: any, arena_config,
-                                    session_context, tool_call_to_node_id)
+                                    session_context, tool_call_to_node_id, settle_completed_round: boolean?)
     local control_responses = {}
     local control_delegations = {}
     local task_complete = false
@@ -1501,7 +1507,7 @@ local function process_tool_results(n, tool_results, iteration, exit_tool_name, 
     -- same turn already ran (tool_results holds their output) and each still needs a
     -- recorded observation, or the next request carries tool_use ids the API never
     -- sees answered. Only a genuine completion ends the loop early.
-    if task_complete then
+    if task_complete and not settle_completed_round then
         return control_responses, control_delegations, task_complete, final_result
     end
 
@@ -1684,7 +1690,9 @@ end
 
 local function finalize_iteration(n, agent_ctx, session_context, iteration, max_iterations, min_iterations, tool_calling,
                                   exit_tool_name, agent_result: any, delegate_calls: any, tool_results, arena_config,
-                                  tool_call_to_node_id)
+                                  tool_call_to_node_id, proposed_controls)
+    local prepared, prepare_err = behavior_controls.prepare(proposed_controls)
+    if not prepared then return nil, nil, prepare_err end
     local control_responses, control_delegations, task_complete, final_result = process_tool_results(
         n,
         tool_results,
@@ -1693,12 +1701,15 @@ local function finalize_iteration(n, agent_ctx, session_context, iteration, max_
         agent_result,
         arena_config,
         session_context,
-        tool_call_to_node_id
+        tool_call_to_node_id,
+        #prepared > 0
     )
 
     append_control_delegations(delegate_calls, control_delegations)
     queue_iteration_warning(n, iteration, max_iterations)
-    n:yield()
+    if #prepared > 0 then n:update_metadata({ behavior_pending = { iteration = iteration, controls = prepared } }) end
+    local _, persist_err = n:yield()
+    if persist_err then return nil, nil, persist_err end
 
     local has_delegations = #delegate_calls > 0
 
@@ -1722,12 +1733,21 @@ local function finalize_iteration(n, agent_ctx, session_context, iteration, max_
         end
 
         delegation_handler.map_delegation_results_to_conversation(delegation_results, n, iteration)
-        n:yield()
+        local _, delegation_persist_err = n:yield()
+        if delegation_persist_err then return nil, nil, delegation_persist_err end
     elseif #control_responses > 0 then
         local changes_err = run_control_response_commands(control_responses, agent_ctx, n, iteration)
         if changes_err then
             return nil, nil, changes_err
         end
+    end
+
+    if #prepared > 0 then
+        local applied, control_err = control_handler.apply_behavior_controls(prepared, agent_ctx, n, iteration)
+        if not applied then return nil, nil, control_err end
+        n:update_metadata({ behavior_pending = false })
+        local _, control_persist_err = n:yield()
+        if control_persist_err then return nil, nil, control_persist_err end
     end
 
     if not task_complete and not has_delegations then
@@ -1783,7 +1803,17 @@ local function recover_persisted_action(n, agent_ctx, agent_instance, caller, se
     local unresolved_tool_calls, unresolved_delegate_calls = collect_unresolved_calls(action_payload, observed_tool_call_ids)
 
     local has_unresolved_work = (#unresolved_tool_calls > 0) or (#unresolved_delegate_calls > 0)
+    local behavior_pending = (n:metadata() or {}).behavior_pending
+    local proposed_controls = type(behavior_pending) == "table" and
+        behavior_pending.iteration == action_iteration and behavior_pending.controls or {}
     if not has_unresolved_work then
+        if #proposed_controls > 0 then
+            local applied, control_err = control_handler.apply_behavior_controls(proposed_controls, agent_ctx, n, action_iteration)
+            if not applied then return false, nil, action_iteration, control_err end
+            n:update_metadata({ behavior_pending = false })
+            local _, persist_err = n:yield()
+            if persist_err then return false, nil, action_iteration, persist_err end
+        end
         local action_has_calls = #(action_payload.content.tool_calls or {}) > 0 or #(action_payload.content.delegate_calls or {}) > 0
         if not action_has_calls and action_payload.content.result ~= nil and action_payload.content.result ~= "" then
             return true, action_payload.content.result, action_iteration, nil
@@ -1802,6 +1832,9 @@ local function recover_persisted_action(n, agent_ctx, agent_instance, caller, se
     local tool_call_to_node_id = create_tool_viz_nodes(n, effective_tool_calls, action_iteration, show_tool_calls,
         exit_tool_name)
     local tool_results = execute_tools(caller, session_context, validated_tools)
+    local combined_controls = {}
+    for _, control in ipairs(proposed_controls) do combined_controls[#combined_controls + 1] = control end
+    for _, control in ipairs(caller:get_wrapper_controls()) do combined_controls[#combined_controls + 1] = control end
 
     if show_tool_calls then
         update_tool_viz_nodes(n, tool_results, tool_call_to_node_id)
@@ -1839,7 +1872,8 @@ local function recover_persisted_action(n, agent_ctx, agent_instance, caller, se
         delegate_calls,
         tool_results,
         config.arena,
-        tool_call_to_node_id
+        tool_call_to_node_id,
+        combined_controls
     )
 
     if finalize_err then
@@ -2134,6 +2168,38 @@ local function run(args)
         }, stalled_message, REASON.UNPRODUCTIVE_STEPS, iteration)
     end
 
+    local function flush_requested_checkpoint()
+        if (n:metadata() or {}).checkpoint_requested ~= true then return true end
+        -- A proposal may switch agent/model/overlays before requesting compact.
+        -- Resolve the committed target here, as recovery does at node startup,
+        -- rather than compacting with the stale agent that produced the round.
+        local checkpoint_agent = agent_ctx:get_current_agent()
+        local current_config = n:config()
+        if not checkpoint_agent then
+            local load_err
+            checkpoint_agent, load_err = agent_ctx:load_agent(current_config.agent or agent_id,
+                { model = current_config.model or agent_ctx.current_model or model_name })
+            if not checkpoint_agent then return nil, load_err or "Failed to load checkpoint agent" end
+        end
+        local current_agent_config = agent_ctx:get_config()
+        local checkpoint_agent_id = current_agent_config.current_agent_id or agent_id
+        local checkpoint_model = current_agent_config.current_model or model_name
+        local options = resolve_agent_checkpoint_config(current_config, checkpoint_agent)
+        local marker, checkpoint_err, strict_err = maybe_checkpoint_history(n, {
+            checkpoint = options, run_context_binding = current_config.run_context_binding,
+        }, context_with_agent_run(session_context, n, checkpoint_agent_id, checkpoint_model, iteration,
+            current_config.run_context_binding), checkpoint_agent, checkpoint_agent_id, checkpoint_model, iteration)
+        if checkpoint_err then
+            if strict_err or (options and options.strict == true) then return nil, checkpoint_err end
+            record_checkpoint_skip(n, iteration, checkpoint_err)
+        end
+        if marker or checkpoint_err or (n:metadata() or {}).checkpoint_requested ~= true then
+            local _, persist_err = n:yield()
+            if persist_err then return nil, persist_err end
+        end
+        return true
+    end
+
     local initial_status = build_status_message(iteration, max_iterations, total_tokens, tool_calls_count, false, false)
     update_node_progress(n, iteration, max_iterations, total_tokens, tool_calls_count, initial_status, agent_id,
         model_name, unproductive_steps)
@@ -2162,6 +2228,11 @@ local function run(args)
     end
     if recovered_iteration and recovered_iteration > iteration then
         iteration = recovered_iteration
+    end
+    local recovered_checkpoint_ok, recovered_checkpoint_err = flush_requested_checkpoint()
+    if not recovered_checkpoint_ok then
+        return fail_with_lifecycle({ code = agent_consts.ERROR.CHECKPOINT_FAILED, message = recovered_checkpoint_err },
+            recovered_checkpoint_err, REASON.HOST_FAILED, iteration)
     end
     if recovered_complete then
         task_complete = true
@@ -2263,7 +2334,7 @@ local function run(args)
             }, step_err, REASON.HOST_FAILED, iteration)
         end
 
-        local _, after_err = apply_agent_lifecycle(
+        local after_result, after_err = apply_agent_lifecycle(
             agent_instance,
             lifecycle_runtime.PHASE.AFTER_STEP,
             n,
@@ -2348,6 +2419,13 @@ local function run(args)
 
         store_memory_recall(n, agent_result, iteration)
         store_agent_action(n, agent_result, iteration, agent_id, model_name, exit_tool_name, {})
+        local proposed_controls = {}
+        for _, summary in ipairs({ before_result or {}, after_result or {} }) do
+            for _, control in ipairs(summary.controls or {}) do proposed_controls[#proposed_controls + 1] = control end
+        end
+        if #proposed_controls > 0 then
+            n:update_metadata({ behavior_pending = { iteration = iteration, controls = proposed_controls } })
+        end
 
         local recovery_hooks = config.recovery_test_hooks or {}
         if recovery_hooks.pre_action_submit_delay_ms and recovery_hooks.pre_action_submit_delay_ms > 0 then
@@ -2388,6 +2466,7 @@ local function run(args)
         local tool_call_to_node_id = create_tool_viz_nodes(n, effective_tool_calls, iteration, show_tool_calls,
             exit_tool_name)
         local tool_results = execute_tools(caller, run_session_context, validated_tools)
+        for _, control in ipairs(caller:get_wrapper_controls()) do proposed_controls[#proposed_controls + 1] = control end
 
         if show_tool_calls then
             update_tool_viz_nodes(n, tool_results, tool_call_to_node_id)
@@ -2418,7 +2497,8 @@ local function run(args)
             delegate_calls,
             tool_results,
             config.arena,
-            tool_call_to_node_id
+            tool_call_to_node_id,
+            proposed_controls
         )
         if finalize_err then
             if type(finalize_err) == "table" then
@@ -2434,6 +2514,11 @@ local function run(args)
         if finalized_complete then
             task_complete = true
             final_result = finalized_result
+        end
+        local checkpoint_ok, requested_checkpoint_err = flush_requested_checkpoint()
+        if not checkpoint_ok then
+            return fail_with_lifecycle({ code = agent_consts.ERROR.CHECKPOINT_FAILED, message = requested_checkpoint_err },
+                requested_checkpoint_err, REASON.HOST_FAILED, iteration)
         end
 
         -- The unproductive turn has been answered with feedback above; once the
@@ -2525,5 +2610,8 @@ return {
         is_unproductive_turn = is_unproductive_turn,
         process_multiple_inputs = process_multiple_inputs,
         process_tool_results = process_tool_results,
+        finalize_iteration = finalize_iteration,
+        maybe_checkpoint_history = maybe_checkpoint_history,
+        recover_persisted_action = recover_persisted_action,
     }
 }

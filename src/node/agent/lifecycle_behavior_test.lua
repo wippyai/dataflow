@@ -8,7 +8,7 @@ local time = require("time")
 local uuid = require("uuid")
 
 local function define_tests()
-    describe("published agent behavior contract", function()
+    describe("agent behavior contract", function()
         it("compiles new behaviors alongside legacy lifecycle and checkpoint bindings", function()
             local trait, discovery_err = traits.get_by_id("app:lifecycle_behavior_trait")
             test.is_nil(discovery_err)

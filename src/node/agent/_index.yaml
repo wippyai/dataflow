@@ -43,6 +43,7 @@ entries:
       - time
       - uuid
     imports:
+      behavior_controls: wippy.agent:behavior_controls
       agent_consts: userspace.dataflow.node.agent:consts
       consts: userspace.dataflow:consts
 
@@ -181,6 +182,7 @@ entries:
       lifecycle_runtime: wippy.agent:lifecycle_runtime
       lifecycle_controller: wippy.agent:lifecycle_controller
       checkpoint_runtime: wippy.agent:checkpoint_runtime
+      behavior_controls: wippy.agent:behavior_controls
     method: run
 
   # userspace.dataflow.node.agent:checkpoint
