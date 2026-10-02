@@ -96,7 +96,9 @@ local function define_tests()
         end
 
         local function wait_running(df_id, timeout_ms)
-            timeout_ms = timeout_ms or 2000
+            -- This is a functional observation budget, not a latency claim.
+            -- Match the existing five-second gate/input polling budget on PG.
+            timeout_ms = timeout_ms or 5000
             local iterations = math.ceil(timeout_ms / 100)
             for _ = 1, iterations do
                 local status = c:get_status(df_id)
@@ -140,6 +142,20 @@ local function define_tests()
             return #data_reader.with_dataflow(df_id)
                 :with_data_types(consts.DATA_TYPE.WORKFLOW_OUTPUT)
                 :all()
+        end
+
+        local function wait_for_parked_node(df_id, node_id)
+            -- Check the specific gate, not a sleep or the previous gate's
+            -- still-visible WAITING state during signal processing.
+            for _ = 1, 50 do
+                local status = c:get_status(df_id)
+                if status == consts.STATUS.COMPLETED_FAILURE then return false end
+                local yielded = data_reader.with_dataflow(df_id)
+                    :with_nodes(node_id):with_data_types(consts.DATA_TYPE.NODE_YIELD):exists()
+                if yielded and status == consts.STATUS.WAITING then return true end
+                time.sleep("100ms")
+            end
+            return false
         end
 
         -- ==========================================
@@ -330,8 +346,7 @@ local function define_tests()
 
                 test.is_true(wait_running(df_id), "running at sig1")
                 c:signal(df_id, sid1, { gate = 1 })
-                time.sleep("500ms")
-                test.eq(c:get_status(df_id), consts.STATUS.WAITING, "still running at sig2")
+                test.is_true(wait_for_parked_node(df_id, sig2), "parked at sig2 after consuming sig1")
 
                 c:signal(df_id, sid2, { gate = 2, message = "final", delay_ms = 10, should_fail = false })
                 test.is_true(wait_complete(df_id), "completed after both signals")
@@ -460,8 +475,8 @@ local function define_tests()
                 })
                 c:start(df_id)
 
-                time.sleep("500ms")
-                test.eq(c:get_status(df_id), consts.STATUS.WAITING, "func done, waiting for signal")
+                test.is_true(wait_for_node_input(df_id, merge, "fast"), "fast branch produced its merge input")
+                test.is_true(wait_for_parked_node(df_id, sig_slow), "func done, waiting for signal")
 
                 c:signal(df_id, sid, { slow_data = true })
                 test.is_true(wait_complete(df_id), "completed after signal")
@@ -508,8 +523,7 @@ local function define_tests()
 
                 test.is_true(wait_running(df_id), "running at sig1")
                 c:signal(df_id, sid1, { message = "step2", delay_ms = 10, should_fail = false })
-                time.sleep("800ms")
-                test.eq(c:get_status(df_id), consts.STATUS.WAITING, "waiting at sig2")
+                test.is_true(wait_for_parked_node(df_id, sig2), "waiting at sig2")
 
                 c:signal(df_id, sid2, { message = "step4", delay_ms = 10, should_fail = false })
                 test.is_true(wait_complete(df_id), "chain completed")
