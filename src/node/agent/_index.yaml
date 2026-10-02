@@ -472,6 +472,7 @@ entries:
         - test
     source: file://agent_checkpoint_test.lua
     modules:
+      - env
       - time
       - uuid
       - funcs

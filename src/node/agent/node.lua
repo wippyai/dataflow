@@ -861,7 +861,7 @@ local function maybe_checkpoint_history(n, config, session_context, agent_instan
 
     local summary_result = nil
     local checkpoint_source = nil
-    local strict_checkpoint_error = false
+    local binding_failed = false
 
     if has_binding then
         local host = {
@@ -907,14 +907,16 @@ local function maybe_checkpoint_history(n, config, session_context, agent_instan
             summary_result = runtime_result.result
             checkpoint_source = "binding"
         elseif runtime_result and runtime_result.errors and #runtime_result.errors > 0 then
-            strict_checkpoint_error = true
+            binding_failed = true
         end
     end
 
     if not summary_result then
         if type(func_id) ~= "string" or func_id == "" then
-            if strict_checkpoint_error then
-                return nil, "checkpoint binding failed and no fallback function is configured", true
+            if binding_failed then
+                -- Strict binding failures returned above. A non-strict failure
+                -- remains skippable unless the host requires strict checkpointing.
+                return nil, "checkpoint binding failed and no fallback function is configured"
             end
             return nil, nil
         end
@@ -2055,11 +2057,6 @@ local function run(args)
 
         local _, lifecycle_err = lifecycle_controller.deactivate(lifecycle_state, {
             dispatch = dispatch_lifecycle,
-            fallback = not lifecycle_state.active_agent and {
-                id = lifecycle_state.active_agent_id,
-                model = lifecycle_state.active_model,
-                agent = agent_instance,
-            } or nil,
             payload = function(_phase: string, descriptor: table): table
                 return {
                     agent_id = descriptor.id,
@@ -2089,11 +2086,6 @@ local function run(args)
             variant = agent_ctx.active_traits,
         }, {
             dispatch = dispatch_lifecycle,
-            fallback = lifecycle_state.active_agent_id and not lifecycle_state.active_agent and {
-                id = lifecycle_state.active_agent_id,
-                model = lifecycle_state.active_model,
-                agent = agent_instance,
-            } or nil,
             payload = function(phase: string, descriptor: table): table
                 local switching = phase == lifecycle_runtime.PHASE.DEACTIVATE
                 local lifecycle_reason = switching and REASON.AGENT_SWITCH or REASON.AGENT_LOADED

@@ -219,6 +219,9 @@ entries:
         value: app:db
       - name: userspace.dataflow:process_host
         value: app:processes
+      # Keep checkpoints deterministic: tests opt into their stub summarizers.
+      - name: userspace.dataflow:checkpoint_function_id
+        value: ""
       - name: wippy.migration:app_db
         value: app:db
 

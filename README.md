@@ -49,11 +49,13 @@ Checkpoint options resolve as trait defaults, explicit `agent_options.checkpoint
 then node `config.checkpoint` overrides. Maps merge recursively; lists replace,
 including an explicit empty list. `enabled = false` disables checkpointing.
 No checkpoint configuration means no implicit checkpointing; Dataflow retains
-its existing threshold rules (zero fires above zero, negative disables).
+its existing threshold rules (zero and negative thresholds disable scheduling).
 
 Checkpoints run before the next model turn, after the preceding tool results
 have settled. Bindings run before the configured function fallback, and both
 receive the effective `options`; a strict binding failure never falls back.
+Without a function fallback, a non-strict binding failure is recorded as a
+skipped checkpoint; an explicit host `strict = true` still fails the workflow.
 The host still owns marker persistence and the summary length cap. Checkpointing
 is conversation compaction, not durable long-term recall or a hard spending limit.
 
