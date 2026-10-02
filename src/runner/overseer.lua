@@ -259,7 +259,8 @@ function M.drive_decision(runtime: Runtime, initial: Decision?): (boolean?, stri
     local decision = initial
     for _ = 1, 10 do
         if not decision or decision.kind == M.overseer_state.ACTION.NONE then
-            if decision and decision.reason == "owner_monitored" and decision.pid then
+            if decision and (decision.reason == "owner_monitored" or
+                decision.reason == "existing_owner_verified") and decision.pid then
                 local owner = M.overseer_state.owner_for_pid(
                     runtime.ownership, decision.pid) :: OwnerReference?
                 if owner then
@@ -689,8 +690,18 @@ end
 function M.next_pending_wake(): (any?, string?)
     local db, db_err = M.sql.get(tostring(M.consts.APP_DB))
     if db_err then return nil, tostring(db_err) end
+    local db_type, type_err = db:type()
+    if type_err then
+        db:release()
+        return nil, tostring(type_err)
+    end
+    -- Lua SQL currently formats time.Time at second precision. Read PostgreSQL
+    -- deadlines as text so sub-second wakes retain the database's precision.
+    local deadline = db_type == "postgres"
+        and [[to_char(wake_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')]]
+        or "wake_at"
     local rows, query_err = db:query([[
-        SELECT dataflow_id, wake_key, wake_at FROM dataflow_wakes
+        SELECT dataflow_id, wake_key, ]] .. deadline .. [[ AS wake_at FROM dataflow_wakes
         WHERE activation_generation IS NULL
         ORDER BY wake_at ASC, dataflow_id ASC, wake_key ASC LIMIT 1
     ]])
@@ -735,7 +746,9 @@ function M.run(_args: any)
         if not wake_err and wake then
             local wait_ns = select(1, duration_until(tostring(wake.wake_at)))
             if wait_ns ~= nil then
-                wake_timer = M.time.after(wait_ns)
+                -- An already-due wake must still yield before reconciliation;
+                -- time.after rejects zero durations.
+                wake_timer = M.time.after(math.max(wait_ns, 1))
                 table.insert(cases, wake_timer:case_receive())
             end
         elseif wake_err and not schema_not_ready(wake_err) then

@@ -32,6 +32,92 @@ end
 
 local function define_tests()
     describe("process_tool_results: exit validator rejection", function()
+        for _, validation in ipairs({
+            {
+                name = "exit schema",
+                config = {
+                    exit_schema = {
+                        type = "object",
+                        properties = { answer = { type = "string" } },
+                        required = { "answer" }
+                    }
+                }
+            },
+            {
+                name = "exit function",
+                config = { exit_func_id = "userspace.dataflow.node.agent.stub:exit_reject_validator" }
+            }
+        }) do
+            it("answers every finish after rejection by the " .. validation.name, function()
+                local n, recorded = make_recording_node()
+                local calls = {
+                    { id = "search_before", name = "kb_search", arguments = {} },
+                    { id = "finish_first", name = "finish", arguments = {} },
+                    { id = "finish_second", name = "finish", arguments = { answer = "must not win" } },
+                    { id = "search_after", name = "kb_search", arguments = {} },
+                    { id = "finish_third", name = "finish", arguments = {} }
+                }
+                local responses, delegations, complete, result = agent_node._test.process_tool_results(
+                    n,
+                    {
+                        search_before = { result = { hits = 1 } },
+                        search_after = { error = "search unavailable" }
+                    },
+                    1, "finish", { tool_calls = calls }, validation.config, {}, {}
+                )
+
+                test.eq(complete, false, "a later valid finish cannot override the first rejection")
+                test.is_nil(result, "the rejected turn produces no final output")
+                test.eq(#responses, 0)
+                test.eq(#delegations, 0)
+                test.eq(#recorded, #calls, "exactly one observation per call")
+
+                local keys = {}
+                for _, call in ipairs(calls) do
+                    local matches = 0
+                    for _, row in ipairs(recorded) do
+                        if row.opts.metadata.tool_call_id == call.id then matches = matches + 1 end
+                    end
+                    test.eq(matches, 1, "one result for " .. call.id)
+                    local observation = find_by_tool_call_id(recorded, call.id)
+                    test.not_nil(observation)
+                    test.eq(observation.data_type, agent_consts.DATA_TYPE.AGENT_OBSERVATION)
+                    test.eq(observation.opts.metadata.tool_name, call.name)
+                    if call.name == "finish" then
+                        test.eq(observation.opts.metadata.is_error, true)
+                        test.eq(observation.opts.metadata.exit_validation, true)
+                        test.is_nil(keys[observation.opts.key], "finish observations have distinct keys")
+                        keys[observation.opts.key] = true
+                    end
+                end
+                test.contains(find_by_tool_call_id(recorded, "finish_second").content, "once")
+                test.contains(find_by_tool_call_id(recorded, "finish_third").content, "once")
+                test.eq(find_by_tool_call_id(recorded, "search_after").opts.metadata.is_error, true)
+            end)
+        end
+
+        it("keeps the first successful finish result and rejects duplicate finishes", function()
+            local n, recorded = make_recording_node()
+            local _responses, _delegations, complete, result = agent_node._test.process_tool_results(
+                n, {}, 1, "finish", {
+                    tool_calls = {
+                        { id = "finish_first", name = "finish", arguments = { answer = "first" } },
+                        { id = "finish_second", name = "finish", arguments = { answer = "second" } },
+                        { id = "finish_third", name = "finish", arguments = {} }
+                    }
+                }, {}, {}, {}
+            )
+            test.eq(complete, true)
+            test.eq((result :: any).answer, "first", "later calls never replace the completion output")
+            test.eq(#recorded, 2, "both duplicates are explicitly rejected")
+            for _, id in ipairs({ "finish_second", "finish_third" }) do
+                local rejection = find_by_tool_call_id(recorded, id)
+                test.not_nil(rejection)
+                test.eq(rejection.opts.metadata.is_error, true)
+                test.contains(rejection.content, "once")
+            end
+        end)
+
         it("still records observations for sibling tool calls in the same turn", function()
             local process_tool_results = agent_node._test.process_tool_results
             test.not_nil(process_tool_results, "process_tool_results exported for testing")

@@ -491,6 +491,54 @@ local function define_tests()
             test.is_true(#filtered < #history, "filter removed at least one row")
         end)
 
+        it("keeps the previous history prefix stable when another row is appended", function()
+            local builder, builder_err = prompt_builder.new("flow", "node", "agent")
+            test.is_nil(builder_err)
+            local history_builder = builder :: any
+
+            history_builder:with_history({
+                {
+                    data_id = "01", type = agent_consts.DATA_TYPE.AGENT_ACTION,
+                    content = { result = "Searching", tool_calls = {
+                        { id = "call-1", name = "search", arguments = { q = "x" } }
+                    } }, metadata = {}
+                },
+                {
+                    data_id = "02", type = agent_consts.DATA_TYPE.AGENT_OBSERVATION,
+                    content = "First result", metadata = {
+                        tool_call_id = "call-1", tool_name = "search"
+                    }
+                }
+            })
+
+            local first_prompt, first_err = history_builder:build_prompt("System", "Input")
+            test.is_nil(first_err)
+            local first = first_prompt:get_messages()
+            test.eq(first[#first].marker_id, "history_tail")
+            test.eq(first[#first - 1].role, "function_result")
+
+            history_builder:with_pending_history({
+                { data_id = "03", type = agent_consts.DATA_TYPE.AGENT_MEMORY,
+                    content = "Later memory", metadata = {} }
+            })
+            local second_prompt, second_err = history_builder:build_prompt("System", "Input")
+            test.is_nil(second_err)
+            local second = second_prompt:get_messages()
+            for i = 1, #first - 1 do
+                test.eq(second[i].role, first[i].role)
+                if first[i].role == "cache_marker" then
+                    test.eq(second[i].marker_id, first[i].marker_id)
+                elseif first[i].role == "function_call" then
+                    test.eq(second[i].function_call.id, first[i].function_call.id)
+                    test.eq(second[i].function_call.name, first[i].function_call.name)
+                elseif first[i].content and first[i].content[1] then
+                    test.eq(second[i].content[1].text, first[i].content[1].text)
+                end
+            end
+            test.eq(second[#second - 1].role, "developer")
+            test.eq(second[#second].marker_id, "history_tail")
+        end)
+
         it("BC_REGRESSION_S2_prompt_builder_preserves_provider_metadata", function()
             local workflow = create_workflow({})
 
@@ -632,6 +680,9 @@ local function define_tests()
             test.is_nil(prompt_err, "prompt built")
 
             local messages = rebuilt_prompt:get_messages()
+
+            test.eq(messages[#messages].role, "cache_marker",
+                "prompt ends with a history_tail cache marker so the next step reads the history from cache")
 
             local assistant_message = find_message_by_role(messages, "assistant")
             test.not_nil(assistant_message, "assistant message exists")

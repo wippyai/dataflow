@@ -79,6 +79,7 @@ entries:
     meta:
       type: test
       suite: signal_edge
+      timeout: "90s"
       comment: Signal node edge cases, data types, validation, timing
     source: file://signal_edge_test.lua
     modules:

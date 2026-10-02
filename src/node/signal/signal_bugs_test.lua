@@ -599,16 +599,28 @@ local function define_tests()
         it("signal reactivates a parked workflow", function()
             local sid = "parked-reactivate-" .. uuid.v7()
             local df_id = make_signal_wf(sid)
-            c:start(df_id)
-            time.sleep("500ms")
+            local _, start_err = c:start(df_id)
+            test.is_nil(start_err, "workflow starts")
 
-            test.is_nil(process.registry.lookup("dataflow." .. df_id),
-                "parked workflow has no resident orchestrator")
+            local status, owner
+            for _ = 1, 50 do
+                status = c:get_status(df_id)
+                owner = process.registry.lookup("dataflow." .. df_id)
+                if status == consts.STATUS.WAITING and owner == nil then break end
+                time.sleep("100ms")
+            end
+            test.eq(status, consts.STATUS.WAITING, "workflow waits for the signal")
+            test.is_nil(owner, "parked workflow has no resident orchestrator")
 
-            c:signal(df_id, sid, { after_park = true })
-            time.sleep("2s")
+            local _, signal_err = c:signal(df_id, sid, { after_park = true })
+            test.is_nil(signal_err, "durable signal is accepted")
+            for _ = 1, 50 do
+                status = c:get_status(df_id)
+                if status == consts.STATUS.COMPLETED_SUCCESS then break end
+                time.sleep("100ms")
+            end
 
-            test.eq(c:get_status(df_id), consts.STATUS.COMPLETED_SUCCESS,
+            test.eq(status, consts.STATUS.COMPLETED_SUCCESS,
                 "durable signal activation completes")
         end)
     end)

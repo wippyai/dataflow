@@ -3,6 +3,7 @@ local sql = require("sql")
 local uuid = require("uuid")
 local time = require("time")
 local wake_repo = require("wake_repo")
+local overseer = require("overseer")
 
 local function run_tests()
     test.describe("Dataflow wake repository", function()
@@ -28,7 +29,7 @@ local function run_tests()
 
             local insert_db = test.not_nil(select(1, sql.get("app:db"))) :: any
             for _, wake in ipairs({
-                { key = "yield:a", at = "2998-07-12T20:02:00Z" },
+                { key = "yield:a", at = "2998-07-12T20:02:00.123456Z" },
                 { key = "yield:b", at = "2998-07-12T20:01:00Z" },
                 { key = "commit:c", at = "2998-07-12T20:03:00Z" },
             }) do
@@ -47,6 +48,11 @@ local function run_tests()
             test.is_true(select(1, wake_repo.remove(id, "yield:b")))
             row = test.not_nil(select(1, wake_repo.next())) :: any
             test.eq(row.wake_key, "yield:a")
+            local pending, pending_err = overseer.next_pending_wake()
+            test.is_nil(pending_err)
+            test.not_nil(pending)
+            test.eq(pending.wake_at, "2998-07-12T20:02:00.123456Z",
+                "the overseer must preserve fractional deadlines on both SQL dialects")
             test.is_true(select(1, wake_repo.clear(id)))
             test.is_nil(select(1, wake_repo.next()))
         end)

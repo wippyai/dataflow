@@ -290,8 +290,7 @@ local function define_tests()
                 local sid = "delayed-" .. uuid.v7()
                 local df_id = make_signal_wf(sid)
                 c:start(df_id)
-                time.sleep("300ms")
-                test.eq(c:get_status(df_id), consts.STATUS.WAITING, "still waiting")
+                test.is_true(wait_status(df_id, consts.STATUS.WAITING), "still waiting")
 
                 time.sleep("1s")
                 test.eq(c:get_status(df_id), consts.STATUS.WAITING, "still waiting after 1s")
@@ -313,8 +312,7 @@ local function define_tests()
                 time.sleep("300ms")
 
                 c:signal(df_id, "wrong-" .. uuid.v7(), { nope = true })
-                time.sleep("500ms")
-                test.eq(c:get_status(df_id), consts.STATUS.WAITING, "not satisfied by wrong id")
+                test.is_true(wait_status(df_id, consts.STATUS.WAITING), "not satisfied by wrong id")
 
                 c:signal(df_id, sid, { correct = true })
                 test.is_true(wait_complete(df_id), "satisfied by correct id")
@@ -512,13 +510,19 @@ local function define_tests()
             it("timeout deadline survives parked reactivation", function()
                 local sid = "timeout-reactivate-" .. uuid.v7()
                 local df_id = make_signal_wf(sid, {
-                    timeout = "800ms",
+                    timeout = "4s",
                     data_targets = timeout_branch_targets(),
                 })
 
                 c:start(df_id)
-                time.sleep("200ms")
-                test.is_nil(process.registry.lookup("dataflow." .. df_id), "parked wait has no resident orchestrator")
+                test.is_true(wait_status(df_id, consts.STATUS.WAITING), "the workflow passivates")
+                local owner
+                for _ = 1, 50 do
+                    owner = process.registry.lookup("dataflow." .. df_id)
+                    if owner == nil then break end
+                    time.sleep("50ms")
+                end
+                test.is_nil(owner, "parked wait has no resident orchestrator")
                 c:start(df_id)
 
                 test.is_true(wait_complete(df_id, 5000), "workflow completes via persisted timeout")

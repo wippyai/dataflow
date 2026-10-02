@@ -97,6 +97,62 @@ local function handler(contract_args)
     -- prompt token count above the checkpoint threshold deterministically
     local base_prompt = tonumber(scenario.prompt_tokens) or nil
 
+    -- Exercise the real persisted-history path: reject the first finish, then
+    -- refuse the next request unless every call in that turn has one result.
+    if scenario.mode == "multiple_finish_then_retry" then
+        local first_id = helpers.call_id(scenario.scenario_id, "finish-first")
+        local second_id = helpers.call_id(scenario.scenario_id, "finish-second")
+        local third_id = helpers.call_id(scenario.scenario_id, "finish-third")
+        local sibling_id = helpers.call_id(scenario.scenario_id, 1)
+        if helpers.get_metric(scenario.scenario_id, "llm_calls", 0) == 1 then
+            return {
+                success = true,
+                result = {
+                    content = "",
+                    tool_calls = {
+                        { id = first_id, name = "finish", arguments = {} },
+                        { id = sibling_id, name = "recovery_tool", arguments = { scenario_id = scenario.scenario_id } },
+                        { id = second_id, name = "finish", arguments = { answer = "must-not-win" } },
+                        { id = third_id, name = "finish", arguments = {} }
+                    }
+                },
+                finish_reason = "tool_call",
+                tokens = response_tokens(13, 8),
+                metadata = {}
+            }
+        end
+
+        local expected: {[string]: number} = { [first_id] = 0, [second_id] = 0, [third_id] = 0, [sibling_id] = 0 }
+        for _, message in ipairs(messages) do
+            local id = message.function_call_id
+            if message.role == "function_result" and type(id) == "string" then
+                local count = expected[id]
+                if count ~= nil then expected[id] = count + 1 end
+            end
+        end
+        for id, count in pairs(expected) do
+            if count ~= 1 then
+                return nil, "unpaired tool call in reconstructed request: " .. id .. " (results=" .. count .. ")"
+            end
+        end
+        return {
+            success = true,
+            result = {
+                content = "",
+                tool_calls = {
+                    {
+                        id = helpers.call_id(scenario.scenario_id, "finish-retry"),
+                        name = "finish",
+                        arguments = { answer = "retried:" .. scenario.scenario_id }
+                    }
+                }
+            },
+            finish_reason = "tool_call",
+            tokens = response_tokens(15, 4),
+            metadata = {}
+        }
+    end
+
     if scenario.mode == "failing_tool_then_final" then
         if result_count == 0 then
             return tool_call_response(scenario.scenario_id, 1, scenario.tool_delay_ms, base_prompt or 13, 8, "recovery_tool", {
@@ -213,7 +269,21 @@ local function handler(contract_args)
     -- finish_when_offered: calls the finish tool as soon as the request offers it
     -- and answers in plain text otherwise, so a node that withholds the finish
     -- tool never receives a terminal call.
-    if scenario.mode == "finish_when_offered" then
+    if scenario.mode == "finish_when_offered" or scenario.mode == "finish_after_text" then
+        if contract_args.tool_choice == "any" then
+            helpers.bump_metric(scenario.scenario_id, "tool_choice_any", 1)
+        end
+        if contract_args.tool_choice == "auto" then
+            helpers.bump_metric(scenario.scenario_id, "tool_choice_auto", 1)
+        end
+        local options = contract_args.options or {}
+        if options.tool_choice_fallback == "auto" then
+            helpers.bump_metric(scenario.scenario_id, "tool_choice_fallback_auto", 1)
+        end
+        if scenario.mode == "finish_after_text"
+            and helpers.get_metric(scenario.scenario_id, "llm_calls", 0) == 1 then
+            return final_response(scenario.scenario_id, scenario.mode, result_count, base_prompt or 9, 4)
+        end
         if offers_tool(contract_args, "finish") then
             helpers.bump_metric(scenario.scenario_id, "finish_offered", 1)
             return {

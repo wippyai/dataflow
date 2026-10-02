@@ -120,6 +120,10 @@ local function run_tests()
                 sql = overseer.sql,
                 with_tx = overseer.with_tx,
                 pending_due = overseer.pending_due,
+                bootstrap = overseer.bootstrap,
+                next_pending_wake = overseer.next_pending_wake,
+                time = overseer.time,
+                channel = overseer.channel,
             }
             observed = captures()
             activations = {} :: { [string]: any }
@@ -188,6 +192,36 @@ local function run_tests()
             for key, value in pairs(originals) do overseer[key] = value end
         end)
 
+        test.it("never arms a zero-duration timer for an overdue wake", function()
+            local wake_duration = nil
+            local timer = { case_receive = function() return {} end }
+            overseer.process.registry.register = function() return true, nil end
+            overseer.process.inbox = function() return timer end
+            overseer.process.events = function() return timer end
+            overseer.bootstrap = function() return true, nil end
+            overseer.next_pending_wake = function()
+                return { wake_at = "2000-01-01T00:00:00Z" }, nil
+            end
+            overseer.time = {
+                parse = originals.time.parse,
+                now = originals.time.now,
+                RFC3339 = originals.time.RFC3339,
+                RFC3339NANO = originals.time.RFC3339NANO,
+                after = function(duration)
+                    if type(duration) == "number" then
+                        wake_duration = duration
+                        test.is_true(duration > 0, "time.after rejects zero and negative durations")
+                    end
+                    return timer
+                end,
+            }
+            overseer.channel = { select = function() return { ok = false } end }
+
+            overseer.run({})
+
+            test.not_nil(wake_duration, "the due wake still schedules immediate reconciliation")
+        end)
+
         test.it("recovers each durable boot activation once under its frozen actor and scope", function()
             activations.boot = activation("boot", 3, { init_func_id = "app:init" })
             activations.boot.owner_epoch = "runtime-before-restart"
@@ -228,6 +262,53 @@ local function run_tests()
             test.eq(#observed.claims, 1)
             test.eq(observed.claims[1].runtime_epoch, CURRENT_EPOCH)
             test.eq(observed.monitors[1], "pid-existing")
+        end)
+
+        test.it("nudges an existing owner for each signal generation without monitoring it again", function()
+            activations.burst = activation("burst", 1)
+            workflows.burst = workflow("burst")
+            local runtime = overseer.new_runtime(CURRENT_EPOCH)
+            test.is_true(select(1, overseer.reconcile_activation(runtime, activations.burst)))
+            local pid = observed.spawns[1].pid
+
+            for generation = 2, 11 do
+                activations.burst.generation = generation
+                local ok, err = overseer.reconcile_activation(runtime, activations.burst)
+                test.is_nil(err)
+                test.is_true(ok)
+                test.eq(#observed.sends, generation, "each new generation wakes the owner")
+                test.eq(observed.sends[generation].pid, pid)
+                test.eq(observed.sends[generation].topic, overseer.consts.MESSAGE_TOPIC.WAKE)
+                test.eq(observed.sends[generation].payload.generation, generation)
+                test.is_nil(runtime.nudges.burst, "delivered nudge is removed")
+            end
+
+            test.is_true(select(1, overseer.reconcile_activation(runtime, activations.burst)))
+            test.is_true(select(1, overseer.reconcile_activation(runtime, activation("burst", 10))))
+            test.eq(#observed.sends, 11, "duplicate and stale generations do not send another nudge")
+            test.eq(#observed.spawns, 1)
+            test.eq(#observed.monitors, 1)
+            test.eq(#observed.failures, 0)
+        end)
+
+        test.it("retries an undelivered nudge after verifying the existing owner", function()
+            activations.retry_nudge = activation("retry_nudge", 1)
+            workflows.retry_nudge = workflow("retry_nudge")
+            local runtime = overseer.new_runtime(CURRENT_EPOCH)
+            local send = overseer.process.send
+            overseer.process.send = function() return nil, "mailbox unavailable" end
+
+            test.is_true(select(1, overseer.reconcile_activation(runtime, activations.retry_nudge)))
+            test.not_nil(runtime.nudges.retry_nudge, "failed delivery keeps the nudge")
+            overseer.process.send = send
+
+            local ok, err = overseer.reconcile_activation(runtime, activations.retry_nudge)
+            test.is_nil(err)
+            test.is_true(ok)
+            test.eq(#observed.sends, 1)
+            test.eq(observed.sends[1].payload.generation, 1)
+            test.is_nil(runtime.nudges.retry_nudge)
+            test.eq(#observed.monitors, 1)
         end)
 
         test.it("accepts the idempotent monitor result from spawn_monitored", function()

@@ -18,7 +18,7 @@ local function rebind(query, db_type)
 end
 
 -- tx:query wrapper that auto-rebinds placeholders per db dialect
-local function txq(tx, query, params)
+local function txq(tx: sql.Transaction, query, params)
     return tx:query(rebind(query, tx:db_type()), params)
 end
 
@@ -63,7 +63,7 @@ local function define_tests()
         end)
 
         local function get_test_transaction()
-            return test_ctx.tx
+            return assert(test_ctx.tx, "test transaction must be initialized")
         end
 
         local function setup_test_resources()
