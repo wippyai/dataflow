@@ -273,6 +273,48 @@ local function run_tests()
             test.eq(owner.phase, "monitored")
         end)
 
+        test.it("re-admits a signal generation after the passivated owner leaves the registry", function()
+            local state = acquire(activate(overseer.new(), "df-passivated", 1),
+                "df-passivated", 1, "pid-passivated")
+            local advancing, inspect = on_activation(state, {
+                dataflow_id = "df-passivated", generation = 2, desired_active = true,
+                runtime_epoch = CURRENT_EPOCH,
+            })
+            test.eq(required(inspect).kind, overseer.ACTION.INSPECT_OWNER)
+            local completed = acquire(advancing, "df-passivated", 2, "pid-resumed")
+            test.is_nil(overseer.owner_for_pid(completed, "pid-passivated"))
+            local terminal, stop = on_activation(completed, {
+                dataflow_id = "df-passivated", generation = 2, desired_active = false,
+                status = "completed", owner_epoch = CURRENT_EPOCH, runtime_epoch = CURRENT_EPOCH,
+            })
+            test.eq(required(stop).kind, overseer.ACTION.STOP)
+            test.eq(stop.pid, "pid-resumed")
+            test.is_nil(overseer.owner_for_dataflow(terminal, "df-passivated"))
+        end)
+
+        test.it("re-admits a newer signal generation when the old owner's EXIT arrives first", function()
+            local state = acquire(activate(overseer.new(), "df-delayed-exit", 1),
+                "df-delayed-exit", 1, "pid-old")
+            local advancing = select(1, on_activation(state, {
+                dataflow_id = "df-delayed-exit", generation = 2, desired_active = true,
+                runtime_epoch = CURRENT_EPOCH,
+            }))
+            local exited, inspect = on_exit(advancing, {
+                pid = "pid-old", generation = 2, desired_active = true,
+            })
+            test.eq(required(inspect).kind, overseer.ACTION.INSPECT_OWNER)
+            local completed = acquire(exited, "df-delayed-exit", 2, "pid-new")
+            local terminal, stop = on_activation(completed, {
+                dataflow_id = "df-delayed-exit", generation = 2, desired_active = false,
+                status = "completed", runtime_epoch = CURRENT_EPOCH,
+            })
+            test.eq(required(stop).kind, overseer.ACTION.STOP)
+            test.eq(stop.pid, "pid-new")
+            test.is_nil(overseer.owner_for_dataflow(terminal, "df-delayed-exit"))
+            local _, stale = on_exit(terminal, {pid = "pid-old", desired_active = true})
+            test.eq(required(stale).reason, "stale_exit")
+        end)
+
         test.it("does not let a racing activation resurrect a lost runtime owner", function()
             local state = acquire(activate(overseer.new(), "df-racing-loss", 4),
                 "df-racing-loss", 4, "pid-racing-loss")
