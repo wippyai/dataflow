@@ -357,8 +357,10 @@ function M.on_owner_observation(state: State, input: OwnerObservationInput): (St
 
     if record.pid ~= nil then
         unbind(next_state, record)
-        return next_state, fail(record, "runtime_owner_lost",
-            input.message or "active orchestrator disappeared during runtime"), nil
+        if record.phase ~= "acquisition_requested" or not record.claim_required then
+            return next_state, fail(record, "runtime_owner_lost",
+                input.message or "active orchestrator disappeared during runtime"), nil
+        end
     end
 
     if record.phase == "acquisition_requested" and record.claim_required then
@@ -500,7 +502,9 @@ function M.on_exit(state: State, input: ExitInput): (State, Decision, string?)
         return next_state, none(is_terminal(input) and "terminal_exit" or "inactive_exit"), nil
     end
     assert(input.desired_active == true, "desired_active must be a boolean")
-    record.phase = "verification_requested"
+    if record.phase ~= "acquisition_requested" or not record.claim_required then
+        record.phase = "verification_requested"
+    end
     return next_state, {
         kind = M.ACTION.INSPECT_OWNER,
         reason = "verify_after_exit",
