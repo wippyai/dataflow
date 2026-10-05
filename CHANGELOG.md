@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## [0.7.23](https://github.com/wippyai/dataflow/compare/v0.7.22...v0.7.23) (2026-10-05)
+
+
+### Bug Fixes
+
+* acquire the signal generation after the previous owner exits ([#98](https://github.com/wippyai/dataflow/issues/98)) ([509f728](https://github.com/wippyai/dataflow/commit/509f72853bfb85c3a2569681457883af64d53c92))
+
 ## [0.7.22](https://github.com/wippyai/dataflow/compare/v0.7.21...v0.7.22) (2026-10-01)
 
 
