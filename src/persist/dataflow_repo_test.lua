@@ -269,22 +269,6 @@ local function define_tests()
                             metadata = '{"source":"json_test","tags":["test","config"]}'
                         }
                     },
-                    {
-                        id = uuid.v7(),
-                        type = "invalid_json_config_node",
-                        params = {
-                            config = '{"invalid":json}',
-                            metadata = '{"invalid":metadata}'
-                        }
-                    },
-                    {
-                        id = uuid.v7(),
-                        type = "empty_string_config_node",
-                        params = {
-                            config = "",
-                            metadata = ""
-                        }
-                    }
                 }
 
                 for _, test_node in ipairs(test_nodes) do
@@ -300,7 +284,7 @@ local function define_tests()
 
                 test.is_nil(err)
                 test.not_nil(nodes)
-                test.eq(#nodes, 5)
+                test.eq(#nodes, 3)
 
                 -- Sort nodes by type for predictable testing
                 table.sort(nodes, function(a, b) return a.type < b.type end)
@@ -374,45 +358,6 @@ local function define_tests()
                 test.is_nil(next(minimal_node.config))
                 test.is_table(minimal_node.metadata)
                 test.is_nil(next(minimal_node.metadata))
-            end)
-
-            it("should handle invalid JSON gracefully", function()
-                local nodes, err = dataflow_repo.get_nodes_for_dataflow(nodes_test_dataflow_id)
-                test.is_nil(err)
-
-                local invalid_node = nil
-                for _, node in ipairs(nodes) do
-                    if node.type == "invalid_json_config_node" then
-                        invalid_node = node
-                        break
-                    end
-                end
-
-                test.not_nil(invalid_node)
-                -- Invalid JSON should default to empty table
-                test.is_table(invalid_node.config)
-                test.is_nil(next(invalid_node.config))
-                test.is_table(invalid_node.metadata)
-                test.is_nil(next(invalid_node.metadata))
-            end)
-
-            it("should handle empty string config", function()
-                local nodes, err = dataflow_repo.get_nodes_for_dataflow(nodes_test_dataflow_id)
-                test.is_nil(err)
-
-                local empty_node = nil
-                for _, node in ipairs(nodes) do
-                    if node.type == "empty_string_config_node" then
-                        empty_node = node
-                        break
-                    end
-                end
-
-                test.not_nil(empty_node)
-                test.is_table(empty_node.config)
-                test.is_nil(next(empty_node.config))
-                test.is_table(empty_node.metadata)
-                test.is_nil(next(empty_node.metadata))
             end)
 
             it("should return error for missing dataflow ID", function()
@@ -546,14 +491,21 @@ local function define_tests()
                 local first, first_err = dataflow_repo.capture_context_if_empty(
                     dataflow_id, actor_id, first_context)
                 test.is_nil(first_err)
-                test.eq(first.actor_context, first_context)
+                local decoded, decode_err = json.decode(first.actor_context)
+                test.is_nil(decode_err)
+                test.eq(decoded.kind, "dataflow.execution_frame")
+                test.eq(decoded.version, 1)
+                test.eq(decoded.winner, 1)
+                local field_count = 0
+                for _ in pairs(decoded) do field_count = field_count + 1 end
+                test.eq(field_count, 3)
                 test.is_true(first.context_captured)
 
                 local second, second_err = dataflow_repo.capture_context_if_empty(
                     dataflow_id, actor_id,
                     '{"kind":"dataflow.execution_frame","version":1,"winner":2}')
                 test.is_nil(second_err)
-                test.eq(second.actor_context, first_context)
+                test.eq(second.actor_context, first.actor_context)
                 test.is_false(second.context_captured)
             end)
 

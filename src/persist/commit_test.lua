@@ -112,10 +112,9 @@ local function define_tests()
                     error("Failed to connect for isolated dataflow cleanup: " .. cleanup_db_err)
                 end
                 for _, dataflow_id in ipairs(test_ctx.isolated_dataflows) do
-                    local _, cleanup_err = cleanup_db:execute(
-                        "DELETE FROM dataflows WHERE dataflow_id = ?",
-                        { dataflow_id }
-                    )
+                    local _, cleanup_err = sql.builder.delete("dataflows")
+                        :where("dataflow_id = ?", dataflow_id)
+                        :run_with(cleanup_db):exec()
                     if cleanup_err then
                         cleanup_db:release()
                         error("Failed to clean isolated dataflow " .. dataflow_id .. ": " .. cleanup_err)
@@ -1043,7 +1042,7 @@ local function define_tests()
                 local dataflow_id = create_isolated_dataflow()
                 local db = test.not_nil(select(1, sql.get("app:db"))) :: any
                 local _, update_err = db:execute(
-                    "UPDATE dataflows SET status = ? WHERE dataflow_id = ?",
+                    "UPDATE dataflows SET status = $1 WHERE dataflow_id = $2",
                     { consts.STATUS.COMPLETED_SUCCESS, dataflow_id })
                 db:release()
                 test.is_nil(update_err)
@@ -1073,12 +1072,12 @@ local function define_tests()
 
                 local db = test.not_nil(select(1, sql.get("app:db"))) :: any
                 local rows, query_err = db:query([[
-                    SELECT generation, desired_active FROM dataflow_activations WHERE dataflow_id = ?
+                    SELECT generation, desired_active FROM dataflow_activations WHERE dataflow_id = $1
                 ]], { dataflow_id })
                 db:release()
                 test.is_nil(query_err)
                 test.eq(tonumber(rows[1].generation), 1)
-                test.eq(tonumber(rows[1].desired_active), 1)
+                test.is_true(rows[1].desired_active == true or tonumber(rows[1].desired_active) == 1)
             end)
 
             it("disables legacy terminal activation and reconciles after commit", function()
@@ -1092,11 +1091,11 @@ local function define_tests()
                 local db = test.not_nil(select(1, sql.get("app:db"))) :: any
                 local _, wake_err = db:execute([[
                     INSERT INTO dataflow_wakes(dataflow_id, wake_key, wake_at, activation_generation)
-                    VALUES (?, ?, ?, ?)
+                    VALUES ($1, $2, $3, $4)
                 ]], { dataflow_id, "signal:legacy-terminal", "2023-01-01T12:00:00Z", 1 })
                 test.is_nil(wake_err)
                 local _, terminal_err = db:execute(
-                    "UPDATE dataflows SET status = ? WHERE dataflow_id = ?",
+                    "UPDATE dataflows SET status = $1 WHERE dataflow_id = $2",
                     { consts.STATUS.COMPLETED_FAILURE, dataflow_id })
                 db:release()
                 test.is_nil(terminal_err)
@@ -1111,14 +1110,14 @@ local function define_tests()
 
                 db = test.not_nil(select(1, sql.get("app:db"))) :: any
                 local rows, query_err = db:query([[
-                    SELECT desired_active FROM dataflow_activations WHERE dataflow_id = ?
+                    SELECT desired_active FROM dataflow_activations WHERE dataflow_id = $1
                 ]], { dataflow_id })
                 local wakes, wakes_err = db:query(
-                    "SELECT wake_key FROM dataflow_wakes WHERE dataflow_id = ?", { dataflow_id })
+                    "SELECT wake_key FROM dataflow_wakes WHERE dataflow_id = $1", { dataflow_id })
                 db:release()
                 test.is_nil(query_err)
                 test.is_nil(wakes_err)
-                test.eq(tonumber(rows[1].desired_active), 0)
+                test.is_true(rows[1].desired_active == false or tonumber(rows[1].desired_active) == 0)
                 test.eq(#wakes, 0)
             end)
 
@@ -1149,14 +1148,14 @@ local function define_tests()
                     SELECT w.activation_generation, a.generation, a.desired_active
                     FROM dataflow_wakes w
                     JOIN dataflow_activations a ON a.dataflow_id = w.dataflow_id
-                    WHERE w.dataflow_id = ? AND w.wake_key = ?
+                    WHERE w.dataflow_id = $1 AND w.wake_key = $2
                 ]], { dataflow_id, "signal:" .. signal_id })
                 db:release()
                 test.is_nil(query_err)
                 test.eq(#rows, 1)
                 test.eq(tonumber(rows[1].activation_generation), 1)
                 test.eq(tonumber(rows[1].generation), 1)
-                test.eq(tonumber(rows[1].desired_active), 1)
+                test.is_true(rows[1].desired_active == true or tonumber(rows[1].desired_active) == 1)
 
                 local duplicate, duplicate_err = commit.submit(dataflow_id, nil, { command })
                 test.is_nil(duplicate_err)
@@ -1173,11 +1172,11 @@ local function define_tests()
                 local dataflow_id = create_isolated_dataflow()
                 local db = test.not_nil(select(1, sql.get("app:db"))) :: any
                 local _, terminal_err = db:execute(
-                    "UPDATE dataflows SET status = ? WHERE dataflow_id = ?",
+                    "UPDATE dataflows SET status = $1 WHERE dataflow_id = $2",
                     { consts.STATUS.COMPLETED_SUCCESS, dataflow_id })
                 test.is_nil(terminal_err)
                 local before_rows, before_err = db:query(
-                    "SELECT COUNT(*) AS row_count FROM dataflow_commits WHERE dataflow_id = ?",
+                    "SELECT COUNT(*) AS row_count FROM dataflow_commits WHERE dataflow_id = $1",
                     { dataflow_id })
                 test.is_nil(before_err)
                 local signal_id = uuid.v7()
@@ -1192,11 +1191,11 @@ local function define_tests()
                 test.is_nil(result)
                 test.contains(submit_err, "terminal")
                 local after_rows, after_err = db:query(
-                    "SELECT COUNT(*) AS row_count FROM dataflow_commits WHERE dataflow_id = ?",
+                    "SELECT COUNT(*) AS row_count FROM dataflow_commits WHERE dataflow_id = $1",
                     { dataflow_id })
                 test.is_nil(after_err)
                 local wakes, wake_err = db:query(
-                    "SELECT wake_key FROM dataflow_wakes WHERE dataflow_id = ?", { dataflow_id })
+                    "SELECT wake_key FROM dataflow_wakes WHERE dataflow_id = $1", { dataflow_id })
                 db:release()
                 test.is_nil(wake_err)
                 test.eq(tonumber(after_rows[1].row_count), tonumber(before_rows[1].row_count))

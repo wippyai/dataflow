@@ -109,7 +109,7 @@ function commit.fail_activation(dataflow_id, generation, failure)
             payload = {
                 activation_generation = generation,
                 status = consts.STATUS.COMPLETED_FAILURE,
-                metadata = { runtime_failure = failure },
+                metadata = { runtime_failure = failure, error = failure.message },
                 merge_metadata = true,
             },
         },

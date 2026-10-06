@@ -34,6 +34,8 @@ profiles:
 # Tests execute through the framework runner rather than a production caller.
 # Give every test entry an explicit, narrow identity; production Dataflow has no fallback.
 override:
+  "app:node_decode_test:security.actor.id": dataflow.test
+  "app:node_decode_test:security.policies": [app:test_policy]
   "app:wait_for_boot:security.actor.id": dataflow.test
   "app:wait_for_boot:security.policies": [app:test_policy]
   "app:database_profile_test:security.actor.id": dataflow.test
