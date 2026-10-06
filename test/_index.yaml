@@ -117,6 +117,7 @@ entries:
     source: file://runtime_failure_test.lua
     modules: [uuid, time, process]
     imports:
+      dataflow_repo: userspace.dataflow.persist:dataflow_repo
       activation_repo: userspace.dataflow.persist:activation_repo
       client: userspace.dataflow:client
       consts: userspace.dataflow:consts
@@ -246,3 +247,26 @@ entries:
         value: app:api.public
       - name: wippy.views:env_storage
         value: app:env_storage
+
+  - name: node_row_sql
+    kind: library.lua
+    source: file://node_row_sql.lua
+
+  - name: node_decode_fixture
+    kind: library.lua
+    source: file://node_decode_fixture.lua
+    modules: [json, time]
+    imports:
+      sql: app:node_row_sql
+      dataflow_consts: userspace.dataflow:consts
+
+  - name: node_decode_test
+    kind: function.lua
+    meta:
+      type: test
+      suite: repository
+    source: file://node_decode_test.lua
+    imports:
+      decoder: app:node_decode_fixture
+      test: wippy.test:test
+    method: run
