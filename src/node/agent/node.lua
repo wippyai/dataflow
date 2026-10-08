@@ -639,8 +639,23 @@ local function accumulate_tokens(total_tokens, new_tokens)
     return total_tokens
 end
 
+local function carry_route_pin(current: any, agent_result: any): any?
+    if type(agent_result) == "table" and agent_result.route_pin ~= nil then
+        return agent_result.route_pin
+    end
+    return current
+end
+
+local function route_pin_after_switch(pin: any, previous_agent_id: any, previous_model: any,
+                                      agent_id: any, model_name: any): any?
+    if agent_id ~= previous_agent_id or model_name ~= previous_model then
+        return nil
+    end
+    return pin
+end
+
 local function update_node_progress(n, iteration, max_iterations, total_tokens, tool_calls_count, status_message,
-                                    agent_id, model_name, unproductive_steps)
+                                    agent_id, model_name, unproductive_steps, route_pin)
     local state_info = {
         current_iteration = iteration,
         max_iterations = max_iterations,
@@ -648,7 +663,8 @@ local function update_node_progress(n, iteration, max_iterations, total_tokens, 
         model = model_name,
         total_tokens = total_tokens,
         tool_calls = tool_calls_count,
-        unproductive_steps = unproductive_steps
+        unproductive_steps = unproductive_steps,
+        route_pin = route_pin
     }
 
     n:update_metadata({
@@ -2070,6 +2086,7 @@ local function run(args)
     -- The run of consecutive unproductive turns is node state: a resumed node
     -- continues the run it was in rather than starting a fresh allowance.
     local unproductive_steps = saved_state.unproductive_steps or 0
+    local route_pin = saved_state.route_pin
     local pending_checkpoint_history = {}
     local lifecycle_state = {
         active_agent_id = nil,
@@ -2168,7 +2185,7 @@ local function run(args)
         local stalled_status = build_status_message(iteration, max_iterations, total_tokens, tool_calls_count, true,
             false)
         update_node_progress(n, iteration, max_iterations, total_tokens, tool_calls_count, stalled_status, agent_id,
-            model_name, unproductive_steps)
+            model_name, unproductive_steps, route_pin)
 
         local stalled_message = string.format(agent_consts.ERROR_MSG.UNPRODUCTIVE_STEPS, unproductive_steps)
         return fail_with_lifecycle({
@@ -2179,7 +2196,7 @@ local function run(args)
 
     local initial_status = build_status_message(iteration, max_iterations, total_tokens, tool_calls_count, false, false)
     update_node_progress(n, iteration, max_iterations, total_tokens, tool_calls_count, initial_status, agent_id,
-        model_name, unproductive_steps)
+        model_name, unproductive_steps, route_pin)
 
     local recovered_complete, recovered_result, recovered_iteration, recovery_err = recover_persisted_action(
         n,
@@ -2298,6 +2315,9 @@ local function run(args)
         if tool_calling == agent_consts.TOOL_CALLING.ANY then
             step_options.tool_call_fallback = "auto"
         end
+        if route_pin ~= nil then
+            step_options.route = route_pin
+        end
         local agent_result, step_err = agent_instance:step(prompt, step_options)
         if step_err then
             return fail_with_lifecycle({
@@ -2305,6 +2325,7 @@ local function run(args)
                 message = step_err
             }, step_err, REASON.HOST_FAILED, iteration)
         end
+        route_pin = carry_route_pin(route_pin, agent_result)
 
         local _, after_err = apply_agent_lifecycle(
             agent_instance,
@@ -2337,7 +2358,7 @@ local function run(args)
 
             local status_msg = build_status_message(iteration, max_iterations, total_tokens, tool_calls_count, false, false)
             update_node_progress(n, iteration, max_iterations, total_tokens, tool_calls_count, status_msg, agent_id,
-                model_name, unproductive_steps)
+                model_name, unproductive_steps, route_pin)
 
             store_agent_action(n, agent_result, iteration, agent_id, model_name, exit_tool_name, {})
 
@@ -2387,7 +2408,7 @@ local function run(args)
 
         local status_msg = build_status_message(iteration, max_iterations, total_tokens, tool_calls_count, false, false)
         update_node_progress(n, iteration, max_iterations, total_tokens, tool_calls_count, status_msg, agent_id,
-            model_name, unproductive_steps)
+            model_name, unproductive_steps, route_pin)
 
         store_memory_recall(n, agent_result, iteration)
         store_agent_action(n, agent_result, iteration, agent_id, model_name, exit_tool_name, {})
@@ -2500,10 +2521,12 @@ local function run(args)
                     reload_model and { model = reload_model } or nil)
             end
             if refreshed then
+                local previous_agent_id, previous_model = agent_id, model_name
                 agent_instance = refreshed
                 local refreshed_config = agent_ctx:get_config()
                 agent_id = refreshed_config.current_agent_id or agent_id
                 model_name = refreshed_config.current_model or model_name
+                route_pin = route_pin_after_switch(route_pin, previous_agent_id, previous_model, agent_id, model_name)
             end
         end
 
@@ -2513,7 +2536,7 @@ local function run(args)
     if not task_complete and iteration >= max_iterations then
         local final_status = build_status_message(iteration, max_iterations, total_tokens, tool_calls_count, true, false)
         update_node_progress(n, iteration, max_iterations, total_tokens, tool_calls_count, final_status, agent_id,
-            model_name, unproductive_steps)
+            model_name, unproductive_steps, route_pin)
 
         return fail_with_lifecycle({
             code = agent_consts.ERROR.AGENT_EXEC_FAILED,
@@ -2524,7 +2547,7 @@ local function run(args)
     local final_status = build_status_message(iteration, max_iterations, total_tokens, tool_calls_count, true,
         task_complete)
     update_node_progress(n, iteration, max_iterations, total_tokens, tool_calls_count, final_status, agent_id,
-        model_name, unproductive_steps)
+        model_name, unproductive_steps, route_pin)
 
     local output_content = final_result or { success = false, error = "No result produced" }
     local success = true
@@ -2568,5 +2591,8 @@ return {
         is_unproductive_turn = is_unproductive_turn,
         process_multiple_inputs = process_multiple_inputs,
         process_tool_results = process_tool_results,
+        carry_route_pin = carry_route_pin,
+        route_pin_after_switch = route_pin_after_switch,
+        update_node_progress = update_node_progress,
     }
 }
