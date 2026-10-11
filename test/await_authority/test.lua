@@ -30,6 +30,24 @@ local function run_tests()
         end)
         test.after_all(function() db:release() end)
 
+        for _, operation in ipairs({"capture", "resolve"}) do
+            test.it("returns a native missing-credential error from " .. operation, function()
+                local subject_id = uuid.v7()
+                local value, err
+                if operation == "capture" then
+                    value, err = authority.capture(assert(security.new_actor(subject_id, {})),
+                        assert(security.new_scope()))
+                else
+                    local scope
+                    value, scope, err = authority.resolve({subject_id = subject_id})
+                    test.is_nil(scope)
+                end
+                test.is_nil(value)
+                test.eq(err:kind(), errors.NOT_FOUND)
+                test.eq(err:retryable(), false)
+            end)
+        end
+
         local function run_case(spec)
             local subject_id = uuid.v7()
             local groups = {"app.await_authority:member", "app.await_authority:privileged"}

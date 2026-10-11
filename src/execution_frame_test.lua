@@ -49,6 +49,43 @@ local function define_tests()
             execution_frame._deps.identity_resolver = original_identity_resolver
         end)
 
+        describe("UPSTREAM-DATAFLOW-LIVE-AUTHORITY native provider errors", function()
+            for _, operation in ipairs({"capture", "reconstruct", "resolve"}) do
+                for _, kind in ipairs({errors.INVALID, errors.PERMISSION_DENIED, errors.UNAVAILABLE, errors.INTERNAL}) do
+                    for _, retryable in ipairs({false, true}) do
+                        it(operation .. " preserves " .. kind .. " retryable=" .. tostring(retryable), function()
+                            local provider_err = errors.new({kind = kind, retryable = retryable,
+                                message = "authority provider refuses",
+                                details = {code = "authority_refusal", nested = {subject_id = "actor:one"},
+                                    cause = {kind = errors.NOT_FOUND, message = "credential is absent", retryable = false}}})
+                            execution_frame._deps.security = capture_security({}, {policy("policy:a")})
+                            execution_frame._deps.identity_resolver = {
+                                capture = function() return nil, provider_err end,
+                                resolve = function() return nil, nil, provider_err end,
+                            }
+                            local value, err
+                            if operation == "capture" then
+                                value, err = execution_frame.capture()
+                            else
+                                local scope
+                                value, scope, err = execution_frame[operation]("actor:one", valid_context())
+                                test.is_nil(scope)
+                            end
+                            test.is_nil(value)
+                            test.eq(err, provider_err)
+                            test.eq(err:kind(), kind)
+                            test.eq(err:retryable(), retryable)
+                            test.eq(err:details().code, "authority_refusal")
+                            test.eq(err:details().nested.subject_id, "actor:one")
+                            test.eq(err:details().cause.kind, errors.NOT_FOUND)
+                            test.eq(err:details().cause.message, "credential is absent")
+                            test.eq(err:details().cause.retryable, false)
+                        end)
+                    end
+                end
+            end
+        end)
+
         it("resolves current authority without rebuilding captured policies", function()
             local live_actor = native_security.new_actor("actor:one", {current = true})
             local live_scope = native_security.new_scope()
@@ -132,12 +169,15 @@ local function define_tests()
             actor, restored_scope, err = execution_frame.reconstruct("actor:one", valid_context())
             test.is_nil(actor)
             test.is_nil(restored_scope)
-            test.contains(err, "different actor")
-            execution_frame._deps.identity_resolver.resolve = function() error("authority service unavailable") end
+            test.contains(tostring(err), "different actor")
+            test.eq(err:kind(), errors.INVALID)
+            local provider_err = errors.new({kind = errors.UNAVAILABLE, message = "authority service unavailable"})
+            execution_frame._deps.identity_resolver.resolve = function() return nil, nil, provider_err end
             actor, restored_scope, err = execution_frame.resolve("actor:one", valid_context())
             test.is_nil(actor)
             test.is_nil(restored_scope)
-            test.contains(err, "authority service unavailable")
+            test.contains(tostring(err), "authority service unavailable")
+            test.eq(err, provider_err)
         end)
 
         it("refuses a saved authority context when its resolver is absent", function()
@@ -145,7 +185,8 @@ local function define_tests()
                 valid_context({authority_context = {credential_id = "credential:one"}}))
             test.is_nil(actor)
             test.is_nil(scope)
-            test.contains(err, "authority resolver is unavailable")
+            test.contains(tostring(err), "authority resolver is unavailable")
+            test.eq(err:kind(), errors.UNAVAILABLE)
         end)
 
         it("propagates restriction capture errors", function()
@@ -164,7 +205,8 @@ local function define_tests()
             local actor, scope, err = execution_frame.resolve("actor:one", valid_context())
             test.is_nil(actor)
             test.is_nil(scope)
-            test.contains(err, "must provide capture and resolve")
+            test.contains(tostring(err), "must provide capture and resolve")
+            test.eq(err:kind(), errors.INVALID)
             execution_frame._deps.identity_resolver = {
                 capture = function() return {}, nil end,
                 resolve = function() return {id = function() return "actor:one" end}, {}, nil end,
@@ -172,7 +214,8 @@ local function define_tests()
             actor, scope, err = execution_frame.reconstruct("actor:one", valid_context())
             test.is_nil(actor)
             test.is_nil(scope)
-            test.contains(err, "native actor and scope")
+            test.contains(tostring(err), "native actor and scope")
+            test.eq(err:kind(), errors.INVALID)
         end)
 
         it("rejects runtime values in a captured authority descriptor", function()

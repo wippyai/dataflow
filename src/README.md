@@ -45,6 +45,8 @@ resolve({subject_id, authority_only = true, actor_meta, authority_context}) -> a
 
 The overseer resolves identity on every activation, including Await resume and runtime recovery. Synchronous resolution also uses the host resolver when the ambient frame matches the stored frame. Resolver errors, changed principals, malformed results and missing resolvers for saved restriction contexts fail execution without a policy snapshot fallback.
 
+Both provider methods return errors through their declared result tuple. Dataflow calls them directly and returns provider errors unchanged, preserving native kind, retryability, details and cause. The provider returns an error for operational failures; it does not raise an exception. Dataflow returns `Invalid` for changed principals or malformed binding/results and `Unavailable` when a saved authority context has no configured provider.
+
 The library runs under the calling execution frame. Its declared modules/imports and the host's narrow reconstruction permissions determine access to its authority provider; Dataflow adds no wildcard authority or host-specific permission. The host uses a module-owned authority boundary for protected reads.
 
 The binding defaults to an empty import map. An installation with no binding retains its existing actor/policy reconstruction behavior and stored frame formats. Enabling live resolution also covers existing frames: `authority_context` is absent, and the host uses the existing actor metadata to resolve any stored credential restriction or returns an error if it cannot preserve it. No schema migration or stored-data rewrite occurs. A host keeps its resolver configured while frames containing its restriction contexts remain runnable.

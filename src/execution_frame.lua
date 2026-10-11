@@ -380,7 +380,7 @@ local function authority_resolver(deps)
     local resolver = deps.identity_resolver
     if resolver == nil then return nil, nil end
     if type(resolver) ~= "table" or type(resolver.capture) ~= "function" or type(resolver.resolve) ~= "function" then
-        return nil, "authority resolver must provide capture and resolve"
+        return nil, errors.new({kind = errors.INVALID, message = "authority resolver must provide capture and resolve"})
     end
     return resolver, nil
 end
@@ -388,23 +388,26 @@ end
 local function resolve_authority(deps, actor_id, context)
     local resolver, resolver_err = authority_resolver(deps)
     if resolver_err then return nil, nil, resolver_err end
-    if not resolver then return nil, nil, "authority resolver is unavailable" end
-    local ok, actor, scope, err = pcall(resolver.resolve, {
+    if not resolver then
+        return nil, nil, errors.new({kind = errors.UNAVAILABLE, message = "authority resolver is unavailable"})
+    end
+    local actor, scope, err = resolver.resolve({
         subject_id = actor_id,
         authority_only = true,
         actor_meta = context.actor_meta,
         authority_context = context.authority_context,
     })
-    if not ok then return nil, nil, "authority resolution failed: " .. tostring(actor) end
-    if err then return nil, nil, "authority resolution failed: " .. tostring(err) end
+    if err then return nil, nil, err end
     if type(actor) ~= "userdata" or type(scope) ~= "userdata" then
-        return nil, nil, "authority resolver must return a native actor and scope"
+        return nil, nil, errors.new({kind = errors.INVALID, message = "authority resolver must return a native actor and scope"})
     end
-    local resolved_id, id_err = call("resolved actor id lookup failed", function() return actor:id() end)
+    local resolved_id, id_err = actor:id()
     if id_err then return nil, nil, id_err end
-    if resolved_id ~= actor_id then return nil, nil, "authority resolver returns a different actor" end
+    if resolved_id ~= actor_id then
+        return nil, nil, errors.new({kind = errors.INVALID, message = "authority resolver returns a different actor"})
+    end
     local native_scope = scope :: security.Scope
-    local _, scope_err = call("resolved scope lookup failed", function() return native_scope:policies() end)
+    local _, scope_err = native_scope:policies()
     if scope_err then return nil, nil, scope_err end
     return actor, scope, nil
 end
@@ -440,11 +443,11 @@ function M.capture()
     local authority_context = nil
     if resolver then
         local capture_err
-        authority_context, capture_err = call("authority capture failed", function()
-            return resolver.capture(actor, scope)
-        end)
+        authority_context, capture_err = resolver.capture(actor, scope)
         if capture_err then return nil, capture_err end
-        if authority_context == nil then return fail("authority capture returns no context") end
+        if authority_context == nil then
+            return nil, errors.new({kind = errors.INVALID, message = "authority capture returns no context"})
+        end
     end
     local context, context_err = validate_dataflow_context({
         kind = M.KIND,
