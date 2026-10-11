@@ -134,3 +134,9 @@ override:
   "userspace.dataflow.retention:sweeper_test:security.policies": [app:test_policy]
   "app.await_authority:test:security.actor.id": dataflow.test
   "app.await_authority:test:security.policies": [app:test_policy]
+  "app.await_authority:setup:security.actor.id": dataflow.test
+  "app.await_authority:setup:security.policies": [app:test_policy]
+  "userspace.dataflow.node.agent:agent_empty_result_test:security.actor.id": dataflow.test
+  "userspace.dataflow.node.agent:agent_empty_result_test:security.policies": [app:test_policy]
+  "userspace.dataflow.node.agent:agent_tool_calling_default_test:security.actor.id": dataflow.test
+  "userspace.dataflow.node.agent:agent_tool_calling_default_test:security.policies": [app:test_policy]

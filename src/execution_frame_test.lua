@@ -1,8 +1,10 @@
 local json = require("json")
+local native_security = require("security")
 local test = require("test")
 local execution_frame = require("execution_frame")
 
 local original_security = execution_frame._deps.security
+local original_identity_resolver = execution_frame._deps.identity_resolver
 
 local function policy(id)
     return {
@@ -39,8 +41,149 @@ end
 
 local function define_tests()
     describe("execution_frame", function()
+        before_each(function()
+            execution_frame._deps.identity_resolver = nil
+        end)
         after_each(function()
             execution_frame._deps.security = original_security
+            execution_frame._deps.identity_resolver = original_identity_resolver
+        end)
+
+        it("resolves current authority without rebuilding captured policies", function()
+            local live_actor = native_security.new_actor("actor:one", {current = true})
+            local live_scope = native_security.new_scope()
+            local resolutions = 0
+            execution_frame._deps.identity_resolver = {
+                capture = function() return {credential_id = "credential:one"}, nil end,
+                resolve = function(args)
+                    resolutions = resolutions + 1
+                    test.eq(args.subject_id, "actor:one")
+                    test.eq(args.actor_meta.tenant, "acme")
+                    test.eq(args.authority_context.credential_id, "credential:one")
+                    test.is_true(args.authority_only)
+                    return live_actor, live_scope, nil
+                end,
+            }
+            execution_frame._deps.security = {
+                policy = function() error("captured policies are not current authority") end,
+                new_actor = function() error("host returns the current actor") end,
+                new_scope = function() error("host returns the native restricted scope") end,
+            }
+            local context = valid_context({authority_context = {credential_id = "credential:one"}})
+            local actor, scope, err = execution_frame.reconstruct("actor:one", context)
+            test.is_nil(err)
+            test.eq(actor, live_actor)
+            test.eq(scope, live_scope)
+            test.eq(resolutions, 1)
+        end)
+
+        it("refreshes an exact current frame through the configured authority resolver", function()
+            local live_actor = native_security.new_actor("actor:one", {current = true})
+            local live_scope = native_security.new_scope()
+            execution_frame._deps.security = capture_security(
+                {tenant = "acme", nested = {enabled = true}}, {policy("policy:a"), policy("policy:b")})
+            execution_frame._deps.identity_resolver = {
+                capture = function() return {}, nil end,
+                resolve = function(args)
+                    test.eq(args.subject_id, "actor:one")
+                    test.is_nil(args.authority_context)
+                    return live_actor, live_scope, nil
+                end,
+            }
+            local actor, scope, err = execution_frame.resolve("actor:one", valid_context())
+            test.is_nil(err)
+            test.eq(actor, live_actor)
+            test.eq(scope, live_scope)
+        end)
+
+        it("captures the host's durable restriction context as bounded plain data", function()
+            local descriptor = {credential_id = "credential:one", ceiling = {"policy:read"}}
+            execution_frame._deps.security = capture_security({}, {policy("policy:a")})
+            execution_frame._deps.identity_resolver = {
+                capture = function(actor, scope)
+                    test.eq(actor:id(), "actor:one")
+                    test.eq(#scope:policies(), 1)
+                    return descriptor, nil
+                end,
+                resolve = function() error("capture does not resolve") end,
+            }
+            local row, err = execution_frame.capture()
+            test.is_nil(err)
+            local decoded = assert(json.decode(row.actor_context))
+            test.eq(decoded.authority_context.credential_id, "credential:one")
+            test.eq(decoded.authority_context.ceiling[1], "policy:read")
+            descriptor.ceiling[1] = "policy:write"
+            test.eq(decoded.authority_context.ceiling[1], "policy:read")
+        end)
+
+        it("refuses host authority errors and changed principals without a snapshot fallback", function()
+            local scope = native_security.new_scope()
+            execution_frame._deps.identity_resolver = {
+                capture = function() return {}, nil end,
+                resolve = function() return nil, nil, "subject is inactive" end,
+            }
+            local actor, restored_scope, err = execution_frame.reconstruct("actor:one", valid_context())
+            test.is_nil(actor)
+            test.is_nil(restored_scope)
+            test.contains(err, "subject is inactive")
+            execution_frame._deps.identity_resolver.resolve = function()
+                return native_security.new_actor("actor:other", {}), scope, nil
+            end
+            actor, restored_scope, err = execution_frame.reconstruct("actor:one", valid_context())
+            test.is_nil(actor)
+            test.is_nil(restored_scope)
+            test.contains(err, "different actor")
+            execution_frame._deps.identity_resolver.resolve = function() error("authority service unavailable") end
+            actor, restored_scope, err = execution_frame.resolve("actor:one", valid_context())
+            test.is_nil(actor)
+            test.is_nil(restored_scope)
+            test.contains(err, "authority service unavailable")
+        end)
+
+        it("refuses a saved authority context when its resolver is absent", function()
+            local actor, scope, err = execution_frame.reconstruct("actor:one",
+                valid_context({authority_context = {credential_id = "credential:one"}}))
+            test.is_nil(actor)
+            test.is_nil(scope)
+            test.contains(err, "authority resolver is unavailable")
+        end)
+
+        it("propagates restriction capture errors", function()
+            execution_frame._deps.security = capture_security({}, {policy("policy:a")})
+            execution_frame._deps.identity_resolver = {
+                capture = function() return nil, "ceiling cannot be represented" end,
+                resolve = function() error("capture does not resolve") end,
+            }
+            local row, err = execution_frame.capture()
+            test.is_nil(row)
+            test.contains(err, "ceiling cannot be represented")
+        end)
+
+        it("rejects malformed authority bindings and non-native results", function()
+            execution_frame._deps.identity_resolver = {}
+            local actor, scope, err = execution_frame.resolve("actor:one", valid_context())
+            test.is_nil(actor)
+            test.is_nil(scope)
+            test.contains(err, "must provide capture and resolve")
+            execution_frame._deps.identity_resolver = {
+                capture = function() return {}, nil end,
+                resolve = function() return {id = function() return "actor:one" end}, {}, nil end,
+            }
+            actor, scope, err = execution_frame.reconstruct("actor:one", valid_context())
+            test.is_nil(actor)
+            test.is_nil(scope)
+            test.contains(err, "native actor and scope")
+        end)
+
+        it("rejects runtime values in a captured authority descriptor", function()
+            execution_frame._deps.security = capture_security({}, {policy("policy:a")})
+            execution_frame._deps.identity_resolver = {
+                capture = function() return {scope = native_security.new_scope()}, nil end,
+                resolve = function() error("invalid capture does not resolve") end,
+            }
+            local row, err = execution_frame.capture()
+            test.is_nil(row)
+            test.contains(err, "unsupported value type userdata")
         end)
 
         it("captures actor metadata and canonical policy ids in a versioned context", function()

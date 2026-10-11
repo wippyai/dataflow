@@ -182,6 +182,8 @@ entries:
     component: "wippy/dataflow"
     version: "*"
     parameters:
+      - name: userspace.dataflow:execution_authority_imports
+        value: {execution_identity_resolver: app.await_authority:authority}
       - name: userspace.dataflow:target_db
         value: app:db
       - name: userspace.dataflow:process_host

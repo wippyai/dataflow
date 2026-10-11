@@ -15,7 +15,8 @@ function M.lookup(args)
         return {success = false, error = {kind = "PermissionDenied", message = "subject is inactive"}}
     end
     local groups = assert(json.decode(rows[1].groups_json))
-    return {subject_id = args.subject_id, groups = groups, meta = args.actor_meta or {}}
+    return {subject_id = args.subject_id, groups = groups, meta = args.actor_meta or {},
+        ceiling = args.actor_meta and args.actor_meta.ceiling or nil}
 end
 
 function M.start(args)

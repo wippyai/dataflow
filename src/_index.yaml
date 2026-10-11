@@ -147,6 +147,7 @@ entries:
     source: file://execution_frame_test.lua
     modules:
       - json
+      - security
     imports:
       execution_frame: userspace.dataflow:execution_frame
       test: wippy.test:test
@@ -240,6 +241,15 @@ entries:
       node: userspace.dataflow:node
       test: wippy.test:test
     method: run_tests
+
+  - name: execution_authority_imports
+    kind: ns.requirement
+    meta:
+      description: "Optional host library binding: {execution_identity_resolver: host:library}. The library captures durable restrictions and resolves current native authority."
+    default: {}
+    targets:
+      - entry: userspace.dataflow:execution_frame
+        path: .imports
 
   # Requirements
   - name: target_db
