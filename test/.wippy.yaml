@@ -132,3 +132,5 @@ override:
   "userspace.dataflow:node_test:security.policies": [app:test_policy]
   "userspace.dataflow.retention:sweeper_test:security.actor.id": dataflow.test
   "userspace.dataflow.retention:sweeper_test:security.policies": [app:test_policy]
+  "app.await_authority:test:security.actor.id": dataflow.test
+  "app.await_authority:test:security.policies": [app:test_policy]

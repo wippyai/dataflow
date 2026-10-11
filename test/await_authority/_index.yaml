@@ -1,0 +1,96 @@
+version: "1.0"
+namespace: app.await_authority
+
+entries:
+  - name: test
+    kind: function.lua
+    meta:
+      type: test
+      suite: await_authority
+    source: file://test.lua
+    method: run_tests
+    modules: [sql, json, uuid, time, security, funcs, process]
+    imports:
+      test: wippy.test:test
+      client: userspace.dataflow:client
+      consts: userspace.dataflow:consts
+      activation_repo: userspace.dataflow.persist:activation_repo
+      dataflow_repo: userspace.dataflow.persist:dataflow_repo
+
+  - name: subject_lookup
+    kind: function.lua
+    source: file://fixture.lua
+    method: lookup
+    modules: [sql, json, security]
+    imports:
+      flow: userspace.dataflow.flow:flow
+      client: userspace.dataflow:client
+    security:
+      actor: {id: await.subject_lookup}
+      policies: [app:test_policy]
+
+  - name: start
+    kind: function.lua
+    source: file://fixture.lua
+    method: start
+    modules: [sql, json, security]
+    imports:
+      flow: userspace.dataflow.flow:flow
+      client: userspace.dataflow:client
+
+  - name: signal
+    kind: function.lua
+    source: file://fixture.lua
+    method: signal
+    modules: [sql, json, security]
+    imports:
+      flow: userspace.dataflow.flow:flow
+      client: userspace.dataflow:client
+
+  - name: protected_effect
+    kind: function.lua
+    source: file://fixture.lua
+    method: effect
+    modules: [sql, json, security]
+    imports:
+      flow: userspace.dataflow.flow:flow
+      client: userspace.dataflow:client
+
+  - name: tokens_storage
+    kind: store.memory
+    max_size: 1000
+    cleanup_interval: 1m
+    lifecycle:
+      auto_start: true
+
+  - name: tokens
+    kind: security.token_store
+    store: app.await_authority:tokens_storage
+    token_length: 32
+    default_expiration: 1h
+    subject_lookup: app.await_authority:subject_lookup
+
+  - name: member
+    kind: registry.entry
+  - name: privileged
+    kind: registry.entry
+
+  - name: member_policy
+    kind: security.policy
+    groups: [app.await_authority:member]
+    policy:
+      resources: '*'
+      actions: '*'
+      conditions:
+        - field: resource
+          operator: ne
+          value: app.await_authority:protected_effect
+      effect: allow
+
+  - name: privileged_policy
+    kind: security.policy
+    groups: [app.await_authority:privileged]
+    policy:
+      resources: app.await_authority:protected_effect
+      actions: funcs.call
+      effect: allow
