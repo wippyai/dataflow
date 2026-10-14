@@ -46,6 +46,9 @@ local function run()
     test.eq(tostring(dependencies[2]), "app:db")
 
     assert_policy("root.database", { "app:db" }, { "db.get" })
+    assert_policy("root.authority_settings", {
+        "userspace.dataflow:execution_authority_settings",
+    }, { "registry.get" })
     assert_policy("root.orchestrator_spawn", {
         "userspace.dataflow.runner:orchestrator",
     }, { "process.spawn", "process.spawn.monitored" })

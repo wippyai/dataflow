@@ -5,6 +5,7 @@ local execution_frame = require("execution_frame")
 
 local original_security = execution_frame._deps.security
 local original_identity_resolver = execution_frame._deps.identity_resolver
+local original_refresh_perms = execution_frame._deps.refresh_perms
 
 local function policy(id)
     return {
@@ -43,10 +44,71 @@ local function define_tests()
     describe("execution_frame", function()
         before_each(function()
             execution_frame._deps.identity_resolver = nil
+            execution_frame._deps.refresh_perms = true
         end)
         after_each(function()
             execution_frame._deps.security = original_security
             execution_frame._deps.identity_resolver = original_identity_resolver
+            execution_frame._deps.refresh_perms = original_refresh_perms
+        end)
+
+        for _, enabled in ipairs({false, "true"}) do
+            it("makes no provider calls when refresh_perms=" .. tostring(enabled) .. " is not boolean true", function()
+                execution_frame._deps.refresh_perms = enabled
+                execution_frame._deps.security = capture_security({}, {})
+                local captures, resolutions = 0, 0
+                execution_frame._deps.identity_resolver = {
+                    capture = function() captures = captures + 1; error("disabled capture") end,
+                    resolve = function() resolutions = resolutions + 1; error("disabled resolve") end,
+                }
+                local restored_actor, restored_scope = {}, {}
+                execution_frame._deps.security.new_actor = function() return restored_actor end
+                execution_frame._deps.security.new_scope = function() return restored_scope end
+                local row, capture_err = execution_frame.capture()
+                test.is_nil(capture_err)
+                test.is_nil(assert(json.decode(row.actor_context)).authority_context)
+                local actor, scope, err = execution_frame.resolve(row.actor_id, row.actor_context)
+                test.is_nil(err)
+                test.not_nil(actor)
+                test.not_nil(scope)
+                actor, scope, err = execution_frame.reconstruct(row.actor_id, row.actor_context)
+                test.is_nil(err)
+                test.eq(actor, restored_actor)
+                test.eq(scope, restored_scope)
+                test.eq(captures, 0)
+                test.eq(resolutions, 0)
+            end)
+        end
+
+        it("ignores a malformed resolver binding while refresh_perms is disabled", function()
+            execution_frame._deps.refresh_perms = false
+            execution_frame._deps.security = capture_security({}, {})
+            execution_frame._deps.identity_resolver = {}
+            local row, err = execution_frame.capture()
+            test.is_nil(err)
+            test.not_nil(row)
+            local actor, scope
+            actor, scope, err = execution_frame.resolve(row.actor_id, row.actor_context)
+            test.is_nil(err)
+            test.not_nil(actor)
+            test.not_nil(scope)
+        end)
+
+        it("does not discard a saved restriction context when refresh_perms is disabled", function()
+            execution_frame._deps.refresh_perms = false
+            local calls = 0
+            execution_frame._deps.identity_resolver = {
+                capture = function() calls = calls + 1; return {} end,
+                resolve = function() calls = calls + 1; return nil, nil, "must not resolve" end,
+            }
+            for _, operation in ipairs({"resolve", "reconstruct"}) do
+                local actor, scope, err = execution_frame[operation]("actor:one",
+                    valid_context({authority_context = {credential_id = "credential:one"}}))
+                test.is_nil(actor)
+                test.is_nil(scope)
+                test.is_true(errors.is(err, errors.UNAVAILABLE))
+            end
+            test.eq(calls, 0)
         end)
 
         describe("UPSTREAM-DATAFLOW-LIVE-AUTHORITY native provider errors", function()

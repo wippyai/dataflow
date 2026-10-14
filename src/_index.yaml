@@ -137,6 +137,7 @@ entries:
     modules:
       - json
       - security
+      - registry
 
   - name: execution_frame_test
     kind: function.lua
@@ -250,6 +251,20 @@ entries:
     targets:
       - entry: userspace.dataflow:execution_frame
         path: .imports
+
+  - name: refresh_perms
+    kind: ns.requirement
+    meta:
+      description: "Resolve live authority at workflow activation and resume boundaries when execution_authority_imports is bound. Disabled by default."
+    default: false
+    targets:
+      - entry: userspace.dataflow:execution_authority_settings
+        path: .meta.refresh_perms
+
+  - name: execution_authority_settings
+    kind: registry.entry
+    meta:
+      refresh_perms: false
 
   # Requirements
   - name: target_db

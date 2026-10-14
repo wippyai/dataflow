@@ -97,4 +97,4 @@ with an authorized database handle. The library is not a public HTTP endpoint.
 
 ## Live execution authority
 
-Hosts with mutable permissions bind their native identity resolver through `execution_authority_imports`. Dataflow resolves current authority on activation and preserves explicit narrowing ceilings. The [host binding contract](src/README.md#live-execution-authority) describes capture, resolution and existing frame behavior.
+Hosts with mutable permissions bind their native identity resolver through `execution_authority_imports` and set `refresh_perms: true` (default false). Dataflow resolves current authority at activation and resume boundaries and preserves explicit narrowing ceilings. The [host binding contract](src/README.md#live-execution-authority) describes capture, resolution and existing frame behavior.

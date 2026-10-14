@@ -1,5 +1,6 @@
 local json = require("json")
 local security = require("security")
+local registry = require("registry")
 
 local M = {}
 
@@ -376,9 +377,16 @@ local function scope_policy_ids(scope, label)
     return policy_ids, nil
 end
 
+local function refresh_enabled(deps)
+    if deps.refresh_perms ~= nil then return deps.refresh_perms == true end
+    local settings = assert(registry.get("userspace.dataflow:execution_authority_settings"))
+    return settings.meta.refresh_perms == true
+end
+
 local function authority_resolver(deps)
     local resolver = deps.identity_resolver
     if resolver == nil then return nil, nil end
+    if not refresh_enabled(deps) then return nil, nil end
     if type(resolver) ~= "table" or type(resolver.capture) ~= "function" or type(resolver.resolve) ~= "function" then
         return nil, errors.new({kind = errors.INVALID, message = "authority resolver must provide capture and resolve"})
     end
@@ -474,7 +482,7 @@ function M.reconstruct(actor_id, actor_context)
     local restored = context :: any
 
     local deps = M._deps
-    if deps.identity_resolver ~= nil or restored.authority_context ~= nil then
+    if (deps.identity_resolver ~= nil and refresh_enabled(deps)) or restored.authority_context ~= nil then
         return resolve_authority(deps, valid_actor_id, restored)
     end
     local scope = nil
@@ -535,7 +543,7 @@ function M.resolve(actor_id, actor_context)
     local persisted = persisted_raw :: any
 
     local deps = M._deps
-    if deps.identity_resolver ~= nil or persisted.authority_context ~= nil then
+    if (deps.identity_resolver ~= nil and refresh_enabled(deps)) or persisted.authority_context ~= nil then
         return resolve_authority(deps, valid_actor_id, persisted)
     end
     local actor, actor_err = current_actor(deps)
