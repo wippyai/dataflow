@@ -2,6 +2,17 @@ version: "1.0"
 namespace: userspace.dataflow.security
 
 entries:
+  - name: root.authority_settings
+    kind: security.policy
+    meta:
+      comment: Reads only the module's non-secret permission-refresh setting.
+    groups:
+      - userspace.dataflow.security:root
+    policy:
+      resources: userspace.dataflow:execution_authority_settings
+      actions: registry.get
+      effect: allow
+
   - name: root
     kind: registry.entry
     meta:

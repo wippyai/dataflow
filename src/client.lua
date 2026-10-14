@@ -32,14 +32,9 @@ local function has_actor_context(value)
 end
 
 function methods:_capture_identity()
-    local ok, result, capture_err = pcall(function()
-        return self._deps.execution_frame.capture()
-    end)
-    if not ok then
-        return nil, "execution identity capture failed: " .. tostring(result)
-    end
+    local result, capture_err = self._deps.execution_frame.capture()
     if capture_err then
-        return nil, "execution identity capture failed: " .. tostring(capture_err)
+        return nil, capture_err
     end
     if type(result) ~= "table" then
         return nil, "execution identity capture returned invalid result"

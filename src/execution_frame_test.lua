@@ -1,8 +1,11 @@
 local json = require("json")
+local native_security = require("security")
 local test = require("test")
 local execution_frame = require("execution_frame")
 
 local original_security = execution_frame._deps.security
+local original_identity_resolver = execution_frame._deps.identity_resolver
+local original_refresh_perms = execution_frame._deps.refresh_perms
 
 local function policy(id)
     return {
@@ -39,8 +42,253 @@ end
 
 local function define_tests()
     describe("execution_frame", function()
+        before_each(function()
+            execution_frame._deps.identity_resolver = nil
+            execution_frame._deps.refresh_perms = true
+        end)
         after_each(function()
             execution_frame._deps.security = original_security
+            execution_frame._deps.identity_resolver = original_identity_resolver
+            execution_frame._deps.refresh_perms = original_refresh_perms
+        end)
+
+        for _, enabled in ipairs({false, "true"}) do
+            it("makes no provider calls when refresh_perms=" .. tostring(enabled) .. " is not boolean true", function()
+                execution_frame._deps.refresh_perms = enabled
+                execution_frame._deps.security = capture_security({}, {})
+                local captures, resolutions = 0, 0
+                execution_frame._deps.identity_resolver = {
+                    capture = function() captures = captures + 1; error("disabled capture") end,
+                    resolve = function() resolutions = resolutions + 1; error("disabled resolve") end,
+                }
+                local restored_actor, restored_scope = {}, {}
+                execution_frame._deps.security.new_actor = function() return restored_actor end
+                execution_frame._deps.security.new_scope = function() return restored_scope end
+                local row, capture_err = execution_frame.capture()
+                test.is_nil(capture_err)
+                test.is_nil(assert(json.decode(row.actor_context)).authority_context)
+                local actor, scope, err = execution_frame.resolve(row.actor_id, row.actor_context)
+                test.is_nil(err)
+                test.not_nil(actor)
+                test.not_nil(scope)
+                actor, scope, err = execution_frame.reconstruct(row.actor_id, row.actor_context)
+                test.is_nil(err)
+                test.eq(actor, restored_actor)
+                test.eq(scope, restored_scope)
+                test.eq(captures, 0)
+                test.eq(resolutions, 0)
+            end)
+        end
+
+        it("ignores a malformed resolver binding while refresh_perms is disabled", function()
+            execution_frame._deps.refresh_perms = false
+            execution_frame._deps.security = capture_security({}, {})
+            execution_frame._deps.identity_resolver = {}
+            local row, err = execution_frame.capture()
+            test.is_nil(err)
+            test.not_nil(row)
+            local actor, scope
+            actor, scope, err = execution_frame.resolve(row.actor_id, row.actor_context)
+            test.is_nil(err)
+            test.not_nil(actor)
+            test.not_nil(scope)
+        end)
+
+        it("does not discard a saved restriction context when refresh_perms is disabled", function()
+            execution_frame._deps.refresh_perms = false
+            local calls = 0
+            execution_frame._deps.identity_resolver = {
+                capture = function() calls = calls + 1; return {} end,
+                resolve = function() calls = calls + 1; return nil, nil, "must not resolve" end,
+            }
+            for _, operation in ipairs({"resolve", "reconstruct"}) do
+                local actor, scope, err = execution_frame[operation]("actor:one",
+                    valid_context({authority_context = {credential_id = "credential:one"}}))
+                test.is_nil(actor)
+                test.is_nil(scope)
+                test.is_true(errors.is(err, errors.UNAVAILABLE))
+            end
+            test.eq(calls, 0)
+        end)
+
+        describe("UPSTREAM-DATAFLOW-LIVE-AUTHORITY native provider errors", function()
+            for _, operation in ipairs({"capture", "reconstruct", "resolve"}) do
+                for _, kind in ipairs({errors.INVALID, errors.PERMISSION_DENIED, errors.UNAVAILABLE, errors.INTERNAL}) do
+                    for _, retryable in ipairs({false, true}) do
+                        it(operation .. " preserves " .. kind .. " retryable=" .. tostring(retryable), function()
+                            local provider_err = errors.new({kind = kind, retryable = retryable,
+                                message = "authority provider refuses",
+                                details = {code = "authority_refusal", nested = {subject_id = "actor:one"},
+                                    cause = {kind = errors.NOT_FOUND, message = "credential is absent", retryable = false}}})
+                            execution_frame._deps.security = capture_security({}, {policy("policy:a")})
+                            execution_frame._deps.identity_resolver = {
+                                capture = function() return nil, provider_err end,
+                                resolve = function() return nil, nil, provider_err end,
+                            }
+                            local value, err
+                            if operation == "capture" then
+                                value, err = execution_frame.capture()
+                            else
+                                local scope
+                                value, scope, err = execution_frame[operation]("actor:one", valid_context())
+                                test.is_nil(scope)
+                            end
+                            test.is_nil(value)
+                            test.eq(err, provider_err)
+                            test.eq(err:kind(), kind)
+                            test.eq(err:retryable(), retryable)
+                            test.eq(err:details().code, "authority_refusal")
+                            test.eq(err:details().nested.subject_id, "actor:one")
+                            test.eq(err:details().cause.kind, errors.NOT_FOUND)
+                            test.eq(err:details().cause.message, "credential is absent")
+                            test.eq(err:details().cause.retryable, false)
+                        end)
+                    end
+                end
+            end
+        end)
+
+        it("resolves current authority without rebuilding captured policies", function()
+            local live_actor = native_security.new_actor("actor:one", {current = true})
+            local live_scope = native_security.new_scope()
+            local resolutions = 0
+            execution_frame._deps.identity_resolver = {
+                capture = function() return {credential_id = "credential:one"}, nil end,
+                resolve = function(args)
+                    resolutions = resolutions + 1
+                    test.eq(args.subject_id, "actor:one")
+                    test.eq(args.actor_meta.tenant, "acme")
+                    test.eq(args.authority_context.credential_id, "credential:one")
+                    test.is_true(args.authority_only)
+                    return live_actor, live_scope, nil
+                end,
+            }
+            execution_frame._deps.security = {
+                policy = function() error("captured policies are not current authority") end,
+                new_actor = function() error("host returns the current actor") end,
+                new_scope = function() error("host returns the native restricted scope") end,
+            }
+            local context = valid_context({authority_context = {credential_id = "credential:one"}})
+            local actor, scope, err = execution_frame.reconstruct("actor:one", context)
+            test.is_nil(err)
+            test.eq(actor, live_actor)
+            test.eq(scope, live_scope)
+            test.eq(resolutions, 1)
+        end)
+
+        it("refreshes an exact current frame through the configured authority resolver", function()
+            local live_actor = native_security.new_actor("actor:one", {current = true})
+            local live_scope = native_security.new_scope()
+            execution_frame._deps.security = capture_security(
+                {tenant = "acme", nested = {enabled = true}}, {policy("policy:a"), policy("policy:b")})
+            execution_frame._deps.identity_resolver = {
+                capture = function() return {}, nil end,
+                resolve = function(args)
+                    test.eq(args.subject_id, "actor:one")
+                    test.is_nil(args.authority_context)
+                    return live_actor, live_scope, nil
+                end,
+            }
+            local actor, scope, err = execution_frame.resolve("actor:one", valid_context())
+            test.is_nil(err)
+            test.eq(actor, live_actor)
+            test.eq(scope, live_scope)
+        end)
+
+        it("captures the host's durable restriction context as bounded plain data", function()
+            local descriptor = {credential_id = "credential:one", ceiling = {"policy:read"}}
+            execution_frame._deps.security = capture_security({}, {policy("policy:a")})
+            execution_frame._deps.identity_resolver = {
+                capture = function(actor, scope)
+                    test.eq(actor:id(), "actor:one")
+                    test.eq(#scope:policies(), 1)
+                    return descriptor, nil
+                end,
+                resolve = function() error("capture does not resolve") end,
+            }
+            local row, err = execution_frame.capture()
+            test.is_nil(err)
+            local decoded = assert(json.decode(row.actor_context))
+            test.eq(decoded.authority_context.credential_id, "credential:one")
+            test.eq(decoded.authority_context.ceiling[1], "policy:read")
+            descriptor.ceiling[1] = "policy:write"
+            test.eq(decoded.authority_context.ceiling[1], "policy:read")
+        end)
+
+        it("refuses host authority errors and changed principals without a snapshot fallback", function()
+            local scope = native_security.new_scope()
+            execution_frame._deps.identity_resolver = {
+                capture = function() return {}, nil end,
+                resolve = function() return nil, nil, "subject is inactive" end,
+            }
+            local actor, restored_scope, err = execution_frame.reconstruct("actor:one", valid_context())
+            test.is_nil(actor)
+            test.is_nil(restored_scope)
+            test.contains(err, "subject is inactive")
+            execution_frame._deps.identity_resolver.resolve = function()
+                return native_security.new_actor("actor:other", {}), scope, nil
+            end
+            actor, restored_scope, err = execution_frame.reconstruct("actor:one", valid_context())
+            test.is_nil(actor)
+            test.is_nil(restored_scope)
+            test.contains(tostring(err), "different actor")
+            test.eq(err:kind(), errors.INVALID)
+            local provider_err = errors.new({kind = errors.UNAVAILABLE, message = "authority service unavailable"})
+            execution_frame._deps.identity_resolver.resolve = function() return nil, nil, provider_err end
+            actor, restored_scope, err = execution_frame.resolve("actor:one", valid_context())
+            test.is_nil(actor)
+            test.is_nil(restored_scope)
+            test.contains(tostring(err), "authority service unavailable")
+            test.eq(err, provider_err)
+        end)
+
+        it("refuses a saved authority context when its resolver is absent", function()
+            local actor, scope, err = execution_frame.reconstruct("actor:one",
+                valid_context({authority_context = {credential_id = "credential:one"}}))
+            test.is_nil(actor)
+            test.is_nil(scope)
+            test.contains(tostring(err), "authority resolver is unavailable")
+            test.eq(err:kind(), errors.UNAVAILABLE)
+        end)
+
+        it("propagates restriction capture errors", function()
+            execution_frame._deps.security = capture_security({}, {policy("policy:a")})
+            execution_frame._deps.identity_resolver = {
+                capture = function() return nil, "ceiling cannot be represented" end,
+                resolve = function() error("capture does not resolve") end,
+            }
+            local row, err = execution_frame.capture()
+            test.is_nil(row)
+            test.contains(err, "ceiling cannot be represented")
+        end)
+
+        it("rejects malformed authority bindings and non-native results", function()
+            execution_frame._deps.identity_resolver = {}
+            local actor, scope, err = execution_frame.resolve("actor:one", valid_context())
+            test.is_nil(actor)
+            test.is_nil(scope)
+            test.contains(tostring(err), "must provide capture and resolve")
+            test.eq(err:kind(), errors.INVALID)
+            execution_frame._deps.identity_resolver = {
+                capture = function() return {}, nil end,
+                resolve = function() return {id = function() return "actor:one" end}, {}, nil end,
+            }
+            actor, scope, err = execution_frame.reconstruct("actor:one", valid_context())
+            test.is_nil(actor)
+            test.is_nil(scope)
+            test.contains(tostring(err), "native actor and scope")
+            test.eq(err:kind(), errors.INVALID)
+        end)
+
+        it("rejects runtime values in a captured authority descriptor", function()
+            execution_frame._deps.security = capture_security({}, {policy("policy:a")})
+            execution_frame._deps.identity_resolver = {
+                capture = function() return {scope = native_security.new_scope()}, nil end,
+                resolve = function() error("invalid capture does not resolve") end,
+            }
+            local row, err = execution_frame.capture()
+            test.is_nil(row)
+            test.contains(err, "unsupported value type userdata")
         end)
 
         it("captures actor metadata and canonical policy ids in a versioned context", function()
