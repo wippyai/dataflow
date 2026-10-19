@@ -85,6 +85,7 @@ local function process_mock(captured)
         end
         function spawner:spawn_monitored(source, host, args)
             local pid = "pid-" .. tostring(args.dataflow_id) .. "-" .. tostring(args.activation_generation)
+            table.insert(captured.monitors, pid)
             captured.owners[self.name] = pid
             table.insert(captured.spawns, {
                 source = source,
@@ -457,12 +458,34 @@ local function run_tests()
             test.eq(#observed.monitors, 1)
         end)
 
-        test.it("accepts the idempotent monitor result from spawn_monitored", function()
+        test.it("keeps the atomic spawn monitor when the owner exits before another lookup", function()
+            local id = "fast_park"
+            activations[id] = activation(id, 1)
+            workflows[id] = workflow(id)
+            local lookup = overseer.process.registry.lookup
+            overseer.process.registry.lookup = function(name)
+                if #observed.spawns > 0 then observed.owners[name] = nil end
+                return lookup(name)
+            end
+            overseer.process.monitor = function() return nil, "pid not registered" end
+            local runtime = overseer.new_runtime(CURRENT_EPOCH)
+            test.is_true(select(1, overseer.reconcile_activation(runtime, activations[id])))
+            test.eq(#observed.failures, 0, "spawn_monitored installed the monitor before dispatch")
+            local pid = observed.spawns[1].pid
+            test.not_nil(overseer.overseer_state.owner_for_pid(runtime.ownership, pid))
+            activations[id].desired_active = false
+            test.is_true(select(1, overseer.handle_exit(runtime, { from = pid, result = { value = {
+                success = true, passivated = true, activation_generation = 1,
+            } } })))
+            test.is_nil(overseer.overseer_state.owner_for_pid(runtime.ownership, pid))
+            test.eq(#observed.failures, 0)
+        end)
+
+        test.it("uses the monitor installed atomically by spawn_monitored", function()
             activations.monitored = activation("monitored", 1)
             workflows.monitored = workflow("monitored")
             overseer.process.monitor = function(pid)
-                table.insert(observed.monitors, tostring(pid))
-                return nil, "already monitoring pid"
+                error("spawn_monitored already installed the monitor for " .. tostring(pid))
             end
 
             local ok, err = overseer.reconcile_activation(

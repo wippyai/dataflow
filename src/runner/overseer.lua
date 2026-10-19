@@ -419,6 +419,17 @@ function M.drive_decision(runtime: Runtime, initial: Decision?): (boolean?, stri
                             registered_pid = registered_pid,
                             error = spawn_pid and nil or tostring(spawn_err or "spawn returned no PID"),
                         })))
+                    if spawn_pid and decision and decision.kind == M.overseer_state.ACTION.MONITOR and
+                        decision.pid == tostring(spawn_pid) then
+                        -- spawn_monitored installs this monitor before dispatch.
+                        -- Monitoring again can fail after a fast clean exit even
+                        -- though the original EXIT is already on its way.
+                        decision = select(1, apply_transition(runtime,
+                            M.overseer_state.on_monitor_observation(runtime.ownership, {
+                                dataflow_id = dataflow_id, generation = generation,
+                                pid = tostring(spawn_pid), monitor_ok = true,
+                            })))
+                    end
                 end
             end
 
