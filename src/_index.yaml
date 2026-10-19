@@ -396,7 +396,7 @@ entries:
     meta:
       description: "Agent framework for agent node execution"
     component: "wippy/agent"
-    version: ">=v0.5.1"
+    version: ">=v0.5.5"
 
   - name: dep.wippy.llm
     kind: ns.dependency
