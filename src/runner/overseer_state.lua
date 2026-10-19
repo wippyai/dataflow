@@ -74,6 +74,8 @@ type ExitInput = {
     status: string?,
     terminal: boolean?,
     message: string?,
+    released_generation: number?,
+    owner_epoch: string?,
 }
 
 type Decision = {
@@ -356,11 +358,13 @@ function M.on_owner_observation(state: State, input: OwnerObservationInput): (St
     end
 
     if record.pid ~= nil then
-        unbind(next_state, record)
         if record.phase ~= "acquisition_requested" or not record.claim_required then
-            return next_state, fail(record, "runtime_owner_lost",
-                input.message or "active orchestrator disappeared during runtime"), nil
+            -- A registered name can disappear before its monitored EXIT is
+            -- delivered. Keep the monitor so its result distinguishes a
+            -- released generation from a crash before deciding owner loss.
+            return next_state, none("awaiting_monitored_exit"), nil
         end
+        unbind(next_state, record)
     end
 
     if record.phase == "acquisition_requested" and record.claim_required then
@@ -502,6 +506,15 @@ function M.on_exit(state: State, input: ExitInput): (State, Decision, string?)
         return next_state, none(is_terminal(input) and "terminal_exit" or "inactive_exit"), nil
     end
     assert(input.desired_active == true, "desired_active must be a boolean")
+    if input.released_generation and input.released_generation >= 1 and
+        input.released_generation % 1 == 0 and input.released_generation < record.generation then
+        -- This owner released an older generation before a signal arrived.
+        -- Adopting its still-registered PID did not make it own the new work.
+        record.phase = "acquisition_requested"
+        record.claim_required = true
+        record.claim_from_epoch = input.owner_epoch
+        record.candidate_pid = nil
+    end
     if record.phase ~= "acquisition_requested" or not record.claim_required then
         record.phase = "verification_requested"
     end

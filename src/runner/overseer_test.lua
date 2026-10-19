@@ -273,6 +273,7 @@ local function run_tests()
 
             for generation = 2, 11 do
                 activations.burst.generation = generation
+                activations.burst.owner_epoch = nil
                 local ok, err = overseer.reconcile_activation(runtime, activations.burst)
                 test.is_nil(err)
                 test.is_true(ok)
@@ -335,6 +336,73 @@ local function run_tests()
                 test.is_true(select(1, overseer.reconcile_activation(runtime, activations[id], workflows[id])))
                 test.is_nil(overseer.overseer_state.owner_for_dataflow(runtime.ownership, id))
                 test.eq(#observed.failures, 0)
+            end)
+        end
+
+        for _, hint_before_exit in ipairs({false, true}) do
+            test.it("resumes a generation adopted while its old owner was parking: hint=" ..
+                tostring(hint_before_exit), function()
+                local id = "parking_handoff"
+                activations[id] = activation(id, 1)
+                workflows[id] = workflow(id)
+                local runtime = overseer.new_runtime(CURRENT_EPOCH)
+                test.is_true(select(1, overseer.reconcile_activation(runtime, activations[id])))
+                local old_pid = observed.spawns[1].pid
+
+                -- The owner released generation 1, but still has its canonical
+                -- name while finishing. A signal arrives before it exits.
+                activations[id] = activation(id, 2)
+                test.is_true(select(1, overseer.reconcile_activation(runtime, activations[id])))
+                test.eq(#observed.spawns, 1)
+                test.eq(#observed.sends, 2, "a newly claimed generation must wake the existing owner")
+                test.eq(observed.sends[2].pid, old_pid)
+                observed.owners["dataflow." .. id] = nil
+                if hint_before_exit then
+                    test.is_true(select(1, overseer.reconcile_activation(runtime, activations[id])))
+                    test.eq(#observed.failures, 0, "the installed monitor supplies the exit result")
+                end
+                local ok, err = overseer.handle_exit(runtime, { from = old_pid, result = { value = {
+                    success = true, pending = true, passivated = true, activation_generation = 1,
+                } } })
+                test.is_nil(err)
+                test.is_true(ok)
+                test.eq(#observed.failures, 0)
+                test.eq(#observed.spawns, 2)
+                test.eq(observed.spawns[2].args.activation_generation, 2)
+                test.eq(observed.sends[#observed.sends].pid, observed.spawns[2].pid)
+                test.is_nil(runtime.nudges[id])
+            end)
+        end
+
+        for _, result in ipairs({
+            { value = { success = true, passivated = true, activation_generation = 2 } },
+            { value = { success = true, passivated = true, activation_generation = 3 } },
+            { value = { success = true, passivated = true, activation_generation = 0 } },
+            { value = { success = false, passivated = true, activation_generation = 1 } },
+            { value = { success = true, passivated = false, activation_generation = 1 } },
+            { error = "owner crashed", value = {
+                success = true, passivated = true, activation_generation = 1,
+            } },
+        }) do
+            test.it("fails an exited owner without proof of releasing an older generation: " ..
+                tostring(result.error or result.value.activation_generation) .. "/" ..
+                tostring(result.value.success) .. "/" .. tostring(result.value.passivated), function()
+                local id = "unproven_handoff"
+                activations[id] = activation(id, 1)
+                workflows[id] = workflow(id)
+                local runtime = overseer.new_runtime(CURRENT_EPOCH)
+                test.is_true(select(1, overseer.reconcile_activation(runtime, activations[id])))
+                local pid = observed.spawns[1].pid
+                activations[id] = activation(id, 2)
+                test.is_true(select(1, overseer.reconcile_activation(runtime, activations[id])))
+                observed.owners["dataflow." .. id] = nil
+                test.is_true(select(1, overseer.reconcile_activation(runtime, activations[id])))
+                test.eq(#observed.failures, 0, "wait for the monitored EXIT before classifying it")
+                test.is_true(select(1, overseer.handle_exit(runtime, { from = pid, result = result })))
+                test.eq(#observed.spawns, 1, "a crash must not respawn business work")
+                test.eq(#observed.failures, 1)
+                test.is_nil(overseer.overseer_state.owner_for_dataflow(runtime.ownership, id))
+                test.is_nil(overseer.overseer_state.owner_for_pid(runtime.ownership, pid))
             end)
         end
 
