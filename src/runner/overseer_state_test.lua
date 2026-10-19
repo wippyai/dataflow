@@ -281,7 +281,14 @@ local function run_tests()
                 runtime_epoch = CURRENT_EPOCH,
             })
             test.eq(required(inspect).kind, overseer.ACTION.INSPECT_OWNER)
-            local completed = acquire(advancing, "df-passivated", 2, "pid-resumed")
+            local waiting, pending = on_owner_observation(advancing, {
+                dataflow_id = "df-passivated", generation = 2,
+            })
+            test.eq(required(pending).reason, "awaiting_owner_exit")
+            local exited = select(1, on_exit(waiting, {
+                pid = "pid-passivated", generation = 2, desired_active = true, released_generation = 1,
+            }))
+            local completed = acquire(exited, "df-passivated", 2, "pid-resumed")
             test.is_nil(overseer.owner_for_pid(completed, "pid-passivated"))
             local terminal, stop = on_activation(completed, {
                 dataflow_id = "df-passivated", generation = 2, desired_active = false,

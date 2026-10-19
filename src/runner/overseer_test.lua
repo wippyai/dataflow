@@ -308,7 +308,10 @@ local function run_tests()
                     overseer.process.registry.lookup = function(name)
                         if exit_pending then
                             exit_pending = false
-                            local exited, exit_err = overseer.handle_exit(runtime, {from = old_pid})
+                            local exited, exit_err = overseer.handle_exit(runtime, { from = old_pid, result = { value = {
+                                success = true, pending = true, passivated = true,
+                                dataflow_id = id, activation_generation = 1,
+                            } } })
                             test.is_nil(exit_err)
                             test.is_true(exited)
                         end
@@ -321,6 +324,14 @@ local function run_tests()
                     local ok, err = overseer.reconcile_activation(runtime, activations[id])
                     test.is_nil(err)
                     test.is_true(ok)
+                end
+                if ordering == "lookup" then
+                    test.eq(#observed.spawns, 1, "wait for the monitored exit before replacing its owner")
+                    local handled, exit_err = overseer.handle_exit(runtime, { from = old_pid,
+                        result = { value = { success = true, pending = true, passivated = true,
+                            dataflow_id = id, activation_generation = 1 } } })
+                    test.is_nil(exit_err)
+                    test.is_true(handled)
                 end
                 test.eq(#observed.failures, 0)
                 test.eq(#observed.spawns, 2)
