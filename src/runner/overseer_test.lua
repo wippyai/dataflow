@@ -85,6 +85,7 @@ local function process_mock(captured)
         end
         function spawner:spawn_monitored(source, host, args)
             local pid = "pid-" .. tostring(args.dataflow_id) .. "-" .. tostring(args.activation_generation)
+            table.insert(captured.monitors, pid)
             captured.owners[self.name] = pid
             table.insert(captured.spawns, {
                 source = source,
@@ -273,6 +274,7 @@ local function run_tests()
 
             for generation = 2, 11 do
                 activations.burst.generation = generation
+                activations.burst.owner_epoch = nil
                 local ok, err = overseer.reconcile_activation(runtime, activations.burst)
                 test.is_nil(err)
                 test.is_true(ok)
@@ -338,6 +340,104 @@ local function run_tests()
             end)
         end
 
+        for _, inactive_hint in ipairs({false, true}) do
+        for _, hint_before_exit in ipairs({false, true}) do
+            test.it("resumes a generation adopted while its old owner was parking: hint=" ..
+                tostring(hint_before_exit) .. "/inactive=" .. tostring(inactive_hint), function()
+                local id = "parking_handoff"
+                activations[id] = activation(id, 1)
+                workflows[id] = workflow(id)
+                local runtime = overseer.new_runtime(CURRENT_EPOCH)
+                test.is_true(select(1, overseer.reconcile_activation(runtime, activations[id])))
+                local old_pid = observed.spawns[1].pid
+
+                -- The owner released generation 1, but still has its canonical
+                -- name while finishing. A signal arrives before it exits.
+                if inactive_hint then
+                    activations[id].desired_active = false
+                    test.is_true(select(1, overseer.reconcile_activation(runtime, activations[id])))
+                    test.eq(#observed.cancels, 0, "a parked generation exits through its own lifecycle")
+                end
+                activations[id] = activation(id, 2)
+                test.is_true(select(1, overseer.reconcile_activation(runtime, activations[id])))
+                test.eq(#observed.spawns, 1)
+                test.eq(#observed.sends, 2, "a newly claimed generation must wake the existing owner")
+                test.eq(#observed.monitors, 1, "keep the existing monitor across passivation")
+                test.eq(observed.sends[2].pid, old_pid)
+                observed.owners["dataflow." .. id] = nil
+                if hint_before_exit then
+                    test.is_true(select(1, overseer.reconcile_activation(runtime, activations[id])))
+                    test.eq(#observed.failures, 0, "the installed monitor supplies the exit result")
+                end
+                local ok, err = overseer.handle_exit(runtime, { from = old_pid, result = { value = {
+                    success = true, pending = true, passivated = true, activation_generation = 1,
+                } } })
+                test.is_nil(err)
+                test.is_true(ok)
+                test.eq(#observed.failures, 0)
+                test.eq(#observed.spawns, 2)
+                test.eq(observed.spawns[2].args.activation_generation, 2)
+                test.eq(observed.sends[#observed.sends].pid, observed.spawns[2].pid)
+                test.is_nil(overseer.overseer_state.owner_for_pid(runtime.ownership, old_pid))
+                test.is_nil(runtime.nudges[id])
+            end)
+        end
+        end
+
+        test.it("releases a parked owner's tracking when no new signal arrives", function()
+            local id = "parked_cleanup"
+            activations[id] = activation(id, 1)
+            workflows[id] = workflow(id)
+            local runtime = overseer.new_runtime(CURRENT_EPOCH)
+            test.is_true(select(1, overseer.reconcile_activation(runtime, activations[id])))
+            local pid = observed.spawns[1].pid
+            activations[id].desired_active = false
+            test.is_true(select(1, overseer.reconcile_activation(runtime, activations[id])))
+            test.eq(#observed.cancels, 0)
+            test.not_nil(overseer.overseer_state.owner_for_pid(runtime.ownership, pid))
+            observed.owners["dataflow." .. id] = nil
+            test.is_true(select(1, overseer.handle_exit(runtime, { from = pid, result = { value = {
+                success = true, passivated = true, activation_generation = 1,
+            } } })))
+            test.is_nil(overseer.overseer_state.owner_for_dataflow(runtime.ownership, id))
+            test.is_nil(overseer.overseer_state.owner_for_pid(runtime.ownership, pid))
+            test.is_nil(runtime.nudges[id])
+            test.eq(#observed.failures, 0)
+            test.eq(#observed.spawns, 1)
+        end)
+
+        for _, result in ipairs({
+            { value = { success = true, passivated = true, activation_generation = 2 } },
+            { value = { success = true, passivated = true, activation_generation = 3 } },
+            { value = { success = true, passivated = true, activation_generation = 0 } },
+            { value = { success = false, passivated = true, activation_generation = 1 } },
+            { value = { success = true, passivated = false, activation_generation = 1 } },
+            { error = "owner crashed", value = {
+                success = true, passivated = true, activation_generation = 1,
+            } },
+        }) do
+            test.it("fails an exited owner without proof of releasing an older generation: " ..
+                tostring(result.error or result.value.activation_generation) .. "/" ..
+                tostring(result.value.success) .. "/" .. tostring(result.value.passivated), function()
+                local id = "unproven_handoff"
+                activations[id] = activation(id, 1)
+                workflows[id] = workflow(id)
+                local runtime = overseer.new_runtime(CURRENT_EPOCH)
+                test.is_true(select(1, overseer.reconcile_activation(runtime, activations[id])))
+                local pid = observed.spawns[1].pid
+                activations[id] = activation(id, 2)
+                test.is_true(select(1, overseer.reconcile_activation(runtime, activations[id])))
+                observed.owners["dataflow." .. id] = nil
+                test.is_true(select(1, overseer.reconcile_activation(runtime, activations[id])))
+                test.eq(#observed.failures, 0, "wait for the monitored EXIT before classifying it")
+                test.is_true(select(1, overseer.handle_exit(runtime, { from = pid, result = result })))
+                test.eq(#observed.spawns, 1, "a crash must not respawn business work")
+                test.eq(#observed.failures, 1)
+                test.is_nil(overseer.overseer_state.owner_for_dataflow(runtime.ownership, id))
+                test.is_nil(overseer.overseer_state.owner_for_pid(runtime.ownership, pid))
+            end)
+        end
+
         test.it("retries an undelivered nudge after verifying the existing owner", function()
             activations.retry_nudge = activation("retry_nudge", 1)
             workflows.retry_nudge = workflow("retry_nudge")
@@ -358,12 +458,34 @@ local function run_tests()
             test.eq(#observed.monitors, 1)
         end)
 
-        test.it("accepts the idempotent monitor result from spawn_monitored", function()
+        test.it("keeps the atomic spawn monitor when the owner exits before another lookup", function()
+            local id = "fast_park"
+            activations[id] = activation(id, 1)
+            workflows[id] = workflow(id)
+            local lookup = overseer.process.registry.lookup
+            overseer.process.registry.lookup = function(name)
+                if #observed.spawns > 0 then observed.owners[name] = nil end
+                return lookup(name)
+            end
+            overseer.process.monitor = function() return nil, "pid not registered" end
+            local runtime = overseer.new_runtime(CURRENT_EPOCH)
+            test.is_true(select(1, overseer.reconcile_activation(runtime, activations[id])))
+            test.eq(#observed.failures, 0, "spawn_monitored installed the monitor before dispatch")
+            local pid = observed.spawns[1].pid
+            test.not_nil(overseer.overseer_state.owner_for_pid(runtime.ownership, pid))
+            activations[id].desired_active = false
+            test.is_true(select(1, overseer.handle_exit(runtime, { from = pid, result = { value = {
+                success = true, passivated = true, activation_generation = 1,
+            } } })))
+            test.is_nil(overseer.overseer_state.owner_for_pid(runtime.ownership, pid))
+            test.eq(#observed.failures, 0)
+        end)
+
+        test.it("uses the monitor installed atomically by spawn_monitored", function()
             activations.monitored = activation("monitored", 1)
             workflows.monitored = workflow("monitored")
             overseer.process.monitor = function(pid)
-                table.insert(observed.monitors, tostring(pid))
-                return nil, "already monitoring pid"
+                error("spawn_monitored already installed the monitor for " .. tostring(pid))
             end
 
             local ok, err = overseer.reconcile_activation(

@@ -260,6 +260,7 @@ function M.drive_decision(runtime: Runtime, initial: Decision?): (boolean?, stri
     for _ = 1, 10 do
         if not decision or decision.kind == M.overseer_state.ACTION.NONE then
             if decision and (decision.reason == "owner_monitored" or
+                decision.reason == "existing_owner_claimed" or
                 decision.reason == "existing_owner_verified") and decision.pid then
                 local owner = M.overseer_state.owner_for_pid(
                     runtime.ownership, decision.pid) :: OwnerReference?
@@ -418,6 +419,17 @@ function M.drive_decision(runtime: Runtime, initial: Decision?): (boolean?, stri
                             registered_pid = registered_pid,
                             error = spawn_pid and nil or tostring(spawn_err or "spawn returned no PID"),
                         })))
+                    if spawn_pid and decision and decision.kind == M.overseer_state.ACTION.MONITOR and
+                        decision.pid == tostring(spawn_pid) then
+                        -- spawn_monitored installs this monitor before dispatch.
+                        -- Monitoring again can fail after a fast clean exit even
+                        -- though the original EXIT is already on its way.
+                        decision = select(1, apply_transition(runtime,
+                            M.overseer_state.on_monitor_observation(runtime.ownership, {
+                                dataflow_id = dataflow_id, generation = generation,
+                                pid = tostring(spawn_pid), monitor_ok = true,
+                            })))
+                    end
                 end
             end
 
@@ -673,6 +685,19 @@ function M.handle_exit(runtime: Runtime, event: any): (boolean?, string?)
 
     local desired_active = activation ~= nil and activation.desired_active == true and
         workflow ~= nil and not is_terminal(workflow.status)
+    local released_generation = nil
+    local result = event and event.result
+    local value = result and result.value
+    if result and result.error == nil and type(value) == "table" and
+        value.success == true and value.passivated == true then
+        released_generation = tonumber(value.activation_generation)
+    end
+    if released_generation and released_generation >= 1 and released_generation % 1 == 0 and
+        generation and released_generation < generation and desired_active then
+        runtime.nudges[owner.dataflow_id] = {
+            dataflow_id = owner.dataflow_id, generation = generation,
+        }
+    end
     local next_state, next_decision, transition_err = M.overseer_state.on_exit(
         runtime.ownership, {
         pid = pid,
@@ -680,6 +705,8 @@ function M.handle_exit(runtime: Runtime, event: any): (boolean?, string?)
         desired_active = desired_active,
         status = workflow and tostring(workflow.status) or nil,
         message = failure_message(event),
+        released_generation = released_generation,
+        owner_epoch = activation and activation.owner_epoch or nil,
     })
     local decision, state_err = apply_transition(
         runtime, next_state, next_decision, transition_err)

@@ -288,6 +288,7 @@ local function define_tests()
             test.is_true(result.success)
             test.is_true(result.pending)
             test.is_true(result.passivated)
+            test.eq(result.activation_generation, 1)
         end)
 
         it("runtime cancellation stops the life without inventing business cancellation", function()
