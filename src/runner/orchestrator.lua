@@ -467,8 +467,8 @@ local function call_scheduler_and_handle(state: OrchestratorState)
                 success = true,
                 pending = true,
                 passivated = true,
-                dataflow_id = state.dataflow_id,
                 activation_generation = state.activation_generation,
+                dataflow_id = state.dataflow_id,
             }
             return false
         else

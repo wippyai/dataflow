@@ -15,6 +15,12 @@
 
 </div>
 
+## Agent route pinning
+
+Agent nodes retain a successful fallback route across iterations and recovery.
+This requires Agent 0.5.5 or later. A committed agent or model change clears the
+previous route; recovery restores it only for the same configured agent and model.
+
 ## Durable external waits
 
 Nodes that start external work and then wait for a signal use the declarative park contract:

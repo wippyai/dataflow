@@ -3,16 +3,16 @@ directories:
     src: .
 modules:
     - name: wippy/agent
-      version: 0.5.4
-      hash: f023d98e27b8c62bf8e1317aa56a066c7378ef1d59ccacdcdee039f3da9f3347
+      version: 0.5.5
+      hash: afd0e1315e2e0785661f266885054b96b4e2037763f92c50cc78540714415282
     - name: wippy/bootloader
       version: 0.3.18
       hash: c7e71b358539b450b49b55e725f60f2dac8218e1c596cf3a473ce71e36b10a9b
     - name: wippy/dataflow
       version: 0.0.0
     - name: wippy/llm
-      version: 0.5.7
-      hash: 99d6a6c706ba71b625e118ce736bd262c9aac695aa09008109d7d25851c09583
+      version: 0.5.8
+      hash: 5c6b10c51a5657c25d989286eda12ce68684d11575c46940160c5c726c5260f7
     - name: wippy/migration
       version: 0.3.23
       hash: 1666a62a870fa2692e560eda7cb7438fba027931d1fb88a2c5c713d660a10412
@@ -26,8 +26,8 @@ modules:
       version: 0.4.6
       hash: aa0c92b85c0dc2c96f00119a7eaa1ced569a2ac8899514d432aef0c910e73e63
     - name: wippy/test
-      version: 0.4.22
-      hash: 5b20c990c7e48234aca72cf538dcb9dbd48d1ff79132382e93d7844696a6baa1
+      version: 0.4.23
+      hash: 94878c4eeabac3337b795087d37ef6fe894458e26a5c7a1dd61012b43fcae366
     - name: wippy/views
       version: 0.5.12
       hash: a90c888b6150f1b5fc89f35191a39dce5f644cbdbf069224b22ad524860ce9a0

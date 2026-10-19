@@ -4,8 +4,7 @@
 -- owns an activation generation inside the current runtime. A missing owner is
 -- spawned while acquiring a newly observed generation (including boot). Once a
 -- generation has been observed, losing its owner is a terminal failure; it is
--- never restarted in the same runtime. A successful, generation-fenced park
--- is a handoff to durable work, not an owner loss.
+-- never restarted in the same runtime.
 local M = {}
 
 type OwnershipRecord = {
@@ -239,6 +238,13 @@ function M.on_activation(state: State, input: ActivationInput): (State, Decision
     if is_terminal(input) or input.desired_active == false then
         local stopped_pid = nil
         if record and id.generation >= record.generation then
+            if not is_terminal(input) and record.pid ~= nil then
+                -- Passivation already tells this owner to exit. Retain its
+                -- monitor until EXIT: a signal may arrive while it is still
+                -- registered, and must not acquire an unmonitored closing PID.
+                record.generation = id.generation
+                return next_state, none("inactive_owner_draining"), nil
+            end
             stopped_pid = record.pid
             remove(next_state, id.dataflow_id)
         end
@@ -256,25 +262,13 @@ function M.on_activation(state: State, input: ActivationInput): (State, Decision
     assert(input.desired_active == true, "desired_active must be a boolean")
 
     if record and id.generation == record.generation then
-        if record.phase == "monitored" or record.phase == "verification_requested" or
-            record.phase == "acquisition_requested" then
-            if record.phase == "monitored" then record.phase = "verification_requested" end
+        if record.phase == "monitored" then
+            record.phase = "verification_requested"
             return next_state, {
                 kind = M.ACTION.INSPECT_OWNER,
                 reason = "verify_active_owner",
                 dataflow_id = id.dataflow_id,
                 generation = id.generation,
-            }, nil
-        end
-        if record.phase == "claim_requested" then
-            -- A failed transaction did not produce a claim observation. Retry
-            -- the same fenced CAS; never infer that an owner may be spawned.
-            return next_state, {
-                kind = M.ACTION.CLAIM,
-                reason = "retry_activation_claim",
-                dataflow_id = id.dataflow_id,
-                generation = id.generation,
-                observed_epoch = record.claim_from_epoch,
             }, nil
         end
         if record.phase == "failure_requested" then
@@ -371,16 +365,13 @@ function M.on_owner_observation(state: State, input: OwnerObservationInput): (St
     end
 
     if record.pid ~= nil then
-        -- Name removal can precede the monitored EXIT. Keep the PID until
-        -- that event distinguishes a successful park from an unexpected loss.
-        -- In particular, a signal may have advanced the durable generation
-        -- after release but before the old owner's EXIT was delivered.
-        record.phase = "monitored"
-        return next_state, none("awaiting_owner_exit", {
-            dataflow_id = id.dataflow_id,
-            generation = id.generation,
-            pid = record.pid,
-        }), nil
+        if record.phase ~= "acquisition_requested" or not record.claim_required then
+            -- A registered name can disappear before its monitored EXIT is
+            -- delivered. Keep the monitor so its result distinguishes a
+            -- released generation from a crash before deciding owner loss.
+            return next_state, none("awaiting_monitored_exit"), nil
+        end
+        unbind(next_state, record)
     end
 
     if record.phase == "acquisition_requested" and record.claim_required then
@@ -522,22 +513,14 @@ function M.on_exit(state: State, input: ExitInput): (State, Decision, string?)
         return next_state, none(is_terminal(input) and "terminal_exit" or "inactive_exit"), nil
     end
     assert(input.desired_active == true, "desired_active must be a boolean")
-    local released = input.released_generation
-    if released and released >= 1 and released % 1 == 0 and released < record.generation then
-        -- Only the exited canonical owner can report this successful release.
-        -- The newer generation is durable work that arrived after its park.
-        -- Claim it even if the old, still-named PID had already claimed its
-        -- epoch: that PID has now exited and cannot execute the newer work.
+    if input.released_generation and input.released_generation >= 1 and
+        input.released_generation % 1 == 0 and input.released_generation < record.generation then
+        -- This owner released an older generation before a signal arrived.
+        -- Adopting its still-registered PID did not make it own the new work.
         record.phase = "acquisition_requested"
         record.claim_required = true
         record.claim_from_epoch = input.owner_epoch
         record.candidate_pid = nil
-        return next_state, {
-            kind = M.ACTION.INSPECT_OWNER,
-            reason = "acquire_after_passivation",
-            dataflow_id = record.dataflow_id,
-            generation = record.generation,
-        }, nil
     end
     if record.phase ~= "acquisition_requested" or not record.claim_required then
         record.phase = "verification_requested"
