@@ -238,6 +238,13 @@ function M.on_activation(state: State, input: ActivationInput): (State, Decision
     if is_terminal(input) or input.desired_active == false then
         local stopped_pid = nil
         if record and id.generation >= record.generation then
+            if not is_terminal(input) and record.pid ~= nil then
+                -- Passivation already tells this owner to exit. Retain its
+                -- monitor until EXIT: a signal may arrive while it is still
+                -- registered, and must not acquire an unmonitored closing PID.
+                record.generation = id.generation
+                return next_state, none("inactive_owner_draining"), nil
+            end
             stopped_pid = record.pid
             remove(next_state, id.dataflow_id)
         end
