@@ -539,7 +539,9 @@ function M.on_exit(state: State, input: ExitInput): (State, Decision, string?)
             generation = record.generation,
         }, nil
     end
-    record.phase = "verification_requested"
+    if record.phase ~= "acquisition_requested" or not record.claim_required then
+        record.phase = "verification_requested"
+    end
     return next_state, {
         kind = M.ACTION.INSPECT_OWNER,
         reason = "verify_after_exit",

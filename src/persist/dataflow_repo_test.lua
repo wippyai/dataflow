@@ -551,16 +551,21 @@ local function define_tests()
                 local first, first_err = dataflow_repo.capture_context_if_empty(
                     dataflow_id, actor_id, first_context)
                 test.is_nil(first_err)
-                local captured_context = json.encode((json.decode(first.actor_context)))
-                test.eq(captured_context, expected_context)
+                local decoded, decode_err = json.decode(first.actor_context)
+                test.is_nil(decode_err)
+                test.eq(decoded.kind, "dataflow.execution_frame")
+                test.eq(decoded.version, 1)
+                test.eq(decoded.winner, 1)
+                local field_count = 0
+                for _ in pairs(decoded) do field_count = field_count + 1 end
+                test.eq(field_count, 3)
                 test.is_true(first.context_captured)
 
                 local second, second_err = dataflow_repo.capture_context_if_empty(
                     dataflow_id, actor_id,
                     '{"kind":"dataflow.execution_frame","version":1,"winner":2}')
                 test.is_nil(second_err)
-                local preserved_context = json.encode((json.decode(second.actor_context)))
-                test.eq(preserved_context, expected_context)
+                test.eq(second.actor_context, first.actor_context)
                 test.is_false(second.context_captured)
             end)
 

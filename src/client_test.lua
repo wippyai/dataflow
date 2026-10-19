@@ -388,6 +388,28 @@ local function define_tests()
                 test.not_nil(test_client._deps.data_reader)
             end)
 
+            for _, kind in ipairs({errors.INVALID, errors.PERMISSION_DENIED, errors.UNAVAILABLE, errors.INTERNAL}) do
+                for _, retryable in ipairs({false, true}) do
+                    it("UPSTREAM-DATAFLOW-LIVE-AUTHORITY creation preserves " .. kind .. " retryable=" .. tostring(retryable), function()
+                        local provider_err = errors.new({kind = kind, retryable = retryable,
+                            message = "authority capture refuses", details = {code = "authority_refusal",
+                                cause = {kind = errors.NOT_FOUND, message = "credential is absent", retryable = false}}})
+                        mock_deps.execution_frame.capture = function() return nil, provider_err end
+                        local dataflow_id, err = test_client:create_workflow()
+                        test.is_nil(dataflow_id)
+                        test.eq(err, provider_err)
+                        test.eq(err:kind(), kind)
+                        test.eq(err:retryable(), retryable)
+                        test.eq(err:details().code, "authority_refusal")
+                        test.eq(err:details().cause.kind, errors.NOT_FOUND)
+                        test.eq(err:details().cause.message, "credential is absent")
+                        test.eq(err:details().cause.retryable, false)
+                        test.eq(#captured_calls.commit_execute, 0)
+                        test.eq(#captured_calls.contract_get, 0)
+                    end)
+                end
+            end
+
             it("should create workflow with no additional commands", function()
                 local dataflow_id, err = test_client:create_workflow()
 

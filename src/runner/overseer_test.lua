@@ -291,6 +291,53 @@ local function run_tests()
             test.eq(#observed.failures, 0)
         end)
 
+        for _, ordering in ipairs({"lookup", "exit"}) do
+            test.it("completes signal resume after passivation with ordered " .. ordering, function()
+                local id = "passivated_" .. ordering
+                activations[id] = activation(id, 1)
+                workflows[id] = workflow(id)
+                local runtime = overseer.new_runtime(CURRENT_EPOCH)
+                test.is_true(select(1, overseer.reconcile_activation(runtime, activations[id])))
+                local old_pid = observed.spawns[1].pid
+                activations[id].desired_active = false
+                observed.owners["dataflow." .. id] = nil
+                activations[id] = activation(id, 2)
+                if ordering == "exit" then
+                    local lookup = overseer.process.registry.lookup
+                    local exit_pending = true
+                    overseer.process.registry.lookup = function(name)
+                        if exit_pending then
+                            exit_pending = false
+                            local exited, exit_err = overseer.handle_exit(runtime, {from = old_pid})
+                            test.is_nil(exit_err)
+                            test.is_true(exited)
+                        end
+                        return lookup(name)
+                    end
+                    local ok, err = overseer.reconcile_activation(runtime, activations[id])
+                    test.is_nil(err)
+                    test.is_true(ok)
+                else
+                    local ok, err = overseer.reconcile_activation(runtime, activations[id])
+                    test.is_nil(err)
+                    test.is_true(ok)
+                end
+                test.eq(#observed.failures, 0)
+                test.eq(#observed.spawns, 2)
+                local owner = test.not_nil(overseer.overseer_state.owner_for_dataflow(runtime.ownership, id))
+                test.eq(owner.generation, 2)
+                test.eq(owner.pid, observed.spawns[2].pid)
+                test.eq(observed.sends[2].pid, owner.pid)
+                test.eq(observed.sends[2].payload.generation, 2)
+                test.is_nil(runtime.nudges[id])
+                workflows[id].status = overseer.consts.STATUS.COMPLETED_SUCCESS
+                activations[id].desired_active = false
+                test.is_true(select(1, overseer.reconcile_activation(runtime, activations[id], workflows[id])))
+                test.is_nil(overseer.overseer_state.owner_for_dataflow(runtime.ownership, id))
+                test.eq(#observed.failures, 0)
+            end)
+        end
+
         test.it("retries an undelivered nudge after verifying the existing owner", function()
             activations.retry_nudge = activation("retry_nudge", 1)
             workflows.retry_nudge = workflow("retry_nudge")

@@ -4,6 +4,7 @@ local time = require("time")
 local client = require("client")
 local consts = require("consts")
 local activation_repo = require("activation_repo")
+local dataflow_repo = require("dataflow_repo")
 
 local function wait_until(predicate, timeout_ms: number): boolean
     local attempts = math.ceil(timeout_ms / 50)
@@ -71,6 +72,11 @@ local function run_tests()
             test.is_nil(activation_err)
             activation = test.not_nil(activation) :: any
             test.is_false(activation.desired_active)
+            local failed, failed_err = dataflow_repo.get(dataflow_id)
+            test.is_nil(failed_err)
+            test.not_nil(failed.metadata.runtime_failure)
+            test.eq(failed.metadata.error, failed.metadata.runtime_failure.message)
+            test.is_true(type(failed.metadata.error) == "string" and failed.metadata.error ~= "")
             local failed_generation = activation.generation
             test.is_nil((process.registry.lookup(process_name)))
 

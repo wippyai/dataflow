@@ -32,7 +32,7 @@ jobs:
       # the release app opens the release PR, which also lets CI run on it.
       - name: Mint release app token
         id: app-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           app-id: ${{ secrets.RELEASE_PLEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_PLEASE_APP_PRIVATE_KEY }}
@@ -47,8 +47,8 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
-  deploy-dry-run:
-    name: Deploy dry run
+  publish:
+    name: Publish release
     needs: release
     if: ${{ needs.release.outputs.created == 'true' }}
     runs-on: ubuntu-24.04
@@ -63,13 +63,23 @@ jobs:
       - id: wippy
         uses: ./.github/actions/setup-wippy
 
-      - name: Deploy dry run
+      - name: Release notes
+        env:
+          RELEASE_VERSION: ${{ needs.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          python3 scripts/release_notes.py --line CHANGELOG.md "$RELEASE_VERSION" > release-notes.txt
+          test -s release-notes.txt
+
+      - name: Pack and publish release
         env:
           RELEASE_VERSION: ${{ needs.release.outputs.version }}
           WIPPY: ${{ steps.wippy.outputs.path }}
           WIPPY_TOKEN: ${{ secrets.WIPPY_TOKEN }}
         run: |
           set -euo pipefail
+          test -n "${WIPPY_TOKEN:-}"
           manifest_version="$(awk '/^version:/ { print $2; exit }' wippy.yaml)"
           test "$manifest_version" = "$RELEASE_VERSION"
           "$WIPPY" publish --version "$RELEASE_VERSION" --dry-run
+          "$WIPPY" publish --version "$RELEASE_VERSION" --release-notes "$(cat release-notes.txt)"

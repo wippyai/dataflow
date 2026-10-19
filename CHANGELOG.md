@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+## [0.7.25](https://github.com/wippyai/dataflow/compare/v0.7.24...v0.7.25) (2026-10-14)
+
+
+### Bug Fixes
+
+* Live permission refresh requires both the execution identity resolver binding and refresh_perms set to true; the default is false. Refresh occurs at workflow activation and resume boundaries, including Await and recovery. Captured credential restrictions are preserved and resolver failures refuse execution.
+* opt in to live authority at workflow resume boundaries ([#103](https://github.com/wippyai/dataflow/issues/103)) ([70f5ef9](https://github.com/wippyai/dataflow/commit/70f5ef931c02c6742e0e2cafa8654ca090a7bcee))
+
+## [0.7.24](https://github.com/wippyai/dataflow/compare/v0.7.23...v0.7.24) (2026-10-06)
+
+
+### Bug Fixes
+
+* record activation failures in public dataflow error metadata ([#100](https://github.com/wippyai/dataflow/issues/100)) ([349fd71](https://github.com/wippyai/dataflow/commit/349fd714a8d2ba7f36eea49bc8b53209be130a30))
+
+## [0.7.23](https://github.com/wippyai/dataflow/compare/v0.7.22...v0.7.23) (2026-10-05)
+
+
+### Bug Fixes
+
+* acquire the signal generation after the previous owner exits ([#98](https://github.com/wippyai/dataflow/issues/98)) ([509f728](https://github.com/wippyai/dataflow/commit/509f72853bfb85c3a2569681457883af64d53c92))
+
 ## [0.7.22](https://github.com/wippyai/dataflow/compare/v0.7.21...v0.7.22) (2026-10-01)
 
 
