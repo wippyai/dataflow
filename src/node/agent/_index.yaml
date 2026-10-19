@@ -300,6 +300,9 @@ entries:
         - test
     source: file://route_pin_test.lua
     imports:
+      node_sdk: userspace.dataflow:node
+      agent_context: wippy.agent:context
+      prompt_builder: userspace.dataflow.node.agent:prompt_builder
       agent_node: userspace.dataflow.node.agent:node
       test: wippy.test:test
     method: run_tests

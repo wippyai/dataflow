@@ -2086,7 +2086,8 @@ local function run(args)
     -- The run of consecutive unproductive turns is node state: a resumed node
     -- continues the run it was in rather than starting a fresh allowance.
     local unproductive_steps = saved_state.unproductive_steps or 0
-    local route_pin = saved_state.route_pin
+    local route_pin = route_pin_after_switch(saved_state.route_pin, saved_state.agent_id, saved_state.model,
+        agent_id, model_name)
     local pending_checkpoint_history = {}
     local lifecycle_state = {
         active_agent_id = nil,
