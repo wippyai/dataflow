@@ -1,5 +1,6 @@
 local json = require("json")
 local security = require("security")
+local registry = require("registry")
 
 local M = {}
 
@@ -7,6 +8,7 @@ M.VERSION = 1
 M.KIND = "dataflow.execution_frame"
 M._deps = {
     security = security,
+    identity_resolver = execution_identity_resolver,
 }
 
 local MAX_DEPTH = 12
@@ -21,6 +23,7 @@ local DATAFLOW_CONTEXT_FIELDS = {
     version = true,
     actor_meta = true,
     policy_ids = true,
+    authority_context = true,
 }
 
 local LEGACY_POLICY_CONTEXT_FIELDS = {
@@ -213,6 +216,12 @@ local function validate_dataflow_context(value: any)
 
     local actor_meta, meta_err = bounded_plain_table(value.actor_meta, "execution frame actor_meta")
     if meta_err then return nil, meta_err end
+    local authority_context = nil
+    if value.authority_context ~= nil then
+        local authority_err
+        authority_context, authority_err = bounded_plain_table(value.authority_context, "execution frame authority_context")
+        if authority_err then return nil, authority_err end
+    end
     local policy_ids, policies_err = validate_policy_ids(value.policy_ids)
     if policies_err then return nil, policies_err end
 
@@ -220,6 +229,7 @@ local function validate_dataflow_context(value: any)
         kind = M.KIND,
         version = M.VERSION,
         actor_meta = actor_meta,
+        authority_context = authority_context,
         policy_ids = policy_ids,
     }, nil
 end
@@ -367,6 +377,49 @@ local function scope_policy_ids(scope, label)
     return policy_ids, nil
 end
 
+local function refresh_enabled(deps)
+    if deps.refresh_perms ~= nil then return deps.refresh_perms == true end
+    local settings = assert(registry.get("userspace.dataflow:execution_authority_settings"))
+    return settings.meta.refresh_perms == true
+end
+
+local function authority_resolver(deps)
+    local resolver = deps.identity_resolver
+    if resolver == nil then return nil, nil end
+    if not refresh_enabled(deps) then return nil, nil end
+    if type(resolver) ~= "table" or type(resolver.capture) ~= "function" or type(resolver.resolve) ~= "function" then
+        return nil, errors.new({kind = errors.INVALID, message = "authority resolver must provide capture and resolve"})
+    end
+    return resolver, nil
+end
+
+local function resolve_authority(deps, actor_id, context)
+    local resolver, resolver_err = authority_resolver(deps)
+    if resolver_err then return nil, nil, resolver_err end
+    if not resolver then
+        return nil, nil, errors.new({kind = errors.UNAVAILABLE, message = "authority resolver is unavailable"})
+    end
+    local actor, scope, err = resolver.resolve({
+        subject_id = actor_id,
+        authority_only = true,
+        actor_meta = context.actor_meta,
+        authority_context = context.authority_context,
+    })
+    if err then return nil, nil, err end
+    if type(actor) ~= "userdata" or type(scope) ~= "userdata" then
+        return nil, nil, errors.new({kind = errors.INVALID, message = "authority resolver must return a native actor and scope"})
+    end
+    local resolved_id, id_err = actor:id()
+    if id_err then return nil, nil, id_err end
+    if resolved_id ~= actor_id then
+        return nil, nil, errors.new({kind = errors.INVALID, message = "authority resolver returns a different actor"})
+    end
+    local native_scope = scope :: security.Scope
+    local _, scope_err = native_scope:policies()
+    if scope_err then return nil, nil, scope_err end
+    return actor, scope, nil
+end
+
 function M.capture()
     local deps = M._deps
     local actor, actor_err = current_actor(deps)
@@ -393,11 +446,23 @@ function M.capture()
     local policy_ids, list_err = scope_policy_ids(scope, "current scope")
     if list_err then return nil, list_err end
 
+    local resolver, resolver_err = authority_resolver(deps)
+    if resolver_err then return nil, resolver_err end
+    local authority_context = nil
+    if resolver then
+        local capture_err
+        authority_context, capture_err = resolver.capture(actor, scope)
+        if capture_err then return nil, capture_err end
+        if authority_context == nil then
+            return nil, errors.new({kind = errors.INVALID, message = "authority capture returns no context"})
+        end
+    end
     local context, context_err = validate_dataflow_context({
         kind = M.KIND,
         version = M.VERSION,
         actor_meta = actor_meta,
         policy_ids = policy_ids,
+        authority_context = authority_context,
     })
     if context_err then return nil, context_err end
     local encoded, encode_err = encode_context(context)
@@ -417,6 +482,9 @@ function M.reconstruct(actor_id, actor_context)
     local restored = context :: any
 
     local deps = M._deps
+    if (deps.identity_resolver ~= nil and refresh_enabled(deps)) or restored.authority_context ~= nil then
+        return resolve_authority(deps, valid_actor_id, restored)
+    end
     local scope = nil
     if restored.format == "named_scope" then
         local status = restored.actor_meta.status
@@ -475,6 +543,9 @@ function M.resolve(actor_id, actor_context)
     local persisted = persisted_raw :: any
 
     local deps = M._deps
+    if (deps.identity_resolver ~= nil and refresh_enabled(deps)) or persisted.authority_context ~= nil then
+        return resolve_authority(deps, valid_actor_id, persisted)
+    end
     local actor, actor_err = current_actor(deps)
     local scope, scope_err = current_scope(deps)
     if not actor_err and actor and not scope_err and scope then

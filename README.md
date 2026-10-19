@@ -94,3 +94,7 @@ reusable; the service does not run disruptive `VACUUM FULL` operations.
 For an administrative preview, call the library
 `userspace.dataflow.retention:sweeper.run(db, {days=30, batch_size=1000, dry_run=true})`
 with an authorized database handle. The library is not a public HTTP endpoint.
+
+## Live execution authority
+
+Hosts with mutable permissions bind their native identity resolver through `execution_authority_imports` and set `refresh_perms: true` (default false). Dataflow resolves current authority at activation and resume boundaries and preserves explicit narrowing ceilings. The [host binding contract](src/README.md#live-execution-authority) describes capture, resolution and existing frame behavior.

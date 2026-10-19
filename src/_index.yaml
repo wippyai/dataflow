@@ -1,4 +1,4 @@
-version: "0.7.24" # x-release-please-version
+version: "0.7.25" # x-release-please-version
 namespace: userspace.dataflow
 
 entries:
@@ -137,6 +137,7 @@ entries:
     modules:
       - json
       - security
+      - registry
 
   - name: execution_frame_test
     kind: function.lua
@@ -147,6 +148,7 @@ entries:
     source: file://execution_frame_test.lua
     modules:
       - json
+      - security
     imports:
       execution_frame: userspace.dataflow:execution_frame
       test: wippy.test:test
@@ -240,6 +242,29 @@ entries:
       node: userspace.dataflow:node
       test: wippy.test:test
     method: run_tests
+
+  - name: execution_authority_imports
+    kind: ns.requirement
+    meta:
+      description: "Optional host library binding: {execution_identity_resolver: host:library}. The library captures durable restrictions and resolves current native authority."
+    default: {}
+    targets:
+      - entry: userspace.dataflow:execution_frame
+        path: .imports
+
+  - name: refresh_perms
+    kind: ns.requirement
+    meta:
+      description: "Resolve live authority at workflow activation and resume boundaries when execution_authority_imports is bound. Disabled by default."
+    default: false
+    targets:
+      - entry: userspace.dataflow:execution_authority_settings
+        path: .meta.refresh_perms
+
+  - name: execution_authority_settings
+    kind: registry.entry
+    meta:
+      refresh_perms: false
 
   # Requirements
   - name: target_db
