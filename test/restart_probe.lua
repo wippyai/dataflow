@@ -18,6 +18,10 @@ function M.create()
     -- Use the same canonical readiness check as the ordinary test harness.
     local ready, readiness_err = funcs.call("app:wait_for_boot")
     if readiness_err or not ready then error(readiness_err or "boot is not ready") end
+    -- The standalone restart process bypasses the test runner's 00_setup suite.
+    -- Seed the same authority fixture before capturing a workflow identity.
+    local authority_ready, authority_err = funcs.call("app.await_authority:setup", { durable_tokens = true })
+    if authority_err or not authority_ready then error(authority_err or "authority fixture is not ready") end
     local template = (flow.template() :: any):func("userspace.dataflow.node.func:test_func")
     local dataflow_id, start_err = (flow.create() :: any)
         :with_input({

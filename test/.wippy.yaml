@@ -27,9 +27,21 @@ profiles:
       "app:db:options.sslmode": disable
   restart_create:
     override:
+      "app.await_authority:tokens_storage:kind": store.sql
+      "app.await_authority:tokens_storage:database": app:db
+      "app.await_authority:tokens_storage:table_name": restart_auth_tokens
+      "app.await_authority:tokens_storage:id_column_name": token_key
+      "app.await_authority:tokens_storage:payload_column_name": token_value
+      "app.await_authority:tokens_storage:expire_column_name": expires_at
       "app:restart_probe.create.service:lifecycle.auto_start": true
   restart_observe:
     override:
+      "app.await_authority:tokens_storage:kind": store.sql
+      "app.await_authority:tokens_storage:database": app:db
+      "app.await_authority:tokens_storage:table_name": restart_auth_tokens
+      "app.await_authority:tokens_storage:id_column_name": token_key
+      "app.await_authority:tokens_storage:payload_column_name": token_value
+      "app.await_authority:tokens_storage:expire_column_name": expires_at
       "app:restart_probe.observe.service:lifecycle.auto_start": true
 # Tests execute through the framework runner rather than a production caller.
 # Give every test entry an explicit, narrow identity; production Dataflow has no fallback.

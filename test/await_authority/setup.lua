@@ -4,9 +4,15 @@ local security = require("security")
 local boot = require("wait_for_boot")
 local authority = require("authority")
 
-local function run()
+local function run(args)
     boot.run()
     local db = assert(sql.get("app:db"))
+    if args and args.durable_tokens then
+        local bytes = db:type() == "postgres" and "BYTEA" or "BLOB"
+        local _, table_err = db:execute("CREATE TABLE IF NOT EXISTS restart_auth_tokens ("
+            .. "token_key TEXT PRIMARY KEY, token_value " .. bytes .. " NOT NULL, expires_at TIMESTAMP NULL)")
+        if table_err then db:release(); error(table_err) end
+    end
     local _, schema_err = authority.create_schema(db)
     if schema_err then db:release(); error(schema_err) end
     local _, insert_err = db:execute([[INSERT INTO await_authority_subjects
