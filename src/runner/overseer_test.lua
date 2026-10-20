@@ -193,6 +193,225 @@ local function run_tests()
             for key, value in pairs(originals) do overseer[key] = value end
         end)
 
+        test.it("does not restart a crashed owner when a signal advances before EXIT", function()
+            local id = "audit_crash"
+            activations[id] = activation(id, 1)
+            workflows[id] = workflow(id)
+            local runtime = overseer.new_runtime(CURRENT_EPOCH)
+            test.is_true(select(1, overseer.reconcile_activation(runtime, activations[id])))
+            local pid = observed.spawns[1].pid
+            activations[id] = activation(id, 2)
+            observed.owners["dataflow." .. id] = nil
+            test.is_true(select(1, overseer.handle_exit(runtime, {
+                from = pid, result = { error = "unexpected crash" },
+            })))
+            test.eq(#observed.spawns, 1, "crashed work must not respawn")
+            test.eq(#observed.failures, 1)
+        end)
+
+        test.it("retains a same-generation EXIT across a temporary database read failure", function()
+            local id = "audit_read"
+            activations[id] = activation(id, 1)
+            workflows[id] = workflow(id)
+            local runtime = overseer.new_runtime(CURRENT_EPOCH)
+            test.is_true(select(1, overseer.reconcile_activation(runtime, activations[id])))
+            local pid = observed.spawns[1].pid
+            observed.owners["dataflow." .. id] = nil
+            local get = overseer.activation_repo.get
+            overseer.activation_repo.get = function() return nil, "temporary database read failure" end
+            local handled, err = overseer.handle_exit(runtime, {
+                from = pid, result = { error = "unexpected crash" },
+            })
+            test.is_nil(handled)
+            test.contains(err, "temporary database read failure")
+            overseer.activation_repo.get = get
+            test.not_nil(select(1, overseer.safety_reconcile(runtime)))
+            test.eq(#observed.spawns, 1)
+            test.eq(#observed.failures, 1, "the exited owner must settle once durable reads recover")
+            test.is_nil(overseer.overseer_state.owner_for_dataflow(runtime.ownership, id))
+        end)
+        test.it("acquires unclaimed work after a temporary claim transaction failure", function()
+            local id = "audit_claim"
+            activations[id] = activation(id, 1)
+            workflows[id] = workflow(id)
+            local runtime = overseer.new_runtime(CURRENT_EPOCH)
+            overseer.with_tx = function() return nil, "temporary transaction failure" end
+            local handled, err = overseer.reconcile_activation(runtime, activations[id])
+            test.is_nil(handled)
+            test.contains(err, "temporary transaction failure")
+            test.eq(#observed.spawns, 0)
+            overseer.with_tx = function(fn) return fn({}) end
+            test.not_nil(select(1, overseer.safety_reconcile(runtime)))
+            test.eq(#observed.spawns, 1, "unclaimed work must be acquired once the database recovers")
+            test.eq(#observed.failures, 0)
+        end)
+
+        for _, repository in ipairs({ "activation_repo", "dataflow_repo" }) do
+        for _, clean_release in ipairs({ false, true }) do
+            test.it("retains exit classification after " .. repository .. " read failure: release=" ..
+                tostring(clean_release), function()
+                local id = "exit_read_failure"
+                activations[id] = activation(id, 1)
+                workflows[id] = workflow(id)
+                local runtime = overseer.new_runtime(CURRENT_EPOCH)
+                test.is_true(select(1, overseer.reconcile_activation(runtime, activations[id])))
+                local pid = observed.spawns[1].pid
+                observed.owners["dataflow." .. id] = nil
+                local get = overseer[repository].get
+                overseer[repository].get = function() return nil, "temporary read failure" end
+                local result = clean_release and { value = {
+                    success = true, passivated = true, activation_generation = 1,
+                } } or { error = "owner crashed" }
+                local ok, err = overseer.handle_exit(runtime, { from = pid, result = result })
+                test.is_nil(ok)
+                test.contains(err, "temporary read failure")
+                test.is_nil(overseer.overseer_state.owner_for_pid(runtime.ownership, pid))
+                test.not_nil(overseer.overseer_state.owner_for_dataflow(runtime.ownership, id).exit)
+                -- A signal advances durable state while the database is unavailable.
+                activations[id] = activation(id, 2)
+                overseer[repository].get = get
+                test.not_nil(select(1, overseer.safety_reconcile(runtime)))
+                test.eq(#observed.spawns, clean_release and 2 or 1)
+                test.eq(#observed.failures, clean_release and 0 or 1)
+                if clean_release then
+                    local owner = test.not_nil(overseer.overseer_state.owner_for_dataflow(runtime.ownership, id))
+                    test.eq(owner.pid, observed.spawns[2].pid)
+                    test.is_nil(owner.exit, "settled ownership must release its exit evidence")
+                    test.eq(observed.sends[#observed.sends].pid, owner.pid)
+                else
+                    test.is_nil(overseer.overseer_state.owner_for_dataflow(runtime.ownership, id))
+                    test.is_nil(runtime.known[id])
+                end
+                test.is_nil(runtime.nudges[id])
+                -- Re-delivery of the old exit cannot disturb the settled result.
+                test.is_true(select(1, overseer.handle_exit(runtime, { from = pid, result = result })))
+                test.eq(#observed.spawns, clean_release and 2 or 1)
+                test.eq(#observed.failures, clean_release and 0 or 1)
+            end)
+        end
+        end
+
+        test.it("cleans exit evidence after cancellation during a database outage", function()
+            local id = "exit_cancel"
+            activations[id] = activation(id, 1)
+            workflows[id] = workflow(id)
+            local runtime = overseer.new_runtime(CURRENT_EPOCH)
+            test.is_true(select(1, overseer.reconcile_activation(runtime, activations[id])))
+            local pid = observed.spawns[1].pid
+            observed.owners["dataflow." .. id] = nil
+            local get = overseer.activation_repo.get
+            overseer.activation_repo.get = function() return nil, "temporary read failure" end
+            test.is_nil(select(1, overseer.handle_exit(runtime, { from = pid, result = { error = "crashed" } })))
+            overseer.activation_repo.get = get
+            activations[id].desired_active = false
+            workflows[id].status = overseer.consts.STATUS.CANCELLED
+            test.not_nil(select(1, overseer.safety_reconcile(runtime)))
+            test.is_nil(overseer.overseer_state.owner_for_dataflow(runtime.ownership, id))
+            test.is_nil(overseer.overseer_state.owner_for_pid(runtime.ownership, pid))
+            test.is_nil(runtime.nudges[id])
+            test.is_nil(runtime.known[id])
+            test.eq(#observed.failures, 0)
+            test.eq(#observed.spawns, 1)
+        end)
+
+        test.it("rechecks an exit after a temporary canonical lookup failure", function()
+            local id = "exit_lookup"
+            activations[id] = activation(id, 1)
+            workflows[id] = workflow(id)
+            local runtime = overseer.new_runtime(CURRENT_EPOCH)
+            test.is_true(select(1, overseer.reconcile_activation(runtime, activations[id])))
+            local pid = observed.spawns[1].pid
+            observed.owners["dataflow." .. id] = nil
+            local lookup = overseer.process.registry.lookup
+            overseer.process.registry.lookup = function() return nil, "registry unavailable" end
+            test.is_nil(select(1, overseer.handle_exit(runtime, { from = pid, result = { error = "crashed" } })))
+            overseer.process.registry.lookup = lookup
+            test.not_nil(select(1, overseer.safety_reconcile(runtime)))
+            test.eq(#observed.failures, 1)
+            test.eq(#observed.spawns, 1)
+            test.is_nil(overseer.overseer_state.owner_for_dataflow(runtime.ownership, id))
+        end)
+
+        test.it("keeps a crash terminal when a signal races failure persistence", function()
+            local id = "failure_fence"
+            activations[id] = activation(id, 1)
+            workflows[id] = workflow(id)
+            local runtime = overseer.new_runtime(CURRENT_EPOCH)
+            test.is_true(select(1, overseer.reconcile_activation(runtime, activations[id])))
+            local pid = observed.spawns[1].pid
+            observed.owners["dataflow." .. id] = nil
+            local fail = overseer.commit.fail_activation
+            overseer.commit.fail_activation = function(flow_id, generation, failure)
+                if generation == 1 then
+                    activations[id] = activation(id, 2)
+                    return { completed = false, current_generation = 2 }, nil
+                end
+                return fail(flow_id, generation, failure)
+            end
+            test.is_true(select(1, overseer.handle_exit(runtime, { from = pid, result = { error = "crashed" } })))
+            test.eq(#observed.failures, 1)
+            test.eq(observed.failures[1].generation, 2)
+            test.eq(#observed.spawns, 1)
+            test.is_nil(overseer.overseer_state.owner_for_dataflow(runtime.ownership, id))
+            test.is_nil(runtime.nudges[id])
+            test.is_nil(runtime.known[id])
+        end)
+
+        test.it("reclaims an uncertain committed epoch without duplicating the owner", function()
+            local id = "uncertain_claim"
+            activations[id] = activation(id, 1)
+            workflows[id] = workflow(id)
+            local runtime = overseer.new_runtime(CURRENT_EPOCH)
+            overseer.with_tx = function(fn)
+                fn({})
+                return nil, "commit outcome unavailable"
+            end
+            test.is_nil(select(1, overseer.reconcile_activation(runtime, activations[id])))
+            test.eq(activations[id].owner_epoch, CURRENT_EPOCH)
+            test.eq(#observed.spawns, 0)
+            overseer.with_tx = function(fn) return fn({}) end
+            test.not_nil(select(1, overseer.safety_reconcile(runtime)))
+            test.eq(#observed.spawns, 1)
+            test.eq(#observed.failures, 0)
+            test.eq(observed.claims[2].observed_epoch, CURRENT_EPOCH)
+            test.not_nil(select(1, overseer.safety_reconcile(runtime)))
+            test.eq(#observed.spawns, 1)
+        end)
+
+        for _, clean_release in ipairs({ false, true }) do
+        for _, advance in ipairs({ false, true }) do
+            test.it("does not restart a lost adoption candidate: release=" .. tostring(clean_release) ..
+                "/advance=" .. tostring(advance), function()
+                local id = "lost_candidate"
+                activations[id] = activation(id, 1)
+                workflows[id] = workflow(id)
+                local runtime = overseer.new_runtime(CURRENT_EPOCH)
+                local old_pid
+                if clean_release then
+                    test.is_true(select(1, overseer.reconcile_activation(runtime, activations[id])))
+                    old_pid = observed.spawns[1].pid
+                    activations[id] = activation(id, 2)
+                end
+                observed.owners["dataflow." .. id] = "direct-owner"
+                overseer.with_tx = function() return nil, "transaction unavailable" end
+                if clean_release then
+                    test.is_nil(select(1, overseer.handle_exit(runtime, { from = old_pid, result = { value = {
+                        success = true, passivated = true, activation_generation = 1,
+                    } } })))
+                else
+                    test.is_nil(select(1, overseer.reconcile_activation(runtime, activations[id])))
+                end
+                if advance then activations[id] = activation(id, activations[id].generation + 1) end
+                observed.owners["dataflow." .. id] = nil
+                overseer.with_tx = function(fn) return fn({}) end
+                test.not_nil(select(1, overseer.safety_reconcile(runtime)))
+                test.eq(#observed.failures, 1)
+                test.eq(#observed.spawns, clean_release and 1 or 0)
+                test.is_nil(overseer.overseer_state.owner_for_dataflow(runtime.ownership, id))
+            end)
+        end
+        end
+
         test.it("never arms a zero-duration timer for an overdue wake", function()
             local wake_duration = nil
             local timer = { case_receive = function() return {} end }
@@ -310,7 +529,9 @@ local function run_tests()
                     overseer.process.registry.lookup = function(name)
                         if exit_pending then
                             exit_pending = false
-                            local exited, exit_err = overseer.handle_exit(runtime, {from = old_pid})
+                            local exited, exit_err = overseer.handle_exit(runtime, {from = old_pid, result = {value = {
+                                success = true, passivated = true, activation_generation = 1,
+                            }}})
                             test.is_nil(exit_err)
                             test.is_true(exited)
                         end
@@ -323,6 +544,10 @@ local function run_tests()
                     local ok, err = overseer.reconcile_activation(runtime, activations[id])
                     test.is_nil(err)
                     test.is_true(ok)
+                    test.eq(#observed.spawns, 1, "a missing name must wait for the monitored EXIT")
+                    test.is_true(select(1, overseer.handle_exit(runtime, {from = old_pid, result = {value = {
+                        success = true, passivated = true, activation_generation = 1,
+                    }}})))
                 end
                 test.eq(#observed.failures, 0)
                 test.eq(#observed.spawns, 2)
@@ -412,6 +637,7 @@ local function run_tests()
             { value = { success = true, passivated = true, activation_generation = 0 } },
             { value = { success = false, passivated = true, activation_generation = 1 } },
             { value = { success = true, passivated = false, activation_generation = 1 } },
+            { value = { success = true, passivated = true, activation_generation = 1, error = "failed" } },
             { error = "owner crashed", value = {
                 success = true, passivated = true, activation_generation = 1,
             } },

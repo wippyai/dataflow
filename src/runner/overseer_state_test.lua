@@ -98,7 +98,12 @@ local function run_tests()
                 desired_active = true,
                 message = "host process crashed",
             })
-            inspect = required(inspect)
+            test.eq(required(inspect).kind, overseer.ACTION.REFRESH)
+            local refreshed, decision = on_activation(exited, {
+                dataflow_id = "df-fail", generation = 3, desired_active = true,
+                owner_epoch = CURRENT_EPOCH, runtime_epoch = CURRENT_EPOCH,
+            })
+            exited, inspect = refreshed, required(decision)
             test.eq(inspect.kind, overseer.ACTION.INSPECT_OWNER)
             local failing, failure = on_owner_observation(exited, {
                 dataflow_id = "df-fail",
@@ -118,12 +123,16 @@ local function run_tests()
             local exited, inspect = on_exit(state, {
                 pid = "pid-loser", generation = 4, desired_active = true,
             })
-            inspect = required(inspect)
-            local next_state, monitor = on_owner_observation(exited, {
+            test.eq(required(inspect).kind, overseer.ACTION.REFRESH)
+            exited = activate(exited, "df-race", 4)
+            local claiming, claim = on_owner_observation(exited, {
                 dataflow_id = "df-race", generation = 4, registered_pid = "pid-winner",
             })
+            test.eq(required(claim).kind, overseer.ACTION.CLAIM)
+            local next_state, monitor = on_claim_observation(claiming, {
+                dataflow_id = "df-race", generation = 4, claimed = true,
+            })
             monitor = required(monitor)
-            test.eq(inspect.kind, overseer.ACTION.INSPECT_OWNER)
             test.eq(monitor.kind, overseer.ACTION.MONITOR)
             test.eq(monitor.pid, "pid-winner")
             test.eq((test.not_nil(overseer.owner_for_dataflow(next_state, "df-race"))).phase,
@@ -281,7 +290,13 @@ local function run_tests()
                 runtime_epoch = CURRENT_EPOCH,
             })
             test.eq(required(inspect).kind, overseer.ACTION.INSPECT_OWNER)
-            local completed = acquire(advancing, "df-passivated", 2, "pid-resumed")
+            local waiting, decision = on_owner_observation(advancing, {
+                dataflow_id = "df-passivated", generation = 2,
+            })
+            test.eq(required(decision).reason, "awaiting_monitored_exit")
+            test.not_nil(overseer.owner_for_pid(waiting, "pid-passivated"))
+            local exited = select(1, on_exit(waiting, {pid = "pid-passivated", released_generation = 1}))
+            local completed = acquire(activate(exited, "df-passivated", 2), "df-passivated", 2, "pid-resumed")
             test.is_nil(overseer.owner_for_pid(completed, "pid-passivated"))
             local terminal, stop = on_activation(completed, {
                 dataflow_id = "df-passivated", generation = 2, desired_active = false,
@@ -300,9 +315,10 @@ local function run_tests()
                 runtime_epoch = CURRENT_EPOCH,
             }))
             local exited, inspect = on_exit(advancing, {
-                pid = "pid-old", generation = 2, desired_active = true,
+                pid = "pid-old", generation = 2, released_generation = 1,
             })
-            test.eq(required(inspect).kind, overseer.ACTION.INSPECT_OWNER)
+            test.eq(required(inspect).kind, overseer.ACTION.REFRESH)
+            exited = activate(exited, "df-delayed-exit", 2)
             local completed = acquire(exited, "df-delayed-exit", 2, "pid-new")
             local terminal, stop = on_activation(completed, {
                 dataflow_id = "df-delayed-exit", generation = 2, desired_active = false,
@@ -326,6 +342,10 @@ local function run_tests()
                 dataflow_id = "df-racing-loss", generation = 5, desired_active = true,
                 runtime_epoch = CURRENT_EPOCH,
             })
+            test.eq(required(failure).kind, overseer.ACTION.INSPECT_OWNER)
+            failing, failure = on_owner_observation(failing, {
+                dataflow_id = "df-racing-loss", generation = 5,
+            })
             failure = required(failure)
             test.eq(failure.kind, overseer.ACTION.FAIL)
             test.eq(failure.generation, 5)
@@ -333,6 +353,23 @@ local function run_tests()
             local owner = test.not_nil(overseer.owner_for_dataflow(failing, "df-racing-loss"))
             test.eq(owner.generation, 5)
             test.eq(owner.phase, "failure_requested")
+        end)
+
+        test.it("retains an adoption candidate across a lost claim fence and newer generation", function()
+            local state = activate(overseer.new(), "df-claim-race", 1)
+            state = select(1, on_owner_observation(state, {
+                dataflow_id = "df-claim-race", generation = 1, registered_pid = "pid-candidate",
+            }))
+            local refreshing, refresh = on_claim_observation(state, {
+                dataflow_id = "df-claim-race", generation = 1, claimed = false,
+            })
+            test.eq(required(refresh).kind, overseer.ACTION.REFRESH)
+            test.eq(overseer.owner_for_dataflow(refreshing, "df-claim-race").candidate_pid, "pid-candidate")
+            local advancing = activate(refreshing, "df-claim-race", 2)
+            local _, failure = on_owner_observation(advancing, {
+                dataflow_id = "df-claim-race", generation = 2,
+            })
+            test.eq(required(failure).kind, overseer.ACTION.FAIL)
         end)
 
         test.it("fails spawn and monitor acquisition errors without a retry action", function()
