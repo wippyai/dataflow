@@ -7,6 +7,7 @@ db_file="$test_dir/.wippy/restart-proof.db"
 phase1_log="$test_dir/.wippy/restart-phase1.log"
 phase2_log="$test_dir/.wippy/restart-phase2.log"
 runtime_pid=""
+restart_wippy="${WIPPY:-wippy}"
 dialect="${DATAFLOW_RESTART_DIALECT:-sqlite}"
 pg_host="${DATAFLOW_PG_HOST:-127.0.0.1}"
 pg_port="${DATAFLOW_PG_PORT:-5432}"
@@ -60,14 +61,14 @@ start_runtime() {
     restart_profile="$1"
     runtime_log="$2"
     if [ "$dialect" = "postgres" ]; then
-        wippy run -s --profile postgres --profile "$restart_profile" \
+        "$restart_wippy" run -s --profile postgres --profile "$restart_profile" \
             --set "vars.postgres_host=$pg_host" \
             --set "vars.postgres_port=$pg_port" \
             --set "vars.postgres_database=$pg_database" \
             --set "vars.postgres_username=$pg_username" \
             --set "vars.postgres_password=$pg_password" >"$runtime_log" 2>&1 &
     else
-        wippy run -s --profile sqlite --profile "$restart_profile" \
+        "$restart_wippy" run -s --profile sqlite --profile "$restart_profile" \
             --set vars.sqlite_file=./.wippy/restart-proof.db >"$runtime_log" 2>&1 &
     fi
     runtime_pid=$!

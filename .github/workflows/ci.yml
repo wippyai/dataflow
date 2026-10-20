@@ -76,6 +76,11 @@ jobs:
         env:
           WIPPY: ${{ steps.wippy.outputs.path }}
         run: make "$MAKE_TARGET"
+      - name: Verify recovery across a runtime restart
+        env:
+          WIPPY: ${{ steps.wippy.outputs.path }}
+          RESTART_TARGET: test-restart-${{ matrix.database }}
+        run: make "$RESTART_TARGET"
 
   package:
     name: Package dry run
