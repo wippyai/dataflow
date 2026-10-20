@@ -1,4 +1,4 @@
-version: "0.7.25" # x-release-please-version
+version: "0.7.26" # x-release-please-version
 namespace: userspace.dataflow
 
 entries:
