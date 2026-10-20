@@ -96,9 +96,7 @@ local function define_tests()
         end
 
         local function wait_running(df_id, timeout_ms)
-            -- This is a functional observation budget, not a latency claim.
-            -- Match the existing five-second gate/input polling budget on PG.
-            timeout_ms = timeout_ms or 5000
+            timeout_ms = timeout_ms or 2000
             local iterations = math.ceil(timeout_ms / 100)
             for _ = 1, iterations do
                 local status = c:get_status(df_id)
