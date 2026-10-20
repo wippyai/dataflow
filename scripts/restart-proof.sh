@@ -7,7 +7,10 @@ db_file="$test_dir/.wippy/restart-proof.db"
 phase1_log="$test_dir/.wippy/restart-phase1.log"
 phase2_log="$test_dir/.wippy/restart-phase2.log"
 runtime_pid=""
+restart_wippy="${WIPPY:-wippy}"
 dialect="${DATAFLOW_RESTART_DIALECT:-sqlite}"
+scenario="${DATAFLOW_RESTART_SCENARIO:-rolling}"
+case "$scenario" in rolling|behavior) ;; *) echo "unsupported restart scenario" >&2; exit 1 ;; esac
 pg_host="${DATAFLOW_PG_HOST:-127.0.0.1}"
 pg_port="${DATAFLOW_PG_PORT:-5432}"
 pg_database="${DATAFLOW_PG_DATABASE:-dataflow_restart_test}"
@@ -59,15 +62,16 @@ query() {
 start_runtime() {
     restart_profile="$1"
     runtime_log="$2"
+    if [ "$scenario" = "behavior" ]; then set -- --profile restart_behavior; else set --; fi
     if [ "$dialect" = "postgres" ]; then
-        wippy run -s --profile postgres --profile "$restart_profile" \
+        "$restart_wippy" run -s --config "${DATAFLOW_RESTART_CONFIG:-.wippy.yaml}" --profile postgres --profile "$restart_profile" "$@" \
             --set "vars.postgres_host=$pg_host" \
             --set "vars.postgres_port=$pg_port" \
             --set "vars.postgres_database=$pg_database" \
             --set "vars.postgres_username=$pg_username" \
             --set "vars.postgres_password=$pg_password" >"$runtime_log" 2>&1 &
     else
-        wippy run -s --profile sqlite --profile "$restart_profile" \
+        "$restart_wippy" run -s --config "${DATAFLOW_RESTART_CONFIG:-.wippy.yaml}" --profile sqlite --profile "$restart_profile" "$@" \
             --set vars.sqlite_file=./.wippy/restart-proof.db >"$runtime_log" 2>&1 &
     fi
     runtime_pid=$!
@@ -88,6 +92,19 @@ start_runtime restart_create "$phase1_log"
 phase1=""
 attempts=0
 while [ "$attempts" -lt 200 ]; do
+    if [ "$scenario" = "behavior" ]; then
+        if [ "$dialect" = "postgres" ]; then
+            pending_predicate="n.metadata #>> '{behavior_pending,iteration}' = '1'"
+        else
+            pending_predicate="json_extract(n.metadata, '$.behavior_pending.iteration') = 1"
+        fi
+        phase1=$(query "SELECT a.dataflow_id || '|' || a.owner_epoch
+            FROM dataflow_activations a JOIN dataflow_nodes n ON n.dataflow_id = a.dataflow_id
+            WHERE a.desired_active AND n.status = 'running' AND $pending_predicate
+              AND EXISTS (SELECT 1 FROM dataflow_data d WHERE d.node_id = n.node_id AND d.type = 'agent.action')
+              AND NOT EXISTS (SELECT 1 FROM dataflow_data d WHERE d.node_id = n.node_id AND d.type = 'agent.observation')
+            LIMIT 1;" 2>/dev/null || true)
+    else
     phase1=$(query "
         SELECT a.dataflow_id || '|' || a.owner_epoch
         FROM dataflow_activations a
@@ -99,6 +116,7 @@ while [ "$attempts" -lt 200 ]; do
                  AND c.status = 'running') = 2
         LIMIT 1;
     " 2>/dev/null || true)
+    fi
     [ -n "$phase1" ] && break
     if ! kill -0 "$runtime_pid" 2>/dev/null; then
         echo "first runtime exited before creating an active workflow" >&2
@@ -114,6 +132,7 @@ dataflow_id=${phase1%%|*}
 first_epoch=${phase1#*|}
 [ -n "$first_epoch" ] || { echo "first runtime did not claim an epoch" >&2; exit 1; }
 
+if [ "$scenario" = "rolling" ]; then
 if [ "$dialect" = "postgres" ]; then
     rolling_yield=$(query "
         SELECT COUNT(*) FROM dataflow_data
@@ -168,7 +187,14 @@ while [ "$attempts" -lt 100 ]; do
 done
 [ "$rolling_refilled" = "1" ] || { echo "rolling window did not refill before the slow iteration completed" >&2; exit 1; }
 
-stop_runtime "$runtime_pid"
+fi
+if [ "$scenario" = "behavior" ]; then
+    # Interrupt only this disposable runtime while its persisted proposal is pending.
+    kill -KILL "$runtime_pid"
+    wait "$runtime_pid" 2>/dev/null || true
+else
+    stop_runtime "$runtime_pid"
+fi
 runtime_pid=""
 
 preserved=$(query "
@@ -225,6 +251,31 @@ done
     tail -120 "$phase2_log" >&2 || true
     exit 1
 }
+
+if [ "$scenario" = "behavior" ]; then
+    if [ "$dialect" = "postgres" ]; then
+        selection_predicate="config->>'agent' = 'userspace.dataflow.node.agent.stub:compact_target_agent' AND metadata->>'behavior_pending' = 'false'"
+        target_predicate="metadata->>'agent_id' = 'userspace.dataflow.node.agent.stub:compact_target_agent'"
+        call_predicate="metadata->>'tool_call_id' = 'call-behavior-restart-1'"
+    else
+        selection_predicate="json_extract(config, '$.agent') = 'userspace.dataflow.node.agent.stub:compact_target_agent' AND json_extract(metadata, '$.behavior_pending') = 0"
+        target_predicate="json_extract(metadata, '$.agent_id') = 'userspace.dataflow.node.agent.stub:compact_target_agent'"
+        call_predicate="json_extract(metadata, '$.tool_call_id') = 'call-behavior-restart-1'"
+    fi
+    selected=$(query "SELECT COUNT(*) FROM dataflow_nodes WHERE dataflow_id = '$dataflow_id' AND $selection_predicate;")
+    actions=$(query "SELECT COUNT(*) FROM dataflow_data WHERE dataflow_id = '$dataflow_id' AND type = 'agent.action';")
+    target_actions=$(query "SELECT COUNT(*) FROM dataflow_data WHERE dataflow_id = '$dataflow_id' AND type = 'agent.action' AND $target_predicate;")
+    observations=$(query "SELECT COUNT(*) FROM dataflow_data WHERE dataflow_id = '$dataflow_id' AND type = 'agent.observation' AND $call_predicate;")
+    results=$(query "SELECT COUNT(*) FROM dataflow_data WHERE dataflow_id = '$dataflow_id' AND type = 'node.result';")
+    checkpoints=$(query "SELECT COUNT(*) FROM dataflow_data WHERE dataflow_id = '$dataflow_id' AND type = 'agent.memory';")
+    workflows=$(query "SELECT COUNT(*) FROM dataflows;")
+    [ "$selected|$actions|$target_actions|$observations|$results|$checkpoints|$workflows" = "1|2|1|1|1|1|1" ] || {
+        echo "behavior recovery used a stale selection or duplicated a round: $selected|$actions|$target_actions|$observations|$results" >&2
+        exit 1
+    }
+    echo "$dialect behavior restart proof passed: $dataflow_id $first_epoch -> $second_epoch"
+    exit 0
+fi
 
 iteration_results=$(query "
     SELECT COUNT(*) FROM dataflow_data

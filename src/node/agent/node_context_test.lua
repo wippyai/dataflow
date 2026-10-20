@@ -1,9 +1,44 @@
 local agent_node = require("agent_node")
 local agent_consts = require("agent_consts")
 local test = require("test")
+local control_handler = require("control_handler")
 
 local function define_tests()
     describe("agent node context inheritance", function()
+        it("uses settled behavior context for subsequent tool and checkpoint calls", function()
+            local metadata = {}
+            local n = {
+                dataflow_id = "df-1", node_id = "node-1",
+                metadata = function() return metadata end,
+                update_metadata = function(_, patch)
+                    for key, value in pairs(patch) do metadata[key] = value end
+                end,
+            }
+            local base = { dataflow_id = "df-1", node_id = "node-1", project = "initial" }
+            local build = agent_node._test.context_with_agent_run
+            local previous = build(base, n, "agent", "model", 1, nil)
+            local applied, err = control_handler.apply_behavior_controls({{
+                context = { session = { set = { project = "updated", enabled = false } } },
+            }}, {}, n, 1)
+            test.is_nil(err)
+            test.not_nil(applied)
+            local next_context = build(base, n, "agent", "model", 2, nil)
+            test.eq(next_context.project, "updated")
+            test.is_false(next_context.enabled)
+            test.eq(previous.project, "initial", "settlement must not mutate an earlier call's snapshot")
+            test.eq(base.project, "initial")
+            test.eq(next_context.agent_run.host.iteration, 2)
+
+            applied, err = control_handler.apply_behavior_controls({{
+                context = { session = { delete = { "project", "enabled" } } },
+            }}, {}, n, 2)
+            test.is_nil(err)
+            test.not_nil(applied)
+            local restored = build(base, n, "agent", "model", 3, nil)
+            test.eq(restored.project, "initial", "deleting an overlay reveals the configured default")
+            test.is_nil(restored.enabled)
+        end)
+
         it("passes node session and input context under agent_context config.context", function()
             local build = agent_node._test.build_agent_context_config
             local cfg = build(

@@ -49,6 +49,45 @@ error and abandons the tracked wait so a later signal cannot revive it.
 
 Existing `n:yield` behavior is unchanged.
 
+## Agent checkpoints
+
+Checkpoint options resolve as trait defaults, explicit `agent_options.checkpoint`,
+then node `config.checkpoint` overrides. Maps merge recursively; lists replace,
+including an explicit empty list. `enabled = false` disables checkpointing.
+No checkpoint configuration means no implicit checkpointing; Dataflow retains
+its existing threshold rules (zero and negative thresholds disable scheduling).
+
+Checkpoints run before the next model turn, after the preceding tool results
+have settled. Bindings run before the configured function fallback, and both
+receive the effective `options`; a strict binding failure never falls back.
+Without a function fallback, a non-strict binding failure is recorded as a
+skipped checkpoint; an explicit host `strict = true` still fails the workflow.
+The host still owns marker persistence and the summary length cap. Checkpointing
+is conversation compaction, not durable long-term recall or a hard spending limit.
+
+Opt-in behavior `_control` proposals use the shared declarative subset:
+agent/model/trait/tool targets, session/public metadata, and `memory.compact`.
+Proposals are persisted with their iteration. Outcomes and delegations settle
+before policy application; effects and completion metadata are committed via
+the existing node transaction machinery. Recovery applies stored proposals
+without rerunning resolved tools. Replay is at-least-once, so external provider
+writes and lifecycle hooks must be idempotent using stable host refs.
+Proposals apply in order against the updated selection. Explicit model, trait
+and tool targets survive an agent switch, including empty tool lists. Recovery
+reloads the selected agent before another checkpoint, lifecycle hook or model
+step; a failed reload fails the node instead of running the previous agent.
+CI also kills and restarts a runtime with a pending behavior proposal, then
+checks the replacement agent's first step, its settled tool result and compaction.
+
+`memory.compact = true` persists a request that bypasses the token threshold,
+not an explicit disable or a missing provider. False is not cancellation.
+Requested compaction also runs when the final response ends the node, rather
+than depending on another model step. If a proposal also changes agent, model
+or overlays, compaction resolves the committed target's identity, provider and
+options, consistently with recovery. The provider still owns long-term memory
+storage, retention, retrieval and authorization. No behavior attachment means
+no new automatic policy/evaluator calls or loop thresholds.
+
 
 [wippy-documentation]: https://docs.wippy.ai
 [releases-page]: https://github.com/wippyai/dataflow/releases

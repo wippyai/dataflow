@@ -81,6 +81,128 @@ local function queued_of_type(n, command_type)
 end
 
 local function define_tests()
+    describe("explicit behavior tool restrictions", function()
+        it("preserves an explicitly empty tools restriction across an agent switch", function()
+            local n = make_node({})
+            n:update_config({ agent = "agent:old", active_tools = {} })
+            local ctx = {
+                current_model = "model:new",
+                switch_to_agent = function() return true end,
+                set_active_tools = function() return true end,
+            }
+            local result, err = control_handler.apply_behavior_controls({
+                { config = { agent = "agent:new", tools = {} } }
+            }, ctx, n, 1)
+            test.is_nil(err)
+            test.not_nil(result)
+            test.eq(type(n:config().active_tools), "table")
+            test.eq(#n:config().active_tools, 0)
+        end)
+    end)
+
+    describe("ordered behavior targets", function()
+        local function context()
+            return {
+                current_model = "model:keep",
+                switch_to_agent = function(self, id) self.current_model = "model:new_default"; return true end,
+                switch_to_model = function(self, model) self.current_model = model; return true end,
+                set_active_traits = function() return true end,
+                set_active_tools = function() return true end,
+            }
+        end
+        it("lets a later model proposal restore the original model", function()
+            local n = make_node({})
+            n:update_config({ agent = "agent:old", model = "model:keep" })
+            local result, err = control_handler.apply_behavior_controls({
+                { config = { model = "model:temporary" } },
+                { config = { model = "model:keep" } },
+            }, context(), n, 1)
+            test.is_nil(err)
+            test.not_nil(result)
+            test.eq(n:config().model, "model:keep")
+        end)
+        it("retains an explicit trait overlay equal to the old agent overlay", function()
+            local n = make_node({})
+            n:update_config({ agent = "agent:old", active_traits = { "trait:keep" } })
+            local result, err = control_handler.apply_behavior_controls({
+                { config = { agent = "agent:new", traits = { "trait:keep" } } },
+            }, context(), n, 1)
+            test.is_nil(err)
+            test.not_nil(result)
+            test.eq(type(n:config().active_traits), "table")
+            test.eq(n:config().active_traits[1], "trait:keep")
+        end)
+        it("retains an explicit model equal to the old model after an agent switch", function()
+            local n = make_node({})
+            n:update_config({ agent = "agent:old", model = "model:keep" })
+            local result, err = control_handler.apply_behavior_controls({
+                { config = { agent = "agent:new", model = "model:keep" } },
+            }, context(), n, 1)
+            test.is_nil(err)
+            test.not_nil(result)
+            test.eq(n:config().model, "model:keep")
+        end)
+    end)
+
+    describe("declarative behavior proposals", function()
+        it("keeps a committed combined target unchanged on replay", function()
+            local n = make_node({})
+            n:update_config({ agent = "agent:old", model = "model:keep", active_tools = {} })
+            local switches, tools_set = 0, 0
+            local ctx = {
+                current_model = "model:keep",
+                switch_to_agent = function(self) switches = switches + 1; self.current_model = "model:new_default"; return true end,
+                switch_to_model = function(self, model) self.current_model = model; return true end,
+                set_active_tools = function() tools_set = tools_set + 1; return true end,
+            }
+            local controls = {{ config = { agent = "agent:new", model = "model:keep", tools = {} } }}
+            for _ = 1, 2 do
+                local result, err = control_handler.apply_behavior_controls(controls, ctx, n, 1)
+                test.is_nil(err)
+                test.not_nil(result)
+                test.eq(n:config().model, "model:keep")
+                test.eq(type(n:config().active_tools), "table")
+                test.eq(#n:config().active_tools, 0)
+            end
+            test.eq(switches, 1)
+            test.eq(tools_set, 1)
+        end)
+
+        it("stops the proposal batch when a selection fails", function()
+            local n = make_node({})
+            local result, err = control_handler.apply_behavior_controls({
+                { config = { agent = "agent:missing" } },
+                { context = { session = { set = { should_not_apply = true } } } },
+            }, { switch_to_agent = function() return false, "agent unavailable" end }, n, 1)
+            test.is_nil(result)
+            test.contains(tostring(err), "agent unavailable")
+            test.is_nil(n:metadata().session_context)
+        end)
+
+        it("rejects unsupported policies before queuing any commands", function()
+            local n = make_node({})
+            local result, err = control_handler.apply_behavior_controls({
+                { context = { session = { set = { key = "value" } } } },
+                { config = { stop = true } },
+            }, {}, n, 1)
+            test.is_nil(result)
+            test.not_nil(err)
+            test.eq(#n._queued_commands, 0)
+        end)
+
+        it("uses canonical context writes and persists a compact request", function()
+            local n = make_node({ session_context = { existing = "kept" } })
+            local result, err = control_handler.apply_behavior_controls({
+                { context = { session = { set = { project = "project-1" } } }, memory = { compact = true } }
+            }, {}, n, 1)
+            test.is_nil(err)
+            test.not_nil(result)
+            test.eq(n:metadata().session_context.existing, "kept")
+            test.eq(n:metadata().session_context.project, "project-1")
+            test.is_true(n:metadata().checkpoint_requested)
+        end)
+    end)
+
     describe("Agent Control Handler", function()
         describe("session context", function()
             it("merges set keys with existing session_context", function()
@@ -466,6 +588,25 @@ local function define_tests()
                 local cfg = n:config()
                 test.eq((cfg.active_traits or {})[1], "researcher", "traits persisted for recovery")
                 test.eq((cfg.active_tools or {})[1], "wippy.x:tool", "tools persisted for recovery")
+            end)
+
+            it("persists a replacement agent's default model instead of the old override", function()
+                local n = make_node({})
+                n:update_config({ agent = "agent:a", model = "model:old" })
+                local ctx, calls = mock_agent_ctx()
+                ctx.switch_to_agent = function(self, id)
+                    table.insert(calls.agent, id)
+                    self.current_model = "model:new_default"
+                    return true
+                end
+                local result, err = control_handler.apply_behavior_controls({
+                    { config = { agent = "agent:b" } },
+                }, ctx, n, 1)
+                test.is_nil(err)
+                test.not_nil(result)
+                test.eq(n:config().agent, "agent:b")
+                test.eq(n:config().model, "model:new_default",
+                    "recovery must load the same model as the live replacement agent")
             end)
 
             it("applies an agent switch before the trait/tool overlay in one directive", function()

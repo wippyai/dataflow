@@ -94,6 +94,7 @@ entries:
       test: wippy.test:test
       consts: userspace.dataflow:consts
       client: userspace.dataflow:client
+      activation_repo: userspace.dataflow.persist:activation_repo
       data_reader: userspace.dataflow.persist:data_reader
     method: run_tests
 
