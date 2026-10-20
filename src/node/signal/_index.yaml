@@ -57,7 +57,6 @@ entries:
     meta:
       type: test
       suite: signal_compound
-      timeout: "90s"
       comment: Compound pipeline tests combining signal with func and state nodes
     source: file://compound_signal_test.lua
     modules:
