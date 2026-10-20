@@ -203,6 +203,13 @@ local function context_with_agent_run(base_context: any, n: any, agent_id: any, 
             next_context[k] = v
         end
     end
+    -- Match the run-context API: settled session controls overlay the arena
+    -- defaults for each new call, including after recovery. Never mutate a
+    -- snapshot already handed to a tool or summarizer.
+    local metadata = n:metadata() or {}
+    if type(metadata.session_context) == "table" then
+        for k, v in pairs(metadata.session_context) do next_context[k] = v end
+    end
 
     local host = {
         kind = "dataflow",
@@ -2636,6 +2643,7 @@ return {
     _test = {
         validate_and_resolve_config = validate_and_resolve_config,
         build_agent_context_config = build_agent_context_config,
+        context_with_agent_run = context_with_agent_run,
         check_completion = check_completion,
         is_unproductive_turn = is_unproductive_turn,
         process_multiple_inputs = process_multiple_inputs,

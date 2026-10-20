@@ -250,6 +250,8 @@ entries:
       options:
         propose_compaction: true
         switch_agent: userspace.dataflow.node.agent.stub:compact_target_agent
+        session_context:
+          behavior_project: settled-project
 - name: compact_target_agent
   kind: registry.entry
   meta:
