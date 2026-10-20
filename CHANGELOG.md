@@ -5,6 +5,24 @@
 * Preserve an agent node's successful fallback route across iterations and recovery, clearing it when the configured agent or model changes. Requires Agent 0.5.5 or later.
 * Wake an existing orchestrator when it claims a signal generation. A clean exit that released an older generation no longer fails newly activated work; actual owner crashes still fail without restarting the workflow.
 
+## [0.7.26](https://github.com/wippyai/dataflow/compare/v0.7.25...v0.7.26) (2026-10-20)
+
+
+### Features
+
+* **dataflow:** apply agent behavior controls after tool settlement ([#91](https://github.com/wippyai/dataflow/issues/91)) ([3c11327](https://github.com/wippyai/dataflow/commit/3c11327ad34ee4d807f11602cc80f27124dac325))
+* preserve fallback routes and signal owner handoffs ([aa05ddb](https://github.com/wippyai/dataflow/commit/aa05ddbb0e61ae1c887af69519795bb8d9f79ded))
+
+
+### Bug Fixes
+
+* preserve owner exits and fenced claims during reconciliation ([#106](https://github.com/wippyai/dataflow/issues/106)) ([607fe82](https://github.com/wippyai/dataflow/commit/607fe82d6559d599d6867dcf862d9d6cc879db9b))
+* preserve signal activation across clean owner handoff ([7ee3d4f](https://github.com/wippyai/dataflow/commit/7ee3d4f62ef105394b6c6e9ff310419b17a7ca8b))
+* reject recovered route pins from a different agent or model ([4643087](https://github.com/wippyai/dataflow/commit/46430875770beedca76aa007c31013aaa78e3b30))
+* require Agent with route pin support ([725b68b](https://github.com/wippyai/dataflow/commit/725b68b4f2ba021874b80c314746153533dda526))
+* retain parked owner monitoring until exit ([539a978](https://github.com/wippyai/dataflow/commit/539a978489c7bcd0b54232b16db728e98c576eeb))
+* use the atomic monitor established at spawn ([903003c](https://github.com/wippyai/dataflow/commit/903003cfe2f9e27587f9542b09f5bf405a7f73a3))
+
 ## [0.7.25](https://github.com/wippyai/dataflow/compare/v0.7.24...v0.7.25) (2026-10-14)
 
 
