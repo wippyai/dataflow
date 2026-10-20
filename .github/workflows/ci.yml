@@ -80,7 +80,9 @@ jobs:
         env:
           WIPPY: ${{ steps.wippy.outputs.path }}
           RESTART_TARGET: test-restart-${{ matrix.database }}
-        run: make "$RESTART_TARGET"
+        run: |
+          make "$RESTART_TARGET"
+          DATAFLOW_RESTART_SCENARIO=behavior make "$RESTART_TARGET"
 
   package:
     name: Package dry run

@@ -1,5 +1,8 @@
 local flow = require("flow")
 local funcs = require("funcs")
+local uuid = require("uuid")
+local client = require("client")
+local consts = require("consts")
 
 local M = {}
 
@@ -13,7 +16,36 @@ local function hold_runtime()
     end
 end
 
-function M.create()
+local function create_behavior_workflow()
+    local node_id, input_id = uuid.v7(), uuid.v7()
+    local c = client.new()
+    local id, err = c:create_workflow({
+        { type = consts.COMMAND_TYPES.CREATE_NODE, payload = {
+            node_id = node_id, node_type = "userspace.dataflow.node.agent:node", status = consts.STATUS.PENDING,
+            config = {
+                agent = "userspace.dataflow.node.agent.stub:recovery_test_agent", show_tool_calls = false,
+                data_targets = {{ data_type = consts.DATA_TYPE.WORKFLOW_OUTPUT, key = "result", content_type = consts.CONTENT_TYPE.TEXT }},
+                active_traits = { "userspace.dataflow.node.agent.stub:behavior_switch_compact_trait" },
+                arena = { prompt = "Complete the restart scenario.", max_iterations = 4, tool_calling = "auto",
+                    tools = { "userspace.dataflow.node.agent.stub:recovery_tool" } },
+            },
+        } },
+        { type = consts.COMMAND_TYPES.CREATE_DATA, payload = {
+            data_id = input_id, data_type = consts.DATA_TYPE.WORKFLOW_INPUT,
+            content = { scenario_id = "behavior-restart", mode = "behavior_restart", tool_delay_ms = 9000 },
+            content_type = consts.CONTENT_TYPE.JSON,
+        } },
+        { type = consts.COMMAND_TYPES.CREATE_DATA, payload = {
+            data_id = uuid.v7(), data_type = consts.DATA_TYPE.NODE_INPUT, node_id = node_id, key = input_id,
+            content = "", content_type = consts.CONTENT_TYPE.REFERENCE,
+        } },
+    })
+    if not id then error(err or "behavior workflow creation failed") end
+    local started, start_err = c:start(id)
+    if not started then error(start_err or "behavior workflow start failed") end
+end
+
+local function prepare_runtime()
     -- Services may start while the dependency bootloader is still migrating.
     -- Use the same canonical readiness check as the ordinary test harness.
     local ready, readiness_err = funcs.call("app:wait_for_boot")
@@ -22,6 +54,16 @@ function M.create()
     -- Seed the same authority fixture before capturing a workflow identity.
     local authority_ready, authority_err = funcs.call("app.await_authority:setup", { durable_tokens = true })
     if authority_err or not authority_ready then error(authority_err or "authority fixture is not ready") end
+end
+
+function M.create_behavior()
+    prepare_runtime()
+    create_behavior_workflow()
+    return hold_runtime()
+end
+
+function M.create()
+    prepare_runtime()
     local template = (flow.template() :: any):func("userspace.dataflow.node.func:test_func")
     local dataflow_id, start_err = (flow.create() :: any)
         :with_input({

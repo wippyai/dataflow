@@ -365,8 +365,8 @@ end
 
 -- Apply collected control responses to agent context and node state
 -- Returns: changes_summary, error
-function control_handler.apply_control_responses(control_responses, agent_context, node_sdk)
-    local changes_summary = {
+function control_handler.apply_control_responses(control_responses, agent_context, node_sdk, changes_summary)
+    changes_summary = changes_summary or {
         agent_changed = false,
         model_changed = false,
         traits_changed = false,
@@ -454,23 +454,28 @@ end
 function control_handler.apply_behavior_controls(controls, agent_context, node_sdk, iteration)
     local prepared, err = behavior_controls.prepare(controls)
     if not prepared then return nil, err end
-    local responses = {}
+    local changes_summary
     for _, control in ipairs(prepared) do
         if control.config then
             local current = type(node_sdk.config) == "function" and node_sdk:config() or {}
+            local switching_agent = control.config.agent ~= nil and control.config.agent ~= current.agent
             local changes = {}
             for key, value in pairs(control.config) do
                 local stored_key = key == "traits" and "active_traits" or (key == "tools" and "active_tools" or key)
-                if json.encode(current[stored_key]) ~= json.encode(value) then changes[key] = value end
+                -- Switching agents resets its model and overlays. Keep explicit
+                -- targets for the replacement, including an empty tool list.
+                if switching_agent or json.encode(current[stored_key]) ~= json.encode(value) then changes[key] = value end
             end
             control.config = next(changes) and changes or nil
         end
         local _, response = control_handler.process_control_directive({ _control = control }, node_sdk, iteration)
-        responses[#responses + 1] = response
+        -- Evaluate the next proposal against this one's result, not the state
+        -- from before the batch. Later hooks can deliberately restore a target.
+        local result, apply_err = control_handler.apply_control_responses({ response }, agent_context, node_sdk, changes_summary)
+        if apply_err then return nil, apply_err end
+        changes_summary = result
     end
-    local result, apply_err = control_handler.apply_control_responses(responses, agent_context, node_sdk)
-    if apply_err then return nil, apply_err end
-    return result
+    return changes_summary or control_handler.apply_control_responses({}, agent_context, node_sdk)
 end
 
 return control_handler

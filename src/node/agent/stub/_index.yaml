@@ -257,7 +257,7 @@ entries:
     name: compact-target-agent
     test_only: true
   model: recovery-test-model
-  prompt: Follow the deterministic scenario encoded in the user input.
+  prompt: BEHAVIOR-RESTART-TARGET. Follow the deterministic scenario encoded in the user input.
   agent_options:
     checkpoint:
       function_id: userspace.dataflow.node.agent.stub:target_checkpoint_summarizer

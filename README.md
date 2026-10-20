@@ -72,6 +72,12 @@ before policy application; effects and completion metadata are committed via
 the existing node transaction machinery. Recovery applies stored proposals
 without rerunning resolved tools. Replay is at-least-once, so external provider
 writes and lifecycle hooks must be idempotent using stable host refs.
+Proposals apply in order against the updated selection. Explicit model, trait
+and tool targets survive an agent switch, including empty tool lists. Recovery
+reloads the selected agent before another checkpoint, lifecycle hook or model
+step; a failed reload fails the node instead of running the previous agent.
+CI also kills and restarts a runtime with a pending behavior proposal, then
+checks the replacement agent's first step, its settled tool result and compaction.
 
 `memory.compact = true` persists a request that bypasses the token threshold,
 not an explicit disable or a missing provider. False is not cancellation.

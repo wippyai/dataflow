@@ -173,6 +173,16 @@ local function handler(contract_args)
         return nil, "recovery provider unavailable"
     end
 
+    if scenario.mode == "behavior_restart" then
+        if result_count == 0 then
+            return tool_call_response(scenario.scenario_id, 1, scenario.tool_delay_ms, 13, 8)
+        end
+        if helpers.count_text_matches(messages, "BEHAVIOR-RESTART-TARGET") == 0 then
+            return nil, "recovered proposal ran the previous agent"
+        end
+        return final_response(scenario.scenario_id, scenario.mode, result_count, 9, 4)
+    end
+
     if scenario.mode == "single_tool_then_final" then
         if result_count == 0 then
             return tool_call_response(scenario.scenario_id, 1, scenario.tool_delay_ms, base_prompt or 13, 8)

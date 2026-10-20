@@ -324,6 +324,7 @@ entries:
         - test
     source: file://route_pin_test.lua
     imports:
+      agent_consts: userspace.dataflow.node.agent:consts
       node_sdk: userspace.dataflow:node
       agent_context: wippy.agent:context
       prompt_builder: userspace.dataflow.node.agent:prompt_builder

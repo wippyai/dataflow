@@ -2186,27 +2186,40 @@ local function run(args)
         }, stalled_message, REASON.UNPRODUCTIVE_STEPS, iteration)
     end
 
+    -- Reconcile the committed selection before admitting checkpoint providers,
+    -- lifecycle hooks or another model step, including after proposal replay.
+    local function refresh_current_agent()
+        local refreshed = agent_ctx:get_current_agent()
+        local current_config = n:config()
+        if not refreshed then
+            local load_err
+            local reload_model = current_config.model or agent_ctx.current_model or model_name
+            refreshed, load_err = agent_ctx:load_agent(current_config.agent or agent_id,
+                reload_model and { model = reload_model } or nil)
+            if not refreshed then return nil, load_err or "Failed to reload selected agent" end
+        end
+        local previous_agent_id, previous_model = agent_id, model_name
+        local refreshed_config = agent_ctx:get_config()
+        agent_instance = refreshed
+        agent_id = refreshed_config.current_agent_id or agent_id
+        model_name = refreshed_config.current_model or model_name
+        route_pin = route_pin_after_switch(route_pin, previous_agent_id, previous_model, agent_id, model_name)
+        config = current_config
+        return true
+    end
+
     local function flush_requested_checkpoint()
         if (n:metadata() or {}).checkpoint_requested ~= true then return true end
         -- A proposal may switch agent/model/overlays before requesting compact.
         -- Resolve the committed target here, as recovery does at node startup,
         -- rather than compacting with the stale agent that produced the round.
-        local checkpoint_agent = agent_ctx:get_current_agent()
-        local current_config = n:config()
-        if not checkpoint_agent then
-            local load_err
-            checkpoint_agent, load_err = agent_ctx:load_agent(current_config.agent or agent_id,
-                { model = current_config.model or agent_ctx.current_model or model_name })
-            if not checkpoint_agent then return nil, load_err or "Failed to load checkpoint agent" end
-        end
-        local current_agent_config = agent_ctx:get_config()
-        local checkpoint_agent_id = current_agent_config.current_agent_id or agent_id
-        local checkpoint_model = current_agent_config.current_model or model_name
-        local options = resolve_agent_checkpoint_config(current_config, checkpoint_agent)
+        local refreshed, refresh_err = refresh_current_agent()
+        if not refreshed then return nil, refresh_err end
+        local options = resolve_agent_checkpoint_config(config, agent_instance)
         local marker, checkpoint_err, strict_err = maybe_checkpoint_history(n, {
-            checkpoint = options, run_context_binding = current_config.run_context_binding,
-        }, context_with_agent_run(session_context, n, checkpoint_agent_id, checkpoint_model, iteration,
-            current_config.run_context_binding), checkpoint_agent, checkpoint_agent_id, checkpoint_model, iteration)
+            checkpoint = options, run_context_binding = config.run_context_binding,
+        }, context_with_agent_run(session_context, n, agent_id, model_name, iteration,
+            config.run_context_binding), agent_instance, agent_id, model_name, iteration)
         if checkpoint_err then
             if strict_err or (options and options.strict == true) then return nil, checkpoint_err end
             record_checkpoint_skip(n, iteration, checkpoint_err)
@@ -2247,10 +2260,16 @@ local function run(args)
     if recovered_iteration and recovered_iteration > iteration then
         iteration = recovered_iteration
     end
+    local recovered_agent_ok, recovered_agent_err = refresh_current_agent()
+    if not recovered_agent_ok then
+        return fail_with_lifecycle({ code = agent_consts.ERROR.AGENT_LOAD_FAILED, message = recovered_agent_err },
+            recovered_agent_err, REASON.HOST_FAILED, iteration)
+    end
     local recovered_checkpoint_ok, recovered_checkpoint_err = flush_requested_checkpoint()
     if not recovered_checkpoint_ok then
-        return fail_with_lifecycle({ code = agent_consts.ERROR.CHECKPOINT_FAILED, message = recovered_checkpoint_err },
-            recovered_checkpoint_err, REASON.HOST_FAILED, iteration)
+        local checkpoint_message = recovered_checkpoint_err or "Requested checkpoint failed"
+        return fail_with_lifecycle({ code = agent_consts.ERROR.CHECKPOINT_FAILED, message = checkpoint_message },
+            checkpoint_message, REASON.HOST_FAILED, iteration)
     end
     if recovered_complete then
         task_complete = true
@@ -2539,8 +2558,9 @@ local function run(args)
         end
         local checkpoint_ok, requested_checkpoint_err = flush_requested_checkpoint()
         if not checkpoint_ok then
-            return fail_with_lifecycle({ code = agent_consts.ERROR.CHECKPOINT_FAILED, message = requested_checkpoint_err },
-                requested_checkpoint_err, REASON.HOST_FAILED, iteration)
+            local checkpoint_message = requested_checkpoint_err or "Requested checkpoint failed"
+            return fail_with_lifecycle({ code = agent_consts.ERROR.CHECKPOINT_FAILED, message = checkpoint_message },
+                checkpoint_message, REASON.HOST_FAILED, iteration)
         end
 
         -- The unproductive turn has been answered with feedback above; once the
@@ -2551,25 +2571,11 @@ local function run(args)
             return fail_unproductive()
         end
 
-        -- Reconcile any agent/model/trait/tool change a control directive applied this
-        -- iteration so the next step uses the updated agent. apply_control_responses
-        -- mutated agent_ctx (and persisted to node config); re-fetch the loaded agent,
-        -- reloading from the now-updated config when an overlay change cleared it.
         if not task_complete then
-            local refreshed = agent_ctx:get_current_agent()
+            local refreshed, refresh_err = refresh_current_agent()
             if not refreshed then
-                local cfg = n:config()
-                local reload_model = cfg.model or model_name
-                refreshed = agent_ctx:load_agent(cfg.agent or agent_id,
-                    reload_model and { model = reload_model } or nil)
-            end
-            if refreshed then
-                local previous_agent_id, previous_model = agent_id, model_name
-                agent_instance = refreshed
-                local refreshed_config = agent_ctx:get_config()
-                agent_id = refreshed_config.current_agent_id or agent_id
-                model_name = refreshed_config.current_model or model_name
-                route_pin = route_pin_after_switch(route_pin, previous_agent_id, previous_model, agent_id, model_name)
+                return fail_with_lifecycle({ code = agent_consts.ERROR.AGENT_LOAD_FAILED, message = refresh_err },
+                    refresh_err, REASON.HOST_FAILED, iteration)
             end
         end
 

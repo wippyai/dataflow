@@ -34,6 +34,9 @@ profiles:
       "app.await_authority:tokens_storage:payload_column_name": token_value
       "app.await_authority:tokens_storage:expire_column_name": expires_at
       "app:restart_probe.create.service:lifecycle.auto_start": true
+  restart_behavior:
+    override:
+      "app:restart_probe.create:method": create_behavior
   restart_observe:
     override:
       "app.await_authority:tokens_storage:kind": store.sql
