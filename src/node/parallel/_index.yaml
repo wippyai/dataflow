@@ -26,6 +26,7 @@ entries:
     imports:
       consts: userspace.dataflow:consts
       data_reader: userspace.dataflow.persist:data_reader
+      template_graph: userspace.dataflow.template:graph
     
   # userspace.dataflow.node.parallel:iterator_test
   - name: iterator_test

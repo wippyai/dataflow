@@ -49,4 +49,16 @@ entries:
       template_graph: userspace.dataflow.template:graph
       test: wippy.test:test
     method: run_tests
-    
+  - name: iteration_routes_test
+    kind: function.lua
+    meta:
+      type: test
+      suite: iteration_routes
+    source: file://iteration_routes_test.lua
+    method: run_tests
+    modules: [uuid, json]
+    imports:
+      test: wippy.test:test
+      client: userspace.dataflow:client
+      consts: userspace.dataflow:consts
+      data_reader: userspace.dataflow.persist:data_reader

@@ -1,6 +1,7 @@
 local uuid = require("uuid")
 local json = require("json")
 local consts = require("consts")
+local template_graph_lib = require("template_graph")
 
 local default_deps = {
     data_reader = require("data_reader")
@@ -234,10 +235,12 @@ function iterator.create_iteration(parent_node, template_graph, input_item, iter
         if is_root then
             table.insert(root_nodes, actual_node_id)
 
-            parent_node:data(consts.DATA_TYPE.NODE_INPUT, input_item, {
-                node_id = actual_node_id,
-                discriminator = iteration_input_key
-            })
+            if template_graph.iteration_input_routes == nil then
+                parent_node:data(consts.DATA_TYPE.NODE_INPUT, input_item, {
+                    node_id = actual_node_id,
+                    discriminator = iteration_input_key
+                })
+            end
 
             if passthrough_inputs then
                 for input_key, ref_target in pairs(passthrough_inputs) do
@@ -253,6 +256,13 @@ function iterator.create_iteration(parent_node, template_graph, input_item, iter
                 end
             end
         end
+    end
+
+    if template_graph.iteration_input_routes ~= nil then
+        local _, route_err = template_graph_lib.route_iteration_input(
+            template_graph, parent_node, uuid_mapping, input_item
+        )
+        if route_err then return nil, route_err end
     end
 
     return {
@@ -303,9 +313,10 @@ function iterator.create_batch(parent_node, template_graph, items, batch_start, 
     end
 
     for _, i in ipairs(indices) do
-        local iteration_info = iterator.create_iteration(
+        local iteration_info, iteration_err = iterator.create_iteration(
             parent_node, template_graph, items[i], i, iteration_input_key, passthrough_inputs, options, deps
         )
+        if iteration_err then return nil, iteration_err end
         table.insert(iterations, iteration_info)
     end
 

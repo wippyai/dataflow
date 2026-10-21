@@ -478,13 +478,20 @@ local function execute_template_iteration(n, template_graph, current_state, last
         iteration = iteration_number
     }
 
-    local template_roots = (template_graph :: any):get_roots()
-    for _, root_template_id in ipairs(template_roots) do
-        local actual_node_id = uuid_mapping[root_template_id]
-        n:data(cycle._deps.consts.DATA_TYPE.NODE_INPUT, cycle_context, {
-            node_id = actual_node_id,
-            key = "default"
-        })
+    if template_graph.iteration_input_routes ~= nil then
+        local _, route_err = cycle._deps.template_graph.route_iteration_input(
+            template_graph, n, uuid_mapping, cycle_context
+        )
+        if route_err then return nil, route_err end
+    else
+        local template_roots = (template_graph :: any):get_roots()
+        for _, root_template_id in ipairs(template_roots) do
+            local actual_node_id = uuid_mapping[root_template_id]
+            n:data(cycle._deps.consts.DATA_TYPE.NODE_INPUT, cycle_context, {
+                node_id = actual_node_id,
+                key = "default"
+            })
+        end
     end
 
     local all_nodes = collect_node_ids(uuid_mapping)
@@ -527,9 +534,10 @@ local function collect_children_result(n, node_ids: {any}, yield_result)
     return nil, nil
 end
 
--- Applies a child result over the iteration's working values. A child may return an
--- envelope ({state,result,continue}) or a bare value; mirrors the inline logic used
--- on both the normal and recovery-resume paths.
+local function is_result_envelope(value)
+    return value.state ~= nil or value.result ~= nil or value.continue ~= nil
+end
+
 local function apply_child_result(child_result, current_state, current_result, should_continue, has_explicit_continue)
     if child_result == nil then
         return current_result, current_state, should_continue, has_explicit_continue
@@ -537,11 +545,7 @@ local function apply_child_result(child_result, current_state, current_result, s
 
     if type(child_result) == "table" then
         local child_result_table = child_result :: any
-        local has_envelope = child_result_table.state ~= nil or
-            child_result_table.result ~= nil or
-            child_result_table.continue ~= nil
-
-        if has_envelope then
+        if is_result_envelope(child_result_table) then
             current_state = child_result_table.state or current_state
             if child_result_table.result ~= nil then
                 current_result = child_result_table.result
@@ -876,7 +880,11 @@ local function run(args)
             if type(iteration_result) == "table" then
                 local iter_table = iteration_result :: any
                 new_state = iter_table.state or current_state
-                current_result = iter_table.result
+                if is_result_envelope(iter_table) then
+                    current_result = iter_table.result
+                else
+                    current_result = iter_table
+                end
 
                 if iter_table.continue ~= nil then
                     should_continue = iter_table.continue

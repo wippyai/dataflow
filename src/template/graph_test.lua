@@ -5,6 +5,78 @@ local template_graph = require("template_graph")
 
 local function define_tests()
     describe("Template Graph Tests", function()
+        describe("Iteration input routes", function()
+            local function build(routes, targets)
+                local templates = {
+                    { node_id = "root", config = { data_targets = { { node_id = "join" } } } },
+                    { node_id = "join", config = { data_targets = targets or {} } },
+                }
+                local deps = { node_reader = { with_dataflow = function()
+                    return {
+                        with_parent_nodes = function(self) return self end,
+                        with_statuses = function(self) return self end,
+                        all = function() return templates end,
+                    }
+                end } }
+                return template_graph.build_for_node({
+                    dataflow_id = "flow", node_id = "loop",
+                    config = function() return { iteration_input_routes = routes } end,
+                }, deps)
+            end
+
+            it("accepts a non-root route alongside a body edge into that target", function()
+                local routes = { { node_id = "root" }, { node_id = "join", discriminator = "item" } }
+                local graph, err = build(routes)
+                test.is_nil(err)
+                test.eq((graph :: any).iteration_input_routes, routes)
+                test.eq(#(graph :: any):get_roots(), 1)
+                test.eq((graph :: any):get_roots()[1], "root")
+            end)
+
+            it("rejects a route outside the iteration body", function()
+                for _, target in ipairs({ "missing", "loop" }) do
+                    local graph, err = build({ { node_id = target } })
+                    test.is_nil(graph)
+                    test.contains(err, "iteration body")
+                end
+            end)
+
+            it("rejects duplicate routes even with distinct discriminators", function()
+                local graph, err = build({
+                    { node_id = "join", discriminator = "a" },
+                    { node_id = "join", discriminator = "b" },
+                })
+                test.is_nil(graph)
+                test.contains(err, "Duplicate iteration input route")
+            end)
+
+            it("rejects body edges that close a cycle through the route source", function()
+                local graph, err = build({ { node_id = "root" } }, { { node_id = "loop" } })
+                test.is_nil(graph)
+                test.contains(err, "cycle")
+            end)
+
+            it("rejects a cycle within a routed body", function()
+                local graph, err = build({ { node_id = "root" } }, { { node_id = "root" } })
+                test.is_nil(graph)
+                test.contains(err, "circular dependencies")
+            end)
+
+            it("rejects malformed route lists and fields", function()
+                local sparse = { { node_id = "root" }, { node_id = "root" }, { node_id = "join" } }
+                sparse[2] = nil
+                for _, routes in ipairs({
+                    "root", { bad = { node_id = "root" } }, { false }, sparse,
+                    { { node_id = "root", transform = 4 } },
+                    { { node_id = "root", discriminator = {} } },
+                }) do
+                    local graph, err = build(routes)
+                    test.is_nil(graph)
+                    test.not_nil(err)
+                end
+            end)
+        end)
+
         describe("TemplateGraph Class Methods", function()
             it("should create empty template graph", function()
                 local graph: any = template_graph.new()

@@ -446,7 +446,8 @@ function methods:data(data_type, content, options)
 
     local content_type = options.content_type
     if not content_type then
-        if type(content) == "table" then
+        local content_kind = type(content)
+        if content_kind == "table" or content_kind == "number" or content_kind == "boolean" then
             content_type = consts.CONTENT_TYPE.JSON
         else
             content_type = consts.CONTENT_TYPE.TEXT
@@ -736,8 +737,9 @@ function methods:query()
     return self._deps.data_reader.with_dataflow(self.dataflow_id)
 end
 
-function methods:_route_outputs(content)
-    local routed_data_ids = table.create(#self.data_targets, 0)
+function methods:_route_outputs(content, targets)
+    targets = targets or self.data_targets
+    local routed_data_ids = table.create(#targets, 0)
     local data_id_count = 0
 
     local resolved_content = resolve_dataflow_references(self, content)
@@ -754,7 +756,7 @@ function methods:_route_outputs(content)
         node = self
     }
 
-    for target_idx, target in ipairs(self.data_targets) do
+    for target_idx, target in ipairs(targets) do
         local target_desc = "target[" .. target_idx .. "]"
         if target.discriminator then
             target_desc = target_desc .. " (discriminator=" .. target.discriminator .. ")"
