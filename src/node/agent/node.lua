@@ -309,7 +309,7 @@ local function append_lifecycle_messages(builder: any, result: table?)
     end
 end
 
-local function lifecycle_outcome_from_agent_result(agent_result: any): table
+local function step_outcome(agent_result: any): table
     if agent_result and agent_result.truncated then
         return {
             state = OUTCOME.CONTINUES,
@@ -332,6 +332,14 @@ local function lifecycle_outcome_from_agent_result(agent_result: any): table
         state = OUTCOME.COMPLETED,
         reason = REASON.NO_TOOLS_REQUIRED
     }
+end
+
+local function lifecycle_outcome_from_agent_result(agent_result: any): table
+    local outcome = step_outcome(agent_result)
+    if agent_result and agent_result.memory_recall_error then
+        outcome.memory_recall_error = agent_result.memory_recall_error
+    end
+    return outcome
 end
 
 local function decode_json_content(content: any, content_type: any)
@@ -665,6 +673,7 @@ local function store_agent_action(n, agent_result, iteration, agent_id, model_na
         tokens = agent_result.tokens,
         finish_reason = agent_result.finish_reason,
         llm_meta = agent_result.metadata or {},
+        memory_recall_error = agent_result.memory_recall_error,
     }
 
     if control_metadata and next(control_metadata) then
@@ -677,6 +686,21 @@ local function store_agent_action(n, agent_result, iteration, agent_id, model_na
         node_id = n.node_id,
         metadata = metadata
     })
+    return action_key
+end
+
+-- The committed row is authoritative: persistence deduplication can keep an
+-- earlier row's data_id instead of the candidate generated for this command.
+local function persisted_action_id(n, action_key): (string?, string?)
+    local row = n:query()
+        :with_nodes(n.node_id)
+        :with_data_types(agent_consts.DATA_TYPE.AGENT_ACTION)
+        :with_data_keys(action_key)
+        :one()
+    if not row or type(row.data_id) ~= "string" or row.data_id == "" then
+        return nil, "Persisted agent action not found: " .. tostring(action_key)
+    end
+    return row.data_id, nil
 end
 
 local function store_memory_recall(n, agent_result, iteration)
@@ -2184,6 +2208,36 @@ local function run(args)
         return n:fail(payload, message)
     end
 
+    -- Dispatches after_persist for the committed action row. Returns a failure
+    -- payload and message when the row cannot be resolved or a strict binding fails.
+    local function apply_after_persist(action_key: string, agent_result: any, active_iteration: number): (table?, string?)
+        local event_id, lookup_err = persisted_action_id(n, action_key)
+        if not event_id then
+            return { code = agent_consts.ERROR.AGENT_EXEC_FAILED, message = lookup_err }, lookup_err
+        end
+        local _, persist_err = apply_agent_lifecycle(
+            agent_instance,
+            lifecycle_runtime.PHASE.AFTER_PERSIST,
+            n,
+            agent_id,
+            model_name,
+            active_iteration,
+            config.run_context_binding,
+            {
+                reason = REASON.AGENT_STEP,
+                refs = {
+                    iteration = active_iteration,
+                    event_id = event_id
+                },
+                outcome = lifecycle_outcome_from_agent_result(agent_result)
+            }
+        )
+        if persist_err then
+            return { code = agent_consts.ERROR.AGENT_EXEC_FAILED, message = persist_err }, persist_err
+        end
+        return nil, nil
+    end
+
     local function fail_unproductive()
         local stalled_status = build_status_message(iteration, max_iterations, total_tokens, tool_calls_count, true,
             false)
@@ -2378,10 +2432,12 @@ local function run(args)
             step_options.route = route_pin
         end
         local agent_result, step_err = agent_instance:step(prompt, step_options)
+        local memory_recall_error = type(agent_result) == "table" and agent_result.memory_recall_error or nil
         if step_err then
             return fail_with_lifecycle({
                 code = agent_consts.ERROR.AGENT_EXEC_FAILED,
-                message = step_err
+                message = step_err,
+                memory_recall_error = memory_recall_error
             }, step_err, REASON.HOST_FAILED, iteration)
         end
         route_pin = carry_route_pin(route_pin, agent_result)
@@ -2419,7 +2475,8 @@ local function run(args)
             update_node_progress(n, iteration, max_iterations, total_tokens, tool_calls_count, status_msg, agent_id,
                 model_name, unproductive_steps, route_pin)
 
-            store_agent_action(n, agent_result, iteration, agent_id, model_name, exit_tool_name, {})
+            local truncated_action_key = store_agent_action(n, agent_result, iteration, agent_id, model_name,
+                exit_tool_name, {})
 
             n:data(agent_consts.DATA_TYPE.AGENT_OBSERVATION, agent_consts.FEEDBACK.OUTPUT_TRUNCATED, {
                 key = iteration .. "_truncation_warning",
@@ -2442,6 +2499,13 @@ local function run(args)
                     code = agent_consts.ERROR.AGENT_EXEC_FAILED,
                     message = yield_message
                 }, yield_message, REASON.HOST_FAILED, iteration)
+            end
+            if lifecycle_runtime.subscribed(agent_instance.bindings, lifecycle_runtime.PHASE.AFTER_PERSIST) then
+                local persist_payload, persist_message = apply_after_persist(truncated_action_key, agent_result, iteration)
+                if persist_payload then
+                    return fail_with_lifecycle(persist_payload, persist_message or "after_persist failed",
+                        REASON.HOST_FAILED, iteration)
+                end
             end
             pending_checkpoint_history = {}
             builder:with_pending_history(pending_checkpoint_history)
@@ -2470,7 +2534,7 @@ local function run(args)
             model_name, unproductive_steps, route_pin)
 
         store_memory_recall(n, agent_result, iteration)
-        store_agent_action(n, agent_result, iteration, agent_id, model_name, exit_tool_name, {})
+        local action_key = store_agent_action(n, agent_result, iteration, agent_id, model_name, exit_tool_name, {})
         local proposed_controls = {}
         for _, summary in ipairs({ before_result or {}, after_result or {} }) do
             for _, control in ipairs(summary.controls or {}) do proposed_controls[#proposed_controls + 1] = control end
@@ -2484,7 +2548,17 @@ local function run(args)
             time.sleep(tostring(recovery_hooks.pre_action_submit_delay_ms) .. "ms")
         end
 
-        local submit_ok, submit_err = n:submit()
+        -- after_persist needs the turn applied and readable, which only an
+        -- acknowledged yield guarantees; a bare submit only queues the commit.
+        local persist_subscribed = lifecycle_runtime.subscribed(agent_instance.bindings,
+            lifecycle_runtime.PHASE.AFTER_PERSIST)
+        local submit_ok, submit_err
+        if persist_subscribed then
+            local _, yield_err = n:yield()
+            submit_ok, submit_err = yield_err == nil, yield_err
+        else
+            submit_ok, submit_err = n:submit()
+        end
         if not submit_ok then
             if type(submit_err) == "table" then
                 return fail_with_lifecycle(submit_err, error_message(submit_err, "Failed to persist agent turn"),
@@ -2495,6 +2569,13 @@ local function run(args)
                 code = agent_consts.ERROR.AGENT_EXEC_FAILED,
                 message = submit_message
             }, submit_message, REASON.HOST_FAILED, iteration)
+        end
+        if persist_subscribed then
+            local persist_payload, persist_message = apply_after_persist(action_key, agent_result, iteration)
+            if persist_payload then
+                return fail_with_lifecycle(persist_payload, persist_message or "after_persist failed",
+                    REASON.HOST_FAILED, iteration)
+            end
         end
         pending_checkpoint_history = {}
         builder:with_pending_history(pending_checkpoint_history)
