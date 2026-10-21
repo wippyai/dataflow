@@ -157,3 +157,5 @@ override:
   "userspace.dataflow.node.agent:agent_empty_result_test:security.policies": [app:test_policy]
   "userspace.dataflow.node.agent:agent_tool_calling_default_test:security.actor.id": dataflow.test
   "userspace.dataflow.node.agent:agent_tool_calling_default_test:security.policies": [app:test_policy]
+  "userspace.dataflow.template:iteration_routes_test:security.actor.id": dataflow.test
+  "userspace.dataflow.template:iteration_routes_test:security.policies": [app:test_policy]

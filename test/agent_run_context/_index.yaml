@@ -1,0 +1,29 @@
+version: "1.0"
+namespace: userspace.dataflow.node.agent.run_context
+
+entries:
+  # userspace.dataflow.node.agent.run_context:run_context_test
+  - name: run_context_test
+    kind: function.lua
+    meta:
+      type: test
+      suite: dataflow
+      comment: End-to-end contract tests for the dataflow agent run-context child binding.
+      tags:
+        - dataflow
+        - agent
+        - run-context
+        - test
+    source: file://run_context_test.lua
+    modules:
+      - contract
+      - json
+      - sql
+      - time
+      - uuid
+    imports:
+      agent_consts: userspace.dataflow.node.agent:consts
+      consts: userspace.dataflow:consts
+      test: wippy.test:test
+      wait_for_boot: app:wait_for_boot
+    method: run_tests

@@ -1,5 +1,5 @@
-name: Setup verified latest Wippy runtime
-description: Installs the latest stable Wippy runtime after signature verification.
+name: Setup verified Wippy runtime
+description: Installs Wippy v0.3.47a after signature verification.
 
 outputs:
   path:
@@ -24,7 +24,7 @@ runs:
         GH_TOKEN: ${{ github.token }}
       run: |
         set -euo pipefail
-        wippy_version="$(gh api repos/wippyai/runtime/releases/latest --jq .tag_name)"
+        wippy_version="v0.3.47a"
         test -n "$wippy_version"
 
         tmp="$(mktemp -d)"
