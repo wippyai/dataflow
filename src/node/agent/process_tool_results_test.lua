@@ -142,6 +142,58 @@ local function define_tests()
         end)
     end)
 
+    describe("malformed tool arguments", function()
+        it("records malformed sibling calls when a valid exit completes the turn", function()
+            local n, recorded = make_recording_node()
+            local _, _, complete, result = agent_node._test.process_tool_results(
+                n, {}, 1, "finish", { tool_calls = {
+                    { id = "done", name = "finish", arguments = { answer = "done" } },
+                    { id = "bad", name = "lookup", arguments = '', raw_arguments = '',
+                        arguments_error = "unexpected end of JSON input" },
+                    { id = "bad_exit", name = "finish", arguments = '', raw_arguments = '',
+                        arguments_error = "unexpected end of JSON input" }
+                } }, {}, {}, {}
+            )
+            test.is_true(complete)
+            test.eq(result.answer, "done")
+            test.eq(#recorded, 2)
+            for _, id in ipairs({ "bad", "bad_exit" }) do
+                local row = find_by_tool_call_id(recorded, id)
+                test.not_nil(row)
+                test.eq(row.content, "Failed to parse arguments: unexpected end of JSON input")
+                test.is_true(row.opts.metadata.is_error)
+            end
+        end)
+
+        it("records the parse error for every tool and bypasses exit validation", function()
+            for _, config in ipairs({ {}, { exit_schema = { required = { "answer" } } },
+                { exit_func_id = "userspace.dataflow.node.agent.stub:exit_reject_validator" } }) do
+                local n, recorded = make_recording_node()
+                local calls = {}
+                for _, name in ipairs({ "lookup", "finish", "delegate", "finish" }) do
+                    calls[#calls + 1] = { id = "bad_" .. #calls, name = name,
+                        arguments = '{"answer":', raw_arguments = '{"answer":',
+                        arguments_error = "unexpected end of JSON input" }
+                end
+                local responses, delegations, complete, result = agent_node._test.process_tool_results(
+                    n, {}, 1, "finish", { tool_calls = calls }, config, {}, {}
+                )
+                test.eq(complete, false)
+                test.is_nil(result)
+                test.eq(#responses, 0)
+                test.eq(#delegations, 0)
+                test.eq(#recorded, #calls)
+                for _, call in ipairs(calls) do
+                    local row = find_by_tool_call_id(recorded, call.id)
+                    test.not_nil(row)
+                    test.eq(row.content, "Failed to parse arguments: " .. call.arguments_error)
+                    test.eq(row.opts.metadata.is_error, true)
+                    test.eq(row.opts.metadata.tool_name, call.name)
+                end
+            end
+        end)
+    end)
+
     describe("process_tool_results: exit validator rejection", function()
         for _, validation in ipairs({
             {
