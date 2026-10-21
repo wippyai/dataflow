@@ -1063,6 +1063,16 @@ local function define_tests()
                 test.eq(#test_node._queued_commands, 1)
             end)
 
+            it("preserves numeric and boolean data types through storage", function()
+                for _, value in ipairs({ 7, 2.5, true, false }) do
+                    local _, err = test_node:data(consts.DATA_TYPE.NODE_INPUT, value)
+                    test.is_nil(err)
+                    local command = test_node._queued_commands[#test_node._queued_commands]
+                    test.eq(command.payload.content_type, consts.CONTENT_TYPE.JSON)
+                    test.eq(command.payload.content, value)
+                end
+            end)
+
             it("should determine content type automatically", function()
                 test.not_nil(test_node)
                 test_node:data(consts.DATA_TYPE.NODE_OUTPUT, { message = "test" })

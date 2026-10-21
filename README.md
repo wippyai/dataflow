@@ -143,3 +143,29 @@ with an authorized database handle. The library is not a public HTTP endpoint.
 ## Live execution authority
 
 Hosts with mutable permissions bind their native identity resolver through `execution_authority_imports` and set `refresh_perms: true` (default false). Dataflow resolves current authority at activation and resume boundaries and preserves explicit narrowing ceilings. The [host binding contract](src/README.md#live-execution-authority) describes capture, resolution and existing frame behavior.
+
+## Iteration input routes
+
+Parallel iterator and Cycle template configurations accept optional
+`iteration_input_routes` in raw node commands:
+
+```lua
+iteration_input_routes = {
+    { node_id = root_template_id, discriminator = "default" },
+    { node_id = join_template_id, discriminator = "item", transform = "output" },
+}
+```
+
+Each `node_id` names a direct template child of the iterator. Routes seed the
+Parallel item or the Cycle context (`input`, `state`, `last_result`, `iteration`)
+once per iteration, including nodes with incoming body edges. Discriminators
+participate in the target's normal `inputs.required` gate. Transforms use the
+same expression environment and error handling as data targets, with `output`
+set to the item or context.
+
+When routes are present, they replace implicit root item seeding. When absent,
+the existing root seeding remains unchanged. Parallel passthrough inputs still
+reach roots. Graph construction rejects targets outside the body, duplicate
+targets, body dependency cycles, and body edges returning to the iterator.
+Routes do not add executable nodes or outgoing body edges. Cycle retains its
+existing iteration limit and fails if continuation exceeds it.

@@ -127,6 +127,61 @@ function TemplateGraph:has_cycles()
     return false, nil
 end
 
+local function validate_iteration_input_routes(graph, parent_node)
+    local config = type(parent_node.config) == "function" and parent_node:config() or {}
+    local routes = config.iteration_input_routes
+    if routes == nil then return nil end
+    if type(routes) ~= "table" then
+        return "iteration_input_routes must be an array"
+    end
+    local targets = {}
+    local route_count = 0
+    for index, route in pairs(routes) do
+        route_count = route_count + 1
+        if type(index) ~= "number" or index % 1 ~= 0 or index < 1 or index > #routes then
+            return "iteration_input_routes must be an array"
+        end
+        if type(route) ~= "table" or type(route.node_id) ~= "string" or not graph.nodes[route.node_id] then
+            return "Iteration input route target must be a node inside the iteration body"
+        end
+        if targets[route.node_id] then
+            return "Duplicate iteration input route target: " .. route.node_id
+        end
+        if route.discriminator ~= nil and type(route.discriminator) ~= "string" then
+            return "Iteration input route discriminator must be a string"
+        end
+        if route.transform ~= nil and type(route.transform) ~= "string" then
+            return "Iteration input route transform must be a string expression"
+        end
+        targets[route.node_id] = true
+    end
+    if route_count ~= #routes then return "iteration_input_routes must be an array" end
+    for _, template in pairs(graph.nodes) do
+        for _, field in ipairs({ "data_targets", "error_targets" }) do
+            for _, target in ipairs((template.config or {})[field] or {}) do
+                if target.node_id == parent_node.node_id then
+                    return "Iteration input routes close a cycle through the iteration parent"
+                end
+            end
+        end
+    end
+    graph.iteration_input_routes = routes
+    return nil
+end
+
+function template_graph.route_iteration_input(graph, parent_node, uuid_mapping, input_item)
+    local targets = {}
+    for _, route in ipairs(graph.iteration_input_routes) do
+        table.insert(targets, {
+            node_id = uuid_mapping[route.node_id],
+            data_type = consts.DATA_TYPE.NODE_INPUT,
+            discriminator = route.discriminator,
+            transform = route.transform,
+        })
+    end
+    return parent_node:_route_outputs(input_item, targets)
+end
+
 ---Discover template child nodes for a parent node
 ---@param dataflow_id string Dataflow ID
 ---@param parent_node_id string Parent node ID
@@ -168,16 +223,16 @@ function template_graph.build_for_node(parent_node, deps)
         return nil, discover_err
     end
 
-    if #templates == 0 then
-        return template_graph.new(deps), nil
-    end
-
     local graph = template_graph.new(deps)
 
     -- Step 1: Add all nodes first
     for _, template in ipairs(templates) do
         graph.nodes[template.node_id] = template
     end
+
+    local route_err = validate_iteration_input_routes(graph, parent_node)
+    if route_err then return nil, route_err end
+    if #templates == 0 then return graph, nil end
 
     -- Step 2: Initialize empty edges for all nodes
     for node_id, _ in pairs(graph.nodes) do
