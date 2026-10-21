@@ -22,7 +22,9 @@ local funcs = require("funcs")
 type ToolCall = {
     id: string,
     name: string,
-    arguments: table?,
+    arguments: string | table?,
+    raw_arguments: string?,
+    arguments_error: string?,
     registry_id: string?,
 }
 
@@ -1457,6 +1459,10 @@ local function process_tool_results(n, tool_results, iteration, exit_tool_name, 
         local finish_seen = false
         for _, original_tool_call in ipairs(agent_result.tool_calls) do
             if original_tool_call.name == exit_tool_name then
+                if original_tool_call.arguments_error then
+                    finish_seen = true
+                    goto next_exit_call
+                end
                 -- Only the first finish decides completion. Every later finish
                 -- still needs a result, or a rejected turn cannot be sent again.
                 if finish_seen then
@@ -1526,18 +1532,15 @@ local function process_tool_results(n, tool_results, iteration, exit_tool_name, 
         end
     end
 
-    -- A rejected finish must not short-circuit here: any sibling tool calls in the
-    -- same turn already ran (tool_results holds their output) and each still needs a
-    -- recorded observation, or the next request carries tool_use ids the API never
-    -- sees answered. Only a genuine completion ends the loop early.
-    if task_complete and not settle_completed_round then
-        return control_responses, control_delegations, task_complete, final_result
-    end
-
     if agent_result.tool_calls then
         for _, tool_call in ipairs(agent_result.tool_calls) do
             local call_id = tool_call.id
             local result_data = tool_results[call_id]
+            if tool_call.arguments_error then
+                result_data = { error = "Failed to parse arguments: " .. tool_call.arguments_error }
+            elseif task_complete and not settle_completed_round then
+                goto next_tool_result
+            end
 
             if result_data then
                 local tool_result = result_data.result
@@ -1598,6 +1601,7 @@ local function process_tool_results(n, tool_results, iteration, exit_tool_name, 
                     end
                 end
             end
+            ::next_tool_result::
         end
     end
 
