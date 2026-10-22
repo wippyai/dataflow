@@ -531,3 +531,19 @@ entries:
       prompt_builder: userspace.dataflow.node.agent:prompt_builder
       test: wippy.test:test
     method: run_tests
+
+  - name: agent_error_test
+    kind: function.lua
+    meta:
+      type: test
+      group: Workflow / Agent Node
+    source: file://agent_error_test.lua
+    modules: [json]
+    imports:
+      test: wippy.test:test
+      agent_node: userspace.dataflow.node.agent:node
+      node_sdk: userspace.dataflow:node
+      agent_context: wippy.agent:context
+      prompt_builder: userspace.dataflow.node.agent:prompt_builder
+      agent_consts: userspace.dataflow.node.agent:consts
+    method: run_tests

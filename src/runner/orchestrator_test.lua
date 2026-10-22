@@ -7,6 +7,7 @@ type HarnessOptions = {
     actor_id: string?,
     channel_events: { any }?,
     failed_node_errors: string?,
+    error_details: any?,
     identity_error: string?,
     load_error: string?,
     nodes: { [string]: any }?,
@@ -47,7 +48,7 @@ local function harness(options: HarnessOptions?): any
             has_workflow_output = false,
         }
     end
-    workflow_state.get_failed_node_errors = function(): string? return cfg.failed_node_errors end
+    workflow_state.get_failed_node_errors = function(): (string?, any?) return cfg.failed_node_errors, cfg.error_details end
     workflow_state.track_process = function(self: any): any return self end
     workflow_state.queue_commands = function(self: any): any return self end
     workflow_state.queue_completion = function(self: any): any return self end
@@ -248,6 +249,38 @@ local function define_tests()
             }))
             test.is_true(result.success)
             test.eq(result.output.message, "all done")
+        end)
+
+        it("returns and persists structured node errors with the existing failure text", function()
+            local error_details = { { node_id = "root", error = { code = "EXEC_FAILED",
+                message = "Provider rejects the request", cause = { kind = "PermissionDenied", retryable = false,
+                    details = { error_type = "payment_required", provider = "test_provider", model = "test_model" } } } } }
+            local runtime = harness({
+                failed_node_errors = "Node [root] failed: Provider rejects the request",
+                error_details = error_details,
+                scheduler_decisions = { { type = "complete_workflow", payload = { success = false } } },
+            })
+            local persisted_metadata
+            local ws = runtime.workflow_state.new()
+            ws.queue_completion = function(_self, command) persisted_metadata = command.payload.metadata end
+
+            local hook_args
+            runtime.funcs.new = function()
+                local executor = {}
+                function executor:with_actor() return self end
+                function executor:with_scope() return self end
+                function executor:call(_id, args) hook_args = args; return true, nil end
+                return executor
+            end
+            local result = run(runtime, { on_complete = "test:completion" })
+
+            test.is_false(result.success)
+            test.eq(result.error, "Node [root] failed: Provider rejects the request")
+            test.eq(result.error_details, error_details)
+            test.eq(persisted_metadata.error, result.error)
+            test.eq(persisted_metadata.error_details, error_details)
+            test.eq(hook_args.error, result.error)
+            test.eq(hook_args.error_details, error_details)
         end)
 
         it("preserves detailed node failure text", function()

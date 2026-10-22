@@ -269,6 +269,7 @@ function methods:execute(dataflow_id, options)
         dataflow_id = orch_result.dataflow_id or dataflow_id,
         data = nil,
         error = orch_result.error,
+        error_details = orch_result.error_details,
         pending = orch_result.pending == true,
         passivated = orch_result.passivated == true,
     }
@@ -283,7 +284,8 @@ function methods:execute(dataflow_id, options)
             kind = "WorkflowFailed",
             details = {
                 dataflow_id = result.dataflow_id,
-                success = false
+                success = false,
+                error_details = result.error_details
             }
         })
     end
