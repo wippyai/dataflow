@@ -192,6 +192,103 @@ entries:
   - contract: wippy.agent:lifecycle
     methods:
       apply: userspace.dataflow.node.agent.stub:lifecycle_recorder
+- name: persist_probe
+  kind: function.lua
+  meta:
+    test_only: true
+    comment: Reads the after_persist record through run_context for persistence tests
+  source: file://persist_probe.lua
+  modules:
+  - contract
+  - ctx
+  imports:
+    helpers: userspace.dataflow.node.agent.stub:recovery_helpers
+  method: handler
+- name: persist_probe_records
+  kind: function.lua
+  meta:
+    test_only: true
+    comment: Returns the after_persist deliveries recorded for a dataflow
+  source: file://persist_probe.lua
+  modules:
+  - contract
+  - ctx
+  imports:
+    helpers: userspace.dataflow.node.agent.stub:recovery_helpers
+  method: records
+- name: persist_probe_binding
+  kind: contract.binding
+  meta:
+    test_only: true
+  contracts:
+  - contract: wippy.agent:lifecycle
+    methods:
+      apply: userspace.dataflow.node.agent.stub:persist_probe
+- name: persist_probe_trait
+  kind: registry.entry
+  meta:
+    type: agent.trait
+    test_only: true
+  data:
+    behaviors:
+    - id: persist_probe
+      handles: [after_persist]
+      strict: true
+      handlers:
+        lifecycle: userspace.dataflow.node.agent.stub:persist_probe_binding
+- name: persist_probe_failing_trait
+  kind: registry.entry
+  meta:
+    type: agent.trait
+    test_only: true
+  data:
+    behaviors:
+    - id: persist_probe
+      handles: [after_persist]
+      handlers:
+        lifecycle: userspace.dataflow.node.agent.stub:persist_probe_binding
+      options:
+        fail: true
+- name: persist_probe_strict_failing_trait
+  kind: registry.entry
+  meta:
+    type: agent.trait
+    test_only: true
+  data:
+    behaviors:
+    - id: persist_probe
+      handles: [after_persist]
+      strict: true
+      handlers:
+        lifecycle: userspace.dataflow.node.agent.stub:persist_probe_binding
+      options:
+        fail: true
+- name: failing_memory
+  kind: function.lua
+  meta:
+    test_only: true
+    comment: Memory provider that always fails recall
+  source: file://failing_memory.lua
+  method: recall
+- name: failing_memory_binding
+  kind: contract.binding
+  meta:
+    test_only: true
+  contracts:
+  - contract: wippy.agent:memory
+    methods:
+      recall: userspace.dataflow.node.agent.stub:failing_memory
+- name: failing_recall_trait
+  kind: registry.entry
+  meta:
+    type: agent.trait
+    test_only: true
+  data:
+    behaviors:
+    - id: memory
+      handles: [recall]
+      handlers:
+        recall: userspace.dataflow.node.agent.stub:failing_memory_binding
 - name: lifecycle_test_trait
   kind: registry.entry
   meta:

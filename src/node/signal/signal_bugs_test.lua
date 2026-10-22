@@ -637,6 +637,18 @@ local function define_tests()
             test.not_nil(c, "client created")
         end)
 
+        local function wait_for_completion(dataflow_id)
+            local status
+            for _ = 1, 100 do
+                status = c:get_status(dataflow_id)
+                if status == consts.STATUS.COMPLETED_SUCCESS or status == consts.STATUS.COMPLETED_FAILURE then
+                    return status
+                end
+                time.sleep("100ms")
+            end
+            return status
+        end
+
         local function make_signal_wf(signal_id)
             local nid = uuid.v7()
             local did = uuid.v7()
@@ -665,8 +677,7 @@ local function define_tests()
 
             c:signal(df_id, sid, { ok = true })
             c:start(df_id)
-            time.sleep("2s")
-            test.eq(c:get_status(df_id), consts.STATUS.COMPLETED_SUCCESS, "race resolved")
+            test.eq(wait_for_completion(df_id), consts.STATUS.COMPLETED_SUCCESS, "race resolved")
         end)
 
         it("multiple signals queued while parked select the correct one", function()
@@ -680,8 +691,7 @@ local function define_tests()
             c:signal(df_id, sid, { correct = true })
             c:signal(df_id, "wrong2-" .. uuid.v7(), { nope = true })
 
-            time.sleep("3s")
-            test.eq(c:get_status(df_id), consts.STATUS.COMPLETED_SUCCESS, "correct signal picked from backlog")
+            test.eq(wait_for_completion(df_id), consts.STATUS.COMPLETED_SUCCESS, "correct signal picked from backlog")
         end)
 
         it("duplicate signal correction remains idempotent", function()
@@ -695,8 +705,7 @@ local function define_tests()
             -- correction signal
             c:signal(df_id, sid, { approved = true, version = 2 })
 
-            time.sleep("3s")
-            test.eq(c:get_status(df_id), consts.STATUS.COMPLETED_SUCCESS, "completed with correction")
+            test.eq(wait_for_completion(df_id), consts.STATUS.COMPLETED_SUCCESS, "completed with correction")
         end)
 
         it("five parked workflows reactivate independently", function()
@@ -717,9 +726,8 @@ local function define_tests()
             end
 
             -- verify all complete
-            time.sleep("3s")
             for i = 1, 5 do
-                test.eq(c:get_status(df_ids[i]), consts.STATUS.COMPLETED_SUCCESS, "wf" .. i .. " completed")
+                test.eq(wait_for_completion(df_ids[i]), consts.STATUS.COMPLETED_SUCCESS, "wf" .. i .. " completed")
             end
         end)
     end)

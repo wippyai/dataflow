@@ -103,6 +103,7 @@ entries:
     meta:
       type: test
       suite: signal_bugs
+      timeout: "120s"
       comment: Bug-proving tests - falsy data, orphaned yields, race conditions, terminate behavior
     source: file://signal_bugs_test.lua
     modules:

@@ -81,7 +81,7 @@ local function handler(contract_args)
     local scenario: any = helpers.parse_scenario(messages)
     local result_count = helpers.count_function_results(messages)
 
-    helpers.bump_metric(scenario.scenario_id, "llm_calls", 1)
+    local llm_calls = helpers.bump_metric(scenario.scenario_id, "llm_calls", 1)
     for _, message in ipairs(messages or {}) do
         local text = message.content and message.content[1] and message.content[1].text
         if type(text) == "string" and (
@@ -179,6 +179,17 @@ local function handler(contract_args)
         end
         if helpers.count_text_matches(messages, "BEHAVIOR-RESTART-TARGET") == 0 then
             return nil, "recovered proposal ran the previous agent"
+        end
+        return final_response(scenario.scenario_id, scenario.mode, result_count, 9, 4)
+    end
+
+    -- The first turn reaches the token limit inside a tool call, so it is
+    -- stored as a truncated action and retried.
+    if scenario.mode == "truncated_then_final" then
+        if llm_calls == 1 then
+            local truncated = tool_call_response(scenario.scenario_id, 1, 0, 13, 100)
+            truncated.finish_reason = "length"
+            return truncated
         end
         return final_response(scenario.scenario_id, scenario.mode, result_count, 9, 4)
     end

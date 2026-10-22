@@ -310,6 +310,27 @@ entries:
       test: wippy.test:test
     method: run_tests
 
+  - name: agent_after_persist_test
+    kind: function.lua
+    meta:
+      name: Agent after_persist delivery
+      type: test
+      comment: after_persist reaches subscribed bindings once the action row is committed and readable.
+      group: Workflow / Agent Node
+      timeout: "120s"
+    source: file://agent_after_persist_test.lua
+    modules:
+      - uuid
+      - time
+      - funcs
+    imports:
+      client: userspace.dataflow:client
+      consts: userspace.dataflow:consts
+      agent_consts: userspace.dataflow.node.agent:consts
+      data_reader: userspace.dataflow.persist:data_reader
+      test: wippy.test:test
+    method: run_tests
+
   - name: route_pin_test
     kind: function.lua
     meta:
