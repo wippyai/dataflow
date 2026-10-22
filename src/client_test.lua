@@ -760,6 +760,43 @@ local function define_tests()
                 test.eq(#captured_calls.activation_notify, 0)
             end)
 
+            it("preserves node causes alongside the existing workflow failure message", function()
+                local cause = {
+                    kind = "PermissionDenied",
+                    message = "Provider rejects the request",
+                    retryable = false,
+                    details = { error_type = "payment_required", provider = "test_provider", model = "test_model" }
+                }
+                local error_details = { { node_id = "agent-node", error = {
+                    code = "AGENT_EXEC_FAILED", message = cause.message, cause = cause
+                } } }
+                mock_deps.funcs.new = function()
+                    local executor = {}
+                    function executor:with_actor() return self end
+                    function executor:with_scope() return self end
+                    function executor:call()
+                        return { success = false, error = "Node failed", error_details = error_details }, nil
+                    end
+                    return executor
+                end
+
+                local result, err = test_client:execute("existing-workflow-123")
+
+                test.eq(result.error, "Node failed")
+                test.eq(err:kind(), "WorkflowFailed")
+                test.eq(err:message(), "Node failed")
+                test.eq(result.error_details, error_details)
+                local returned_error = err:details().error_details[1].error
+                test.eq(returned_error.code, "AGENT_EXEC_FAILED")
+                test.eq(returned_error.message, cause.message)
+                test.eq(returned_error.cause.kind, cause.kind)
+                test.eq(returned_error.cause.message, cause.message)
+                test.is_false(returned_error.cause.retryable)
+                test.eq(returned_error.cause.details.error_type, cause.details.error_type)
+                test.eq(returned_error.cause.details.provider, cause.details.provider)
+                test.eq(returned_error.cause.details.model, cause.details.model)
+            end)
+
             it("should handle orchestrator returning workflow failure", function()
                 mock_deps.funcs.new = function()
                     local executor = {}

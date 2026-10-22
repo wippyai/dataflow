@@ -960,12 +960,22 @@ function methods:get_failed_node_errors()
     for _, err_data in ipairs(workflow_errors) do
         if err_data.discriminator == "error" then
             local content = err_data.content
+            local structured = content
+            if err_data.content_type == consts.CONTENT_TYPE.JSON then
+                structured = decode_json_content(content)
+            end
+            local source_node = self.nodes[err_data.node_id]
+            local node_metadata = source_node and source_node.metadata or nil
+            local node_error = type(node_metadata) == "table" and node_metadata.error or nil
+            local details = (type(structured) == "table" or type(node_error) == "table") and {
+                { node_id = err_data.node_id, error = structured, node_error = node_error }
+            } or nil
             if type(content) == "string" then
-                return content
+                return content, details
             elseif type(content) == "table" then
-                return json.encode(content)
+                return json.encode(content), details
             else
-                return tostring(content)
+                return tostring(content), details
             end
         end
     end
@@ -988,6 +998,7 @@ function methods:get_failed_node_errors()
     end
 
     local error_details = {}
+    local structured_errors = {}
     for _, node_id in ipairs(failed_nodes) do
         local result_data = data_reader.with_dataflow(self.dataflow_id)
             :with_nodes(node_id)
@@ -1002,6 +1013,10 @@ function methods:get_failed_node_errors()
                 if result.content_type == "application/json" or result.content_type == consts.CONTENT_TYPE.JSON then
                     local parsed, parse_err = json.decode(content)
                     if not parse_err and type(parsed) == "table" then
+                        table.insert(structured_errors, {
+                            node_id = node_id,
+                            error = type(parsed.error) == "table" and parsed.error or parsed
+                        })
                         if parsed.error and type(parsed.error) == "table" and parsed.error.message then
                             error_message = tostring(parsed.error.message)
                         elseif parsed.message then
@@ -1022,7 +1037,7 @@ function methods:get_failed_node_errors()
         table.insert(error_details, "Node [" .. node_id .. "] failed: " .. error_message)
     end
 
-    return table.concat(error_details, "; ")
+    return table.concat(error_details, "; "), #structured_errors > 0 and structured_errors or nil
 end
 
 function methods:_node_has_required_inputs(node_id)

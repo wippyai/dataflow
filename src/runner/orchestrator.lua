@@ -99,6 +99,7 @@ local function fire_completion_hook(state, result)
     }
     if result and result.error then
         hook_args.error = result.error
+        hook_args.error_details = result.error_details
     end
 
     local executor = state.runtime.funcs.new()
@@ -646,8 +647,10 @@ function handle_complete_workflow(state: OrchestratorState, payload: any)
 
     -- If workflow failed, get detailed node error information
     local detailed_error = message
+    local error_details
     if not success then
-        local failed_node_errors = state.workflow_state:get_failed_node_errors()
+        local failed_node_errors
+        failed_node_errors, error_details = state.workflow_state:get_failed_node_errors()
         if failed_node_errors then
             detailed_error = failed_node_errors
         elseif not message then
@@ -664,7 +667,7 @@ function handle_complete_workflow(state: OrchestratorState, payload: any)
         payload = {
             activation_generation = state.activation_generation,
             status = final_status,
-            metadata = { error = not success and detailed_error or nil }
+            metadata = { error = not success and detailed_error or nil, error_details = error_details }
         }
     })
     local persist_result, persist_err = state.workflow_state:persist()
@@ -736,7 +739,8 @@ function handle_complete_workflow(state: OrchestratorState, payload: any)
         state.exit_result = {
             success = false,
             dataflow_id = state.dataflow_id,
-            error = detailed_error or "Workflow failed"
+            error = detailed_error or "Workflow failed",
+            error_details = error_details
         }
     end
 

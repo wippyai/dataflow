@@ -474,6 +474,93 @@ local function define_tests()
         end)
 
         describe("Error Query", function()
+            it("preserves structured errors from failed nodes without including observed errors", function()
+                local failed_id, observed_id = uuid.v7(), uuid.v7()
+                local cause = { kind = "RateLimited", retryable = true,
+                    details = { error_type = "rate_limit_exceeded", provider = "test_provider", model = "test_model" } }
+                local node_error = { code = "AGENT_EXEC_FAILED", message = "Provider rejects the request", cause = cause }
+                create_test_nodes(test_ctx.tx, test_ctx.dataflow_id :: string, {
+                    { node_id = failed_id, type = "test_node", status = consts.STATUS.COMPLETED_FAILURE },
+                    { node_id = observed_id, type = "test_node", status = consts.STATUS.COMPLETED_FAILURE,
+                      metadata = { error_observed = true } }
+                })
+                create_test_data(test_ctx.tx, test_ctx.dataflow_id :: string, {
+                    { node_id = failed_id, type = consts.DATA_TYPE.NODE_RESULT, discriminator = "result.error",
+                      content = json.encode({ success = false, error = node_error }), content_type = consts.CONTENT_TYPE.JSON },
+                    { node_id = observed_id, type = consts.DATA_TYPE.NODE_RESULT, discriminator = "result.error",
+                      content = json.encode({ success = false, error = { code = "HANDLED", message = "Handled error" } }),
+                      content_type = consts.CONTENT_TYPE.JSON }
+                })
+                test_ctx.tx:commit()
+                test_ctx.db:release()
+                test_ctx.tx, test_ctx.db = nil, nil
+                local ws = assert(workflow_state.new(test_ctx.dataflow_id))
+                local _, load_err = ws:load_state()
+                test.is_nil(load_err)
+
+                local message, error_details = ws:get_failed_node_errors()
+
+                test.eq(message, "Node [" .. failed_id .. "] failed: " .. node_error.message)
+                test.not_nil(error_details)
+                test.eq(#error_details, 1)
+                test.eq(error_details[1].node_id, failed_id)
+                local returned_error = error_details[1].error
+                test.eq(returned_error.code, node_error.code)
+                test.eq(returned_error.message, node_error.message)
+                test.eq(returned_error.cause.kind, node_error.cause.kind)
+                test.eq(returned_error.cause.retryable, node_error.cause.retryable)
+                test.eq(returned_error.cause.details.error_type, node_error.cause.details.error_type)
+                test.eq(returned_error.cause.details.provider, node_error.cause.details.provider)
+                test.eq(returned_error.cause.details.model, node_error.cause.details.model)
+            end)
+
+            for _, format in ipairs({ "json", "text" }) do
+                it("preserves the node cause alongside a routed " .. format .. " error", function()
+                    local node_id = uuid.v7()
+                    local node_error = { code = "EXEC_FAILED", message = "Execution failed",
+                        cause = { kind = "NotFound", retryable = false,
+                            details = { error_type = "model_error", provider = "test_provider", model = "test_model" } } }
+                    local encoded = format == "json" and json.encode({ code = node_error.code, message = node_error.message })
+                        or "Display-safe failure"
+                    create_test_nodes(test_ctx.tx, test_ctx.dataflow_id :: string, {
+                        { node_id = node_id, type = "test_node", status = consts.STATUS.COMPLETED_FAILURE,
+                          metadata = { error = node_error } }
+                    })
+                    create_test_data(test_ctx.tx, test_ctx.dataflow_id :: string, {
+                        { node_id = node_id, type = consts.DATA_TYPE.WORKFLOW_OUTPUT, discriminator = "error",
+                          content = encoded, content_type = format == "json" and consts.CONTENT_TYPE.JSON or consts.CONTENT_TYPE.TEXT }
+                    })
+                    test_ctx.tx:commit()
+                    test_ctx.db:release()
+                    test_ctx.tx, test_ctx.db = nil, nil
+                    local ws = assert(workflow_state.new(test_ctx.dataflow_id))
+                    local _, load_err = ws:load_state()
+                    test.is_nil(load_err)
+
+                    local message, error_details = ws:get_failed_node_errors()
+
+                    test.eq(message, encoded)
+                    test.not_nil(error_details)
+                    test.eq(error_details[1].node_id, node_id)
+                    if format == "json" then
+                        test.eq(error_details[1].error.code, node_error.code)
+                        test.eq(error_details[1].error.message, node_error.message)
+                        test.is_nil(error_details[1].error.cause)
+                    else
+                        test.eq(error_details[1].error, encoded)
+                    end
+                    test.not_nil(error_details[1].node_error)
+                    local returned_error = error_details[1].node_error
+                    test.eq(returned_error.code, node_error.code)
+                    test.eq(returned_error.message, node_error.message)
+                    test.eq(returned_error.cause.kind, node_error.cause.kind)
+                    test.eq(returned_error.cause.retryable, node_error.cause.retryable)
+                    test.eq(returned_error.cause.details.error_type, node_error.cause.details.error_type)
+                    test.eq(returned_error.cause.details.provider, node_error.cause.details.provider)
+                    test.eq(returned_error.cause.details.model, node_error.cause.details.model)
+                end)
+            end
+
             it("should return nil when no nodes have failed", function()
                 test_ctx.tx:commit()
                 test_ctx.db:release()
