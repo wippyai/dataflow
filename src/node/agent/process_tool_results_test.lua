@@ -31,6 +31,31 @@ local function find_by_tool_call_id(recorded, tool_call_id)
 end
 
 local function define_tests()
+    describe("tool call validation", function()
+        it("rejects a missing name before an observation key can be built", function()
+            local valid, err = agent_node._test.validate_tool_calls({
+                { id = "malformed-progress", arguments = {}, arguments_error = "unexpected EOF" }
+            })
+
+            test.is_false(valid)
+            test.eq(err, "Malformed tool call at index 1: name is required")
+        end)
+
+        it("accepts a complete call even when its arguments failed to parse", function()
+            local valid, err = agent_node._test.validate_tool_calls({
+                {
+                    id = "progress",
+                    name = "ReportProgress",
+                    arguments = "",
+                    arguments_error = "unexpected EOF"
+                }
+            })
+
+            test.is_true(valid)
+            test.is_nil(err)
+        end)
+    end)
+
     describe("behavior policy settlement", function()
         it("settles sibling outcomes before policies on a successful finish", function()
             local n, recorded = make_recording_node()
@@ -139,6 +164,36 @@ local function define_tests()
             test.is_true(metadata.session_context.recovered)
             test.eq(metadata.behavior_pending, false)
             test.eq(yields, 1)
+        end)
+
+        it("returns a named failure for malformed persisted tool metadata", function()
+            local action = {
+                content = {
+                    tool_calls = {
+                        { id = "malformed-progress", arguments = {}, arguments_error = "unexpected EOF" }
+                    }
+                },
+                metadata = { iteration = 2 }
+            }
+            local selected
+            local query = {}
+            query.with_nodes = function(self) return self end
+            query.with_data_types = function(self, kind) selected = kind; return self end
+            query.order_by = function(self) return self end
+            query.all = function()
+                return selected == agent_consts.DATA_TYPE.AGENT_ACTION and { action } or {}
+            end
+            local n = { query = function() return query end }
+
+            local complete, result, recovered_iteration, err = agent_node._test.recover_persisted_action(
+                n, {}, {}, {}, {}, {}, 1, 10, 0, "auto", nil, false, "app:agent", "model:test"
+            )
+
+            test.is_false(complete)
+            test.is_nil(result)
+            test.eq(recovered_iteration, 2)
+            test.eq(err.code, agent_consts.ERROR.MALFORMED_TOOL_CALL)
+            test.eq(err.message, "Malformed tool call at index 1: name is required")
         end)
     end)
 
