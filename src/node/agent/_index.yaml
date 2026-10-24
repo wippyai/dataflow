@@ -426,6 +426,19 @@ entries:
       test: wippy.test:test
     method: run_tests
 
+  - name: agent_malformed_tool_call_test
+    kind: function.lua
+    meta:
+      name: Agent Node Malformed Tool Call Test
+      type: test
+      comment: Directly verifies malformed provider tool metadata fails at the finalize-iteration boundary before an observation key can be constructed.
+      group: Workflow / Agent Node
+    source: file://agent_malformed_tool_call_test.lua
+    imports:
+      agent_node: userspace.dataflow.node.agent:node
+      test: wippy.test:test
+    method: run_tests
+
   - name: agent_tool_calling_default_test
     kind: function.lua
     meta:

@@ -1368,6 +1368,39 @@ local function update_tool_viz_nodes(n, tool_results, tool_call_to_node_id)
     end
 end
 
+-- Provider responses are external input. Validate call metadata before any
+-- phase uses it for routing, persistence, invocation, or observation keys.
+-- In particular, do not turn a malformed call into an observation with an
+-- invented name: the node must fail through its configured error targets.
+local function validate_tool_calls(tool_calls: any): (boolean, string?)
+    if tool_calls == nil then return true, nil end
+    if type(tool_calls) ~= "table" then
+        return false, "Malformed tool calls: expected an array"
+    end
+
+    local count = #tool_calls
+    for key in pairs(tool_calls) do
+        if type(key) ~= "number" or key < 1 or key % 1 ~= 0 or key > count then
+            return false, "Malformed tool calls: expected an array"
+        end
+    end
+
+    for index = 1, count do
+        local tool_call = tool_calls[index]
+        if type(tool_call) ~= "table" then
+            return false, "Malformed tool call at index " .. index .. ": expected an object"
+        end
+        if type(tool_call.id) ~= "string" or tool_call.id:match("%S") == nil then
+            return false, "Malformed tool call at index " .. index .. ": id is required"
+        end
+        if type(tool_call.name) ~= "string" or tool_call.name:match("%S") == nil then
+            return false, "Malformed tool call at index " .. index .. ": name is required"
+        end
+    end
+
+    return true, nil
+end
+
 local function split_exit_tool_calls(tool_calls: {ToolCall}?, exit_tool_name: string?): ({ToolCall}, {ToolCall})
     local executable_tool_calls = {} :: { ToolCall }
     local exit_tool_calls = {} :: { ToolCall }
@@ -1742,6 +1775,13 @@ end
 local function finalize_iteration(n, agent_ctx, session_context, iteration, max_iterations, min_iterations, tool_calling,
                                   exit_tool_name, agent_result: any, delegate_calls: any, tool_results, arena_config,
                                   tool_call_to_node_id, proposed_controls)
+    local calls_valid, calls_err = validate_tool_calls(agent_result and agent_result.tool_calls)
+    if not calls_valid then
+        return nil, nil, {
+            code = agent_consts.ERROR.MALFORMED_TOOL_CALL,
+            message = calls_err
+        }
+    end
     local prepared, prepare_err = behavior_controls.prepare(proposed_controls)
     if not prepared then return nil, nil, prepare_err end
     local control_responses, control_delegations, task_complete, final_result = process_tool_results(
@@ -1836,6 +1876,14 @@ local function recover_persisted_action(n, agent_ctx, agent_instance, caller, se
     local finish_reason = action_payload.metadata and action_payload.metadata.finish_reason
     if finish_reason == "length" then
         return false, nil, action_iteration, nil
+    end
+
+    local calls_valid, calls_err = validate_tool_calls(action_payload.content.tool_calls)
+    if not calls_valid then
+        return false, nil, action_iteration, {
+            code = agent_consts.ERROR.MALFORMED_TOOL_CALL,
+            message = calls_err
+        }
     end
 
     local pending = (n:metadata() or {}).agent_pending
@@ -2328,6 +2376,10 @@ local function run(args)
         model_name
     )
     if recovery_err then
+        if type(recovery_err) == "table" then
+            return fail_with_lifecycle(recovery_err, error_message(recovery_err, "Agent recovery failed"),
+                REASON.HOST_FAILED, iteration)
+        end
         return fail_with_lifecycle({
             code = agent_consts.ERROR.AGENT_EXEC_FAILED,
             message = recovery_err
@@ -2450,6 +2502,14 @@ local function run(args)
                 message = step_err,
                 memory_recall_error = memory_recall_error
             }, step_err, REASON.HOST_FAILED, iteration)
+        end
+
+        local calls_valid, calls_err = validate_tool_calls(agent_result and agent_result.tool_calls)
+        if not calls_valid then
+            return fail_with_lifecycle({
+                code = agent_consts.ERROR.MALFORMED_TOOL_CALL,
+                message = calls_err
+            }, calls_err, REASON.HOST_FAILED, iteration)
         end
         route_pin = carry_route_pin(route_pin, agent_result)
 
@@ -2744,6 +2804,7 @@ return {
         is_unproductive_turn = is_unproductive_turn,
         process_multiple_inputs = process_multiple_inputs,
         process_tool_results = process_tool_results,
+        validate_tool_calls = validate_tool_calls,
         finalize_iteration = finalize_iteration,
         maybe_checkpoint_history = maybe_checkpoint_history,
         recover_persisted_action = recover_persisted_action,

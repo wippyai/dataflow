@@ -296,6 +296,46 @@ local function define_tests()
                 "the routed error carries the named code so a workflow can react")
         end)
 
+        it("routes malformed tool metadata once and leaves no running agent node", function()
+            local workflow = create_workflow({
+                mode = "malformed_tool_call",
+                max_iterations = 5,
+                route_errors = true
+            })
+
+            c:start(workflow.dataflow_id)
+
+            test.eq(wait_terminal(workflow.dataflow_id), consts.STATUS.COMPLETED_SUCCESS,
+                "the workflow reaches its terminal handled-error state")
+
+            local agent_nodes = node_reader.with_dataflow(workflow.dataflow_id)
+                :with_nodes(workflow.node_id)
+                :all() or {}
+            test.eq(#agent_nodes, 1, "agent node row present")
+            test.eq((agent_nodes[1] :: any).status, consts.STATUS.COMPLETED_FAILURE,
+                "the agent node reaches a terminal failure state")
+
+            local node_results = data_reader.with_dataflow(workflow.dataflow_id)
+                :with_nodes(workflow.node_id)
+                :with_data_types(consts.DATA_TYPE.NODE_RESULT)
+                :all() or {}
+            test.eq(#node_results, 1, "exactly one durable failed node result is recorded")
+
+            local result_error = agent_error(workflow)
+            test.eq(result_error.code, agent_consts.ERROR.MALFORMED_TOOL_CALL,
+                "the node result identifies malformed tool metadata")
+            test.eq(result_error.message, "Malformed tool call at index 1: name is required",
+                "the node result explains the missing tool name")
+
+            local routed = outputs_for(workflow, "error")
+            test.eq(#routed, 1, "exactly one durable error event reaches the error target")
+            local routed_error = as_table((routed[1] :: any).content)
+            test.eq(routed_error.code, agent_consts.ERROR.MALFORMED_TOOL_CALL,
+                "the routed terminal error preserves its named code")
+            test.eq(#outputs_for(workflow, "result"), 0,
+                "a malformed call never produces a success output")
+        end)
+
         it("resets the bound on any turn that carries a tool call", function()
             local workflow = create_workflow({
                 mode = "empty_tool_empty_empty_final",

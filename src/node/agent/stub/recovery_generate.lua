@@ -163,6 +163,30 @@ local function handler(contract_args)
         return final_response(scenario.scenario_id, scenario.mode, result_count, base_prompt or 9, 4)
     end
 
+    -- Deliberately return a whitespace-only name. It crosses the LLM response
+    -- contract (unlike an omitted required field) but is still an empty tool
+    -- name at the agent-node boundary. The node must fail terminally rather
+    -- than invoke it or build an observation key.
+    if scenario.mode == "malformed_tool_call" then
+        return {
+            success = true,
+            result = {
+                content = "",
+                tool_calls = {
+                    {
+                        id = helpers.call_id(scenario.scenario_id, "malformed-progress"),
+                        name = " ",
+                        arguments = {},
+                        arguments_error = "unexpected EOF within \"/tool/arguments\""
+                    }
+                }
+            },
+            finish_reason = "tool_call",
+            tokens = response_tokens(base_prompt or 13, 8),
+            metadata = {}
+        }
+    end
+
     if scenario.mode == "failing_tool_then_llm_error" then
         if result_count == 0 then
             return tool_call_response(scenario.scenario_id, 1, scenario.tool_delay_ms, base_prompt or 13, 8, "recovery_tool", {
