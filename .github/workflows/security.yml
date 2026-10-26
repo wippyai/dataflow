@@ -70,7 +70,7 @@ jobs:
           inputs: .github
           online-audits: true
           persona: pedantic
-          version: v1.27.0
+          version: v1.31.1
           color: false
       - name: Fail if workflow risks are found
         env:
