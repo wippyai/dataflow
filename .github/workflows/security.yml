@@ -70,7 +70,8 @@ jobs:
           inputs: .github
           online-audits: true
           persona: pedantic
-          version: v1.31.1
+          # Keep workspace-relative uses compatible with the pinned actionlint.
+          version: v1.29.0
           color: false
       - name: Fail if workflow risks are found
         env:
