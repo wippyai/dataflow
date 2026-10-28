@@ -26,8 +26,9 @@ local function query(statement: string, args: { any }, code: string): (Map[]?, e
     local db, db_err = sql.get(consts.APP_DB)
     if not db then return nil, failure(db_err, "Dataflow database unavailable", code, errors.UNAVAILABLE, true) end
     local rows, read_err = db:query(statement, args)
-    db:release()
+    local _, release_err = db:release()
     if read_err then return nil, failure(read_err, "Dataflow inspection failed", code, errors.UNAVAILABLE, true) end
+    if release_err then return nil, failure(release_err, "Dataflow database release failed", code, errors.UNAVAILABLE, true) end
     if type(rows) ~= "table" then
         return nil, failure(nil, "Dataflow inspection response invalid", "DATAFLOW_READ_RESPONSE_INVALID", errors.INTERNAL, false)
     end

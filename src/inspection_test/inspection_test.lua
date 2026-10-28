@@ -84,13 +84,14 @@ local function define_tests()
             test.is_nil(absent)
             test.is_true(errors.is(absent_err, errors.NOT_FOUND))
         end)
-        for _, field in ipairs({"open_error", "query_error"}) do
+        for _, field in ipairs({"open_error", "query_error", "release_error"}) do
             for _, case in ipairs({
                 {kind = errors.NOT_FOUND, retryable = false, code = "db_missing"},
                 {kind = errors.PERMISSION_DENIED, retryable = false, code = "db_denied"},
                 {kind = errors.UNAVAILABLE, retryable = true, code = "db_unavailable"},
             }) do
                 test.it("preserves " .. field .. " " .. case.code, function()
+                    if field == "release_error" then fixture.state.rows = {} end
                     fixture.state[field] = errors.new({message = "fixture database failure", kind = case.kind,
                         retryable = case.retryable, details = {code = case.code, provider = "fixture"}})
                     for _, call in ipairs({function() return subject.flow("flow") end,
@@ -102,10 +103,22 @@ local function define_tests()
                         test.eq(err:details().code, case.code)
                         test.eq(err:details().provider, "fixture")
                     end
-                    test.eq(fixture.state.released, field == "query_error" and true or nil)
+                    test.eq(fixture.state.released, field ~= "open_error" and true or nil)
                 end)
             end
         end
+        test.it("keeps a query failure primary when releasing the database also fails", function()
+            fixture.state.query_error = errors.new({message = "query refused", kind = errors.PERMISSION_DENIED,
+                retryable = false, details = {code = "read_denied"}})
+            fixture.state.release_error = errors.new({message = "release failed", kind = errors.UNAVAILABLE,
+                retryable = true, details = {code = "release_unavailable"}})
+            local value, err = subject.flow("flow")
+            test.is_nil(value)
+            test.is_true(errors.is(err, errors.PERMISSION_DENIED))
+            test.eq(err:details().code, "read_denied")
+            test.is_false(err:retryable())
+            test.is_true(fixture.state.released)
+        end)
         test.it("retains the caller's database authority", function()
             local policy = assert(security.policy("userspace.dataflow.inspection_test:probe_policy"))
             local actor = security.new_actor("inspection-denied", {})
