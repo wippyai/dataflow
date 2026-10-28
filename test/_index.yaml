@@ -349,3 +349,15 @@ entries:
       decoder: app:node_decode_fixture
       test: wippy.test:test
     method: run
+
+  - name: call_loop_fixture
+    kind: function.lua
+    source: file://call_loop_fixture.lua
+    modules: [time]
+    method: run
+
+  - name: call_loop_event
+    kind: process.lua
+    source: file://call_loop_fixture.lua
+    modules: [time]
+    method: exit

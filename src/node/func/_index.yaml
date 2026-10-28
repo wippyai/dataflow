@@ -165,3 +165,24 @@ entries:
       scope: dev
     source: file://native_error_func.lua
     method: run
+
+  # userspace.dataflow.node.func:call_loop_test
+  - name: call_loop_test
+    kind: function.lua
+    meta:
+      name: Function Call Loop Tests
+      type: test
+      comment: Verifies async startup, event handling, cancellation, and result errors.
+      group: Workflow / Function Node
+    source: file://call_loop_test.lua
+    modules: [uuid, time, json]
+    imports:
+      test: wippy.test:test
+      func: userspace.dataflow.node.func:node
+      client: userspace.dataflow:client
+      consts: userspace.dataflow:consts
+      data_reader: userspace.dataflow.persist:data_reader
+    method: run_tests
+    security:
+      actor: {id: dataflow.test}
+      policies: [app:test_policy]
