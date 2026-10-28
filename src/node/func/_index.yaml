@@ -80,6 +80,7 @@ entries:
       consts: userspace.dataflow:consts
       data_reader: userspace.dataflow.persist:data_reader
       func: userspace.dataflow.node.func:node
+      node_reader: userspace.dataflow.persist:node_reader
       test: wippy.test:test
     method: run_tests
     
@@ -156,3 +157,11 @@ entries:
       - time
     method: run
     
+
+  - name: native_error_func
+    kind: function.lua
+    meta:
+      name: Native Error Test Function
+      scope: dev
+    source: file://native_error_func.lua
+    method: run

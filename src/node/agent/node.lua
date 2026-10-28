@@ -2246,17 +2246,6 @@ local function run(args)
     end
 
     local function fail_with_lifecycle(payload: table, message: any, reason: string?, active_iteration: number?)
-        if type(payload) == "table" and type(payload.message) == "userdata" then
-            local cause = payload.message
-            payload.cause = {
-                kind = cause:kind(),
-                message = cause:message(),
-                retryable = cause:retryable(),
-                details = cause:details()
-            }
-            payload.message = tostring(cause)
-        end
-        if type(message) == "userdata" then message = tostring(message) end
         local lifecycle_err = deactivate_active_agent(reason or REASON.HOST_FAILED, {
             state = OUTCOME.FAILED,
             reason = reason or REASON.HOST_FAILED

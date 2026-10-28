@@ -27,15 +27,13 @@ local function define_tests()
                 query.with_data_types = function(self) return self end
                 query.order_by = function(self) return self end
                 query.all = function() return {} end
-                local n = { node_id = "test_node", dataflow_id = "test_workflow",
-                    config = function() return config end,
-                    inputs = function() return {} end,
-                    query = function() return query end,
-                    metadata = function() return metadata end,
-                    update_metadata = function(_, update) for k, v in pairs(update) do metadata[k] = v end end,
-                    fail = function(_, payload, message)
-                        return { success = false, error = payload, message = message }
-                    end }
+                local n = node_sdk.new({ node_id = "test_node", dataflow_id = "test_workflow",
+                    node = { config = config, metadata = metadata } }, {
+                    commit = { submit = function() return {} end },
+                    data_reader = { with_dataflow = function() return query end },
+                    process = { listen = function() return {} end, send = function() return true end }
+                } :: any) :: any
+                n.inputs = function() return {} end
                 local ctx = { current_model = instance.model, current_agent_id = instance.id,
                     configure_delegate_tools = function() end,
                     load_agent = function() return instance end,

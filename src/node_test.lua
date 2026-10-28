@@ -1855,6 +1855,56 @@ local function define_tests()
                 test.eq(data_command.payload.data_id, fixed_data_id)
             end)
 
+            for _, case in ipairs({
+                { name = "retryable", retryable = true },
+                { name = "non-retryable", retryable = false },
+                { name = "unknown" },
+            }) do
+                for _, position in ipairs({ "details", "details_only", "payload", "status", "status_only" }) do
+                    it("persists " .. case.name .. " native causes from " .. position, function()
+                        local native = errors.new({ kind = errors.UNAVAILABLE, message = "Service unavailable",
+                            retryable = case.retryable, details = { code = "X" } })
+                        local details: any = { code = "EXECUTION_FAILED", message = "Service unavailable" }
+                        local status: any = "Execution failed"
+                        if position == "details" or position == "details_only" then
+                            details = native
+                            if position == "details_only" then status = nil end
+                        elseif position == "payload" then
+                            details.message = native
+                        elseif position == "status" then
+                            status = native
+                        else
+                            details = nil
+                            status = native
+                        end
+                        local result, fail_err = test_node:fail(details, status)
+                        test.is_nil(fail_err)
+                        local encoded, encode_err = _json.encode({ result = result,
+                            commands = captured_calls.commit_submit[1].commands })
+                        test.is_nil(encode_err)
+                        local stored = _json.decode(encoded)
+                        local function assert_cause(payload)
+                            test.eq(payload.message, "Service unavailable")
+                            test.not_nil(payload.cause)
+                            test.eq(payload.cause.kind, "Unavailable")
+                            test.eq(payload.cause.message, "Service unavailable")
+                            test.eq(payload.cause.retryable, case.retryable)
+                            test.eq(payload.cause.details.code, "X")
+                        end
+                        assert_cause(stored.result.error)
+                        test.eq(stored.result.message, tostring(status or native))
+                        assert_cause(stored.commands[1].payload.metadata.error)
+                        test.eq(stored.commands[1].payload.metadata.status_message, tostring(status or native))
+                        for _, cmd in ipairs(stored.commands) do
+                            if cmd.type == consts.COMMAND_TYPES.CREATE_DATA then
+                                assert_cause(cmd.payload.content)
+                            end
+                        end
+                        test.eq(#stored.result.data_ids, 2)
+                    end)
+                end
+            end
+
             it("should handle complete without output content", function()
                 local test_node_no_targets, _err = node.new({
                     node_id = "test-node-123",

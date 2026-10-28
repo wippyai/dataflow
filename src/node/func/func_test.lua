@@ -4,9 +4,77 @@ local json = require("json")
 local client = require("client")
 local consts = require("consts")
 local data_reader = require("data_reader")
+local node_reader = require("node_reader")
 
 local function define_tests()
     describe("Function Node Integration Tests", function()
+        describe("Native failure persistence", function()
+            for _, case in ipairs({
+                { name = "retryable", retryable = true },
+                { name = "non-retryable", retryable = false },
+                { name = "unknown" },
+            }) do
+                it("preserves " .. case.name .. " function causes across persistence and execution", function()
+                    local c, client_err = client.new()
+                    test.is_nil(client_err)
+                    local failed_id, handler_id = uuid.v7(), uuid.v7()
+                    local dataflow_id, create_err = c:create_workflow({
+                        { type = consts.COMMAND_TYPES.CREATE_NODE, payload = {
+                            node_id = failed_id, node_type = "userspace.dataflow.node.func:node",
+                            status = consts.STATUS.PENDING, config = {
+                                func_id = "userspace.dataflow.node.func:native_error_func",
+                                error_targets = { { data_type = consts.DATA_TYPE.NODE_INPUT,
+                                    node_id = handler_id, key = "default" } }
+                            }
+                        } },
+                        { type = consts.COMMAND_TYPES.CREATE_NODE, payload = {
+                            node_id = handler_id, node_type = "userspace.dataflow.node.func:node",
+                            status = consts.STATUS.PENDING, config = {
+                                func_id = "userspace.dataflow.node.func:test_func"
+                            }
+                        } },
+                        { type = consts.COMMAND_TYPES.CREATE_DATA, payload = {
+                            data_id = uuid.v7(), data_type = consts.DATA_TYPE.NODE_INPUT,
+                            node_id = failed_id, key = "default", content_type = consts.CONTENT_TYPE.JSON,
+                            content = { kind = "Unavailable", message = "Service unavailable",
+                                retryable = case.retryable, details = { code = "X" } }
+                        } },
+                    })
+                    test.is_nil(create_err)
+                    local result, exec_err = c:execute(dataflow_id)
+                    test.not_nil(result)
+                    test.is_false(result.success)
+                    test.not_nil(exec_err)
+                    local function assert_cause(payload)
+                        test.eq(payload.code, "FUNCTION_EXECUTION_FAILED")
+                        test.eq(payload.message, "Service unavailable")
+                        test.not_nil(payload.cause)
+                        test.eq(payload.cause.kind, "Unavailable")
+                        test.eq(payload.cause.message, "Service unavailable")
+                        test.eq(payload.cause.retryable, case.retryable)
+                        test.eq(payload.cause.details.code, "X")
+                    end
+                    local failed = node_reader.with_dataflow(dataflow_id):with_nodes(failed_id):one()
+                    test.not_nil(failed)
+                    assert_cause(failed.metadata.error)
+                    local rows = data_reader.with_dataflow(dataflow_id):with_nodes(failed_id)
+                        :with_data_types(consts.DATA_TYPE.NODE_RESULT):all()
+                    test.eq(#rows, 1)
+                    test.eq(rows[1].discriminator, "result.error")
+                    local persisted = json.decode(rows[1].content)
+                    assert_cause(persisted.error)
+                    local routed = data_reader.with_dataflow(dataflow_id):with_nodes(handler_id)
+                        :with_data_types(consts.DATA_TYPE.NODE_INPUT)
+                        :fetch_options({ replace_references = true }):one()
+                    test.not_nil(routed)
+                    assert_cause(json.decode(routed.content))
+                    test.eq(#result.error_details, 1)
+                    assert_cause(result.error_details[1].error)
+                    assert_cause(exec_err:details().error_details[1].error)
+                end)
+            end
+        end)
+
         describe("Basic Function Execution", function()
             it("should execute test_func successfully via func node", function()
                 print("=== FUNC NODE INTEGRATION TEST START ===")
