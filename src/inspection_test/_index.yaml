@@ -1,0 +1,47 @@
+version: "1.0"
+namespace: userspace.dataflow.inspection_test
+
+entries:
+  - name: probe
+    kind: function.lua
+    meta: {scope: dev}
+    source: file://probe.lua
+    method: run
+    imports:
+      inspection: userspace.dataflow:inspection
+
+  - name: probe_policy
+    kind: security.policy
+    meta: {scope: dev}
+    policy:
+      resources: [userspace.dataflow.inspection_test:probe]
+      actions: [funcs.call]
+      effect: allow
+
+  - name: sql
+    kind: library.lua
+    meta: {scope: dev}
+    source: file://sql.lua
+
+  - name: subject
+    kind: library.lua
+    meta: {scope: dev}
+    source: file://../inspection.lua
+    modules: [json]
+    imports:
+      sql: userspace.dataflow.inspection_test:sql
+      consts: userspace.dataflow:consts
+
+  - name: test
+    kind: function.lua
+    meta: {type: test, suite: dataflow}
+    source: file://inspection_test.lua
+    method: run_tests
+    modules: [sql, uuid, json, security, funcs]
+    imports:
+      inspection: userspace.dataflow:inspection
+      dataflow_repo: userspace.dataflow.persist:dataflow_repo
+      subject: userspace.dataflow.inspection_test:subject
+      fixture: userspace.dataflow.inspection_test:sql
+      consts: userspace.dataflow:consts
+      test: wippy.test:test

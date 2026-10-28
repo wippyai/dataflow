@@ -9,6 +9,15 @@ entries:
       title: Dataflow
       description: Workflow execution engine with visual flow designer support
 
+  - name: inspection
+    kind: library.lua
+    meta:
+      comment: Typed, read-only flow and parked-signal inspection under the caller's database authority.
+    source: file://inspection.lua
+    modules: [sql, json]
+    imports:
+      consts: userspace.dataflow:consts
+
   # userspace.dataflow:client
   - name: client
     kind: library.lua

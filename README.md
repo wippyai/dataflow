@@ -21,6 +21,34 @@ Agent nodes retain a successful fallback route across iterations and recovery.
 This requires Agent 0.5.5 or later. A committed agent or model change clears the
 previous route; recovery restores it only for the same configured agent and model.
 
+## Typed storage inspection
+
+`userspace.dataflow:inspection` is a read-only library for trusted owners that
+inspect durable flows and external signal waits. Declare it as a library import.
+`inspection.flow(dataflow_id)` returns the flow's ID, actor ID, opaque execution
+context, status and decoded metadata. `inspection.pending_signal(dataflow_id,
+signal_id, node_type)` returns the pending node and yield IDs for a node type that
+implements the signal-wait protocol. A declaration without a committed yield is
+absent; a committed result closes the current episode even while the node is
+still active. Only the latest UUID-v7 yield episode for each node is inspected,
+matching recovery's ordering. Older results cannot close a newer episode.
+
+These operations retain the caller's database authority. They do not authorize
+the caller, reconstruct an identity, reserve a wait, or execute a workflow.
+The owning application must verify the returned flow's actor and terminal status
+before performing an external action. Use the arm's idempotency key for delivery.
+The signal query filters by flow, node type, active node status and yield record
+type rather than loading the entire flow's event history.
+
+Errors are native: confirmed absence has kind `NOT_FOUND` with code
+`DATAFLOW_FLOW_NOT_FOUND` or `DATAFLOW_SIGNAL_NOT_FOUND`. Invalid stored metadata
+or wait state has kind `INTERNAL`, is not retryable, and uses
+`DATAFLOW_FLOW_METADATA_INVALID` or `DATAFLOW_SIGNAL_STATE_INVALID`.
+Database failures preserve their native kind, retryability and detail fields;
+a database-resource `NOT_FOUND` is not a missing-flow proof. Legacy empty
+metadata encodings remain empty metadata. Existing repository/client methods
+retain their behavior.
+
 ## Durable external waits
 
 Nodes that start external work and then wait for a signal use the declarative park contract:
