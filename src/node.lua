@@ -745,7 +745,6 @@ end
 
 local function route_targets(self, content, targets, env, label, target_prefix, default_node_id)
     local commands = table.create(#targets, 0)
-    local routed_data_ids = table.create(#targets, 0)
 
     for target_idx, target in ipairs(targets) do
         local target_desc = target_prefix .. "[" .. target_idx .. "]"
@@ -793,16 +792,20 @@ local function route_targets(self, content, targets, env, label, target_prefix, 
             return nil, "Node [" .. self.node_id .. "] failed to create data for " .. target_desc .. ": " .. data_err
         end
         table.insert(commands, command)
-        table.insert(routed_data_ids, command.payload.data_id)
 
         ::continue::
     end
 
-    -- Enqueue only after every target validates so routing is atomic with failure metadata.
+    return commands, nil
+end
+
+local function queue_routes(self, commands)
+    local routed_data_ids = table.create(#commands, 0)
     for _, command in ipairs(commands) do
         queue_data_command(self, command)
+        table.insert(routed_data_ids, command.payload.data_id)
     end
-    return routed_data_ids, nil
+    return routed_data_ids
 end
 
 function methods:_route_outputs(content, targets)
@@ -812,15 +815,20 @@ function methods:_route_outputs(content, targets)
         return nil, "Node [" .. self.node_id .. "] failed to load inputs for output routing: " .. tostring(inputs_err)
     end
 
-    return route_targets(self, resolved_content, targets or self.data_targets, {
+    local commands, route_err = route_targets(self, resolved_content, targets or self.data_targets, {
         output = resolved_content,
         input = inputs_map or {},
         inputs = inputs_map or {},
         node = self
     }, "Output", "target", self.node_id)
+    if route_err then
+        return nil, route_err
+    end
+    return queue_routes(self, commands), nil
 end
 
-function methods:_route_errors(error_content)
+-- Prepares every error-target command without queueing, so a routing failure leaves no partial data.
+function methods:_prepare_error_routes(error_content)
     return route_targets(self, error_content, self.error_targets, {
         error = error_content,
         node = self
@@ -943,21 +951,26 @@ function methods:fail(error_details, message, extra_metadata)
         error_metadata = merge_metadata(error_metadata, extra_metadata)
     end
 
-    self:update_metadata(error_metadata)
+    -- Error-target expressions read the failure metadata during routing.
+    self._metadata = merge_metadata(self._metadata, error_metadata)
 
-    local data_ids = table.create(#self.error_targets, 0)
+    local route_commands = {}
     local routing_failure = nil
     if error_details ~= nil then
-        local routed_ids, route_err = self:_route_errors(error_details)
+        local prepared, route_err = self:_prepare_error_routes(error_details)
         if route_err then
             status_msg = "Node [" .. self.node_id .. "] failed to route errors: " .. tostring(route_err)
             error_msg = { message = status_msg, error = error_msg }
             routing_failure = error_msg
-            self:update_metadata({ status_message = status_msg, error = error_msg })
+            error_metadata.status_message = status_msg
+            error_metadata.error = error_msg
         else
-            data_ids = routed_ids
+            route_commands = prepared
         end
     end
+
+    self:update_metadata(error_metadata)
+    local data_ids = queue_routes(self, route_commands)
 
     local success, err = self:_submit_final()
     if not success then

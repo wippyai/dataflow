@@ -1881,7 +1881,7 @@ local function define_tests()
                         local result, fail_err = test_node:fail(details, status)
                         test.is_nil(fail_err)
                         if type(details) == "table" then
-                            test.is_nil(details.cause)
+                            test.is_nil((details :: any).cause)
                             test.eq(result.error.code, "EXECUTION_FAILED")
                         end
                         local encoded, encode_err = _json.encode({ result = result,
@@ -2665,7 +2665,7 @@ local function define_tests()
                     local primary = { code = "EXECUTION_FAILED", message = "Primary failure",
                         error = "Primary context", details = { retained = true },
                         cause = { kind = "Unavailable", retryable = false } }
-                    local routed, routing_err = n:_route_errors(primary)
+                    local routed, routing_err = n:_prepare_error_routes(primary)
                     test.is_nil(routed)
                     test.contains(routing_err, case.expected)
                     test.eq(#n._queued_commands, 1)
@@ -2681,15 +2681,45 @@ local function define_tests()
                     test.eq(#result.data_ids, 0)
                     test.eq(#n:created_data_ids(), 1)
                     local commands = captured_calls.commit_submit[1].commands
-                    test.eq(#commands, 3)
+                    local updates = 0
+                    for _, command in ipairs(commands) do
+                        if command.type == consts.COMMAND_TYPES.UPDATE_NODE then
+                            updates = updates + 1
+                            test.eq(command.payload.metadata.error, result.error)
+                            test.eq(command.payload.metadata.status_message, result.message)
+                            test.eq(command.payload.metadata.final_state, "failed")
+                        end
+                    end
+                    test.eq(updates, 1)
+                    test.eq(#commands, 2)
                     test.eq(commands[1].payload.data_id, "existing-data")
                     test.eq(commands[2].type, consts.COMMAND_TYPES.UPDATE_NODE)
-                    test.eq(commands[3].type, consts.COMMAND_TYPES.UPDATE_NODE)
-                    test.eq(commands[3].payload.metadata.error, result.error)
-                    test.eq(commands[3].payload.metadata.status_message, result.message)
-                    test.eq(commands[3].payload.metadata.final_state, "failed")
                 end)
             end
+
+            it("exposes failure metadata to error-route expressions before submitting one update", function()
+                local n = node.new({ node_id = "failed-node", dataflow_id = "failed-workflow",
+                    node = { metadata = { retained = true }, config = { error_targets = {
+                        { data_type = "error.output", key = "error",
+                            condition = "node._metadata.status_message == 'Execution failed' && node._metadata.final_state == 'failed'",
+                            transform = "node._metadata.error" }
+                    } } } }, mock_deps) :: any
+                local primary = { code = "EXECUTION_FAILED", message = "Primary failure" }
+                local result, fail_err = n:fail(primary, "Execution failed", { final_state = "failed" })
+                test.is_nil(fail_err)
+                test.eq(result.error, primary)
+                test.eq(#result.data_ids, 1)
+                local commands = captured_calls.commit_submit[1].commands
+                test.eq(#commands, 2)
+                test.eq(commands[1].type, consts.COMMAND_TYPES.UPDATE_NODE)
+                test.eq(commands[1].payload.metadata.error, primary)
+                test.eq(commands[1].payload.metadata.status_message, "Execution failed")
+                test.eq(commands[1].payload.metadata.final_state, "failed")
+                test.is_true(commands[1].payload.metadata.retained)
+                test.eq(commands[2].type, consts.COMMAND_TYPES.CREATE_DATA)
+                test.eq(commands[2].payload.content.code, primary.code)
+                test.eq(commands[2].payload.content.message, primary.message)
+            end)
 
             it("queues no partial outputs when a later output target fails", function()
                 local n = node.new({ node_id = "failed-node", dataflow_id = "failed-workflow",
