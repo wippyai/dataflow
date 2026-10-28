@@ -31,6 +31,7 @@ local function harness(options: HarnessOptions?): any
         if cfg.load_error then return nil, cfg.load_error end
         return self, nil
     end
+    workflow_state.recover = function(self: any): (any, nil) return self, nil end
     workflow_state.get_nodes = function(): { [string]: any }
         if cfg.nodes ~= nil then return cfg.nodes end
         return { root = { type = "test_node", status = consts.STATUS.PENDING } }

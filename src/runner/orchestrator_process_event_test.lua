@@ -15,6 +15,7 @@ local function define_tests()
 
             local workflow_state = {
                 load_state = function(self: any): (any?, string?) return self, nil end,
+                recover = function(self: any): (any, nil) return self, nil end,
                 get_nodes = function(): { [string]: any }
                     return { ["node-1"] = { type = "test_node", status = consts.STATUS.PENDING } }
                 end,
