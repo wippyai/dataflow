@@ -52,6 +52,86 @@ local function define_tests()
             execution_frame._deps.refresh_perms = original_refresh_perms
         end)
 
+        it("preserves large policy sets through capture and reconstruction", function()
+            local policies = {}
+            for index = 1, 1024 do
+                policies[index] = policy(string.format("policy:%04d", index))
+            end
+            execution_frame._deps.security = capture_security({ role = "admin" }, policies)
+            local row, capture_err = execution_frame.capture()
+            test.is_nil(capture_err)
+            row = test.not_nil(row)
+            local context, decode_err = json.decode(row.actor_context)
+            test.is_nil(decode_err)
+            context = test.not_nil(context)
+            test.eq(#context.policy_ids, #policies)
+            local looked_up = {}
+            execution_frame._deps.security = {
+                policy = function(id)
+                    looked_up[#looked_up + 1] = id
+                    return policy(id)
+                end,
+                new_actor = function(id, meta)
+                    test.eq(id, row.actor_id)
+                    test.eq(meta.role, "admin")
+                    return { id = id }
+                end,
+                new_scope = function(restored) return { policies = restored } end,
+            }
+            local actor, scope, err = execution_frame.reconstruct(row.actor_id, row.actor_context)
+            test.is_nil(err)
+            test.not_nil(actor)
+            test.eq(#scope.policies, #policies)
+            for index, original in ipairs(policies) do
+                test.eq(looked_up[index], original:id())
+                test.eq(scope.policies[index]:id(), original:id())
+            end
+        end)
+
+        it("bounds policy sets by encoded size on capture and every reconstruction input", function()
+            local policies, ids = {}, {}
+            for index = 1, 1024 do
+                local id = string.format("policy:%04d:", index) .. string.rep("x", 256)
+                ids[index] = id
+                policies[index] = policy(id)
+            end
+            execution_frame._deps.security = capture_security({}, policies)
+            local row, capture_err = execution_frame.capture()
+            test.is_nil(row)
+            test.contains(capture_err, "maximum size")
+
+            execution_frame._deps.security = {}
+            local context = valid_context({ actor_meta = {}, policy_ids = ids })
+            for _, input in ipairs({ context, assert(json.encode(context)) }) do
+                local actor, scope, err = execution_frame.reconstruct("actor:one", input)
+                test.is_nil(actor)
+                test.is_nil(scope)
+                test.contains(err, "maximum size")
+            end
+        end)
+
+        it("retains the separate metadata and policy budgets for table contexts", function()
+            local ids = {}
+            for index = 1, 200 do
+                ids[index] = string.format("policy:%04d:", index) .. string.rep("x", 384)
+            end
+            local meta = { payload = string.rep("x", 192 * 1024) }
+            execution_frame._deps.security = {
+                policy = function(id) return policy(id) end,
+                new_actor = function(id, restored)
+                    test.eq(restored.payload, meta.payload)
+                    return { id = id }
+                end,
+                new_scope = function(policies) return { policies = policies } end,
+            }
+            local actor, scope, err = execution_frame.reconstruct("actor:one", valid_context({
+                actor_meta = meta, policy_ids = ids,
+            }))
+            test.is_nil(err)
+            test.not_nil(actor)
+            test.eq(#scope.policies, #ids)
+        end)
+
         for _, enabled in ipairs({false, "true"}) do
             it("makes no provider calls when refresh_perms=" .. tostring(enabled) .. " is not boolean true", function()
                 execution_frame._deps.refresh_perms = enabled
