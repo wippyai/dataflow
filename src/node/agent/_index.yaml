@@ -478,6 +478,27 @@ entries:
       test: wippy.test:test
     method: run_tests
 
+  - name: agent_recovery_completion_test
+    kind: function.lua
+    meta:
+      name: Agent Recovery Completion Test
+      type: test
+      group: Workflow / Agent Node
+    source: file://agent_recovery_completion_test.lua
+    modules: [uuid, json, process]
+    imports:
+      test: wippy.test:test
+      client: userspace.dataflow:client
+      commit: userspace.dataflow.persist:commit
+      consts: userspace.dataflow:consts
+      data_reader: userspace.dataflow.persist:data_reader
+      node_reader: userspace.dataflow.persist:node_reader
+      node_sdk: userspace.dataflow:node
+      agent_context: wippy.agent:context
+      agent_node: userspace.dataflow.node.agent:node
+      agent_consts: userspace.dataflow.node.agent:consts
+    method: run_tests
+
   - name: check_completion_test
     kind: function.lua
     meta:
