@@ -16,7 +16,6 @@ local MAX_NODES = 2048
 local MAX_BYTES = 256 * 1024
 local MAX_KEY_BYTES = 256
 local MAX_ID_BYTES = 512
-local MAX_POLICIES = 256
 
 local DATAFLOW_CONTEXT_FIELDS = {
     kind = true,
@@ -159,6 +158,18 @@ local function validate_id(value, path)
     return value, nil
 end
 
+local function encode_context(context)
+    local ok, encoded, encode_err = pcall(json.encode, context)
+    if not ok then return fail("execution frame encoding failed: " .. tostring(encoded)) end
+    if encode_err or type(encoded) ~= "string" then
+        return fail("execution frame encoding failed: " .. tostring(encode_err or "no encoded value"))
+    end
+    if #encoded > MAX_BYTES then
+        return fail("encoded execution frame exceeds maximum size")
+    end
+    return encoded, nil
+end
+
 local function validate_policy_ids(value)
     if type(value) ~= "table" or getmetatable(value) ~= nil then
         return fail("execution frame policy_ids must be an array")
@@ -174,9 +185,6 @@ local function validate_policy_ids(value)
     if count ~= #value then
         return fail("execution frame policy_ids must be a dense array")
     end
-    if count > MAX_POLICIES then
-        return fail("execution frame contains too many policies")
-    end
 
     local copy = {}
     local previous = nil
@@ -189,6 +197,8 @@ local function validate_policy_ids(value)
         copy[index] = id
         previous = id
     end
+    local _, size_err = encode_context(copy)
+    if size_err then return nil, size_err end
     return copy, nil
 end
 
@@ -293,18 +303,6 @@ local function validate_context(value: any)
     return fail("unrecognized execution identity context")
 end
 
-local function encode_context(context)
-    local ok, encoded, encode_err = pcall(json.encode, context)
-    if not ok then return fail("execution frame encoding failed: " .. tostring(encoded)) end
-    if encode_err or type(encoded) ~= "string" then
-        return fail("execution frame encoding failed: " .. tostring(encode_err or "no encoded value"))
-    end
-    if #encoded > MAX_BYTES then
-        return fail("encoded execution frame exceeds maximum size")
-    end
-    return encoded, nil
-end
-
 local function decode_context(actor_context)
     if type(actor_context) == "table" then
         return validate_context(actor_context)
@@ -372,7 +370,6 @@ local function scope_policy_ids(scope, label)
         policy_ids[#policy_ids + 1] = policy_id
     end
     if count ~= #policies then return fail(label .. " policies must be a dense array") end
-    if count > MAX_POLICIES then return fail(label .. " contains too many policies") end
     table.sort(policy_ids)
     return policy_ids, nil
 end
