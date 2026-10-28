@@ -7,6 +7,8 @@ local consts = require("consts")
 
 local M = {}
 type Map = { [string]: any }
+type FlowRecord = {dataflow_id: string, actor_id: string, actor_context: any?, status: string, metadata: Map}
+type PendingSignal = {node_id: string, type: string, yield_id: string}
 
 local function failure(err: any, message: string, code: string, kind: string, retryable: boolean): error
     local details: Map = {code = code}
@@ -41,7 +43,7 @@ local function object(value: any, code: string): (Map?, error?)
     return nil, failure(nil, "Persisted Dataflow state invalid", code, errors.INTERNAL, false)
 end
 
-function M.flow(dataflow_id: string): (Map?, error?)
+function M.flow(dataflow_id: string): (FlowRecord?, error?)
     if type(dataflow_id) ~= "string" or dataflow_id == "" then
         return nil, failure(nil, "dataflow_id is required", "DATAFLOW_ID_REQUIRED", errors.INVALID, false)
     end
@@ -52,19 +54,22 @@ function M.flow(dataflow_id: string): (Map?, error?)
         return nil, failure(nil, "Flow not found", "DATAFLOW_FLOW_NOT_FOUND", errors.NOT_FOUND, false)
     end
     local row = rows[1]
+    if type(row.dataflow_id) ~= "string" or type(row.actor_id) ~= "string" or type(row.status) ~= "string" then
+        return nil, failure(nil, "Flow inspection response invalid", "DATAFLOW_READ_RESPONSE_INVALID", errors.INTERNAL, false)
+    end
     local metadata = row.metadata
     -- Legacy constructors encode an absent metadata value as JSON null or an
     -- empty array. Neither carries a resume route; retain their empty meaning.
     if metadata == nil or metadata == "" or metadata == "null" or metadata == "[]" then metadata = {} end
     local decoded, decode_err = object(metadata, "DATAFLOW_FLOW_METADATA_INVALID")
     if decode_err then return nil, decode_err end
-    row.metadata = decoded
-    return row, nil
+    return {dataflow_id = row.dataflow_id, actor_id = row.actor_id, actor_context = row.actor_context,
+        status = row.status, metadata = decoded}, nil
 end
 
 -- The caller selects a node type implementing the signal-wait protocol. Reads
 -- only that type's active nodes; declarations alone never prove a parked wait.
-function M.pending_signal(dataflow_id: string, signal_id: string, node_type: string): (Map?, error?)
+function M.pending_signal(dataflow_id: string, signal_id: string, node_type: string): (PendingSignal?, error?)
     for _, arg in ipairs({{name = "dataflow_id", value = dataflow_id},
         {name = "signal_id", value = signal_id}, {name = "node_type", value = node_type}}) do
         local field, value = arg.name, arg.value
@@ -83,6 +88,9 @@ function M.pending_signal(dataflow_id: string, signal_id: string, node_type: str
     if err or not rows then return nil, err end
     local satisfied: Map = {}
     for _, row in ipairs(rows) do
+        if type(row.node_id) ~= "string" or row.node_id == "" then
+            return nil, failure(nil, "Signal inspection response invalid", "DATAFLOW_READ_RESPONSE_INVALID", errors.INTERNAL, false)
+        end
         if row.type == consts.DATA_TYPE.NODE_YIELD_RESULT then
             local id = row.key or row.discriminator
             if type(id) ~= "string" or id == "" then

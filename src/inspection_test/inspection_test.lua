@@ -11,6 +11,9 @@ local subject = require("subject")
 local fixture = require("fixture")
 local dataflow_repo = require("dataflow_repo")
 
+local function flow_row(metadata)
+    return {dataflow_id = "flow", actor_id = "owner", status = consts.STATUS.RUNNING, metadata = metadata}
+end
 local function yield_row(id, node_id, signal, key)
     return {data_id = id, node_id = node_id, type = consts.DATA_TYPE.NODE_YIELD,
         content = {yield_id = key, yield_context = {wait_for_signal = true, signal_id = signal}}}
@@ -118,9 +121,19 @@ local function define_tests()
             test.is_true(errors.is(err, errors.INTERNAL))
             test.eq(err:details().code, "DATAFLOW_READ_RESPONSE_INVALID")
         end)
+        test.it("rejects an invalid record shape before returning a typed result", function()
+            fixture.state.rows = {{dataflow_id = "flow", actor_id = 7, status = consts.STATUS.RUNNING}}
+            local flow, flow_err = subject.flow("flow")
+            test.is_nil(flow)
+            test.eq(flow_err:details().code, "DATAFLOW_READ_RESPONSE_INVALID")
+            fixture.state.rows = {{type = consts.DATA_TYPE.NODE_YIELD, content = {}}}
+            local node, node_err = subject.pending_signal("flow", "signal", "inspection:wait")
+            test.is_nil(node)
+            test.eq(node_err:details().code, "DATAFLOW_READ_RESPONSE_INVALID")
+        end)
         for _, metadata in ipairs({'42', '[1]', '{broken', false}) do
             test.it("rejects malformed stored metadata " .. tostring(metadata), function()
-                fixture.state.rows = {{metadata = metadata}}
+                fixture.state.rows = {flow_row(metadata)}
                 local value, err = subject.flow("flow")
                 test.is_nil(value)
                 test.is_true(errors.is(err, errors.INTERNAL))
@@ -129,7 +142,7 @@ local function define_tests()
         end
         test.it("preserves legacy empty metadata encodings", function()
             for _, metadata in ipairs({'', 'null', '[]', '{}'}) do
-                fixture.state.rows = {{metadata = metadata}}
+                fixture.state.rows = {flow_row(metadata)}
                 local flow, err = subject.flow("flow")
                 test.is_nil(err)
                 test.eq(next(flow.metadata), nil)
