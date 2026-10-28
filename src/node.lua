@@ -908,10 +908,8 @@ function methods:fail(error_details, message, extra_metadata)
     if type(error_details) == "userdata" then
         message = message or tostring(error_details)
         native_cause = error_details
-        error_details = { message = tostring(error_details) }
     elseif type(error_details) == "table" and type(error_details.message) == "userdata" then
         native_cause = error_details.message
-        error_details = merge_metadata(error_details, { message = tostring(native_cause) })
     end
     if type(message) == "userdata" then
         native_cause = native_cause or message
@@ -919,9 +917,13 @@ function methods:fail(error_details, message, extra_metadata)
     end
     if native_cause then
         local payload = type(error_details) == "table" and error_details or {
-            message = error_details or message
+            message = tostring(error_details or message)
         }
-        error_details = merge_metadata(payload, { cause = {
+        local payload_message = payload.message
+        if payload_message == nil or type(payload_message) == "userdata" then
+            payload_message = tostring(native_cause)
+        end
+        error_details = merge_metadata(payload, { message = payload_message, cause = {
             kind = native_cause:kind(),
             message = native_cause:message(),
             retryable = native_cause:retryable(),

@@ -1860,7 +1860,7 @@ local function define_tests()
                 { name = "non-retryable", retryable = false },
                 { name = "unknown" },
             }) do
-                for _, position in ipairs({ "details", "details_only", "payload", "status", "status_only" }) do
+                for _, position in ipairs({ "details", "details_only", "payload", "status", "status_without_message", "status_only" }) do
                     it("persists " .. case.name .. " native causes from " .. position, function()
                         local native = errors.new({ kind = errors.UNAVAILABLE, message = "Service unavailable",
                             retryable = case.retryable, details = { code = "X" } })
@@ -1871,7 +1871,8 @@ local function define_tests()
                             if position == "details_only" then status = nil end
                         elseif position == "payload" then
                             details.message = native
-                        elseif position == "status" then
+                        elseif position == "status" or position == "status_without_message" then
+                            if position == "status_without_message" then details = { code = "EXECUTION_FAILED" } end
                             status = native
                         else
                             details = nil
@@ -1879,6 +1880,10 @@ local function define_tests()
                         end
                         local result, fail_err = test_node:fail(details, status)
                         test.is_nil(fail_err)
+                        if type(details) == "table" then
+                            test.is_nil(details.cause)
+                            test.eq(result.error.code, "EXECUTION_FAILED")
+                        end
                         local encoded, encode_err = _json.encode({ result = result,
                             commands = captured_calls.commit_submit[1].commands })
                         test.is_nil(encode_err)
