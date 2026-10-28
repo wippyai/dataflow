@@ -5,6 +5,16 @@
 * Preserve an agent node's successful fallback route across iterations and recovery, clearing it when the configured agent or model changes. Requires Agent 0.5.5 or later.
 * Wake an existing orchestrator when it claims a signal generation. A clean exit that released an older generation no longer fails newly activated work; actual owner crashes still fail without restarting the workflow.
 
+## [0.7.32](https://github.com/wippyai/dataflow/compare/v0.7.31...v0.7.32) (2026-10-28)
+
+
+### Bug Fixes
+
+* **agent:** honor completion checks during persisted turn recovery ([#123](https://github.com/wippyai/dataflow/issues/123)) ([67de68b](https://github.com/wippyai/dataflow/commit/67de68b470ae85a6ad6323aa4895ccf1a943dca6))
+* **flow:** compile reusable templates ([#125](https://github.com/wippyai/dataflow/issues/125)) ([97a237f](https://github.com/wippyai/dataflow/commit/97a237fbce95a416a520ad3e0abcc76b3213d056))
+* **func:** handle async start errors and call events ([#121](https://github.com/wippyai/dataflow/issues/121)) ([f5f2c6e](https://github.com/wippyai/dataflow/commit/f5f2c6ee77329b77f6107fb7b0bc3d7525f384e9))
+* preserve node failure causes and report routing errors ([#122](https://github.com/wippyai/dataflow/issues/122)) ([740c5ad](https://github.com/wippyai/dataflow/commit/740c5ada03dfd40b6a87cbb52339850bd38b780e))
+
 ## [0.7.31](https://github.com/wippyai/dataflow/compare/v0.7.30...v0.7.31) (2026-10-28)
 
 
