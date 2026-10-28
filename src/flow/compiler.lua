@@ -21,6 +21,20 @@ compiler.OP_TYPES = {
     WHEN = "when"
 }
 
+local function inline_operations(operations)
+    local expanded = {}
+    for _, op in ipairs(operations) do
+        if op.type == compiler.OP_TYPES.USE and op.config.operations then
+            for _, nested in ipairs(inline_operations(op.config.operations)) do
+                table.insert(expanded, nested)
+            end
+        else
+            table.insert(expanded, op)
+        end
+    end
+    return expanded
+end
+
 local FlowGraph = {}
 local flow_graph_mt = { __index = FlowGraph }
 
@@ -101,7 +115,7 @@ function FlowGraph:create_template_nodes(template, parent_node_id)
     local template_node_ids = table.create(#template.operations, 0)
     local last_template_node_id = nil
 
-    for _, op in ipairs(template.operations) do
+    for _, op in ipairs(inline_operations(template.operations)) do
         if op.type == compiler.OP_TYPES.FUNC then
             local template_node_id = uuid.v7()
 
@@ -417,7 +431,7 @@ function compiler.build_graph(operations, session_context)
         graph.session_parent_id = session_context.node_id
     end
 
-    for _, op in ipairs(operations) do
+    for _, op in ipairs(inline_operations(operations)) do
         if op.type == compiler.OP_TYPES.WITH_INPUT then
             graph.input_data = op.config.data
         elseif op.type == compiler.OP_TYPES.WITH_DATA then
@@ -520,12 +534,6 @@ function compiler.build_graph(operations, session_context)
             local node_id, err = graph:create_node("userspace.dataflow.node.state:state", config, op.config.metadata)
             if err then
                 return nil, err
-            end
-        elseif op.type == compiler.OP_TYPES.USE then
-            if op.config.operations then
-                for _, template_op in ipairs(op.config.operations) do
-                    table.insert(graph.operations, template_op)
-                end
             end
         elseif op.type == compiler.OP_TYPES.AS then
             if graph.last_static_id then

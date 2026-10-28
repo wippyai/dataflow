@@ -14,6 +14,42 @@ end
 
 local function define_tests()
     describe("flow builder", function()
+        for _, placement in ipairs({"root", "parallel", "cycle"}) do
+            it("inlines reusable templates without retry fields in " .. placement, function()
+                local template = (flow.template() :: any):func("example:first", {context = {value = 7}})
+                    :func("example:second", {context = {label = "reused"}})
+                local nested = (flow.template() :: any):use(template)
+                local builder = (flow.create() :: any):with_input({items = {1}})
+                if placement == "root" then builder:use(nested)
+                elseif placement == "parallel" then builder:parallel({source_array_key = "items", template = nested})
+                else builder:cycle({template = nested, max_iterations = 2}) end
+                local result, err = compiler.compile(builder.operations, {})
+                test.is_nil(err)
+                local functions = {}
+                for _, node in pairs(result.graph.nodes) do
+                    if node.node_type == "userspace.dataflow.node.func:node" then
+                        functions[node.config.func_id] = node
+                        test.eq(node.parent_node_id ~= nil, placement ~= "root")
+                    end
+                end
+                local first = test.not_nil(functions["example:first"])
+                local second = test.not_nil(functions["example:second"])
+                test.eq(first.config.context.value, 7)
+                test.eq(second.config.context.label, "reused")
+                local linked = false
+                if placement == "root" then
+                    for _, target in ipairs(result.graph.edges[first.node_id].targets) do
+                        if target.target_node_id == second.node_id then linked = true end
+                    end
+                else
+                    for _, target in ipairs(first.config.data_targets) do
+                        if target.node_id == second.node_id then linked = true end
+                    end
+                end
+                test.is_true(linked)
+            end)
+        end
+
         it("preserves explicit agent capability overlays", function()
             local builder = (flow.create() :: any):agent("example.agent", {
                 active_traits = {},
