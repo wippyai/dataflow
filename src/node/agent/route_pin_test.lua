@@ -28,16 +28,21 @@ local function define_tests()
                     { config = scenario.changes }
                 } } }
                 local action = { content = { result = "", tool_calls = {} }, metadata = { iteration = 1 } }
-                local query_kind
+                local query_kind, query_key, feedback
                 local query = {}
                 query.with_nodes = function(self) return self end
                 query.with_data_types = function(self, kind) query_kind = kind; return self end
+                query.with_data_keys = function(self, key) query_key = key; return self end
                 query.order_by = function(self) return self end
                 query.all = function() return query_kind == agent_consts.DATA_TYPE.AGENT_ACTION and { action } or {} end
+                query.one = function() return feedback and feedback.key == query_key and feedback or nil end
                 local n = { node_id = "node:test", dataflow_id = "df:test",
                     config = function() return config end,
                     inputs = function() return {} end,
                     query = function() return query end,
+                    data = function(_, kind, content, options)
+                        feedback = { data_type = kind, content = content, key = options.key }
+                    end,
                     metadata = function() return metadata end,
                     update_metadata = function(_, update) for k,v in pairs(update) do metadata[k] = v end end,
                     update_config = function(_, update) for k,v in pairs(update) do config[k] = v end end,
@@ -83,6 +88,8 @@ local function define_tests()
                 else
                     test.eq(result, "probe complete")
                     test.eq(selected, "new", "the first model step uses the replayed selection")
+                    test.eq(feedback.key, "1_empty_result")
+                    test.eq(feedback.content, agent_consts.FEEDBACK.EMPTY_RESULT)
                     if scenario.drops_pin then test.is_nil(seen_options.route)
                     else test.eq(seen_options.route, pin) end
                 end

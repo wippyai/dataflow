@@ -1694,44 +1694,24 @@ local function has_usable_result(result)
     return true
 end
 
--- Returns (task_complete, final_result, feedback_recorded). feedback_recorded is
--- true when an observation asking the model for a real answer was queued.
-local function check_completion(tool_calling, agent_result: any, iteration, min_iterations, exit_tool_name, n)
-    local task_complete = false
-    local final_result = nil
-    local feedback_recorded = false
-
+local function completion_decision(tool_calling, agent_result: any, iteration, min_iterations, exit_tool_name)
     if iteration < min_iterations then
-        return task_complete, final_result, feedback_recorded
+        return false, nil, nil, nil
     end
 
     if tool_calling == agent_consts.TOOL_CALLING.NONE then
         if has_usable_result(agent_result.result) then
-            task_complete = true
-            final_result = agent_result.result
+            return true, agent_result.result, nil, nil
         end
     elseif tool_calling == agent_consts.TOOL_CALLING.AUTO then
         if not tools_were_attempted(agent_result) then
             if has_usable_result(agent_result.result) then
-                task_complete = true
-                final_result = agent_result.result
-            else
-                local feedback = agent_consts.FEEDBACK.NO_TOOLS_CALLED
-                local key = iteration .. "_no_tools_called"
-                if agent_result.result ~= nil then
-                    feedback = agent_consts.FEEDBACK.EMPTY_RESULT
-                    key = iteration .. "_empty_result"
-                end
-                n:data(agent_consts.DATA_TYPE.AGENT_OBSERVATION, feedback, {
-                    key = key,
-                    content_type = consts.CONTENT_TYPE.TEXT,
-                    node_id = n.node_id,
-                    metadata = {
-                        iteration = iteration
-                    }
-                })
-                feedback_recorded = true
+                return true, agent_result.result, nil, nil
             end
+            if agent_result.result ~= nil then
+                return false, nil, agent_consts.FEEDBACK.EMPTY_RESULT, "_empty_result"
+            end
+            return false, nil, agent_consts.FEEDBACK.NO_TOOLS_CALLED, "_no_tools_called"
         end
     elseif tool_calling == agent_consts.TOOL_CALLING.ANY then
         if not tools_were_attempted(agent_result) then
@@ -1739,19 +1719,29 @@ local function check_completion(tool_calling, agent_result: any, iteration, min_
             if exit_tool_name then
                 feedback = feedback .. " " .. string.format(agent_consts.FEEDBACK.EXIT_AVAILABLE, exit_tool_name)
             end
-            n:data(agent_consts.DATA_TYPE.AGENT_OBSERVATION, feedback, {
-                key = iteration .. "_no_tools_called",
-                content_type = consts.CONTENT_TYPE.TEXT,
-                node_id = n.node_id,
-                metadata = {
-                    iteration = iteration
-                }
-            })
-            feedback_recorded = true
+            return false, nil, feedback, "_no_tools_called"
         end
     end
 
-    return task_complete, final_result, feedback_recorded
+    return false, nil, nil, nil
+end
+
+local function record_completion_feedback(n, iteration, feedback, key_suffix)
+    n:data(agent_consts.DATA_TYPE.AGENT_OBSERVATION, feedback, {
+        key = iteration .. key_suffix,
+        content_type = consts.CONTENT_TYPE.TEXT,
+        node_id = n.node_id,
+        metadata = { iteration = iteration }
+    })
+end
+
+-- Returns (task_complete, final_result, feedback_recorded). feedback_recorded is
+-- true when an observation asking the model for a real answer was queued.
+local function check_completion(tool_calling, agent_result: any, iteration, min_iterations, exit_tool_name, n)
+    local task_complete, final_result, feedback, key_suffix = completion_decision(tool_calling, agent_result,
+        iteration, min_iterations, exit_tool_name)
+    if feedback then record_completion_feedback(n, iteration, feedback, key_suffix) end
+    return task_complete, final_result, feedback ~= nil
 end
 
 -- A turn is unproductive when it calls nothing and settles nothing: no tool or
@@ -1913,9 +1903,22 @@ local function recover_persisted_action(n, agent_ctx, agent_instance, caller, se
             local _, persist_err = n:yield()
             if persist_err then return false, nil, action_iteration, persist_err end
         end
-        local action_has_calls = #(action_payload.content.tool_calls or {}) > 0 or #(action_payload.content.delegate_calls or {}) > 0
-        if not action_has_calls and action_payload.content.result ~= nil and action_payload.content.result ~= "" then
-            return true, action_payload.content.result, action_iteration, nil
+        if not tools_were_attempted(action_payload.content) then
+            local complete, result, feedback, key_suffix = completion_decision(tool_calling, action_payload.content,
+                action_iteration, min_iterations, exit_tool_name)
+            if feedback then
+                local observation = n:query()
+                    :with_nodes(n.node_id)
+                    :with_data_types(agent_consts.DATA_TYPE.AGENT_OBSERVATION)
+                    :with_data_keys(action_iteration .. key_suffix)
+                    :one()
+                if not observation then
+                    record_completion_feedback(n, action_iteration, feedback, key_suffix)
+                    local _, persist_err = n:yield()
+                    if persist_err then return false, nil, action_iteration, persist_err end
+                end
+            end
+            return complete, result, action_iteration, nil
         end
         return false, nil, action_iteration, nil
     end
