@@ -1855,6 +1855,61 @@ local function define_tests()
                 test.eq(data_command.payload.data_id, fixed_data_id)
             end)
 
+            for _, case in ipairs({
+                { name = "retryable", retryable = true },
+                { name = "non-retryable", retryable = false },
+                { name = "unknown" },
+            }) do
+                for _, position in ipairs({ "details", "details_only", "payload", "status", "status_without_message", "status_only" }) do
+                    it("persists " .. case.name .. " native causes from " .. position, function()
+                        local native = errors.new({ kind = errors.UNAVAILABLE, message = "Service unavailable",
+                            retryable = case.retryable, details = { code = "X" } })
+                        local details: any = { code = "EXECUTION_FAILED", message = "Service unavailable" }
+                        local status: any = "Execution failed"
+                        if position == "details" or position == "details_only" then
+                            details = native
+                            if position == "details_only" then status = nil end
+                        elseif position == "payload" then
+                            details.message = native
+                        elseif position == "status" or position == "status_without_message" then
+                            if position == "status_without_message" then details = { code = "EXECUTION_FAILED" } end
+                            status = native
+                        else
+                            details = nil
+                            status = native
+                        end
+                        local result, fail_err = test_node:fail(details, status)
+                        test.is_nil(fail_err)
+                        if type(details) == "table" then
+                            test.is_nil((details :: any).cause)
+                            test.eq(result.error.code, "EXECUTION_FAILED")
+                        end
+                        local encoded, encode_err = _json.encode({ result = result,
+                            commands = captured_calls.commit_submit[1].commands })
+                        test.is_nil(encode_err)
+                        local stored = _json.decode(encoded)
+                        local function assert_cause(payload)
+                            test.eq(payload.message, "Service unavailable")
+                            test.not_nil(payload.cause)
+                            test.eq(payload.cause.kind, "Unavailable")
+                            test.eq(payload.cause.message, "Service unavailable")
+                            test.eq(payload.cause.retryable, case.retryable)
+                            test.eq(payload.cause.details.code, "X")
+                        end
+                        assert_cause(stored.result.error)
+                        test.eq(stored.result.message, tostring(status or native))
+                        assert_cause(stored.commands[1].payload.metadata.error)
+                        test.eq(stored.commands[1].payload.metadata.status_message, tostring(status or native))
+                        for _, cmd in ipairs(stored.commands) do
+                            if cmd.type == consts.COMMAND_TYPES.CREATE_DATA then
+                                assert_cause(cmd.payload.content)
+                            end
+                        end
+                        test.eq(#stored.result.data_ids, 2)
+                    end)
+                end
+            end
+
             it("should handle complete without output content", function()
                 local test_node_no_targets, _err = node.new({
                     node_id = "test-node-123",
@@ -2510,7 +2565,7 @@ local function define_tests()
                 test.eq(type(alert_cmd.payload.content.timestamp), "number")
             end)
 
-            it("should gracefully handle error transform failures", function()
+            it("reports error transform failures with the primary error", function()
                 local test_node_bad_transform, _err = node.new({
                     node_id = "test-node-123",
                     dataflow_id = "test-dataflow-456",
@@ -2529,10 +2584,14 @@ local function define_tests()
                 test.not_nil(test_node_bad_transform)
 
                 local error_details = { message = "original error" }
-                local result = test_node_bad_transform:fail(error_details, "Test error")
+                local result, route_err = test_node_bad_transform:fail(error_details, "Test error")
 
                 test.is_false(result.success)
-                test.eq(result.message, "Test error")
+                test.not_nil(route_err)
+                test.eq(route_err, result.error)
+                test.eq(result.error.error, error_details)
+                test.contains(result.error.message, "Error transform failed")
+                test.contains(result.error.message, "undefined_function(error.message)")
 
                 local submit_call = captured_calls.commit_submit[1]
                 local data_commands: {any} = {}
@@ -2542,8 +2601,8 @@ local function define_tests()
                     end
                 end
 
-                test.eq(#data_commands, 1)
-                test.eq((data_commands[1] :: any).payload.content, error_details)
+                test.eq(#data_commands, 0)
+                test.eq(submit_call.commands[#submit_call.commands].payload.metadata.error, result.error)
             end)
 
             it("should skip error targets when condition fails", function()
@@ -2583,6 +2642,115 @@ local function define_tests()
 
                 test.eq(#data_commands, 1)
                 test.eq((data_commands[1] :: any).payload.key, "general_error")
+            end)
+        end)
+
+        describe("Atomic error routing", function()
+            for _, case in ipairs({
+                { name = "condition", target = { data_type = "error.output", condition = "missing.value" },
+                    expected = "Error condition evaluation failed" },
+                { name = "transform", target = { data_type = "error.output", transform = "missing(error.message)" },
+                    expected = "Error transform failed" },
+                { name = "data", target = {}, expected = "data type is required" },
+                { name = "nil content", target = { data_type = "error.output", transform = "nil" },
+                    expected = "content is nil" },
+            }) do
+                it("preserves both failures and queues no partial routes after a " .. case.name .. " failure", function()
+                    local n = node.new({ node_id = "failed-node", dataflow_id = "failed-workflow",
+                        node = { config = { error_targets = {
+                            { data_type = "error.output", key = "first" }, case.target,
+                            { data_type = "error.output", key = "last" }
+                        } } } }, mock_deps) :: any
+                    n:data("existing.output", "existing data", { data_id = "existing-data" })
+                    local primary = { code = "EXECUTION_FAILED", message = "Primary failure",
+                        error = "Primary context", details = { retained = true },
+                        cause = { kind = "Unavailable", retryable = false } }
+                    local routed, routing_err = n:_prepare_error_routes(primary)
+                    test.is_nil(routed)
+                    test.contains(routing_err, case.expected)
+                    test.eq(#n._queued_commands, 1)
+                    test.eq(#n:created_data_ids(), 1)
+                    local result, fail_err = n:fail(primary, "Execution failed", { final_state = "failed" })
+                    test.is_false(result.success)
+                    test.eq(fail_err, result.error)
+                    test.eq(result.error.error, primary)
+                    test.eq(result.error.error.error, "Primary context")
+                    test.is_true(result.error.error.details.retained)
+                    test.contains(result.error.message, case.expected)
+                    test.contains(result.message, case.expected)
+                    test.eq(#result.data_ids, 0)
+                    test.eq(#n:created_data_ids(), 1)
+                    local commands = captured_calls.commit_submit[1].commands
+                    local updates = 0
+                    for _, command in ipairs(commands) do
+                        if command.type == consts.COMMAND_TYPES.UPDATE_NODE then
+                            updates = updates + 1
+                            test.eq(command.payload.metadata.error, result.error)
+                            test.eq(command.payload.metadata.status_message, result.message)
+                            test.eq(command.payload.metadata.final_state, "failed")
+                        end
+                    end
+                    test.eq(updates, 1)
+                    test.eq(#commands, 2)
+                    test.eq(commands[1].payload.data_id, "existing-data")
+                    test.eq(commands[2].type, consts.COMMAND_TYPES.UPDATE_NODE)
+                end)
+            end
+
+            it("exposes failure metadata to error-route expressions before submitting one update", function()
+                local n = node.new({ node_id = "failed-node", dataflow_id = "failed-workflow",
+                    node = { metadata = { retained = true }, config = { error_targets = {
+                        { data_type = "error.output", key = "error",
+                            condition = "node._metadata.status_message == 'Execution failed' && node._metadata.final_state == 'failed'",
+                            transform = "node._metadata.error" }
+                    } } } }, mock_deps) :: any
+                local primary = { code = "EXECUTION_FAILED", message = "Primary failure" }
+                local result, fail_err = n:fail(primary, "Execution failed", { final_state = "failed" })
+                test.is_nil(fail_err)
+                test.eq(result.error, primary)
+                test.eq(#result.data_ids, 1)
+                local commands = captured_calls.commit_submit[1].commands
+                test.eq(#commands, 2)
+                test.eq(commands[1].type, consts.COMMAND_TYPES.UPDATE_NODE)
+                test.eq(commands[1].payload.metadata.error, primary)
+                test.eq(commands[1].payload.metadata.status_message, "Execution failed")
+                test.eq(commands[1].payload.metadata.final_state, "failed")
+                test.is_true(commands[1].payload.metadata.retained)
+                test.eq(commands[2].type, consts.COMMAND_TYPES.CREATE_DATA)
+                test.eq(commands[2].payload.content.code, primary.code)
+                test.eq(commands[2].payload.content.message, primary.message)
+            end)
+
+            it("queues no partial outputs when a later output target fails", function()
+                local n = node.new({ node_id = "failed-node", dataflow_id = "failed-workflow",
+                    node = { config = {
+                        data_targets = {
+                            { data_type = "output.result", key = "first" },
+                            { data_type = "output.result", transform = "missing(output.message)" }
+                        },
+                        error_targets = { { data_type = "error.output", key = "error" } }
+                    } } }, mock_deps) :: any
+                local result, route_err = n:complete({ message = "Output" })
+                test.is_false(result.success)
+                test.contains(route_err, "Output transform failed")
+                test.eq(#result.data_ids, 1)
+                test.eq(#n:created_data_ids(), 1)
+                local commands = captured_calls.commit_submit[1].commands
+                test.eq(#commands, 2)
+                test.eq(commands[1].type, consts.COMMAND_TYPES.UPDATE_NODE)
+                test.eq(commands[2].payload.key, "error")
+                test.contains(commands[2].payload.content, "Output transform failed")
+            end)
+
+            it("preserves a primary string when its error route fails", function()
+                local n = node.new({ node_id = "failed-node", dataflow_id = "failed-workflow",
+                    node = { config = { error_targets = {
+                        { data_type = "error.output", condition = "missing.value" }
+                    } } } }, mock_deps) :: any
+                local result, route_err = n:fail("Primary failure", "Execution failed")
+                test.eq(route_err, result.error)
+                test.eq(result.error.error, "Primary failure")
+                test.contains(result.error.message, "Error condition evaluation failed")
             end)
         end)
 
@@ -2707,7 +2875,7 @@ local function define_tests()
                 test.contains(error_msg, "Output condition evaluation failed")
             end)
 
-            it("should gracefully skip error targets with bad conditions", function()
+            it("reports invalid error conditions without routing later targets", function()
                 local test_node_bad_error_condition, _err = node.new({
                     node_id = "test-node-123",
                     dataflow_id = "test-dataflow-456",
@@ -2729,9 +2897,13 @@ local function define_tests()
                 }, mock_deps)
                 test.not_nil(test_node_bad_error_condition)
 
-                local result = test_node_bad_error_condition:fail({ message = "test error" })
+                local result, route_err = test_node_bad_error_condition:fail({ message = "test error" })
 
                 test.is_false(result.success)
+                test.not_nil(route_err)
+                test.eq(route_err, result.error)
+                test.eq(result.error.error.message, "test error")
+                test.contains(result.error.message, "Error condition evaluation failed")
 
                 local submit_call = captured_calls.commit_submit[1]
                 local data_commands: {any} = {}
@@ -2741,8 +2913,8 @@ local function define_tests()
                     end
                 end
 
-                test.eq(#data_commands, 1)
-                test.eq((data_commands[1] :: any).payload.key, "good_target")
+                test.eq(#data_commands, 0)
+                test.eq(submit_call.commands[#submit_call.commands].payload.metadata.error, result.error)
             end)
 
             it("should validate transform expressions properly", function()

@@ -433,7 +433,7 @@ function methods:with_child_nodes(definitions)
     return child_ids, nil
 end
 
-function methods:data(data_type, content, options)
+local function build_data_command(self, data_type, content, options)
     if not data_type or data_type == "" then
         return nil, "Node [" .. self.node_id .. "] data type is required"
     end
@@ -454,13 +454,10 @@ function methods:data(data_type, content, options)
         end
     end
 
-    local data_id = options.data_id or uuid.v7()
-    table.insert(self._created_data_ids, data_id)
-
-    local command: any = {
+    return {
         type = consts.COMMAND_TYPES.CREATE_DATA,
         payload = {
-            data_id = data_id,
+            data_id = options.data_id or uuid.v7(),
             data_type = data_type,
             key = options.key,
             content = content,
@@ -469,9 +466,18 @@ function methods:data(data_type, content, options)
             node_id = options.node_id,
             metadata = options.metadata
         }
-    }
+    }, nil
+end
 
+local function queue_data_command(self, command)
+    table.insert(self._created_data_ids, command.payload.data_id)
     table.insert(self._queued_commands, command)
+end
+
+function methods:data(data_type, content, options)
+    local command, err = build_data_command(self, data_type, content, options)
+    if err then return nil, err end
+    queue_data_command(self, command)
     return self, nil
 end
 
@@ -737,136 +743,96 @@ function methods:query()
     return self._deps.data_reader.with_dataflow(self.dataflow_id)
 end
 
+local function route_targets(self, content, targets, env, label, target_prefix, default_node_id)
+    local commands = table.create(#targets, 0)
+
+    for target_idx, target in ipairs(targets) do
+        local target_desc = target_prefix .. "[" .. target_idx .. "]"
+        if target.discriminator then
+            target_desc = target_desc .. " (discriminator=" .. target.discriminator .. ")"
+        end
+        if target.node_id then
+            target_desc = target_desc .. " -> node[" .. target.node_id .. "]"
+        end
+
+        if target.condition then
+            local should_create, condition_err = expr.eval(target.condition :: string, env)
+            if condition_err then
+                return nil, label .. " condition evaluation failed for " .. target_desc .. ": " .. tostring(condition_err)
+            end
+            if not should_create then
+                goto continue
+            end
+        end
+
+        local routed_content = content
+        if target.transform ~= nil then
+            local transformed, transform_err = expr.eval(target.transform :: string, env)
+            if transform_err then
+                return nil, label .. " transform failed for " .. target_desc ..
+                    " (expression: " .. tostring(target.transform) .. "): " .. tostring(transform_err)
+            end
+            routed_content = transformed
+        end
+
+        if routed_content == nil then
+            return nil, "Node [" .. self.node_id .. "] " .. string.lower(label) .. " content is nil for " .. target_desc ..
+                       " (transform: " .. tostring(target.transform or "none") .. ")"
+        end
+
+        local command, data_err = build_data_command(self, target.data_type, routed_content, {
+            data_id = target.data_id,
+            key = target.key,
+            discriminator = target.discriminator,
+            node_id = target.node_id or default_node_id,
+            content_type = target.content_type,
+            metadata = target.metadata
+        })
+        if data_err then
+            return nil, "Node [" .. self.node_id .. "] failed to create data for " .. target_desc .. ": " .. data_err
+        end
+        table.insert(commands, command)
+
+        ::continue::
+    end
+
+    return commands, nil
+end
+
+local function queue_routes(self, commands)
+    local routed_data_ids = table.create(#commands, 0)
+    for _, command in ipairs(commands) do
+        queue_data_command(self, command)
+        table.insert(routed_data_ids, command.payload.data_id)
+    end
+    return routed_data_ids
+end
+
 function methods:_route_outputs(content, targets)
-    targets = targets or self.data_targets
-    local routed_data_ids = table.create(#targets, 0)
-    local data_id_count = 0
-
     local resolved_content = resolve_dataflow_references(self, content)
-
     local inputs_map, inputs_err = self:inputs()
     if inputs_err then
         return nil, "Node [" .. self.node_id .. "] failed to load inputs for output routing: " .. tostring(inputs_err)
     end
 
-    local env = {
+    local commands, route_err = route_targets(self, resolved_content, targets or self.data_targets, {
         output = resolved_content,
         input = inputs_map or {},
         inputs = inputs_map or {},
         node = self
-    }
-
-    for target_idx, target in ipairs(targets) do
-        local target_desc = "target[" .. target_idx .. "]"
-        if target.discriminator then
-            target_desc = target_desc .. " (discriminator=" .. target.discriminator .. ")"
-        end
-        if target.node_id then
-            target_desc = target_desc .. " -> node[" .. target.node_id .. "]"
-        end
-
-        if target.condition then
-            local should_create, condition_err = expr.eval(target.condition :: string, env)
-            if condition_err then
-                return nil, "Output condition evaluation failed for " .. target_desc .. ": " .. tostring(condition_err)
-            end
-            if not should_create then
-                goto continue
-            end
-        end
-
-        local output_content = resolved_content
-        local has_transform = target.transform ~= nil
-
-        if has_transform then
-            local transformed, transform_err = expr.eval(target.transform :: string, env)
-            if transform_err then
-                return nil, "Output transform failed for " .. target_desc ..
-                    " (expression: " .. tostring(target.transform) .. "): " .. tostring(transform_err)
-            end
-            output_content = transformed
-        end
-
-        if output_content == nil then
-            return nil, "Node [" .. self.node_id .. "] output content is nil for " .. target_desc ..
-                       " (transform: " .. tostring(target.transform or "none") .. ")"
-        end
-
-        local data_id = target.data_id or uuid.v7()
-        data_id_count = data_id_count + 1
-        routed_data_ids[data_id_count] = data_id
-
-        local _, data_err = self:data(target.data_type, output_content, {
-            data_id = data_id,
-            key = target.key,
-            discriminator = target.discriminator,
-            node_id = target.node_id or self.node_id,
-            content_type = target.content_type,
-            metadata = target.metadata
-        })
-        if data_err then
-            return nil, "Node [" .. self.node_id .. "] failed to create data for " .. target_desc .. ": " .. (data_err :: string)
-        end
-
-        ::continue::
+    }, "Output", "target", self.node_id)
+    if route_err then
+        return nil, route_err
     end
-
-    return routed_data_ids, nil
+    return queue_routes(self, commands), nil
 end
 
-function methods:_route_errors(error_content)
-    local routed_data_ids = table.create(#self.error_targets, 0)
-    local data_id_count = 0
-
-    local env = {
+-- Prepares every error-target command without queueing, so a routing failure leaves no partial data.
+function methods:_prepare_error_routes(error_content)
+    return route_targets(self, error_content, self.error_targets, {
         error = error_content,
         node = self
-    }
-
-    for target_idx, target in ipairs(self.error_targets) do
-        local target_desc = "error_target[" .. target_idx .. "]"
-        if target.discriminator then
-            target_desc = target_desc .. " (discriminator=" .. target.discriminator .. ")"
-        end
-        if target.node_id then
-            target_desc = target_desc .. " -> node[" .. target.node_id .. "]"
-        end
-
-        if target.condition then
-            local should_create, condition_err = expr.eval(target.condition :: string, env)
-            if condition_err then
-                goto continue
-            end
-            if not should_create then
-                goto continue
-            end
-        end
-
-        local error_output = error_content
-        if target.transform then
-            local transformed, transform_err = expr.eval(target.transform :: string, env)
-            if not transform_err then
-                error_output = transformed
-            end
-        end
-
-        local data_id = target.data_id or uuid.v7()
-        data_id_count = data_id_count + 1
-        routed_data_ids[data_id_count] = data_id
-
-        self:data(target.data_type, error_output, {
-            data_id = data_id,
-            key = target.key,
-            discriminator = target.discriminator,
-            node_id = target.node_id,
-            content_type = target.content_type,
-            metadata = target.metadata
-        })
-
-        ::continue::
-    end
-
-    return routed_data_ids, nil
+    }, "Error", "error_target", nil)
 end
 
 function methods:_submit_final()
@@ -946,6 +912,33 @@ function methods:complete(output_content, message, extra_metadata)
 end
 
 function methods:fail(error_details, message, extra_metadata)
+    local native_cause = nil
+    if type(error_details) == "userdata" then
+        message = message or tostring(error_details)
+        native_cause = error_details
+    elseif type(error_details) == "table" and type(error_details.message) == "userdata" then
+        native_cause = error_details.message
+    end
+    if type(message) == "userdata" then
+        native_cause = native_cause or message
+        message = tostring(message)
+    end
+    if native_cause then
+        local payload = type(error_details) == "table" and error_details or {
+            message = tostring(error_details or message)
+        }
+        local payload_message = payload.message
+        if payload_message == nil or type(payload_message) == "userdata" then
+            payload_message = tostring(native_cause)
+        end
+        error_details = merge_metadata(payload, { message = payload_message, cause = {
+            kind = native_cause:kind(),
+            message = native_cause:message(),
+            retryable = native_cause:retryable(),
+            details = native_cause:details()
+        } })
+    end
+
     local error_msg = error_details or "Unknown error"
     local status_msg = message or error_msg
 
@@ -958,15 +951,26 @@ function methods:fail(error_details, message, extra_metadata)
         error_metadata = merge_metadata(error_metadata, extra_metadata)
     end
 
-    self:update_metadata(error_metadata)
+    -- Error-target expressions read the failure metadata during routing.
+    self._metadata = merge_metadata(self._metadata, error_metadata)
 
-    local data_ids = table.create(#self.error_targets, 0)
+    local route_commands = {}
+    local routing_failure = nil
     if error_details ~= nil then
-        local routed_ids, route_err = self:_route_errors(error_details)
-        if not route_err then
-            data_ids = routed_ids
+        local prepared, route_err = self:_prepare_error_routes(error_details)
+        if route_err then
+            status_msg = "Node [" .. self.node_id .. "] failed to route errors: " .. tostring(route_err)
+            error_msg = { message = status_msg, error = error_msg }
+            routing_failure = error_msg
+            error_metadata.status_message = status_msg
+            error_metadata.error = error_msg
+        else
+            route_commands = prepared
         end
     end
+
+    self:update_metadata(error_metadata)
+    local data_ids = queue_routes(self, route_commands)
 
     local success, err = self:_submit_final()
     if not success then
@@ -983,7 +987,7 @@ function methods:fail(error_details, message, extra_metadata)
         message = status_msg,
         error = error_msg,
         data_ids = data_ids
-    }
+    }, routing_failure
 end
 
 function methods:command(cmd)
