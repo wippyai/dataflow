@@ -6,6 +6,8 @@ local ERROR_FUNCTION_CANCELED = "FUNCTION_CANCELED"
 local ERROR_FUNCTION_EXECUTION_FAILED = "FUNCTION_EXECUTION_FAILED"
 
 func._deps = {
+    time = require("time"),
+    retry = require("retry"),
     process = process,
     channel = channel,
     node = require("node"),
@@ -13,6 +15,14 @@ func._deps = {
     consts = require("consts"),
     child_output = require("child_output")
 }
+
+local function fail_node(n, details, message)
+    local reservation = (n:metadata() or {}).func_retry
+    if type(reservation) == "table" and (reservation.in_flight or reservation.wait_until) then
+        n:update_metadata({func_retry = false})
+    end
+    return n:fail(details, message)
+end
 
 local function error_message(error_value: any, fallback: string)
     if type(error_value) == "string" then
@@ -184,10 +194,10 @@ end
 
 local function fail_child_collect(n, collect_err)
     if type(collect_err) == "table" then
-        return n:fail(collect_err, error_message(collect_err, "Child workflow failed"))
+        return fail_node(n, collect_err, error_message(collect_err, "Child workflow failed"))
     end
 
-    return n:fail({
+    return fail_node(n, {
         code = ERROR_FUNCTION_EXECUTION_FAILED,
         message = error_message(collect_err, "Child workflow failed")
     }, error_message(collect_err, "Child workflow failed"))
@@ -213,9 +223,9 @@ local function finish_with_children(n, created_node_ids, fallback_result)
     local yield_result, yield_err = n:yield({ run_nodes = created_node_ids })
     if yield_err then
         if type(yield_err) == "table" then
-            return n:fail(yield_err, "Control command execution failed")
+            return fail_node(n, yield_err, "Control command execution failed")
         end
-        return n:fail({
+        return fail_node(n, {
             code = ERROR_FUNCTION_EXECUTION_FAILED,
             message = prefixed_error("Control command execution failed: ", yield_err, "unknown")
         }, "Control command execution failed")
@@ -232,6 +242,127 @@ local function finish_with_children(n, created_node_ids, fallback_result)
     return (n:complete(fallback_result, "Function executed successfully"))
 end
 
+local function now_ms()
+    return func._deps.time.now():unix_nano() / func._deps.time.MILLISECOND
+end
+
+local function call_once(executor, func_id, input_data, timeout_ms)
+    local command, start_err = executor:async(func_id, input_data)
+    if start_err then return nil, start_err end
+
+    local response_channel = command:response()
+    local events_channel = func._deps.process.events()
+    local timeout_channel = timeout_ms and func._deps.time.after(math.max(timeout_ms * func._deps.time.MILLISECOND, 1))
+    local receive_cases = { response_channel:case_receive(), events_channel:case_receive() }
+    if timeout_channel then table.insert(receive_cases, timeout_channel:case_receive()) end
+
+    while true do
+        local result = func._deps.channel.select(receive_cases)
+        if result.channel == response_channel then break end
+        if result.channel == timeout_channel then
+            command:cancel()
+            return nil, {kind = errors.TIMEOUT, message = "Function attempt timed out", retryable = true}
+        end
+        if result.channel == events_channel then
+            if not result.ok then
+                -- Keep the timeout case dense when the event channel closes.
+                receive_cases = {response_channel:case_receive()}
+                if timeout_channel then table.insert(receive_cases, timeout_channel:case_receive()) end
+            elseif result.value.kind == func._deps.process.event.CANCEL then
+                command:cancel()
+                return nil, {kind = errors.CANCELED, message = "Function execution was canceled by system event"}
+            end
+        end
+    end
+    if command:is_canceled() then
+        return nil, {kind = errors.CANCELED, message = "Function execution was canceled"}
+    end
+    return command:result()
+end
+
+local function final_call_failure(n, cause, record)
+    local canceled = type(cause) == "table" and cause.kind == errors.CANCELED
+    if not record then
+        local message = type(cause) == "table" and cause.message or cause
+        return fail_node(n, {code = canceled and ERROR_FUNCTION_CANCELED or ERROR_FUNCTION_EXECUTION_FAILED,
+            message = message, cause = type(cause) == "table" and cause or nil},
+            canceled and "Function execution was canceled" or "Function execution failed: " .. tostring(message))
+    end
+    n:update_metadata({func_retry = {attempt = record.attempt, first_attempt_at = record.first_attempt_at,
+        in_flight = false, last_error = cause}})
+    return fail_node(n, {code = canceled and ERROR_FUNCTION_CANCELED or ERROR_FUNCTION_EXECUTION_FAILED,
+        message = cause.message, cause = cause, attempts = record.attempt, last_error = cause},
+        "Function execution failed: " .. cause.message)
+end
+
+local function execute_call(n, config, normalized, input_data)
+    local policy = normalized.retry_policy
+    local record = policy and (n:metadata() or {}).func_retry or nil
+    if type(record) ~= "table" then record = nil end
+    local outcome = nil
+    if record and record.in_flight then
+        outcome = {kind = errors.UNAVAILABLE, retryable = true, message = "Function attempt interrupted before its outcome is committed"}
+    end
+
+    while true do
+        if outcome then
+            local decision = func._deps.retry.decide(normalized, outcome, record.attempt, record.first_attempt_at, now_ms())
+            if not decision.retry then return nil, final_call_failure(n, outcome, record) end
+            record = {attempt = record.attempt, first_attempt_at = record.first_attempt_at,
+                in_flight = false, last_error = outcome,
+                wait_until = func._deps.time.unix(0, decision.next_at * func._deps.time.MILLISECOND):format(func._deps.time.RFC3339NANO)}
+            n:update_metadata({func_retry = record})
+            outcome = nil
+        end
+        if record and record.wait_until then
+            local yield_id = n.node_id .. ":retry:" .. tostring(record.attempt)
+            local resumed, wait_err = n:yield({wait_for_timer = true, timeout_deadline = record.wait_until,
+                yield_id = yield_id})
+            if wait_err then
+                return nil, fail_node(n, {code = "RETRY_WAIT_FAILED", message = tostring(wait_err)}, "Retry wait failed")
+            end
+            if not resumed then return nil, nil end
+        end
+
+        local started_at = now_ms()
+        local first_attempt_at = record and record.first_attempt_at or started_at
+        local remaining = normalized.schedule_to_close_timeout and
+            (first_attempt_at + normalized.schedule_to_close_timeout - started_at)
+        if remaining and remaining < 0 then
+            local cause = record and record.last_error or {kind = errors.TIMEOUT, message = "Function schedule-to-close timeout elapsed"}
+            return nil, final_call_failure(n, cause, record)
+        end
+        local attempt = record and record.attempt + 1 or 1
+        if policy then
+            record = {attempt = attempt, first_attempt_at = first_attempt_at, in_flight = true}
+            n:update_metadata({func_retry = record, error = false, status_message = false})
+            local submitted, submit_err = n:submit()
+            if not submitted then
+                return nil, fail_node(n, {code = "RETRY_RESERVATION_FAILED", message = tostring(submit_err)}, "Attempt reservation failed")
+            end
+        end
+        if normalized.schedule_to_close_timeout then
+            remaining = first_attempt_at + normalized.schedule_to_close_timeout - now_ms()
+            if remaining < 0 then
+                return nil, final_call_failure(n, {kind = errors.TIMEOUT, message = "Function schedule-to-close timeout elapsed"}, record)
+            end
+        end
+        local execution_context = build_execution_context_with_dataflow(config.context, n.dataflow_id, n.node_id, n.path)
+        execution_context.attempt = attempt
+        execution_context.idempotency_key = n.dataflow_id .. ":" .. n.node_id
+        local executor = func._deps.funcs.new():with_context(execution_context)
+        local timeout = normalized.start_to_close_timeout
+        if remaining then timeout = math.min(timeout or remaining, remaining) end
+        local payload, call_err = call_once(executor, config.func_id, input_data, timeout)
+        if not call_err then
+            if policy then n:update_metadata({func_retry = false}) end
+            return payload, nil
+        end
+        if not policy then return nil, final_call_failure(n, call_err, nil) end
+        outcome = func._deps.retry.extract_error(call_err)
+    end
+end
+
 local function run(args)
     local n, err = func._deps.node.new(args) :: any
     if err then
@@ -246,7 +377,7 @@ local function run(args)
     end
     local func_id = config.func_id
     if not func_id or func_id == "" then
-        return n:fail({
+        return fail_node(n, {
             code = ERROR_MISSING_FUNC_ID,
             message = "Function ID not specified in node configuration"
         }, "Missing func_id in node config")
@@ -257,9 +388,9 @@ local function run(args)
     local inputs, inputs_err = safe_inputs(n)
     if inputs_err then
         if type(inputs_err) == "table" then
-            return n:fail(inputs_err, error_message(inputs_err, "Failed to load inputs"))
+            return fail_node(n, inputs_err, error_message(inputs_err, "Failed to load inputs"))
         end
-        return n:fail({
+        return fail_node(n, {
             code = "INPUT_VALIDATION_FAILED",
             message = inputs_err
         }, inputs_err)
@@ -268,72 +399,18 @@ local function run(args)
     local input_data = merge_inputs_with_base_args(inputs, base_args)
 
     if input_data == nil then
-        return n:fail({
+        return fail_node(n, {
             code = ERROR_NO_INPUT_DATA,
             message = "No input data provided for function node"
         }, "Function node requires input data")
     end
 
-    local executor = func._deps.funcs.new() :: any
-    local base_context = config.context
-    local execution_context = build_execution_context_with_dataflow(
-        base_context,
-        n.dataflow_id,
-        n.node_id,
-        n.path
-    )
-    executor = executor:with_context(execution_context)
-
-    local command, start_err = executor:async(func_id, input_data)
-    if start_err then
-        return n:fail({
-            code = ERROR_FUNCTION_EXECUTION_FAILED,
-            message = start_err
-        }, "Function execution failed: " .. start_err)
+    local normalized, validation_err = func._deps.retry.normalize(config)
+    if validation_err then
+        return fail_node(n, {code = "INVALID_RETRY_POLICY", message = validation_err}, validation_err)
     end
-
-    local response_channel = command:response()
-    local events_channel = func._deps.process.events()
-
-    local receive_cases = {
-        response_channel:case_receive(),
-        events_channel:case_receive()
-    }
-
-    while true do
-        local result = func._deps.channel.select(receive_cases)
-
-        if result.channel == response_channel then
-            break
-        end
-
-        if result.channel == events_channel then
-            if not result.ok then
-                receive_cases[2] = nil
-            elseif result.value.kind == func._deps.process.event.CANCEL then
-                command:cancel()
-                return n:fail({
-                    code = ERROR_FUNCTION_CANCELED,
-                    message = "Function execution was canceled by system event"
-                }, "Function execution was canceled")
-            end
-        end
-    end
-
-    if command:is_canceled() then
-        return n:fail({
-            code = ERROR_FUNCTION_CANCELED,
-            message = "Function execution was canceled"
-        }, "Function execution was canceled")
-    end
-
-    local payload, result_err = command:result()
-    if result_err then
-        return n:fail({
-            code = ERROR_FUNCTION_EXECUTION_FAILED,
-            message = result_err
-        }, "Function execution failed: " .. result_err)
-    end
+    local payload, failure = execute_call(n, config, normalized, input_data)
+    if not payload then return failure end
 
     local function_result = payload:data()
 

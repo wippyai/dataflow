@@ -31,6 +31,86 @@ type TestDataRecord = {
 
 local function define_tests()
     describe("WorkflowState", function()
+        it("resumes a durable dispatch reservation after its process exits without a committed outcome", function()
+            for _, success in ipairs({false, true}) do
+                local state = test.not_nil(workflow_state.new("workflow")) :: any
+                state.nodes.call = {type = "func", status = consts.STATUS.RUNNING,
+                    config = {retry_policy = {}}, metadata = {func_retry = {
+                        attempt = 2, first_attempt_at = 123, in_flight = true,
+                    }}}
+                state.active_processes.call = "call-process"
+                local exit = state:handle_process_exit("call-process", success, "Interrupted")
+                test.is_nil(exit, "an unresolved reservation has no terminal exit result")
+                test.eq(state.nodes.call.status, consts.STATUS.PENDING)
+                test.eq(state.nodes.call.metadata.func_retry.attempt, 2)
+                test.is_true(state.nodes.call.metadata.func_retry.in_flight)
+                test.is_nil(state.active_processes.call)
+                test.eq(#state.queued_commands, 1)
+                test.eq(state.queued_commands[1].type, consts.COMMAND_TYPES.UPDATE_NODE)
+                test.eq(state.queued_commands[1].payload.status, consts.STATUS.PENDING)
+            end
+        end)
+
+        it("preserves committed terminal failures despite stale retry metadata on exit", function()
+            local state = test.not_nil(workflow_state.new("workflow")) :: any
+            state.nodes.call = {type = "func", status = consts.STATUS.COMPLETED_FAILURE,
+                config = {retry_policy = {}}, metadata = {func_retry = {
+                    attempt = 2, first_attempt_at = 123, in_flight = true}}}
+            state.active_processes.call = "call-process"
+            state.active_yields.call = {wait_for_timer = true}
+            test.is_nil(state:handle_process_exit("call-process", true, "process returns"))
+            test.eq(state.nodes.call.status, consts.STATUS.COMPLETED_FAILURE)
+            test.eq(#state.queued_commands, 0, "a committed failure gets no second terminal outcome")
+            test.is_nil(state.active_yields.call)
+        end)
+
+        it("does not resume a reservation after its terminal failure metadata commits", function()
+            local state = test.not_nil(workflow_state.new("workflow")) :: any
+            state.nodes.call = {type = "func", status = consts.STATUS.RUNNING,
+                config = {retry_policy = {}}, metadata = {error = {code = "INPUT_VALIDATION_FAILED"},
+                    status_message = "Input failed", func_retry = false}}
+            state.active_processes.call = "call-process"
+            local exit = state:handle_process_exit("call-process", false, {success = false})
+            test.not_nil(exit)
+            test.eq(state.nodes.call.status, consts.STATUS.COMPLETED_FAILURE)
+        end)
+
+        it("resumes an active reservation despite error metadata from an earlier execution", function()
+            local state = test.not_nil(workflow_state.new("workflow")) :: any
+            state.nodes.call = {type = "func", status = consts.STATUS.RUNNING,
+                config = {retry_policy = {}}, metadata = {error = "Earlier failure", status_message = "Earlier failure",
+                    func_retry = {attempt = 2, first_attempt_at = 123, in_flight = true}}}
+            state.active_processes.call = "call-process"
+            test.is_nil(state:handle_process_exit("call-process", false, "Interrupted"))
+            test.eq(state.nodes.call.status, consts.STATUS.PENDING)
+            test.is_true(state.nodes.call.metadata.func_retry.in_flight)
+        end)
+
+        it("replays a completed timer after a process exits before the next reservation", function()
+            local state = test.not_nil(workflow_state.new("workflow")) :: any
+            state.nodes.call = {type = "func", status = consts.STATUS.RUNNING,
+                config = {retry_policy = {}}, metadata = {func_retry = {
+                    attempt = 1, first_attempt_at = 123, in_flight = false, wait_until = "deadline",
+                }}}
+            state.active_processes.call = "call-process"
+            state.active_yields.call = {wait_for_timer = true, yield_id = "wait", pending_children = {}}
+            state:_update_state_from_results({results = {{input = {
+                type = consts.COMMAND_TYPES.CREATE_DATA, payload = {
+                    node_id = "call", data_type = consts.DATA_TYPE.NODE_YIELD_RESULT,
+                    key = "wait", content = {timer_completed = true},
+                },
+            }}}})
+            test.is_nil(state.active_yields.call)
+            state:handle_process_exit("call-process", false, "Interrupted")
+            test.eq(state.nodes.call.status, consts.STATUS.PENDING)
+            state:track_yield("call", {wait_for_timer = true, yield_id = "wait", pending_children = {}})
+            test.is_true(state.active_yields.call.signal_data.timer_completed)
+            state.queued_commands = {}
+            state:satisfy_yield("call", {timer_completed = true})
+            test.eq(#state.queued_commands, 0, "replay emits no duplicate result")
+            test.is_nil(state.active_yields.call)
+        end)
+
         local test_ctx: {
             db: any?,
             tx: any?,

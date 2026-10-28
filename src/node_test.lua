@@ -1284,6 +1284,23 @@ local function define_tests()
                 }, mock_deps)
             end)
 
+            it("rejects public signal addresses and mixed readiness on timer waits", function()
+                for _, options in ipairs({
+                    {signal_id = "public"}, {wait_for_signal = true}, {run_nodes = {"child"}},
+                    {timeout = "1h"}, {arm = {ref = "example:arm"}},
+                }) do
+                    options.wait_for_timer = true
+                    options.timeout_deadline = _time.now():add(_time.HOUR):format(_time.RFC3339NANO)
+                    local result, err = test_node:yield(options)
+                    test.is_nil(result)
+                    test.contains(err, "timer wait")
+                    test.eq(#captured_calls.commit_submit, 0)
+                end
+                local result, err = test_node:yield({wait_for_timer = true, timeout_deadline = "invalid"})
+                test.is_nil(result)
+                test.contains(err, "valid absolute")
+            end)
+
             it("should handle empty yield", function()
                 test.not_nil(test_node)
                 local result, err = test_node:yield()

@@ -1365,3 +1365,76 @@ This enables:
 - Child workflow spawning from parent workflows
 
 Functions returning anything else cannot participate in dataflow composition.
+
+## Func attempt timeouts and retry policy
+
+Only func nodes accept `start_to_close_timeout`, `schedule_to_close_timeout` and
+`retry_policy`. The builder, compiler (including templates), and raw `CREATE_NODE`
+validation reject these fields on other node kinds, including agent, cycle,
+parallel, signal, state and custom await nodes.
+
+```lua
+flow.create():with_input({ request = "example" })
+    :func("example:call", {
+        start_to_close_timeout = "30s",
+        schedule_to_close_timeout = "6h",
+        retry_policy = {
+            initial_interval = "1s",
+            backoff_coefficient = 2.0,
+            maximum_interval = "100s",
+            maximum_attempts = 0,
+            non_retryable_error_types = { "Invalid" },
+        },
+    })
+```
+
+Durations are positive runtime duration strings (for example `"5s"`, `"10m"`,
+`"1h"`) or millisecond numbers. Without `start_to_close_timeout` there is no
+per-attempt timeout. Without `schedule_to_close_timeout` the whole call window is
+unbounded. The whole window starts at the first attempt's durable dispatch
+reservation, includes reservation persistence, calls and backoff, and never
+restarts on recovery. The call's timer uses the shorter of the per-attempt timeout
+and the remaining whole window.
+
+Without `retry_policy`, the func makes exactly one attempt and retains its existing
+restart behavior. An empty policy enables retries: the initial interval defaults
+to 1 second, the coefficient to 2.0, the maximum interval to 100 times the initial
+interval, the maximum attempts to 0 (unlimited), and the non-retryable kind list to
+empty. The coefficient is finite and at least 1; the maximum interval is at least
+the initial interval. The attempt limit is a non-negative integer and includes
+the first attempt. An unlimited policy needs a schedule-to-close limit when a
+bounded retry window is required.
+
+Cancellation never retries. Next, native `retryable == false` stops retries, then
+a kind in `non_retryable_error_types` stops retries. Per-attempt timeout cancels
+the call and yields the retryable `Timeout` kind. Other call failures, including
+unknown native retryability, are retryable. Backoff before attempt n+1 is
+`min(initial_interval * backoff_coefficient^(n-1), maximum_interval)` without
+jitter. Retrying stops at the attempt limit or when the next attempt would start
+after `first_attempt_at + schedule_to_close_timeout`; a delayed wake also checks
+this boundary before reserving another attempt.
+
+Retries cover the function call only. Configuration validation, input loading and
+transforms, output routing, `_control` commands and child-workflow processing do
+not retry. Error routes run once, on final failure. That failure retains the
+existing code and structured `cause`, and adds `attempts` and `last_error`.
+Success clears the retry record and completes through the existing output path.
+
+Each dispatch reserves `{ attempt, first_attempt_at, in_flight, last_error,
+wait_until }` in node metadata `func_retry` before calling the function.
+`first_attempt_at` is Unix milliseconds; `wait_until` is an absolute RFC3339
+backoff deadline. Fields without a value are absent. Attempts are durable dispatch
+reservations: a crash immediately after reservation consumes an attempt even if
+the function never starts. A reservation without a committed outcome is an
+interrupted retryable `Unavailable` attempt on re-entry. Backoff recovery preserves
+the original deadline and consumes no attempt. Functions receive context
+`attempt` (starting at 1) and `idempotency_key = <dataflow_id>:<node_id>`; the key
+stays unchanged across attempts and restarts. Functions use that key when their
+external effects need deduplication.
+
+Backoff uses a durable yield with the optional `wait_for_timer = true` marker and
+an absolute `timeout_deadline`. It has no signal ID or child readiness. Only the
+deadline satisfies it; `client:signal` cannot shorten it and pending-signal
+inspection omits it. The existing wake index reactivates it. Both node and
+orchestrator processes passivate while it waits, including hour-scale intervals.
+Yields without the marker retain their existing semantics.
