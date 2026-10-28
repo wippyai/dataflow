@@ -6,6 +6,8 @@ local ERROR_FUNCTION_CANCELED = "FUNCTION_CANCELED"
 local ERROR_FUNCTION_EXECUTION_FAILED = "FUNCTION_EXECUTION_FAILED"
 
 func._deps = {
+    process = process,
+    channel = channel,
     node = require("node"),
     funcs = require("funcs"),
     consts = require("consts"),
@@ -282,23 +284,39 @@ local function run(args)
     )
     executor = executor:with_context(execution_context)
 
-    local command = executor:async(func_id, input_data)
-    local response_channel = command:response()
-    local events_channel = process.events()
+    local command, start_err = executor:async(func_id, input_data)
+    if start_err then
+        return n:fail({
+            code = ERROR_FUNCTION_EXECUTION_FAILED,
+            message = start_err
+        }, "Function execution failed: " .. start_err)
+    end
 
-    local result = channel.select({
+    local response_channel = command:response()
+    local events_channel = func._deps.process.events()
+
+    local receive_cases = {
         response_channel:case_receive(),
         events_channel:case_receive()
-    })
+    }
 
-    if result.channel == events_channel then
-        local event = result.value
-        if event.kind == process.event.CANCEL then
-            command:cancel()
-            return n:fail({
-                code = ERROR_FUNCTION_CANCELED,
-                message = "Function execution was canceled by system event"
-            }, "Function execution was canceled")
+    while true do
+        local result = func._deps.channel.select(receive_cases)
+
+        if result.channel == response_channel then
+            break
+        end
+
+        if result.channel == events_channel then
+            if not result.ok then
+                receive_cases[2] = nil
+            elseif result.value.kind == func._deps.process.event.CANCEL then
+                command:cancel()
+                return n:fail({
+                    code = ERROR_FUNCTION_CANCELED,
+                    message = "Function execution was canceled by system event"
+                }, "Function execution was canceled")
+            end
         end
     end
 
