@@ -832,7 +832,7 @@ function methods:_prepare_error_routes(error_content)
     return route_targets(self, error_content, self.error_targets, {
         error = error_content,
         node = self
-    }, "Error", "error_target", nil)
+    }, "Error", "error_target", self.node_id)
 end
 
 function methods:_submit_final()
