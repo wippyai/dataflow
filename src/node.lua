@@ -433,7 +433,7 @@ function methods:with_child_nodes(definitions)
     return child_ids, nil
 end
 
-function methods:data(data_type, content, options)
+local function build_data_command(self, data_type, content, options)
     if not data_type or data_type == "" then
         return nil, "Node [" .. self.node_id .. "] data type is required"
     end
@@ -454,13 +454,10 @@ function methods:data(data_type, content, options)
         end
     end
 
-    local data_id = options.data_id or uuid.v7()
-    table.insert(self._created_data_ids, data_id)
-
-    local command: any = {
+    return {
         type = consts.COMMAND_TYPES.CREATE_DATA,
         payload = {
-            data_id = data_id,
+            data_id = options.data_id or uuid.v7(),
             data_type = data_type,
             key = options.key,
             content = content,
@@ -469,9 +466,18 @@ function methods:data(data_type, content, options)
             node_id = options.node_id,
             metadata = options.metadata
         }
-    }
+    }, nil
+end
 
+local function queue_data_command(self, command)
+    table.insert(self._created_data_ids, command.payload.data_id)
     table.insert(self._queued_commands, command)
+end
+
+function methods:data(data_type, content, options)
+    local command, err = build_data_command(self, data_type, content, options)
+    if err then return nil, err end
+    queue_data_command(self, command)
     return self, nil
 end
 
@@ -737,136 +743,88 @@ function methods:query()
     return self._deps.data_reader.with_dataflow(self.dataflow_id)
 end
 
-function methods:_route_outputs(content, targets)
-    targets = targets or self.data_targets
+local function route_targets(self, content, targets, env, label, target_prefix, default_node_id)
+    local commands = table.create(#targets, 0)
     local routed_data_ids = table.create(#targets, 0)
-    local data_id_count = 0
 
+    for target_idx, target in ipairs(targets) do
+        local target_desc = target_prefix .. "[" .. target_idx .. "]"
+        if target.discriminator then
+            target_desc = target_desc .. " (discriminator=" .. target.discriminator .. ")"
+        end
+        if target.node_id then
+            target_desc = target_desc .. " -> node[" .. target.node_id .. "]"
+        end
+
+        if target.condition then
+            local should_create, condition_err = expr.eval(target.condition :: string, env)
+            if condition_err then
+                return nil, label .. " condition evaluation failed for " .. target_desc .. ": " .. tostring(condition_err)
+            end
+            if not should_create then
+                goto continue
+            end
+        end
+
+        local routed_content = content
+        if target.transform ~= nil then
+            local transformed, transform_err = expr.eval(target.transform :: string, env)
+            if transform_err then
+                return nil, label .. " transform failed for " .. target_desc ..
+                    " (expression: " .. tostring(target.transform) .. "): " .. tostring(transform_err)
+            end
+            routed_content = transformed
+        end
+
+        if routed_content == nil then
+            return nil, "Node [" .. self.node_id .. "] " .. string.lower(label) .. " content is nil for " .. target_desc ..
+                       " (transform: " .. tostring(target.transform or "none") .. ")"
+        end
+
+        local command, data_err = build_data_command(self, target.data_type, routed_content, {
+            data_id = target.data_id,
+            key = target.key,
+            discriminator = target.discriminator,
+            node_id = target.node_id or default_node_id,
+            content_type = target.content_type,
+            metadata = target.metadata
+        })
+        if data_err then
+            return nil, "Node [" .. self.node_id .. "] failed to create data for " .. target_desc .. ": " .. data_err
+        end
+        table.insert(commands, command)
+        table.insert(routed_data_ids, command.payload.data_id)
+
+        ::continue::
+    end
+
+    -- Enqueue only after every target validates so routing is atomic with failure metadata.
+    for _, command in ipairs(commands) do
+        queue_data_command(self, command)
+    end
+    return routed_data_ids, nil
+end
+
+function methods:_route_outputs(content, targets)
     local resolved_content = resolve_dataflow_references(self, content)
-
     local inputs_map, inputs_err = self:inputs()
     if inputs_err then
         return nil, "Node [" .. self.node_id .. "] failed to load inputs for output routing: " .. tostring(inputs_err)
     end
 
-    local env = {
+    return route_targets(self, resolved_content, targets or self.data_targets, {
         output = resolved_content,
         input = inputs_map or {},
         inputs = inputs_map or {},
         node = self
-    }
-
-    for target_idx, target in ipairs(targets) do
-        local target_desc = "target[" .. target_idx .. "]"
-        if target.discriminator then
-            target_desc = target_desc .. " (discriminator=" .. target.discriminator .. ")"
-        end
-        if target.node_id then
-            target_desc = target_desc .. " -> node[" .. target.node_id .. "]"
-        end
-
-        if target.condition then
-            local should_create, condition_err = expr.eval(target.condition :: string, env)
-            if condition_err then
-                return nil, "Output condition evaluation failed for " .. target_desc .. ": " .. tostring(condition_err)
-            end
-            if not should_create then
-                goto continue
-            end
-        end
-
-        local output_content = resolved_content
-        local has_transform = target.transform ~= nil
-
-        if has_transform then
-            local transformed, transform_err = expr.eval(target.transform :: string, env)
-            if transform_err then
-                return nil, "Output transform failed for " .. target_desc ..
-                    " (expression: " .. tostring(target.transform) .. "): " .. tostring(transform_err)
-            end
-            output_content = transformed
-        end
-
-        if output_content == nil then
-            return nil, "Node [" .. self.node_id .. "] output content is nil for " .. target_desc ..
-                       " (transform: " .. tostring(target.transform or "none") .. ")"
-        end
-
-        local data_id = target.data_id or uuid.v7()
-        data_id_count = data_id_count + 1
-        routed_data_ids[data_id_count] = data_id
-
-        local _, data_err = self:data(target.data_type, output_content, {
-            data_id = data_id,
-            key = target.key,
-            discriminator = target.discriminator,
-            node_id = target.node_id or self.node_id,
-            content_type = target.content_type,
-            metadata = target.metadata
-        })
-        if data_err then
-            return nil, "Node [" .. self.node_id .. "] failed to create data for " .. target_desc .. ": " .. (data_err :: string)
-        end
-
-        ::continue::
-    end
-
-    return routed_data_ids, nil
+    }, "Output", "target", self.node_id)
 end
 
 function methods:_route_errors(error_content)
-    local routed_data_ids = table.create(#self.error_targets, 0)
-    local data_id_count = 0
-
-    local env = {
+    return route_targets(self, error_content, self.error_targets, {
         error = error_content,
         node = self
-    }
-
-    for target_idx, target in ipairs(self.error_targets) do
-        local target_desc = "error_target[" .. target_idx .. "]"
-        if target.discriminator then
-            target_desc = target_desc .. " (discriminator=" .. target.discriminator .. ")"
-        end
-        if target.node_id then
-            target_desc = target_desc .. " -> node[" .. target.node_id .. "]"
-        end
-
-        if target.condition then
-            local should_create, condition_err = expr.eval(target.condition :: string, env)
-            if condition_err then
-                goto continue
-            end
-            if not should_create then
-                goto continue
-            end
-        end
-
-        local error_output = error_content
-        if target.transform then
-            local transformed, transform_err = expr.eval(target.transform :: string, env)
-            if not transform_err then
-                error_output = transformed
-            end
-        end
-
-        local data_id = target.data_id or uuid.v7()
-        data_id_count = data_id_count + 1
-        routed_data_ids[data_id_count] = data_id
-
-        self:data(target.data_type, error_output, {
-            data_id = data_id,
-            key = target.key,
-            discriminator = target.discriminator,
-            node_id = target.node_id,
-            content_type = target.content_type,
-            metadata = target.metadata
-        })
-
-        ::continue::
-    end
-
-    return routed_data_ids, nil
+    }, "Error", "error_target", nil)
 end
 
 function methods:_submit_final()
@@ -986,9 +944,15 @@ function methods:fail(error_details, message, extra_metadata)
     self:update_metadata(error_metadata)
 
     local data_ids = table.create(#self.error_targets, 0)
+    local routing_failure = nil
     if error_details ~= nil then
         local routed_ids, route_err = self:_route_errors(error_details)
-        if not route_err then
+        if route_err then
+            status_msg = "Node [" .. self.node_id .. "] failed to route errors: " .. tostring(route_err)
+            error_msg = { message = status_msg, error = error_msg }
+            routing_failure = error_msg
+            self:update_metadata({ status_message = status_msg, error = error_msg })
+        else
             data_ids = routed_ids
         end
     end
@@ -1008,7 +972,7 @@ function methods:fail(error_details, message, extra_metadata)
         message = status_msg,
         error = error_msg,
         data_ids = data_ids
-    }
+    }, routing_failure
 end
 
 function methods:command(cmd)
