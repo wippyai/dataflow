@@ -279,6 +279,8 @@ local function define_tests()
 
                 local result, load_err = ws:load_state()
                 test.is_nil(load_err)
+                local _, recovery_err = ws:recover()
+                test.is_nil(recovery_err)
                 test.not_nil(result)
 
                 test.eq(ws.nodes[running_node_id].status, consts.STATUS.PENDING)
@@ -323,6 +325,8 @@ local function define_tests()
                 local _result, load_err = ws:load_state()
 
                 test.is_nil(load_err)
+                local _, recovery_err = ws:recover()
+                test.is_nil(recovery_err)
                 test.eq(ws.nodes[running_node_id].status, consts.STATUS.COMPLETED_SUCCESS)
 
                 local node_result = data_reader.with_dataflow(test_ctx.dataflow_id :: string)
@@ -397,6 +401,8 @@ local function define_tests()
                 local _result, load_err = ws:load_state()
 
                 test.is_nil(load_err)
+                local _, recovery_err = ws:recover()
+                test.is_nil(recovery_err)
 
                 ws._reset_node_ids = { [upstream_id] = true }
                 local recovery_commands = {}
@@ -1517,6 +1523,8 @@ local function define_tests()
                 local ws = workflow_state.new(test_ctx.dataflow_id) :: any
                 local _result, load_err = ws:load_state()
                 test.is_nil(load_err)
+                local _, recovery_err = ws:recover()
+                test.is_nil(recovery_err)
                 local recovered = test.not_nil(ws.active_yields[parent_id]) :: any
                 test.eq(recovered.park_ack, true)
                 test.eq(recovered.arm.ref, "inbox:arm")
@@ -1583,6 +1591,8 @@ local function define_tests()
                 local ws = workflow_state.new(test_ctx.dataflow_id) :: any
                 local _, load_err = ws:load_state()
                 test.is_nil(load_err)
+                local _, recovery_err = ws:recover()
+                test.is_nil(recovery_err)
 
                 local recovered = test.not_nil(ws.active_yields[parent_id]) :: any
                 test.is_true(recovered.detached)
@@ -1683,6 +1693,8 @@ local function define_tests()
 
                 local _result, load_err = ws:load_state()
                 test.is_nil(load_err)
+                local _, recovery_err = ws:recover()
+                test.is_nil(recovery_err)
 
                 test.eq(ws.nodes[parent_id].status, consts.STATUS.PENDING)
 
@@ -1764,6 +1776,8 @@ local function define_tests()
 
                 local _result, load_err = ws:load_state()
                 test.is_nil(load_err)
+                local _, recovery_err = ws:recover()
+                test.is_nil(recovery_err)
 
                 test.not_nil(ws.active_yields[parent_id])
                 local yield_info = ws.active_yields[parent_id] :: any
@@ -1839,6 +1853,8 @@ local function define_tests()
 
                 local _result, load_err = ws:load_state()
                 test.is_nil(load_err)
+                local _, recovery_err = ws:recover()
+                test.is_nil(recovery_err)
 
                 test.not_nil(ws.active_yields[parent_id])
                 test.eq((ws.active_yields[parent_id] :: any).yield_id, older_unsatisfied_yield_id)
@@ -1917,6 +1933,8 @@ local function define_tests()
 
                 local _result, load_err = ws:load_state()
                 test.is_nil(load_err)
+                local _, recovery_err = ws:recover()
+                test.is_nil(recovery_err)
                 test.not_nil(ws.active_yields[parent_id])
                 test.eq((ws.active_yields[parent_id] :: any).yield_id, third_yield_id)
             end)
@@ -1985,6 +2003,8 @@ local function define_tests()
 
                 local _result, load_err = ws:load_state()
                 test.is_nil(load_err)
+                local _, recovery_err = ws:recover()
+                test.is_nil(recovery_err)
 
                 test.not_nil(ws.active_yields[parent1_id])
                 test.not_nil(ws.active_yields[parent2_id])
@@ -2033,6 +2053,8 @@ local function define_tests()
 
                 local _result, load_err = ws:load_state()
                 test.is_nil(load_err)
+                local _, recovery_err = ws:recover()
+                test.is_nil(recovery_err)
 
                 test.is_nil(ws.active_yields[completed_parent_id])
                 test.is_false(ws:is_node_active(completed_parent_id))
@@ -2073,6 +2095,8 @@ local function define_tests()
 
                 local _result, load_err = ws:load_state()
                 test.is_nil(load_err)
+                local _, recovery_err = ws:recover()
+                test.is_nil(recovery_err)
 
                 test.not_nil(ws.active_yields[parent_id])
                 local yield_info = ws.active_yields[parent_id] :: any
@@ -2113,6 +2137,8 @@ local function define_tests()
 
                 local _result, load_err = ws:load_state()
                 test.is_nil(load_err)
+                local _, recovery_err = ws:recover()
+                test.is_nil(recovery_err)
 
                 test.not_nil(ws.active_yields[parent_id])
                 local yield_info = ws.active_yields[parent_id] :: any
@@ -2179,6 +2205,8 @@ local function define_tests()
 
                 local _result, load_err = ws:load_state()
                 test.is_nil(load_err)
+                local _, recovery_err = ws:recover()
+                test.is_nil(recovery_err)
 
                 test.not_nil(ws.active_yields[grandparent_id])
                 test.not_nil(ws.active_yields[parent_id])
@@ -2269,6 +2297,8 @@ local function define_tests()
 
                 local _result, load_err = ws:load_state()
                 test.is_nil(load_err)
+                local _, recovery_err = ws:recover()
+                test.is_nil(recovery_err)
 
                 test.eq(ws.nodes[grandparent_id].status, consts.STATUS.PENDING)
                 test.eq(ws.nodes[parent_id].status, consts.STATUS.PENDING)

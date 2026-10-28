@@ -66,6 +66,30 @@ entries:
       test: wippy.test:test
     method: run_tests
 
+  - name: orchestrator_recovery_test
+    kind: function.lua
+    meta:
+      name: Orchestrator Recovery Tests
+      type: test
+      group: Workflow
+    source: file://orchestrator_recovery_test.lua
+    modules: [uuid]
+    imports:
+      test: wippy.test:test
+      client: userspace.dataflow:client
+      commit: userspace.dataflow.persist:commit
+      consts: userspace.dataflow:consts
+      data_reader: userspace.dataflow.persist:data_reader
+      dataflow_repo: userspace.dataflow.persist:dataflow_repo
+      node_reader: userspace.dataflow.persist:node_reader
+      node: userspace.dataflow:node
+      orchestrator: userspace.dataflow.runner:orchestrator
+      workflow_state: userspace.dataflow.runner:workflow_state
+      scheduler: userspace.dataflow.runner:scheduler
+      activation_repo: userspace.dataflow.persist:activation_repo
+      execution_frame: userspace.dataflow:execution_frame
+    method: run_tests
+
   - name: orchestrator_completion_flush_test
     kind: function.lua
     meta:
