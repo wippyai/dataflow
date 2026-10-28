@@ -49,6 +49,8 @@ profiles:
 # Tests execute through the framework runner rather than a production caller.
 # Give every test entry an explicit, narrow identity; production Dataflow has no fallback.
 override:
+  "userspace.dataflow.node.agent:agent_recovery_completion_test:security.actor.id": dataflow.test
+  "userspace.dataflow.node.agent:agent_recovery_completion_test:security.policies": [app:test_policy]
   "userspace.dataflow.inspection_test:test:security.actor.id": dataflow.test
   "userspace.dataflow.inspection_test:test:security.policies": [app:test_policy]
   "app:node_decode_test:security.actor.id": dataflow.test
