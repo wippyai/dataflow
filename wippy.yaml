@@ -1,6 +1,6 @@
 organization: wippy
 module: dataflow
-version: 0.7.31 # x-release-please-version
+version: 0.7.32 # x-release-please-version
 description: Workflow execution engine with visual flow designer support
 license: Apache-2.0
 keywords:
@@ -14,6 +14,8 @@ exclude_meta:
   scope:
     - dev
 exclude:
+  # Native fixtures link to production sources and are not module source input.
+  - "test/**"
   - "app:**"
   - "userspace.dataflow.node.agent.stub:**"
   - "userspace.dataflow.node.cycle.stub:**"
