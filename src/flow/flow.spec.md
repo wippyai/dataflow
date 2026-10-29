@@ -1399,11 +1399,11 @@ and the remaining whole window.
 Without `retry_policy`, the func makes exactly one attempt and retains its existing
 restart behavior. An empty policy enables retries: the initial interval defaults
 to 1 second, the coefficient to 2.0, the maximum interval to 100 times the initial
-interval, the maximum attempts to 0 (unlimited), and the non-retryable kind list to
+interval, the maximum attempts to 3, and the non-retryable kind list to
 empty. The coefficient is finite and at least 1; the maximum interval is at least
-the initial interval. The attempt limit is a non-negative integer and includes
-the first attempt. An unlimited policy needs a schedule-to-close limit when a
-bounded retry window is required.
+the initial interval. The attempt limit is a non-negative safe integer and includes
+the first attempt. An explicit zero removes the count limit and requires a positive
+schedule-to-close timeout; a retry policy without either bound is rejected.
 
 Cancellation never retries. Next, native `retryable == false` stops retries, then
 a kind in `non_retryable_error_types` stops retries. Per-attempt timeout cancels

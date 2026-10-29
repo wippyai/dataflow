@@ -68,8 +68,10 @@ Func config accepts Temporal's `start_to_close_timeout`,
 runtime duration strings or millisecond numbers. Both timeouts are absent by
 default. Without a policy, a func keeps its single attempt and existing restart
 behavior. An empty policy defaults to 1s initial backoff, coefficient 2.0, a maximum
-interval of 100 times the initial interval, unlimited attempts (`maximum_attempts
-= 0`, counting the first attempt), and an empty `non_retryable_error_types` list.
+interval of 100 times the initial interval, three attempts (counting the first
+attempt), and an empty `non_retryable_error_types` list. An explicit
+`maximum_attempts = 0` removes the count limit only when a positive
+`schedule_to_close_timeout` bounds the overall retry window.
 Other node kinds reject these declarations.
 
 Backoff after attempt n is `min(initial_interval * backoff_coefficient^(n-1),

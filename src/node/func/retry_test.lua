@@ -298,6 +298,30 @@ local function define_tests()
             test.eq(#state.waits, 0)
         end)
 
+        it("stops a default retry policy after three attempts", function()
+            local state = fixture({func_id = "example:call", retry_policy = {}})
+            state.fail_attempts = 10
+            local result = func.run({})
+            test.is_false(result.success)
+            test.eq(#state.calls, 3)
+            test.eq(#state.waits, 2)
+            test.eq(state.failures, 1)
+            test.eq(result.error.attempts, 3)
+        end)
+
+        it("stops an unlimited attempt policy at its overall deadline", function()
+            local state = fixture({func_id = "example:call", retry_policy = {
+                maximum_attempts = 0, initial_interval = 100,
+            }, schedule_to_close_timeout = "1s"})
+            state.fail_attempts = 100
+            local result = func.run({})
+            test.is_false(result.success)
+            test.eq(#state.calls, 4)
+            test.eq(#state.waits, 3)
+            test.eq(state.failures, 1)
+            test.eq(result.error.attempts, 4)
+        end)
+
         it("preserves caller context when no retry policy is selected", function()
             local state = fixture({func_id = "example:call", context = {
                 attempt = 41, idempotency_key = "caller-owned-key",

@@ -103,6 +103,7 @@ local function define_tests()
         end)
 
         for _, case in ipairs({
+            {name = "default attempt bound", policy = {initial_interval = "10ms"}, attempts = 3},
             {name = "maximum attempts", policy = {initial_interval = "10ms", maximum_attempts = 3}, attempts = 3},
             {name = "schedule window", policy = {initial_interval = "1h"}, schedule = "1s", attempts = 1},
             {name = "native non-retryable flag", policy = {}, retryable = false, attempts = 1},

@@ -2,6 +2,7 @@ local time = require("time")
 
 local retry = {}
 local fields = { "retry_policy", "start_to_close_timeout", "schedule_to_close_timeout" }
+local MAX_SAFE_ATTEMPTS = 9007199254740991
 
 local function finite(value)
     return type(value) == "number" and value == value and value ~= math.huge and value ~= -math.huge
@@ -39,9 +40,12 @@ function retry.normalize(config)
     if maximum < initial then return nil, "maximum_interval must be at least initial_interval" end
     local coefficient = policy.backoff_coefficient == nil and 2.0 or policy.backoff_coefficient
     if not finite(coefficient) or coefficient < 1 then return nil, "backoff_coefficient must be finite and >= 1" end
-    local attempts = policy.maximum_attempts == nil and 0 or policy.maximum_attempts
-    if not finite(attempts) or attempts < 0 or attempts % 1 ~= 0 then
-        return nil, "maximum_attempts must be a non-negative integer"
+    local attempts = policy.maximum_attempts == nil and 3 or policy.maximum_attempts
+    if not finite(attempts) or attempts < 0 or attempts > MAX_SAFE_ATTEMPTS or attempts % 1 ~= 0 then
+        return nil, "maximum_attempts must be a non-negative safe integer"
+    end
+    if attempts == 0 and normalized.schedule_to_close_timeout == nil then
+        return nil, "maximum_attempts = 0 requires schedule_to_close_timeout"
     end
     local kinds = policy.non_retryable_error_types
     if kinds ~= nil and type(kinds) ~= "table" then

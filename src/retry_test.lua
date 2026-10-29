@@ -3,7 +3,7 @@ local retry = require("retry")
 
 local function define_tests()
     describe("Func retry policy", function()
-        it("preserves the opt-in boundary and normalizes Temporal defaults and durations", function()
+        it("preserves the opt-in boundary and normalizes bounded defaults and durations", function()
             local config, err = retry.normalize({})
             test.is_nil(err)
             test.is_nil(config.retry_policy)
@@ -14,7 +14,7 @@ local function define_tests()
             test.eq(config.retry_policy.initial_interval, 1000)
             test.eq(config.retry_policy.maximum_interval, 100000)
             test.eq(config.retry_policy.backoff_coefficient, 2)
-            test.eq(config.retry_policy.maximum_attempts, 0)
+            test.eq(config.retry_policy.maximum_attempts, 3)
             test.eq(#config.retry_policy.non_retryable_error_types, 0)
             local numeric = retry.normalize({retry_policy = {initial_interval = 12.5}, start_to_close_timeout = 250})
             test.eq(numeric.retry_policy.maximum_interval, 1250)
@@ -28,6 +28,7 @@ local function define_tests()
             {field = "backoff_coefficient", value = 0.9}, {field = "backoff_coefficient", value = "2"},
             {field = "backoff_coefficient", value = 0/0}, {field = "maximum_attempts", value = -1},
             {field = "maximum_attempts", value = 1.5}, {field = "maximum_attempts", value = "3"},
+            {field = "maximum_attempts", value = 9007199254740992},
             {field = "non_retryable_error_types", value = "Invalid"},
             {field = "non_retryable_error_types", value = {false}},
             {field = "non_retryable_error_types", value = {""}},
@@ -48,6 +49,17 @@ local function define_tests()
                     test.contains(err, field)
                 end
             end
+        end)
+
+        it("requires an overall deadline for an explicitly unlimited attempt count", function()
+            local _, err = retry.normalize({retry_policy = {maximum_attempts = 0}})
+            test.not_nil(err)
+            test.contains(err, "schedule_to_close_timeout")
+            local config, bounded_err = retry.normalize({retry_policy = {maximum_attempts = 0},
+                schedule_to_close_timeout = "1h"})
+            test.is_nil(bounded_err)
+            test.eq(config.retry_policy.maximum_attempts, 0)
+            test.eq(config.schedule_to_close_timeout, 3600000)
         end)
 
         it("computes exponential delays, caps, constant intervals and very large attempt numbers", function()
@@ -89,9 +101,9 @@ local function define_tests()
             test.is_false(retry.decide(config, cause, 3, 1000, 1000).retry)
             test.is_true(retry.decide(config, cause, 1, 1000, 1900).retry)
             test.is_false(retry.decide(config, cause, 1, 1000, 1901).retry)
-            config.retry_policy.maximum_attempts = 0
-            config.schedule_to_close_timeout = nil
+            config = retry.normalize({retry_policy = {maximum_attempts = 0}, schedule_to_close_timeout = "1h"})
             test.is_true(retry.decide(config, cause, 100000, 0, 0).retry)
+            test.is_false(retry.decide(config, cause, 100000, 0, 3600000).retry)
             test.is_false(retry.decide({}, cause, 1, 0, 0).retry)
         end)
     end)
