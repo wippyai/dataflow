@@ -28,10 +28,11 @@ local function define_tests()
             test.eq(previous.project, "initial", "settlement must not mutate an earlier call's snapshot")
             test.eq(base.project, "initial")
             test.eq(next_context.agent_run.host.iteration, 2)
-            test.eq(next_context.agent_run.host.id, previous.agent_run.host.id)
-            test.eq(next_context.agent_run.host.id, "df-1:node-1")
+            test.is_nil(next_context.agent_run.host.id)
+            test.eq(next_context.agent_run.host.dataflow_id, previous.agent_run.host.dataflow_id)
+            test.eq(next_context.agent_run.host.node_id, previous.agent_run.host.node_id)
             local child = build(base, {dataflow_id = "df-1", node_id = "child-1", metadata = n.metadata}, "agent", "model", 1, nil)
-            test.neq(child.agent_run.host.id, next_context.agent_run.host.id)
+            test.neq(child.agent_run.host.node_id, next_context.agent_run.host.node_id)
 
             applied, err = control_handler.apply_behavior_controls({{
                 context = { session = { delete = { "project", "enabled" } } },

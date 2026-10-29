@@ -633,15 +633,15 @@ local function define_tests()
             local expected = {
                 {role = "user", text = "Study the orchard"},
                 {role = "assistant", text = "Reading the page"},
-                {role = "tool", text = "Orchard notes"},
+                {role = "function", text = "Orchard notes"},
                 {role = "assistant", text = "Asking the researcher"},
-                {role = "tool", text = "Prune in winter"},
+                {role = "function", text = "Prune in winter"},
             }
             for index, want in ipairs(expected) do
                 local event = result.events[index]
                 test.eq(event.id, ids[index])
                 test.eq(event.role, want.role)
-                if want.role == "tool" then
+                if want.role == "function" then
                     test.eq(type(event.content), "table")
                     test.eq(type(event.raw_content), "string")
                 else
@@ -717,7 +717,7 @@ local function define_tests()
 
             local result = read({mode = "all"})
             local event = result.events[3]
-            test.eq(event.role, "tool")
+            test.eq(event.role, "function")
             test.eq(event.metadata.function_name, "read_page")
             test.eq(event.metadata.status, "error")
             test.eq(event.content.url, "https://example.org")
@@ -750,7 +750,7 @@ local function define_tests()
             test.eq(result.events[1].id, ids[2])
             test.eq(result.events[2].id, ids[3])
             test.eq(result.events[1].role, "assistant")
-            test.eq(result.events[2].role, "tool")
+            test.eq(result.events[2].role, "function")
             test.eq(read({mode = "since_id", from_id = ids[3]}).count, 2)
             test.eq(read({mode = "window", last = 1}).events[1].id, ids[5])
             local bounded = read({mode = "all", max_chars = #"Study the orchard"})

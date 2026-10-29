@@ -257,7 +257,6 @@ local function process_rows(rows, replace_references)
             row.data_id = row.key
             row.content = row.ref_content
             row.content_type = row.ref_content_type
-            row.metadata = row.ref_metadata
 
             if row.ref_key then
                 row.key = row.ref_key
@@ -267,7 +266,6 @@ local function process_rows(rows, replace_references)
             row.ref_content_type = nil
             row.ref_discriminator = nil
             row.ref_key = nil
-            row.ref_metadata = nil
         end
     end
 

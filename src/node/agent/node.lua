@@ -35,7 +35,6 @@ type ToolWrapperOutcome = {
 
 type ToolWrapperHostRef = {
     kind: string,
-    id: string,
     dataflow_id: string?,
     node_id: string?,
     iteration: number?,
@@ -202,7 +201,6 @@ local REASON = {
 local function lifecycle_host_ref(n: any, iteration: any): table
     return {
         kind = "dataflow",
-        id = tostring(n.dataflow_id) .. ":" .. tostring(n.node_id),
         dataflow_id = n.dataflow_id,
         node_id = n.node_id,
         iteration = tonumber(iteration) or 0
