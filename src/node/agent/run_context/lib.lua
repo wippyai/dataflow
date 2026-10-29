@@ -139,6 +139,8 @@ local function load_history_rows(dataflow_id, node_id)
     for _, row in ipairs(rows_or_err or {}) do
         local input_key = row.discriminator or row.key or "default"
         if row.content_type == consts.CONTENT_TYPE.REFERENCE then
+            row.metadata = row.metadata or {}
+            if not row.metadata.author then row.metadata.author = (row.ref_metadata or {}).author end
             row.content = row.ref_content
             row.content_type = row.ref_content_type
             input_key = row.discriminator or row.ref_key or row.key or "default"
@@ -269,9 +271,18 @@ local function normalize_event(row, formatter, calls)
             metadata.result = decode_json(row.content)
         end
     end
+    local author = metadata.author
+    if type(author) ~= "table" then
+        if row.type == agent_consts.DATA_TYPE.AGENT_ACTION then
+            author = { kind = "agent", id = metadata.agent_id }
+        else
+            author = { kind = "system" }
+        end
+    end
     return {
         id = row.data_id,
         role = role,
+        author = author,
         content = content,
         raw_content = text,
         content_type = row.content_type,

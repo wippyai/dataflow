@@ -35,6 +35,7 @@ type ToolWrapperOutcome = {
 
 type ToolWrapperHostRef = {
     kind: string,
+    id: string,
     dataflow_id: string?,
     node_id: string?,
     iteration: number?,
@@ -198,6 +199,16 @@ local REASON = {
     DATAFLOW_FINISHED = "dataflow_finished",
 }
 
+local function lifecycle_host_ref(n: any, iteration: any): table
+    return {
+        kind = "dataflow",
+        id = tostring(n.dataflow_id) .. ":" .. tostring(n.node_id),
+        dataflow_id = n.dataflow_id,
+        node_id = n.node_id,
+        iteration = tonumber(iteration) or 0
+    }
+end
+
 local function context_with_agent_run(base_context: any, n: any, agent_id: any, model_name: any, iteration: any, binding: any): table
     local next_context = {}
     if type(base_context) == "table" then
@@ -213,12 +224,7 @@ local function context_with_agent_run(base_context: any, n: any, agent_id: any, 
         for k, v in pairs(metadata.session_context) do next_context[k] = v end
     end
 
-    local host = {
-        kind = "dataflow",
-        dataflow_id = n.dataflow_id,
-        node_id = n.node_id,
-        iteration = tonumber(iteration) or 0
-    }
+    local host = lifecycle_host_ref(n, iteration)
     local agent_info = {
         id = agent_id,
         model = model_name
@@ -236,15 +242,6 @@ local function context_with_agent_run(base_context: any, n: any, agent_id: any, 
     }
 
     return next_context
-end
-
-local function lifecycle_host_ref(n: any, iteration: any): table
-    return {
-        kind = "dataflow",
-        dataflow_id = n.dataflow_id,
-        node_id = n.node_id,
-        iteration = tonumber(iteration) or 0
-    }
 end
 
 local function lifecycle_agent_ref(agent_id: any, model_name: any): ToolWrapperAgentRef
@@ -916,12 +913,7 @@ local function maybe_checkpoint_history(n, config, session_context, agent_instan
     local binding_failed = false
 
     if has_binding then
-        local host = {
-            kind = "dataflow",
-            dataflow_id = n.dataflow_id,
-            node_id = n.node_id,
-            iteration = tonumber(iteration) or checkpoint_iteration
-        }
+        local host = lifecycle_host_ref(n, tonumber(iteration) or checkpoint_iteration)
         local agent = {
             id = agent_id,
             model = model_name
@@ -1440,12 +1432,7 @@ end
 
 local function configure_tool_wrappers(caller, agent_instance, n, agent_id, model_name, iteration, outcome: ToolWrapperOutcome?,
                                       run_context_binding: string?)
-    local host = {
-        kind = "dataflow",
-        dataflow_id = string_or_nil(n.dataflow_id),
-        node_id = string_or_nil(n.node_id),
-        iteration = tonumber(iteration) or 0
-    } :: ToolWrapperHostRef
+    local host = lifecycle_host_ref(n, iteration) :: ToolWrapperHostRef
     local agent_ref = {
         id = string_or_nil(agent_id),
         model = string_or_nil(model_name)
@@ -1453,12 +1440,7 @@ local function configure_tool_wrappers(caller, agent_instance, n, agent_id, mode
     local binding_id = string_or_nil(run_context_binding) or DEFAULT_RUN_CONTEXT_BINDING
 
     local wrapper_context: ToolWrapperExecutionContext = {
-        host = {
-            kind = host.kind,
-            dataflow_id = host.dataflow_id,
-            node_id = host.node_id,
-            iteration = host.iteration
-        },
+        host = host,
         agent = agent_ref,
         run_context = {
             contract = RUN_CONTEXT_CONTRACT,

@@ -1,4 +1,5 @@
 local test = require("test")
+local contract = require("contract")
 local uuid = require("uuid")
 local client = require("client")
 local node = require("node")
@@ -109,6 +110,23 @@ local function define_tests()
             test.is_true(a.child_id ~= b.child_id, "distinct delegations get distinct children")
             test.eq(children_for_tool_call(dataflow_id, parent_node_id, "call-1"), 1)
             test.eq(children_for_tool_call(dataflow_id, parent_node_id, "call-2"), 1)
+        end)
+
+        it("preserves the parent author through persisted child history", function()
+            local n, dataflow_id, parent_node_id = setup_parent()
+            local info = delegation_handler.create_child_node(n, {
+                agent_id = "agent:reader", tool_call_id = "authored-task", input_data = "Read the documentation",
+                context = {from_agent_id = "agent:coordinator"},
+            }, 1, {})
+            apply(n, dataflow_id)
+            local binding = assert(contract.get("wippy.agent:run_context")):open("userspace.dataflow.node.agent.run_context:binding")
+            local result, err = binding:get_history({host = {kind = "dataflow", id = dataflow_id .. ":" .. info.child_id,
+                dataflow_id = dataflow_id, node_id = info.child_id}, selector = {mode = "all"}})
+            test.is_nil(err)
+            test.eq(#result.events, 1)
+            test.eq(result.events[1].role, "user")
+            test.eq(result.events[1].author.kind, "agent")
+            test.eq(result.events[1].author.id, "agent:coordinator")
         end)
 
         it("uses resolved agent display title for child node metadata", function()
