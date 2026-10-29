@@ -241,11 +241,11 @@ local function normalize_event(row, formatter, calls)
     for key, value in pairs(row.metadata or {}) do metadata[key] = value end
     for _, message in ipairs(builder:get_messages()) do
         if message.role ~= prompt.ROLE.FUNCTION_CALL and message.role ~= prompt.ROLE.CACHE_MARKER then
-            role = message.role == prompt.ROLE.FUNCTION_RESULT and "function" or message.role
+            role = message.role == prompt.ROLE.FUNCTION_RESULT and "tool" or message.role
             for _, part in ipairs(message.content or {}) do
                 if part.text then texts[#texts + 1] = part.text end
             end
-            if role == "function" then
+            if role == "tool" then
                 metadata.function_name = message.name
                 metadata.status = metadata.is_error and "error" or "success"
                 metadata.call_id = message.function_call_id
@@ -254,7 +254,7 @@ local function normalize_event(row, formatter, calls)
     end
     local text = table.concat(texts, "\n")
     local content = text
-    if role == "function" then
+    if role == "tool" then
         local call = calls[metadata.call_id]
         if not call then return nil, "Function result has no stored call: " .. tostring(metadata.call_id) end
         content = decode_json(call.arguments)
