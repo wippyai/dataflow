@@ -585,17 +585,23 @@ local function define_tests()
         test.it("projects input, actions, tools and delegation through the real binding", function()
             local result = read({mode = "all"})
             test.eq(result.count, 5)
-            local roles = {"user", "assistant", "function", "assistant", "function"}
-            local texts = {"Study the orchard", "Reading the page", "Orchard notes", "Asking the researcher", "Prune in winter"}
-            for index, event in ipairs(result.events) do
+            local expected = {
+                {role = "user", text = "Study the orchard"},
+                {role = "assistant", text = "Reading the page"},
+                {role = "function", text = "Orchard notes"},
+                {role = "assistant", text = "Asking the researcher"},
+                {role = "function", text = "Prune in winter"},
+            }
+            for index, want in ipairs(expected) do
+                local event = result.events[index]
                 test.eq(event.id, ids[index])
-                test.eq(event.role, roles[index])
-                if roles[index] == "function" then
+                test.eq(event.role, want.role)
+                if want.role == "function" then
                     test.eq(type(event.content), "table")
                     test.eq(type(event.raw_content), "string")
                 else
                     test.eq(type(event.content), "string")
-                    test.contains(event.content, texts[index])
+                    test.contains(event.content, want.text)
                     test.eq(event.raw_content, event.content)
                 end
             end
