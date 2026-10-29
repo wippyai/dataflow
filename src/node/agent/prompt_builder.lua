@@ -475,8 +475,20 @@ function prompt_builder:build_prompt(system_prompt, initial_input)
         end
     end
 
-    local input_err = self:_format_input(input_content, builder)
-    if input_err then return nil, input_err end
+    if input_content then
+        local input_text
+        if type(input_content) == "table" then
+            local json_str, json_err = json.encode(input_content)
+            if json_err then
+                input_text = "[Complex input data]"
+            else
+                input_text = json_str
+            end
+        else
+            input_text = tostring(input_content)
+        end
+        builder:add_user(input_text)
+    end
     builder:add_cache_marker("user_complete")
 
     for i, item in ipairs(history_items) do
