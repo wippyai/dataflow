@@ -214,6 +214,36 @@ local function define_tests()
                 test.eq(tonumber(wakes[1].activation_generation), 7)
             end)
 
+            it("deduplicates timer replay by yield key without rearming a consumed wake", function()
+                local resources = setup_test_resources()
+                local tx = get_test_transaction()
+                local command = {type = ops.COMMAND_TYPES.CREATE_DATA, payload = {
+                    data_id = uuid.v7(), node_id = resources.node_id, key = "timer", data_type = "node.yield",
+                    content = {yield_id = "timer", yield_context = {wait_for_timer = true,
+                        timeout_deadline = "2099-01-01T00:00:00Z"}}, content_type = "application/json",
+                }}
+                local first_id = command.payload.data_id
+                test.is_nil(select(2, ops.execute(tx, resources.dataflow_id, nil, command)))
+                test.is_nil(select(2, ops.execute(tx, resources.dataflow_id, nil, {
+                    type = ops.COMMAND_TYPES.CREATE_DATA, payload = {data_id = uuid.v7(),
+                        node_id = resources.node_id, key = "timer", data_type = "node.yield.result",
+                        content = {timer_completed = true}},
+                })))
+                command.payload.data_id = uuid.v7()
+                local replayed, replay_err = ops.execute(tx, resources.dataflow_id, nil, command)
+                test.is_nil(replay_err)
+                test.eq(replayed.results[1].data_id, first_id)
+                test.is_false(replayed.results[1].changes_made)
+                local wakes, wake_err = txq(tx,
+                    "SELECT wake_key FROM dataflow_wakes WHERE dataflow_id = ?", {resources.dataflow_id})
+                test.is_nil(wake_err)
+                test.eq(#wakes, 0)
+                command.payload.content.yield_context.timeout_deadline = "2099-01-02T00:00:00Z"
+                local conflict, conflict_err = ops.execute(tx, resources.dataflow_id, nil, command)
+                test.is_nil(conflict)
+                test.contains(conflict_err, "conflicting payload")
+            end)
+
             it("deduplicates exact parallel progress creation replay", function()
                 local resources = setup_test_resources()
                 local tx = get_test_transaction()

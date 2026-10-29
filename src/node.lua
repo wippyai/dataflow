@@ -3,6 +3,7 @@ local uuid = require("uuid")
 local expr = require("expr")
 local time = require("time")
 local consts = require("consts")
+local retry = require("retry")
 
 type YieldChannel = Channel<any>
 
@@ -550,6 +551,16 @@ local function durable_yield(self: table, options: any, park: boolean)
         end
     end
 
+    local timer_wait = options.wait_for_timer == true
+    if timer_wait then
+        if options.wait_for_signal or options.signal_id ~= nil or options.arm ~= nil or
+           (options.run_nodes and next(options.run_nodes) ~= nil) or options.timeout ~= nil then
+            return nil, "timer wait requires only an absolute timeout_deadline"
+        end
+        local deadline, deadline_err = time.parse(time.RFC3339NANO, options.timeout_deadline or "")
+        if deadline_err or not deadline then return nil, "timer wait requires a valid absolute timeout_deadline" end
+    end
+
     local yield_id = options.yield_id or uuid.v7()
     if type(yield_id) ~= "string" or yield_id == "" then
         return nil, "yield_id must be a non-empty string when provided"
@@ -560,7 +571,7 @@ local function durable_yield(self: table, options: any, park: boolean)
         return nil, timeout_err
     end
 
-    local timeout_deadline = nil
+    local timeout_deadline = timer_wait and options.timeout_deadline or nil
     local timeout_ms = nil
     if timeout_duration then
         timeout_deadline = time.now():add(timeout_duration):format(time.RFC3339NANO)
@@ -583,11 +594,12 @@ local function durable_yield(self: table, options: any, park: boolean)
                     concurrency_group_key = options.concurrency_group_key,
                     max_concurrent_nodes = options.max_concurrent_nodes,
                     wait_for_signal = options.wait_for_signal,
+                    wait_for_timer = options.wait_for_timer,
                     signal_id = options.signal_id,
                     timeout = options.timeout,
                     timeout_ms = timeout_ms,
                     timeout_deadline = timeout_deadline,
-                    park_ack = options.wait_for_signal == true,
+                    park_ack = options.wait_for_signal == true or timer_wait,
                     arm = park and options.arm or nil,
                 }
             },
@@ -630,11 +642,12 @@ local function durable_yield(self: table, options: any, park: boolean)
             concurrency_group_key = options.concurrency_group_key,
             max_concurrent_nodes = options.max_concurrent_nodes,
             wait_for_signal = options.wait_for_signal,
+            wait_for_timer = options.wait_for_timer,
             signal_id = options.signal_id,
             timeout = options.timeout,
             timeout_ms = timeout_ms,
             timeout_deadline = timeout_deadline,
-            park_ack = options.wait_for_signal == true,
+            park_ack = options.wait_for_signal == true or timer_wait,
             arm = park and options.arm or nil,
         }
     }
@@ -654,9 +667,9 @@ local function durable_yield(self: table, options: any, park: boolean)
     end
 
     local received, ok = self._yield_channel:receive()
-    if options.wait_for_signal == true then
+    if options.wait_for_signal == true or timer_wait then
         -- The reply topic is stable for the node, so a replacement process can
-        -- inherit a queued reply for an earlier yield in the same signal wait.
+        -- inherit a queued reply for an earlier yield in the same durable wait.
         -- Ignore stale episodes; the orchestrator replays the durable result to
         -- this yield id after it tracks the replacement request.
         while ok and (type(received) ~= "table" or received.yield_id ~= yield_id) do
@@ -665,7 +678,7 @@ local function durable_yield(self: table, options: any, park: boolean)
     end
     if not ok then return nil, "Yield channel closed" end
 
-    if options.wait_for_signal == true then
+    if options.wait_for_signal == true or timer_wait then
         -- Prequeued signal compatibility: the orchestrator may satisfy the
         -- durable wait immediately instead of issuing a separate park ACK.
         if type(received) == "table" and type(received.response_data) == "table" then
@@ -685,9 +698,8 @@ local function durable_yield(self: table, options: any, park: boolean)
             return received.response_data.run_node_results or table.create(0, 0), nil
         end
 
-        -- The signal wait is now durable, externally armed when requested, and
-        -- wait registered in the indexed wake queue by the orchestrator.
-        -- Release this node process; signal or due-wake delivery reactivates it.
+        -- The wait is durable and armed when requested. Release this node
+        -- process; its signal or indexed deadline reactivates it.
         self._last_yield_id = yield_id
         return nil, nil
     end
@@ -931,12 +943,7 @@ function methods:fail(error_details, message, extra_metadata)
         if payload_message == nil or type(payload_message) == "userdata" then
             payload_message = tostring(native_cause)
         end
-        error_details = merge_metadata(payload, { message = payload_message, cause = {
-            kind = native_cause:kind(),
-            message = native_cause:message(),
-            retryable = native_cause:retryable(),
-            details = native_cause:details()
-        } })
+        error_details = merge_metadata(payload, { message = payload_message, cause = retry.extract_error(native_cause) })
     end
 
     local error_msg = error_details or "Unknown error"

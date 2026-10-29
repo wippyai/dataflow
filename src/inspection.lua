@@ -109,8 +109,9 @@ function M.pending_signal(dataflow_id: string, signal_id: string, node_type: str
             local value, decode_err = object(row.content, "DATAFLOW_SIGNAL_STATE_INVALID")
             if decode_err then return nil, decode_err end
             local wait = value.yield_context
+            if type(wait) == "table" and wait.wait_for_timer == true then goto continue end
             if type(value.yield_id) ~= "string" or value.yield_id == ""
-                or type(wait) ~= "table" or wait.wait_for_signal ~= true
+                or type(wait) ~= "table" or wait.wait_for_signal ~= true or wait.wait_for_timer == true
                 or type(wait.signal_id) ~= "string" or wait.signal_id == "" then
                 return nil, failure(nil, "Signal wait context invalid", "DATAFLOW_SIGNAL_STATE_INVALID", errors.INTERNAL, false)
             end
@@ -118,6 +119,7 @@ function M.pending_signal(dataflow_id: string, signal_id: string, node_type: str
                 return {node_id = row.node_id, type = node_type, yield_id = value.yield_id}, nil
             end
         end
+        ::continue::
     end
     return nil, failure(nil, "Pending signal not found", "DATAFLOW_SIGNAL_NOT_FOUND", errors.NOT_FOUND, false)
 end

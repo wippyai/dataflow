@@ -6,6 +6,43 @@ local time = require("time")
 local function define_tests()
     describe("Dataflow Scheduler", function()
         describe("Empty State Handling", function()
+            for _, detached in ipairs({ false, true }) do
+                it("waits for the deadline of a timer with no children detached=" .. tostring(detached), function()
+                    local state = scheduler.create_empty_state()
+                    local deadline = time.now():add(time.HOUR):format(time.RFC3339NANO)
+                    state.nodes.timer = { status = detached and consts.STATUS.WAITING or consts.STATUS.RUNNING, type = "func" }
+                    state.active_yields.timer = { wait_for_timer = true, detached = detached,
+                        yield_id = "timer", timeout_deadline = deadline, pending_children = {}, results = {} }
+                    local decision = scheduler.find_next_work(state)
+                    test.eq(decision.type, scheduler.DECISION_TYPE.PASSIVATE)
+                    test.eq(decision.payload.wake_at, deadline)
+                    state.active_yields.timer.timeout_deadline = time.now():add(-time.SECOND):format(time.RFC3339NANO)
+                    decision = scheduler.find_next_work(state)
+                    if detached then
+                        test.eq(decision.type, scheduler.DECISION_TYPE.EXECUTE_NODES)
+                        test.eq(decision.payload.nodes[1].node_id, "timer")
+                    else
+                        test.eq(decision.type, scheduler.DECISION_TYPE.SATISFY_YIELD)
+                        test.is_true(decision.payload.results.timer_completed)
+                    end
+                end)
+            end
+
+            for _, detached in ipairs({false, true}) do
+                it("resumes a completed timer before its deadline detached=" .. tostring(detached), function()
+                    local state = scheduler.create_empty_state()
+                    state.nodes.timer = {status = consts.STATUS.WAITING, type = "func"}
+                    state.active_yields.timer = {wait_for_timer = true, detached = detached,
+                        yield_id = "timer", timeout_deadline = time.now():add(time.HOUR):format(time.RFC3339NANO),
+                        signal_data = {timer_completed = true}, pending_children = {}}
+                    test.is_nil(scheduler.next_wake_duration(state), "a committed result has no remaining timer")
+                    local decision = scheduler.find_next_work(state)
+                    test.eq(decision.type, detached and scheduler.DECISION_TYPE.EXECUTE_NODES or
+                        scheduler.DECISION_TYPE.SATISFY_YIELD)
+                    if not detached then test.is_true(decision.payload.results.timer_completed) end
+                end)
+            end
+
             it("should complete empty workflow", function()
                 local state = scheduler.create_empty_state()
 

@@ -161,6 +161,20 @@ local function define_tests()
                 test.eq(next(flow.metadata), nil)
             end
         end)
+        test.it("skips timer waits while scanning nodes of the same type", function()
+            local timer = {node_id = "timer", type = consts.DATA_TYPE.NODE_YIELD,
+                content = {yield_id = "backoff", yield_context = {wait_for_timer = true,
+                    timeout_deadline = "2099-01-01T00:00:00Z"}}}
+            fixture.state.rows = {timer, yield_row("01", "signal-node", "signal", "wait")}
+            local pending, err = subject.pending_signal("flow", "signal", "inspection:wait")
+            test.is_nil(err)
+            test.eq(pending.node_id, "signal-node")
+            fixture.state.rows = {timer}
+            local missing, missing_err = subject.pending_signal("flow", "signal", "inspection:wait")
+            test.is_nil(missing)
+            test.is_true(errors.is(missing_err, errors.NOT_FOUND))
+        end)
+
         test.it("uses only the latest episode and its own durable result", function()
             local old = yield_row("01", "node", "signal", "old")
             local current = yield_row("03", "node", "signal", "current")

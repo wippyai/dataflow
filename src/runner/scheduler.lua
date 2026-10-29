@@ -65,7 +65,7 @@ local function signal_timeout_result(parent_id, yield_info)
     }
 end
 
-local function signal_timeout_expired(yield_info, now)
+local function wait_deadline_expired(yield_info, now)
     local deadline = parse_timeout_deadline(yield_info.timeout_deadline)
     if not deadline then
         return false
@@ -210,9 +210,11 @@ local function find_yield_driven_work(state)
         -- leave them in place so track_yield() can inherit accumulated signal_data
         -- when the node re-yields, but never satisfy here.
         if yield_info.detached then
-            local ready = yield_info.wait_for_signal and
-                (yield_info.signal_data ~= nil or signal_timeout_expired(yield_info, now)) or
-                (not yield_info.wait_for_signal and
+            local ready = yield_info.wait_for_timer and
+                (yield_info.signal_data ~= nil or wait_deadline_expired(yield_info, now)) or
+                (yield_info.wait_for_signal and not yield_info.wait_for_timer and
+                    (yield_info.signal_data ~= nil or wait_deadline_expired(yield_info, now))) or
+                (not yield_info.wait_for_signal and not yield_info.wait_for_timer and
                     (yield_children_complete(yield_info) or
                      (yield_info.completion_policy == "any_group" and yield_group_complete(yield_info, state))))
             if ready and parent and
@@ -228,8 +230,15 @@ local function find_yield_driven_work(state)
             goto continue
         end
 
-        -- signal yields wait for external data, not child completion
-        if yield_info.wait_for_signal then
+        -- Signal and timer waits do not use child completion.
+        if yield_info.wait_for_timer then
+            if yield_info.signal_data ~= nil or wait_deadline_expired(yield_info, now) then
+                return create_decision(DECISION_TYPE.SATISFY_YIELD, {
+                    parent_id = parent_id, yield_id = yield_info.yield_id, reply_to = yield_info.reply_to,
+                    results = yield_info.signal_data or { timer_completed = true },
+                })
+            end
+        elseif yield_info.wait_for_signal then
             if yield_info.signal_data ~= nil then
                 return create_decision(DECISION_TYPE.SATISFY_YIELD, {
                     parent_id = parent_id,
@@ -238,7 +247,7 @@ local function find_yield_driven_work(state)
                     results = yield_info.signal_data
                 })
             end
-            if signal_timeout_expired(yield_info, now) then
+            if wait_deadline_expired(yield_info, now) then
                 return create_decision(DECISION_TYPE.SATISFY_YIELD, {
                     parent_id = parent_id,
                     yield_id = yield_info.yield_id,
@@ -374,7 +383,8 @@ function scheduler.next_wake_duration(state)
     local soonest_ns = nil
 
     for _, yield_info in pairs(state.active_yields or {}) do
-        if yield_info.wait_for_signal and not yield_info.detached and yield_info.signal_data == nil then
+        if (yield_info.wait_for_timer or yield_info.wait_for_signal) and not yield_info.detached and
+           yield_info.signal_data == nil then
             local deadline = parse_timeout_deadline(yield_info.timeout_deadline)
             if deadline then
                 if now:after(deadline) or now:equal(deadline) then
@@ -556,7 +566,8 @@ local function passivation_wake(state)
     for parent_id, yield_info in pairs(state.active_yields or {}) do
         if node_is_terminal(state.nodes[parent_id]) then goto continue end
         found = true
-        if not yield_info.wait_for_signal or yield_info.signal_data ~= nil then
+        if not (yield_info.wait_for_timer or yield_info.wait_for_signal) or
+           yield_info.signal_data ~= nil then
             return false, nil
         end
         local candidate = yield_info.timeout_deadline

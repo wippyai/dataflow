@@ -2,6 +2,45 @@ version: "1.0"
 namespace: userspace.dataflow.node.func
 
 entries:
+  - name: retry_integration_test
+    kind: function.lua
+    meta: {type: test, suite: dataflow}
+    source: file://retry_integration_test.lua
+    modules: [uuid, time, json]
+    imports:
+      test: wippy.test:test
+      client: userspace.dataflow:client
+      commit: userspace.dataflow.persist:commit
+      consts: userspace.dataflow:consts
+      data_reader: userspace.dataflow.persist:data_reader
+      node_reader: userspace.dataflow.persist:node_reader
+      activation_repo: userspace.dataflow.persist:activation_repo
+      func: userspace.dataflow.node.func:node
+      inspection: userspace.dataflow:inspection
+      workflow_state: userspace.dataflow.runner:workflow_state
+      scheduler: userspace.dataflow.runner:scheduler
+    method: run_tests
+    security:
+      actor: {id: dataflow.test}
+      policies: [app:test_policy]
+
+  - name: retry_fixture
+    kind: function.lua
+    meta: {scope: dev}
+    source: file://retry_fixture.lua
+    modules: [ctx, time]
+    method: run
+
+  - name: retry_test
+    kind: function.lua
+    meta: {type: test, suite: dataflow}
+    source: file://retry_test.lua
+    modules: [time]
+    imports:
+      test: wippy.test:test
+      func: userspace.dataflow.node.func:node
+    method: run_tests
+
   # userspace.dataflow.node.func:control_test_func
   - name: control_test_func
     kind: function.lua
@@ -103,6 +142,7 @@ entries:
       - json
       - time
     imports:
+      retry: userspace.dataflow:retry
       child_output: userspace.dataflow:child_output
       consts: userspace.dataflow:consts
       node: userspace.dataflow:node
@@ -154,6 +194,14 @@ entries:
       - time
     method: run
 
+  - name: native_error_func
+    kind: function.lua
+    meta:
+      name: Native Error Test Function
+      scope: dev
+    source: file://native_error_func.lua
+    method: run
+
   # userspace.dataflow.node.func:call_loop_test
   - name: call_loop_test
     kind: function.lua
@@ -174,12 +222,3 @@ entries:
     security:
       actor: {id: dataflow.test}
       policies: [app:test_policy]
-
-
-  - name: native_error_func
-    kind: function.lua
-    meta:
-      name: Native Error Test Function
-      scope: dev
-    source: file://native_error_func.lua
-    method: run

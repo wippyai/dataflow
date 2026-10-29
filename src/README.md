@@ -60,3 +60,48 @@ The binding defaults to an empty import map and `refresh_perms` defaults to fals
 Node failures retain native error kind, message, retryability, and details in the optional `cause` field. The shared `n:fail` boundary converts native errors passed directly, in the payload message, or as the status message into plain data before persistence and error routing. Unknown retryability leaves `cause.retryable` absent. Existing node codes and readable messages remain unchanged. Historical failures without a structured cause retain their existing fields.
 
 Error routes use the same condition, transform, and data validation as output routes. A routing failure queues no data from that routing batch. `n:fail` stores and returns `{ message = <routing failure>, error = <original error> }` in the node's error payload and returns that payload as its second result. The original error retains all its fields, including its native `cause`. Workflow failure details carry the same payload. Valid conditional routes keep their existing behavior.
+
+## Func retries
+
+Func config accepts Temporal's `start_to_close_timeout`,
+`schedule_to_close_timeout` and `retry_policy` names. Durations are positive
+runtime duration strings or millisecond numbers. Both timeouts are absent by
+default. Without a policy, a func keeps its single attempt and existing restart
+behavior. An empty policy defaults to 1s initial backoff, coefficient 2.0, a maximum
+interval of 100 times the initial interval, three attempts (counting the first
+attempt), and an empty `non_retryable_error_types` list. An explicit
+`maximum_attempts = 0` removes the count limit only when a positive
+`schedule_to_close_timeout` bounds the overall retry window.
+Other node kinds reject these declarations.
+
+Backoff after attempt n is `min(initial_interval * backoff_coefficient^(n-1),
+maximum_interval)`, without jitter. Retries stop at the attempt limit or when the
+next attempt starts after the schedule-to-close deadline. That deadline starts
+at the first attempt's durable dispatch reservation and includes persistence,
+calls and backoff; restarts preserve it. Per-attempt calls use the shorter of
+start-to-close and the remaining whole window. Cancellation, native
+`retryable == false`, and listed error kinds stop retries in that order. Timeout
+cancels the attempt and supplies a retryable `Timeout`; other call errors,
+including unknown retryability, retry. Input/validation failures, routing,
+`_control` processing and other failures after a successful call do not retry.
+
+Node metadata `func_retry` persists the attempt number, first-attempt time,
+in-flight reservation, last structured error and absolute backoff deadline.
+Attempts are durable dispatch reservations: a crash immediately after reservation
+consumes an attempt. On re-entry, an unfinished reservation becomes retryable
+`Unavailable` with an interruption message. Backoff resumes at its original
+deadline without consuming an attempt. Retry-enabled function context exposes
+`attempt` and a stable `idempotency_key` of `<dataflow_id>:<node_id>` across
+attempts and restarts. Calls without a retry policy preserve caller-supplied
+context, including existing values for those keys.
+Final failure keeps the existing structured `cause` and adds `attempts` and
+`last_error`; error routes fire once. Success clears the retry record.
+
+The timer-only yield uses the optional `wait_for_timer` marker with
+`timeout_deadline` in the existing durable yield context. It accepts no signal
+address, appears in no pending-signal inspection and completes only at its
+deadline. The existing atomic wake index and passivation paths release both node
+and orchestrator processes during backoff, including waits of an hour or more.
+Stored yields without the marker keep their existing behavior. See
+[the flow specification](flow/flow.spec.md#func-attempt-timeouts-and-retry-policy)
+for the declaration and exact defaults.

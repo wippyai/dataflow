@@ -1,5 +1,6 @@
 local test = require("test")
 local uuid = require("uuid")
+local time = require("time")
 local client = require("client")
 local node = require("node")
 local commit = require("commit")
@@ -165,6 +166,132 @@ end
 
 local function define_tests()
     describe("Orchestrator recovery from unapplied durable commits", function()
+        it("reconstructs a timer and its retry outcome from the pending backlog before scheduling", function()
+            local fixture = create_workflow()
+            local deadline = time.now():add(time.HOUR):format(time.RFC3339NANO)
+            local yield_id = fixture.root .. ":retry:2"
+            submit(fixture, {
+                {type = consts.COMMAND_TYPES.UPDATE_NODE, payload = {node_id = fixture.root,
+                    status = consts.STATUS.WAITING, metadata = {func_retry = {
+                        attempt = 2, first_attempt_at = 123, in_flight = false, wait_until = deadline,
+                        last_error = {kind = "Unavailable", message = "Interrupted call"},
+                    }}}},
+                data_command(fixture.root, consts.DATA_TYPE.NODE_YIELD, yield_id, {
+                    yield_id = yield_id, reply_to = "previous-process", yield_context = {
+                        wait_for_timer = true, timeout_deadline = deadline, park_ack = true,
+                    },
+                }),
+            })
+            local result, probe = restart(fixture, function(snapshot)
+                local wait = test.not_nil(snapshot.active_yields[fixture.root]) :: any
+                test.is_true(wait.wait_for_timer)
+                test.is_true(wait.detached)
+                test.eq(wait.timeout_deadline, deadline)
+                local row = (node_reader.with_dataflow(fixture.id) :: any):with_nodes(fixture.root):one()
+                test.eq(row.metadata.func_retry.attempt, 2)
+                test.is_false(row.metadata.func_retry.in_flight)
+                test.eq(row.metadata.func_retry.wait_until, deadline)
+                test.eq(scheduler.find_next_work(snapshot).type, scheduler.DECISION_TYPE.PASSIVATE)
+            end)
+            test.is_true(result.passivated)
+            test.eq(#probe.spawned, 0)
+            assert_backlog_applied(fixture)
+        end)
+
+        it("reconstructs a completed timer separately from an outstanding timer", function()
+            local fixture = create_workflow()
+            local deadline = time.now():add(time.HOUR):format(time.RFC3339NANO)
+            local yield_id = uuid.v7()
+            submit(fixture, {
+                {type = consts.COMMAND_TYPES.UPDATE_NODE, payload = {node_id = fixture.root,
+                    status = consts.STATUS.WAITING}},
+                data_command(fixture.root, consts.DATA_TYPE.NODE_YIELD, yield_id, {
+                    yield_id = yield_id, reply_to = "previous-process", yield_context = {
+                        wait_for_timer = true, timeout_deadline = deadline, park_ack = true,
+                    },
+                }),
+                data_command(fixture.root, consts.DATA_TYPE.NODE_YIELD_RESULT, yield_id, {timer_completed = true}),
+            })
+            restart(fixture, function(snapshot)
+                local wait = test.not_nil(snapshot.active_yields[fixture.root]) :: any
+                test.is_true(wait.wait_for_timer)
+                test.is_true(wait.signal_data.timer_completed)
+                test.eq(wait.timeout_deadline, deadline)
+                test.eq(#wait.wake_keys, 0)
+                test.eq(scheduler.find_next_work(snapshot).type, scheduler.DECISION_TYPE.EXECUTE_NODES)
+            end)
+            assert_backlog_applied(fixture)
+        end)
+
+        for _, in_flight in ipairs({false, true}) do
+            it("ignores earlier timer episodes for attempt two in_flight=" .. tostring(in_flight), function()
+                local fixture = create_workflow()
+                local old_deadline = time.now():add(-time.SECOND):format(time.RFC3339NANO)
+                local deadline = time.now():add(time.HOUR):format(time.RFC3339NANO)
+                local old_id, current_id = fixture.root .. ":retry:1", fixture.root .. ":retry:2"
+                local commands = {
+                    {type = consts.COMMAND_TYPES.UPDATE_NODE, payload = {node_id = fixture.root,
+                        status = in_flight and consts.STATUS.RUNNING or consts.STATUS.WAITING,
+                        metadata = {func_retry = {attempt = 2, first_attempt_at = 123,
+                            in_flight = in_flight, wait_until = not in_flight and deadline or nil}}}},
+                    data_command(fixture.root, consts.DATA_TYPE.NODE_YIELD, old_id, {
+                        yield_id = old_id, yield_context = {wait_for_timer = true, timeout_deadline = old_deadline}}),
+                    data_command(fixture.root, consts.DATA_TYPE.NODE_YIELD_RESULT, old_id, {timer_completed = true}),
+                }
+                if not in_flight then
+                    table.insert(commands, data_command(fixture.root, consts.DATA_TYPE.NODE_YIELD, current_id, {
+                        yield_id = current_id, yield_context = {wait_for_timer = true, timeout_deadline = deadline}}))
+                end
+                -- A stale replay may be newer than the current reservation's yield.
+                table.insert(commands, data_command(fixture.root, consts.DATA_TYPE.NODE_YIELD, old_id, {
+                    yield_id = old_id, yield_context = {wait_for_timer = true, timeout_deadline = old_deadline}}))
+                submit(fixture, commands)
+                local result = restart(fixture, function(snapshot)
+                    local wait = snapshot.active_yields[fixture.root]
+                    if in_flight then
+                        test.is_nil(wait, "an in-flight attempt has no backoff to reconstruct")
+                    else
+                        test.not_nil(wait)
+                        test.eq(wait.yield_id, current_id)
+                        test.eq(wait.timeout_deadline, deadline)
+                        test.is_nil(wait.signal_data)
+                    end
+                end)
+                if not in_flight then test.is_true(result.passivated) end
+            end)
+        end
+
+        it("reattaches a completed timer without reintroducing its consumed wake", function()
+            local fixture = create_workflow()
+            local ws = workflow_state.new(fixture.id) :: any
+            test.is_nil(select(2, ws:load_state()))
+            local deadline = time.now():add(time.HOUR):format(time.RFC3339NANO)
+            ws.active_yields[fixture.root] = {yield_id = "completed", wait_for_timer = true,
+                timeout_deadline = deadline, wake_keys = {}, signal_data = {timer_completed = true}, detached = true}
+            test.eq(type(orchestrator.track_wait_yield), "function")
+            local tracking_state: any = {workflow_state = ws}
+            orchestrator.track_wait_yield(tracking_state, fixture.root,
+                {yield_id = "completed", wait_for_timer = true, timeout_deadline = deadline}, "node-process")
+            test.eq(#ws.active_yields[fixture.root].wake_keys, 0)
+            test.is_true(ws.active_yields[fixture.root].signal_data.timer_completed)
+        end)
+
+        it("loads an in-flight dispatch reservation from the backlog before recovery", function()
+            local fixture = create_workflow()
+            submit(fixture, {{type = consts.COMMAND_TYPES.UPDATE_NODE, payload = {
+                node_id = fixture.root, metadata = {func_retry = {
+                    attempt = 3, first_attempt_at = 123, in_flight = true,
+                }},
+            }}})
+            restart(fixture, function(snapshot)
+                local row = (node_reader.with_dataflow(fixture.id) :: any):with_nodes(fixture.root):one()
+                test.eq(row.metadata.func_retry.attempt, 3)
+                test.is_true(row.metadata.func_retry.in_flight)
+                test.eq(snapshot.nodes[fixture.root].status, consts.STATUS.PENDING)
+            end)
+            assert_backlog_applied(fixture)
+        end)
+
         local transport: any = {}
         before_all(function()
             transport.send = commit._send_process_message

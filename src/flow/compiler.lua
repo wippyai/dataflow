@@ -3,6 +3,8 @@ local uuid = require("uuid")
 local expr = require("expr")
 local consts = require("df_consts")
 
+local retry = require("retry")
+
 local compiler = {}
 
 compiler.OP_TYPES = {
@@ -121,6 +123,9 @@ function FlowGraph:create_template_nodes(template, parent_node_id)
 
             local config = {
                 func_id = op.config.func_id,
+                retry_policy = op.config.retry_policy,
+                start_to_close_timeout = op.config.start_to_close_timeout,
+                schedule_to_close_timeout = op.config.schedule_to_close_timeout,
                 args = op.config.args,
                 inputs = op.config.inputs,
                 context = op.config.context,
@@ -420,10 +425,30 @@ function FlowGraph:detect_cycles()
     return false, nil
 end
 
+local function validate_operations(operations)
+    for _, op in ipairs(operations or {}) do
+        local valid, err = retry.validate(op.config, op.type)
+        if not valid then return nil, err end
+        local config = op.config or {}
+        if config.template then
+            local nested_valid, nested_err = validate_operations(config.template.operations)
+            if not nested_valid then return nil, nested_err end
+        end
+        if config.operations then
+            local nested_valid, nested_err = validate_operations(config.operations)
+            if not nested_valid then return nil, nested_err end
+        end
+    end
+    return true, nil
+end
+
 function compiler.build_graph(operations, session_context)
     if not operations or #operations == 0 then
         return nil, "No operations provided"
     end
+
+    local valid, validation_err = validate_operations(operations)
+    if not valid then return nil, validation_err end
 
     local graph = FlowGraph.new() :: any
 
@@ -442,6 +467,9 @@ function compiler.build_graph(operations, session_context)
         elseif op.type == compiler.OP_TYPES.FUNC then
             local config = {
                 func_id = op.config.func_id,
+                retry_policy = op.config.retry_policy,
+                start_to_close_timeout = op.config.start_to_close_timeout,
+                schedule_to_close_timeout = op.config.schedule_to_close_timeout,
                 args = op.config.args,
                 inputs = op.config.inputs,
                 context = op.config.context,

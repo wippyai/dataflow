@@ -24,6 +24,7 @@ entries:
       - json
       - expr
     imports:
+      retry: userspace.dataflow:retry
       df_consts: userspace.dataflow:consts
 
   # userspace.dataflow.flow:flow
@@ -52,6 +53,7 @@ entries:
       agent_ref: userspace.dataflow:agent_ref
       df_client: userspace.dataflow:client
       df_compiler: userspace.dataflow.flow:compiler
+      retry: userspace.dataflow:retry
       df_consts: userspace.dataflow:consts
     method: flow
 

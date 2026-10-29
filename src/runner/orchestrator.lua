@@ -797,11 +797,13 @@ end
 -- Track first, then arm, then acknowledge. The caller invokes the scheduler only
 -- after this returns, so even an already-persisted signal cannot beat the ACK to
 -- the node's reply mailbox.
-local function track_signal_yield(state: OrchestratorState, node_id: string, yield_info: any, from_pid: any)
+local function track_wait_yield(state: OrchestratorState, node_id: string, yield_info: any, from_pid: any)
     local before = state.workflow_state:get_scheduler_snapshot().active_yields[node_id]
     yield_info.episode_id = yield_info.yield_id
     yield_info.wake_keys = { "yield:" .. tostring(yield_info.yield_id) }
-    if before and before.signal_id == yield_info.signal_id then
+    if before and ((yield_info.wait_for_timer and before.wait_for_timer and
+        before.yield_id == yield_info.yield_id) or
+        (not yield_info.wait_for_timer and not before.wait_for_timer and before.signal_id == yield_info.signal_id)) then
         -- A reattached node keeps the original absolute deadline. Recomputing
         -- it from config would make every restart extend the timeout.
         yield_info.timeout = before.timeout
@@ -813,7 +815,9 @@ local function track_signal_yield(state: OrchestratorState, node_id: string, yie
             { "yield:" .. tostring(before.yield_id) }) do
             table.insert(yield_info.wake_keys, wake_key)
         end
-        table.insert(yield_info.wake_keys, "yield:" .. tostring(yield_info.yield_id))
+        if not (yield_info.wait_for_timer and before.signal_data ~= nil) then
+            table.insert(yield_info.wake_keys, "yield:" .. tostring(yield_info.yield_id))
+        end
         yield_info.signal_data = before.signal_data
         if type(before.signal_wake_keys) == "table" then
             yield_info.signal_wake_keys = {}
@@ -946,23 +950,23 @@ local function handle_yield_request(state: OrchestratorState, msg_payload: any, 
         local wait_for_signal = yield_context.wait_for_signal
         local reply_to = msg_payload and msg_payload.request_context and msg_payload.request_context.reply_to
 
-        if wait_for_signal then
-            -- signal yield: track the yield and wait for an external NODE_SIGNAL CREATE_DATA
-            -- commit (client:signal writes it durably; the scheduler satisfies the yield on arrival)
+        if wait_for_signal or yield_context.wait_for_timer then
+            -- Both waits use the existing durable acknowledgement and passivation path.
             local yield_info = {
                 yield_id = yield_id,
                 reply_to = reply_to,
-                signal_id = yield_context.signal_id or yield_id,
+                signal_id = not yield_context.wait_for_timer and (yield_context.signal_id or yield_id) or nil,
                 timeout = yield_context.timeout,
                 timeout_ms = yield_context.timeout_ms,
                 timeout_deadline = yield_context.timeout_deadline,
                 pending_children = {},
                 results = {},
-                wait_for_signal = true,
+                wait_for_signal = wait_for_signal,
+                wait_for_timer = yield_context.wait_for_timer,
                 park_ack = yield_context.park_ack == true,
                 arm = yield_context.arm,
             }
-            track_signal_yield(state, tostring(node_id), yield_info, from_pid)
+            track_wait_yield(state, tostring(node_id), yield_info, from_pid)
         elseif type(reply_to) == "string" and yield_id then
             state.runtime.process.send(tostring(from_pid), reply_to, {
                 yield_id = yield_id,
@@ -1048,7 +1052,8 @@ local function handle_process_event(state: OrchestratorState, event: any)
         not (type(event_value) == "table" and event_value.success == false)
     local prepared_link_down = event.kind == state.runtime.process.event.LINK_DOWN and
         parked and parked.detached == true and parked_node and parked_node.status == consts.STATUS.WAITING
-    if (clean_exit or prepared_link_down) and parked and parked.park_ack == true and parked.wait_for_signal == true then
+    if (clean_exit or prepared_link_down) and parked and parked.park_ack == true and
+       (parked.wait_for_signal == true or parked.wait_for_timer == true) then
         state.active_processes[node_id] = nil
         state.workflow_state:passivate_process(from_pid)
         return true
@@ -1545,6 +1550,6 @@ local function run(args, runtime_override: any?)
 end
 
 orchestrator.arm_parked_yield = arm_parked_yield
-orchestrator.track_signal_yield = track_signal_yield
+orchestrator.track_wait_yield = track_wait_yield
 orchestrator.run = run
 return orchestrator

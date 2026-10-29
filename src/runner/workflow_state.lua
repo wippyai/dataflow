@@ -47,6 +47,15 @@ local function read_node_status(nodes, node_id)
     return node.status
 end
 
+local function committed_failure(node)
+    local metadata = node and node.metadata
+    local reservation = metadata and metadata.func_retry
+    local retired = reservation == false or (type(reservation) == "table" and
+        not reservation.in_flight and not reservation.wait_until)
+    return retired and metadata.error ~= nil and metadata.error ~= false and
+        metadata.status_message ~= nil and metadata.status_message ~= false
+end
+
 local function sort_data_rows_desc(rows)
     table.sort(rows, function(a, b)
         -- Recovery only uses this on dataflow_data rows. Those rows are ordered by
@@ -220,6 +229,16 @@ function methods:_detect_running_node_recovery(node_id)
         return {
             status = consts.STATUS.COMPLETED_SUCCESS,
             result_row = result_row
+        }
+    end
+
+    if committed_failure(node_data) then
+        return {
+            status = consts.STATUS.COMPLETED_FAILURE,
+            synthetic_result = {
+                discriminator = "result.error",
+                content = {success = false, message = node_data.metadata.status_message, error = node_data.metadata.error},
+            },
         }
     end
 
@@ -648,16 +667,21 @@ function methods:_reconstruct_active_yields()
         end
 
         local yield_context = yield_content.yield_context or {}
+        local reservation = parent_node.metadata and parent_node.metadata.func_retry
+        if yield_context.wait_for_timer and reservation ~= nil then
+            if type(reservation) ~= "table" or reservation.in_flight or not reservation.wait_until or
+               yield_id ~= parent_node_id .. ":retry:" .. tostring(reservation.attempt) or
+               yield_context.timeout_deadline ~= reservation.wait_until then
+                goto continue
+            end
+        end
         local was_reset = self._reset_node_ids and self._reset_node_ids[parent_node_id]
         local satisfied_result = satisfied_yields[yield_id]
-        -- A crash can happen after a signal result and its consumed marker are
-        -- committed but before the resumed node persists its terminal result.
-        -- Keep that resolved episode only for the reset node so its fresh
-        -- mailbox can replay the durable result instead of arming a new wait
-        -- for an already-consumed signal.
-        local needs_signal_replay = yield_context.wait_for_signal == true and
+        -- A crash can follow a durable wait result before the node completes.
+        -- A reset or waiting node replays that result through its fresh mailbox.
+        local needs_wait_replay = (yield_context.wait_for_signal == true or yield_context.wait_for_timer == true) and
             (was_reset or parent_node.status == consts.STATUS.WAITING)
-        if satisfied_result and not needs_signal_replay and
+        if satisfied_result and not needs_wait_replay and
            yield_context.completion_policy ~= "any_group" then
             goto continue
         end
@@ -698,6 +722,7 @@ function methods:_reconstruct_active_yields()
             concurrency_group_key = yield_context.concurrency_group_key,
             max_concurrent_nodes = yield_context.max_concurrent_nodes,
             wait_for_signal = yield_context.wait_for_signal,
+            wait_for_timer = yield_context.wait_for_timer,
             signal_id = yield_context.signal_id,
             timeout = yield_context.timeout,
             timeout_ms = yield_context.timeout_ms,
@@ -719,7 +744,7 @@ function methods:_reconstruct_active_yields()
         -- They are retries of one wait episode, not new logical waits. Rebuild
         -- the stable episode identity and every timer key so satisfaction
         -- consumes the whole retry set and the external arm key never changes.
-        if yield_info.wait_for_signal then
+        if yield_info.wait_for_signal and not yield_info.wait_for_timer then
             local episode_id = yield_id
             local wake_keys = {}
             local arm_completed = yield_info.arm_completed
@@ -909,7 +934,7 @@ function methods:_update_state_from_results(results)
                 if signal_wake_key then self.pending_signal_wake_keys[signal_wake_key] = true end
                 if signal_id then
                     for node_id, yield_info in pairs(self.active_yields) do
-                        if yield_info.wait_for_signal and yield_info.signal_id == signal_id then
+                        if yield_info.wait_for_signal and not yield_info.wait_for_timer and yield_info.signal_id == signal_id then
                             yield_info.signal_data = payload.content
                             if type(payload.data_id) == "string" then
                                 local matched_wake_key = "signal:" .. payload.data_id
@@ -928,9 +953,11 @@ function methods:_update_state_from_results(results)
                     -- Satisfaction state follows the committed row. Marking a
                     -- handoff or removing the barrier before persistence can
                     -- strand the scheduler when the transaction rolls back.
-                    if yield_info.wait_for_signal then
+                    if yield_info.wait_for_signal or yield_info.wait_for_timer then
                         self.satisfied_signal_yields[payload.node_id] = {
                             signal_id = yield_info.signal_id,
+                            wait_for_timer = yield_info.wait_for_timer,
+                            yield_id = yield_info.yield_id,
                             signal_data = payload.content,
                         }
                     end
@@ -1155,8 +1182,7 @@ function methods:prepare_passivation(node_id)
     return true, nil
 end
 
--- Release a node process after its indefinite signal wait has been persisted
--- and armed. The node remains pending and its active yield remains durable.
+-- Release the process after its wait is durable; the node remains waiting.
 function methods:passivate_process(pid)
     for node_id, tracked_pid in pairs(self.active_processes) do
         if tracked_pid == pid then
@@ -1181,8 +1207,27 @@ function methods:handle_process_exit(pid, success, result)
     end
 
     self.active_processes[exited_node_id] = nil
-    self.satisfied_signal_yields[exited_node_id] = nil
 
+    local node = self.nodes[exited_node_id]
+    if node and (node.status == consts.STATUS.COMPLETED_SUCCESS or node.status == consts.STATUS.COMPLETED_FAILURE) then
+        self.active_yields[exited_node_id] = nil
+        self.satisfied_signal_yields[exited_node_id] = nil
+        return nil
+    end
+    local reservation = node and node.metadata and node.metadata.func_retry
+    if node and node.status == consts.STATUS.RUNNING and not committed_failure(node) and
+       node.config and node.config.retry_policy and
+       type(reservation) == "table" and (reservation.in_flight == true or reservation.wait_until ~= nil) then
+        node.status = consts.STATUS.PENDING
+        self.active_yields[exited_node_id] = nil
+        self:queue_commands({
+            type = consts.COMMAND_TYPES.UPDATE_NODE,
+            payload = {node_id = exited_node_id, status = consts.STATUS.PENDING},
+        })
+        return nil
+    end
+
+    self.satisfied_signal_yields[exited_node_id] = nil
     local new_status = success and consts.STATUS.COMPLETED_SUCCESS or consts.STATUS.COMPLETED_FAILURE
     if self.nodes[exited_node_id] then
         self.nodes[exited_node_id].status = new_status
@@ -1246,7 +1291,7 @@ function methods:handle_process_exit(pid, success, result)
     -- terminal parent forever. Attached child barriers remain until their live
     -- descendants drain through the normal parent/child exit path.
     local own_yield = self.active_yields[exited_node_id]
-    if own_yield and (own_yield.wait_for_signal or own_yield.detached or own_yield.handoff) then
+    if own_yield and (own_yield.wait_for_signal or own_yield.wait_for_timer or own_yield.detached or own_yield.handoff) then
         self.active_yields[exited_node_id] = nil
     end
 
@@ -1291,7 +1336,13 @@ function methods:handle_process_exit(pid, success, result)
 end
 
 function methods:track_yield(node_id, yield_info)
-    if yield_info.wait_for_signal and yield_info.signal_id and not yield_info.signal_data then
+    local satisfied_timer = self.satisfied_signal_yields[node_id]
+    if yield_info.wait_for_timer and satisfied_timer and satisfied_timer.wait_for_timer and
+       satisfied_timer.yield_id == yield_info.yield_id then
+        yield_info.signal_data = satisfied_timer.signal_data
+        yield_info.wake_keys = {}
+    end
+    if yield_info.wait_for_signal and not yield_info.wait_for_timer and yield_info.signal_id and not yield_info.signal_data then
         -- 1. Replay a result durably consumed by this orchestrator life. The
         -- reply can race process replacement: the old yield result is durable,
         -- but the replacement may re-yield before its predecessor's EXIT is
@@ -1357,6 +1408,10 @@ end
 function methods:satisfy_yield(node_id, results)
     local yield_info = self.active_yields[node_id]
     if yield_info then
+        if yield_info.wait_for_timer and yield_info.signal_data ~= nil then
+            self.active_yields[node_id] = nil
+            return self
+        end
         -- persist() deliberately retains a failed transaction's commands. The
         -- scheduler may immediately choose SATISFY_YIELD again, so reuse that
         -- exact batch instead of appending a second result (and second set of
