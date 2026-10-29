@@ -60,6 +60,19 @@ end
 
 local function define_tests()
     describe("Durable func retry integration", function()
+        it("preserves caller attempt and idempotency context on policy-free calls", function()
+            local c, id = create({context = {attempt = 41, idempotency_key = "caller-owned-key"}},
+                {value = "legacy call"})
+            finish(c, id)
+            local output = rows(id, consts.DATA_TYPE.WORKFLOW_OUTPUT)
+            test.eq(#output, 1)
+            test.eq(output[1].key, "result")
+            local result = decode(output[1].content)
+            test.eq(result.attempt, 41)
+            test.eq(result.idempotency_key, "caller-owned-key")
+            test.eq(result.value, "legacy call")
+        end)
+
         it("fails twice, passivates between attempts and succeeds without an error route", function()
             local c, id, node_id = create({retry_policy = {initial_interval = "30ms", maximum_attempts = 4}},
                 {fail_attempts = 2, value = "done"})

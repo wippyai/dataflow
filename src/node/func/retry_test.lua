@@ -297,6 +297,17 @@ local function define_tests()
             test.eq(#state.reservations, 0)
             test.eq(#state.waits, 0)
         end)
+
+        it("preserves caller context when no retry policy is selected", function()
+            local state = fixture({func_id = "example:call", context = {
+                attempt = 41, idempotency_key = "caller-owned-key",
+            }})
+            test.is_true(func.run({}).success)
+            test.eq(#state.calls, 1)
+            test.eq(state.calls[1].attempt, 41)
+            test.eq(state.calls[1].key, "caller-owned-key")
+            test.eq(#state.reservations, 0)
+        end)
     end)
 end
 

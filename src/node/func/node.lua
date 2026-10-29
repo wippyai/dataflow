@@ -348,8 +348,10 @@ local function execute_call(n, config, normalized, input_data)
             end
         end
         local execution_context = build_execution_context_with_dataflow(config.context, n.dataflow_id, n.node_id, n.path)
-        execution_context.attempt = attempt
-        execution_context.idempotency_key = n.dataflow_id .. ":" .. n.node_id
+        if policy then
+            execution_context.attempt = attempt
+            execution_context.idempotency_key = n.dataflow_id .. ":" .. n.node_id
+        end
         local executor = func._deps.funcs.new():with_context(execution_context)
         local timeout = normalized.start_to_close_timeout
         if remaining then timeout = math.min(timeout or remaining, remaining) end
