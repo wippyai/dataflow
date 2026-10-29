@@ -1427,10 +1427,11 @@ backoff deadline. Fields without a value are absent. Attempts are durable dispat
 reservations: a crash immediately after reservation consumes an attempt even if
 the function never starts. A reservation without a committed outcome is an
 interrupted retryable `Unavailable` attempt on re-entry. Backoff recovery preserves
-the original deadline and consumes no attempt. Functions receive context
+the original deadline and consumes no attempt. Retry-enabled functions receive context
 `attempt` (starting at 1) and `idempotency_key = <dataflow_id>:<node_id>`; the key
 stays unchanged across attempts and restarts. Functions use that key when their
-external effects need deduplication.
+external effects need deduplication. Without a retry policy, existing caller
+context remains unchanged, including any `attempt` or `idempotency_key` values.
 
 Backoff uses a durable yield with the optional `wait_for_timer = true` marker and
 an absolute `timeout_deadline`. It has no signal ID or child readiness. Only the

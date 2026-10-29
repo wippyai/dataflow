@@ -88,8 +88,10 @@ in-flight reservation, last structured error and absolute backoff deadline.
 Attempts are durable dispatch reservations: a crash immediately after reservation
 consumes an attempt. On re-entry, an unfinished reservation becomes retryable
 `Unavailable` with an interruption message. Backoff resumes at its original
-deadline without consuming an attempt. Function context exposes `attempt` and a
-stable `idempotency_key` of `<dataflow_id>:<node_id>` across attempts and restarts.
+deadline without consuming an attempt. Retry-enabled function context exposes
+`attempt` and a stable `idempotency_key` of `<dataflow_id>:<node_id>` across
+attempts and restarts. Calls without a retry policy preserve caller-supplied
+context, including existing values for those keys.
 Final failure keeps the existing structured `cause` and adds `attempts` and
 `last_error`; error routes fire once. Success clears the retry record.
 
