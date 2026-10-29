@@ -273,11 +273,7 @@ local function normalize_event(row, formatter, calls)
     end
     local author = metadata.author
     if type(author) ~= "table" then
-        if row.type == agent_consts.DATA_TYPE.AGENT_ACTION then
-            author = { kind = "agent", id = metadata.agent_id }
-        else
-            author = { kind = "system" }
-        end
+        author = { kind = "unknown" }
     end
     return {
         id = row.data_id,

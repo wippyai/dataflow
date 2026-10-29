@@ -68,4 +68,5 @@ entries:
       test: wippy.test:test
       flow: userspace.dataflow.flow:flow
       compiler: userspace.dataflow.flow:compiler
+      consts: userspace.dataflow:consts
     method: run_tests

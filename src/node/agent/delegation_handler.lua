@@ -160,7 +160,8 @@ function delegation_handler.create_child_node(parent_node_sdk, delegation, deleg
             {
                 data_type = agent_consts.DATA_TYPE.AGENT_DELEGATION,
                 key = result_key,
-                node_id = child_id
+                node_id = child_id,
+                metadata = { author = { kind = "agent", id = delegation.agent_id } }
             }
         }
     }
@@ -366,6 +367,7 @@ function delegation_handler.map_delegation_results_to_conversation(delegation_re
                     node_id = parent_node_sdk.node_id,
                     content_type = "dataflow/reference",
                     metadata = {
+                        author = { kind = "agent", id = info.agent_id },
                         iteration = iteration,
                         tool_call_id = info.tool_call_id,
                         tool_name = info.delegate_tool_name
@@ -380,6 +382,7 @@ function delegation_handler.map_delegation_results_to_conversation(delegation_re
                     key = tool_key,
                     node_id = parent_node_sdk.node_id,
                     metadata = {
+                        author = { kind = "agent", id = info.agent_id },
                         iteration = iteration,
                         tool_call_id = info.tool_call_id,
                         tool_name = info.delegate_tool_name
@@ -396,6 +399,7 @@ function delegation_handler.map_delegation_results_to_conversation(delegation_re
                 key = tool_key,
                 node_id = parent_node_sdk.node_id,
                 metadata = {
+                    author = { kind = "agent", id = info.agent_id },
                     iteration = iteration,
                     tool_call_id = info.tool_call_id,
                     tool_name = info.delegate_tool_name,

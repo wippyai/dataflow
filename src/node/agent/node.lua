@@ -663,6 +663,7 @@ local function store_agent_action(n, agent_result, iteration, agent_id, model_na
     local action_key = is_exit_action and (iteration .. "_final") or (iteration .. "_action")
 
     local metadata = {
+        author = { kind = "agent", id = agent_id },
         iteration = iteration,
         agent_id = agent_id,
         model = model_name,
@@ -709,6 +710,7 @@ local function store_memory_recall(n, agent_result, iteration)
         content_type = consts.CONTENT_TYPE.TEXT,
         node_id = n.node_id,
         metadata = {
+            author = { kind = "system" },
             iteration = iteration,
             memory_ids = agent_result.memory_prompt.metadata and agent_result.memory_prompt.metadata.memory_ids,
             llm_meta = agent_result.memory_prompt.metadata or {}
@@ -789,6 +791,7 @@ local function record_checkpoint_skip(n, iteration, reason)
         content_type = consts.CONTENT_TYPE.TEXT,
         node_id = n.node_id,
         metadata = {
+            author = { kind = "system" },
             iteration = iteration,
             checkpoint_skipped = true,
             checkpoint_error = error_message(reason, "")
@@ -1007,6 +1010,7 @@ local function maybe_checkpoint_history(n, config, session_context, agent_instan
     local memory_truncated = #memory_text < original_memory_len
 
     local marker_metadata = {
+        author = { kind = "system" },
         iteration = checkpoint_iteration,
         checkpoint_marker = true,
         checkpoint_reason = compact_requested and "compaction_requested" or "token_threshold_exceeded",
@@ -1120,6 +1124,7 @@ local function queue_iteration_warning(n, iteration, max_iterations)
             content_type = consts.CONTENT_TYPE.TEXT,
             node_id = n.node_id,
             metadata = {
+                author = { kind = "system" },
                 iteration = iteration,
                 remaining_iterations = remaining_iterations
             }
@@ -1131,6 +1136,7 @@ local function queue_iteration_warning(n, iteration, max_iterations)
             content_type = consts.CONTENT_TYPE.TEXT,
             node_id = n.node_id,
             metadata = {
+                author = { kind = "system" },
                 iteration = iteration,
                 remaining_iterations = remaining_iterations
             }
@@ -1142,6 +1148,7 @@ local function queue_iteration_warning(n, iteration, max_iterations)
             content_type = consts.CONTENT_TYPE.TEXT,
             node_id = n.node_id,
             metadata = {
+                author = { kind = "system" },
                 iteration = iteration,
                 remaining_iterations = remaining_iterations
             }
@@ -1208,6 +1215,7 @@ local function resume_control_commands(n, child_node_ids, iteration)
             content_type = type(output_content) == "table" and consts.CONTENT_TYPE.JSON or consts.CONTENT_TYPE.TEXT,
             node_id = n.node_id,
             metadata = {
+                author = { kind = "system" },
                 iteration = iteration,
                 created_nodes = child_node_ids
             }
@@ -1250,7 +1258,7 @@ local function run_control_response_commands(control_responses, agent_ctx, n, it
             key = iteration .. "_commands_error",
             content_type = consts.CONTENT_TYPE.TEXT,
             node_id = n.node_id,
-            metadata = { iteration = iteration, is_error = true }
+            metadata = { author = { kind = "system" }, iteration = iteration, is_error = true }
         })
     end
     return resume_err
@@ -1510,6 +1518,7 @@ local function process_tool_results(n, tool_results, iteration, exit_tool_name, 
                             content_type = consts.CONTENT_TYPE.TEXT,
                             node_id = n.node_id,
                             metadata = {
+                                author = { kind = "system" },
                                 iteration = iteration,
                                 is_error = true,
                                 tool_call_id = original_tool_call.id,
@@ -1534,6 +1543,7 @@ local function process_tool_results(n, tool_results, iteration, exit_tool_name, 
                             content_type = consts.CONTENT_TYPE.TEXT,
                             node_id = n.node_id,
                             metadata = {
+                                author = { kind = "system" },
                                 iteration = iteration,
                                 is_error = true,
                                 tool_call_id = original_tool_call.id,
@@ -1553,6 +1563,7 @@ local function process_tool_results(n, tool_results, iteration, exit_tool_name, 
                             content_type = consts.CONTENT_TYPE.TEXT,
                             node_id = n.node_id,
                             metadata = {
+                                author = { kind = "system" },
                                 iteration = iteration,
                                 is_error = true,
                                 tool_call_id = original_tool_call.id,
@@ -1615,6 +1626,7 @@ local function process_tool_results(n, tool_results, iteration, exit_tool_name, 
                             consts.CONTENT_TYPE.TEXT,
                         node_id = n.node_id,
                         metadata = {
+                            author = { kind = "system" },
                             iteration = iteration,
                             tool_call_id = call_id,
                             tool_name = tool_call.name,
@@ -1712,7 +1724,7 @@ local function record_completion_feedback(n, iteration, feedback, key_suffix)
         key = iteration .. key_suffix,
         content_type = consts.CONTENT_TYPE.TEXT,
         node_id = n.node_id,
-        metadata = { iteration = iteration }
+        metadata = { author = { kind = "system" }, iteration = iteration }
     })
 end
 
@@ -2527,6 +2539,7 @@ local function run(args)
                 content_type = consts.CONTENT_TYPE.TEXT,
                 node_id = n.node_id,
                 metadata = {
+                    author = { kind = "system" },
                     iteration = iteration,
                     truncated = true
                 }
