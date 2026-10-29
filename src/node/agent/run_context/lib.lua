@@ -285,7 +285,18 @@ local function content_length(event)
         local encoded = json.encode(content)
         content = encoded or tostring(content)
     end
-    return #content
+    local length = #content
+    -- Normalized tool events put arguments in content and the stored result in
+    -- metadata. Both belong to the bounded conversation, including get_prompt.
+    local result = event.role == "function" and event.metadata and event.metadata.result
+    if result ~= nil and event.role == "function" then
+        if type(result) ~= "string" then
+            local encoded = json.encode(result)
+            result = encoded or tostring(result)
+        end
+        length = length + #result
+    end
+    return length
 end
 
 local function clamp_rows(rows, events, max_chars)

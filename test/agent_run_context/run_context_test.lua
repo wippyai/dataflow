@@ -617,6 +617,29 @@ local function define_tests()
             test.eq(result.range.from_id, ids[1])
             test.eq(result.range.to_id, ids[5])
         end)
+        test.it("counts stored tool results when bounding history and prompt slices", function()
+            local db = get_db()
+            local id = uuid.v7()
+            insert(db, "dataflow_data", {data_id = id, dataflow_id = flow_id, node_id = node_id,
+                type = agent_consts.DATA_TYPE.AGENT_OBSERVATION, key = "large-result",
+                content = json.encode({text = string.rep("x", 4096)}), content_type = consts.CONTENT_TYPE.JSON,
+                metadata = json.encode({tool_call_id = "read-call", tool_name = "read_page"}),
+                created_at = time.now():format(time.RFC3339)})
+            db:release()
+            local args = {host = {kind = "dataflow", dataflow_id = flow_id, node_id = node_id},
+                selector = {mode = "since_id", from_id = ids[5], max_chars = 64}, format = "text"}
+            local history, history_err = open_binding():get_history(args)
+            local prompt, prompt_err = open_binding():get_prompt(args)
+            db = get_db()
+            db:execute("DELETE FROM dataflow_data WHERE data_id = ?", {id})
+            db:release()
+            test.is_nil(history_err, tostring(history_err))
+            test.is_nil(prompt_err, tostring(prompt_err))
+            test.eq(history.count, 0)
+            test.is_true(history.truncated)
+            test.is_true(prompt.truncated)
+            test.is_false((prompt.text or ""):find(string.rep("x", 100), 1, true) ~= nil)
+        end)
         test.it("keeps native source ids stable across bounded selectors", function()
             local result = read({mode = "range", from_id = ids[1], to_id = ids[3]})
             test.eq(result.count, 2)
