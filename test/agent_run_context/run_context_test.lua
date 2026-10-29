@@ -540,6 +540,93 @@ local function define_tests()
             test.is_nil(result.messages)
         end)
     end)
+    test.describe("normalized native conversation history", function()
+        local flow_id, node_id
+        local ids = {}
+        test.before_all(function()
+            wait_for_boot.run()
+            local db = get_db()
+            local now = time.now():format(time.RFC3339)
+            flow_id, node_id = uuid.v7(), uuid.v7()
+            insert(db, "dataflows", {dataflow_id = flow_id, actor_id = "history-test", type = "workflow", status = "active", metadata = "{}", created_at = now, updated_at = now})
+            insert(db, "dataflow_nodes", {node_id = node_id, dataflow_id = flow_id, type = "userspace.dataflow.node.agent:node", status = "active", config = "{}", metadata = "{}", created_at = now, updated_at = now})
+            for _, key in ipairs({"context", "agent_id", "model", "max_iterations"}) do
+                insert(db, "dataflow_data", {data_id = uuid.v7(), dataflow_id = flow_id, node_id = node_id,
+                    type = consts.DATA_TYPE.NODE_INPUT, key = "control", discriminator = key,
+                    content = "Runtime control", content_type = consts.CONTENT_TYPE.TEXT, metadata = "{}", created_at = now})
+            end
+            local input_source_id = uuid.v7()
+            insert(db, "dataflow_data", {data_id = input_source_id, dataflow_id = flow_id, type = consts.DATA_TYPE.WORKFLOW_INPUT, content = "Study the orchard", content_type = consts.CONTENT_TYPE.TEXT, metadata = "{}", created_at = now})
+            local rows = {
+                {type = consts.DATA_TYPE.NODE_INPUT, key = input_source_id, content = "", content_type = consts.CONTENT_TYPE.REFERENCE},
+                {type = agent_consts.DATA_TYPE.AGENT_ACTION, content = json.encode({result = "Reading the page", tool_calls = {{id = "read-call", name = "read_page", registry_id = "app:read_page", arguments = {url = "https://example.org"}}}}), content_type = consts.CONTENT_TYPE.JSON},
+                {type = agent_consts.DATA_TYPE.AGENT_OBSERVATION, content = json.encode({text = "Orchard notes"}), content_type = consts.CONTENT_TYPE.JSON, metadata = {tool_call_id = "read-call", tool_name = "read_page"}},
+                {type = agent_consts.DATA_TYPE.AGENT_ACTION, content = json.encode({result = "Asking the researcher", delegate_calls = {{id = "delegate-call", name = "researcher", arguments = {message = "Summarize"}}}}), content_type = consts.CONTENT_TYPE.JSON},
+                {type = agent_consts.DATA_TYPE.AGENT_DELEGATION, content = json.encode({summary = "Prune in winter"}), content_type = consts.CONTENT_TYPE.JSON, metadata = {tool_call_id = "delegate-call", tool_name = "researcher"}},
+            }
+            for index, row in ipairs(rows) do
+                ids[index] = uuid.v7()
+                insert(db, "dataflow_data", {data_id = ids[index], dataflow_id = flow_id, node_id = node_id, type = row.type, key = row.key or tostring(index), content = row.content, content_type = row.content_type, metadata = json.encode(row.metadata or {}), created_at = now})
+            end
+            db:release()
+        end)
+        test.after_all(function()
+            local db = get_db()
+            db:execute("DELETE FROM dataflow_data WHERE dataflow_id = ?", {flow_id})
+            db:execute("DELETE FROM dataflow_nodes WHERE dataflow_id = ?", {flow_id})
+            db:execute("DELETE FROM dataflows WHERE dataflow_id = ?", {flow_id})
+            db:release()
+        end)
+        local function read(sel)
+            local result, err = open_binding():get_history({host = {kind = "dataflow", dataflow_id = flow_id, node_id = node_id}, selector = sel})
+            test.is_nil(err, tostring(err))
+            return result
+        end
+        test.it("projects input, actions, tools and delegation through the real binding", function()
+            local result = read({mode = "all"})
+            test.eq(result.count, 5)
+            local roles = {"user", "assistant", "function", "assistant", "function"}
+            local texts = {"Study the orchard", "Reading the page", "Orchard notes", "Asking the researcher", "Prune in winter"}
+            for index, event in ipairs(result.events) do
+                test.eq(event.id, ids[index])
+                test.eq(event.role, roles[index])
+                if roles[index] == "function" then
+                    test.eq(type(event.content), "table")
+                    test.eq(type(event.raw_content), "string")
+                else
+                    test.eq(type(event.content), "string")
+                    test.contains(event.content, texts[index])
+                    test.eq(event.raw_content, event.content)
+                end
+            end
+            test.eq(result.events[3].metadata.function_name, "read_page")
+            test.eq(result.events[3].metadata.status, "success")
+            test.eq(result.events[3].metadata.registry_id, "app:read_page")
+            test.eq(result.events[3].content.url, "https://example.org")
+            test.eq(result.events[3].metadata.result.text, "Orchard notes")
+            test.eq(result.events[5].metadata.function_name, "researcher")
+            test.eq(result.events[5].metadata.status, "success")
+            test.eq(result.events[5].content.message, "Summarize")
+            test.eq(result.events[5].metadata.result.summary, "Prune in winter")
+            test.eq(result.range.from_id, ids[1])
+            test.eq(result.range.to_id, ids[5])
+        end)
+        test.it("keeps native source ids stable across bounded selectors", function()
+            local result = read({mode = "range", from_id = ids[1], to_id = ids[3]})
+            test.eq(result.count, 2)
+            test.eq(result.events[1].id, ids[2])
+            test.eq(result.events[2].id, ids[3])
+            test.eq(result.events[1].role, "assistant")
+            test.eq(result.events[2].role, "function")
+            test.eq(read({mode = "since_id", from_id = ids[3]}).count, 2)
+            test.eq(read({mode = "window", last = 1}).events[1].id, ids[5])
+            local bounded = read({mode = "all", max_chars = #"Study the orchard"})
+            test.eq(bounded.count, 1)
+            test.is_true(bounded.truncated)
+            test.eq(bounded.range.to_id, ids[1])
+        end)
+    end)
+
 end
 
 return { run_tests = test.run_cases(define_tests) }
