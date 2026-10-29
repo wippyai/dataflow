@@ -233,6 +233,7 @@ entries:
     modules:
       - json
     imports:
+      consts: userspace.dataflow:consts
       prompt: wippy.llm:prompt
       agent_consts: userspace.dataflow.node.agent:consts
       data_reader: userspace.dataflow.persist:data_reader
