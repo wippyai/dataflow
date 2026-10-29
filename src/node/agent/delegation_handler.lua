@@ -140,6 +140,8 @@ function delegation_handler.create_child_node(parent_node_sdk, delegation, deleg
     local agent_info = get_agent_info(delegation.agent_id)
 
     local child_arena_context = merge_session_with_delegate_context(session_context, delegation.context)
+    local parent_id = type(delegation.context) == "table" and delegation.context.from_agent_id or nil
+    local author = type(parent_id) == "string" and parent_id ~= "" and {kind = "agent", id = parent_id} or {kind = "system"}
 
     local child_config = {
         agent = delegation.agent_id,
@@ -186,7 +188,8 @@ function delegation_handler.create_child_node(parent_node_sdk, delegation, deleg
         if delegation.input_data then
             parent_node_sdk:data("node.input", delegation.input_data, {
                 node_id = child_id,
-                key = ""
+                key = "",
+                metadata = { author = author }
             })
         end
     end

@@ -546,7 +546,7 @@ local function define_tests()
         end)
     end)
     test.describe("normalized native conversation history", function()
-        local flow_id, node_id
+        local flow_id, node_id, input_source_id
         local ids = {}
         test.before_all(function()
             wait_for_boot.run()
@@ -560,7 +560,7 @@ local function define_tests()
                     type = consts.DATA_TYPE.NODE_INPUT, key = "control", discriminator = key,
                     content = "Runtime control", content_type = consts.CONTENT_TYPE.TEXT, metadata = "{}", created_at = now})
             end
-            local input_source_id = uuid.v7()
+            input_source_id = uuid.v7()
             insert(db, "dataflow_data", {data_id = input_source_id, dataflow_id = flow_id, type = consts.DATA_TYPE.WORKFLOW_INPUT, content = "Study the orchard", content_type = consts.CONTENT_TYPE.TEXT, metadata = "{}", created_at = now})
             local rows = {
                 {type = consts.DATA_TYPE.NODE_INPUT, key = input_source_id, content = "", content_type = consts.CONTENT_TYPE.REFERENCE},
@@ -571,7 +571,7 @@ local function define_tests()
             }
             for index, row in ipairs(rows) do
                 ids[index] = uuid.v7()
-                insert(db, "dataflow_data", {data_id = ids[index], dataflow_id = flow_id, node_id = node_id, type = row.type, key = row.key or tostring(index), content = row.content, content_type = row.content_type, metadata = json.encode(row.metadata or {}), created_at = now})
+                insert(db, "dataflow_data", {data_id = ids[index], dataflow_id = flow_id, node_id = node_id, type = row.type, key = row.key or tostring(index), content = row.content, content_type = row.content_type, metadata = json.encode(row.metadata or (row.type == agent_consts.DATA_TYPE.AGENT_ACTION and {agent_id = "agent:researcher"}) or {}), created_at = now})
             end
             db:release()
         end)
@@ -660,6 +660,28 @@ local function define_tests()
             db:release()
             test.eq(result.count, 1)
             test.eq(result.events[1].metadata.result, false)
+        end)
+        test.it("separates workflow inputs, self actions and tool authors through contract dispatch", function()
+            local result = read({mode = "all"})
+            test.eq(result.events[1].author.kind, "system")
+            test.eq(result.events[2].author.kind, "agent")
+            test.eq(result.events[2].author.id, "agent:researcher")
+            test.eq(result.events[3].author.kind, "system")
+        end)
+        test.it("preserves parent and human authors on referenced input events", function()
+            local db = get_db()
+            for _, author in ipairs({{kind = "agent", id = "agent:coordinator"}, {kind = "user", id = "human:test"}}) do
+                local _, update_err = db:execute("UPDATE dataflow_data SET metadata = $1 WHERE data_id = $2",
+                    {json.encode({author = author}), input_source_id})
+                test.is_nil(update_err)
+                local result = read({mode = "all"})
+                test.eq(result.events[1].role, "user")
+                test.eq(result.events[1].author.kind, author.kind)
+                test.eq(result.events[1].author.id, author.id)
+            end
+            local _, reset_err = db:execute("UPDATE dataflow_data SET metadata = $1 WHERE data_id = $2", {"{}", input_source_id})
+            db:release()
+            test.is_nil(reset_err)
         end)
         test.it("keeps native source ids stable across bounded selectors", function()
             local result = read({mode = "range", from_id = ids[1], to_id = ids[3]})
