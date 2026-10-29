@@ -7,6 +7,7 @@ local uuid = require("uuid")
 local agent_consts = require("agent_consts")
 local commit = require("commit")
 local consts = require("consts")
+local data_reader = require("data_reader")
 local node = require("node")
 local wait_for_boot = require("wait_for_boot")
 
@@ -803,7 +804,7 @@ local function define_tests()
             db:release()
         end)
 
-        test.it("uses the referenced input author through the run-context binding", function()
+        test.it("uses source provenance for references through the run-context binding", function()
             local author = {kind = "agent", id = "agent:coordinator"}
             local source = open_node(flow_id, source_node_id)
             local _, source_err = source:data(consts.DATA_TYPE.NODE_INPUT, "Coordinate the task", {
@@ -816,24 +817,42 @@ local function define_tests()
             test.is_true(submitted_source, tostring(submit_source_err))
 
             local target = open_node(flow_id, target_node_id)
-            local _, reference_err = target:data(consts.DATA_TYPE.NODE_INPUT, "", {
-                node_id = target_node_id,
-                content_type = consts.CONTENT_TYPE.REFERENCE,
-                key = source_id,
-            })
-            test.is_nil(reference_err, tostring(reference_err))
+            local reference_ids = {}
+            for _, reference_author in ipairs({
+                {kind = "system"},
+                {kind = "unknown"},
+            }) do
+                local reference_id = uuid.v7()
+                local _, reference_err = target:data(consts.DATA_TYPE.NODE_INPUT, "", {
+                    data_id = reference_id,
+                    node_id = target_node_id,
+                    content_type = consts.CONTENT_TYPE.REFERENCE,
+                    key = source_id,
+                    metadata = {author = reference_author},
+                })
+                test.is_nil(reference_err, tostring(reference_err))
+                reference_ids[#reference_ids + 1] = reference_id
+            end
             local submitted_reference, submit_reference_err = target:submit()
             test.is_true(submitted_reference, tostring(submit_reference_err))
+
+            local persisted_unknown = data_reader.with_dataflow(flow_id)
+                :with_data(reference_ids[2])
+                :fetch_options({resolve_references = false})
+                :one()
+            test.eq(persisted_unknown.metadata.author.kind, "unknown")
 
             local history, history_err = open_binding():get_history({
                 host = {kind = "dataflow", dataflow_id = flow_id, node_id = target_node_id},
                 selector = {mode = "all"},
             })
             test.is_nil(history_err, tostring(history_err))
-            test.eq(history.count, 1)
-            test.eq(history.events[1].content, "Coordinate the task")
-            test.eq(history.events[1].author.kind, author.kind)
-            test.eq(history.events[1].author.id, author.id)
+            test.eq(history.count, 2)
+            for _, event in ipairs(history.events) do
+                test.eq(event.content, "Coordinate the task")
+                test.eq(event.author.kind, author.kind)
+                test.eq(event.author.id, author.id)
+            end
         end)
     end)
 
