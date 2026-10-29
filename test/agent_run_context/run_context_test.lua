@@ -758,6 +758,31 @@ local function define_tests()
             test.is_true(bounded.truncated)
             test.eq(bounded.range.to_id, ids[1])
         end)
+        test.it("keeps delegation reference routing with the source author and result", function()
+            local db = get_db()
+            local now = time.now():format(time.RFC3339)
+            local source_id, reference_id = uuid.v7(), uuid.v7()
+            insert(db, "dataflow_data", {data_id = source_id, dataflow_id = flow_id,
+                type = consts.DATA_TYPE.WORKFLOW_OUTPUT, key = "child-result",
+                content = json.encode({summary = "Tree health verified"}), content_type = consts.CONTENT_TYPE.JSON,
+                metadata = json.encode({author = {kind = "agent", id = "agent:child"}}), created_at = now})
+            insert(db, "dataflow_data", {data_id = reference_id, dataflow_id = flow_id, node_id = node_id,
+                type = agent_consts.DATA_TYPE.AGENT_DELEGATION, key = source_id, content = "",
+                content_type = consts.CONTENT_TYPE.REFERENCE,
+                metadata = json.encode({tool_call_id = "delegate-call", tool_name = "researcher", iteration = 9,
+                    author = {kind = "unknown"}}), created_at = now})
+            db:release()
+            local result = read({mode = "all"})
+            local found
+            for _, event in ipairs(result.events) do if event.id == reference_id then found = event end end
+            test.not_nil(found)
+            test.eq(found.role, "function")
+            test.eq(found.metadata.call_id, "delegate-call")
+            test.eq(found.metadata.iteration, 9)
+            test.eq(found.metadata.result.summary, "Tree health verified")
+            test.eq(found.author.kind, "agent")
+            test.eq(found.author.id, "agent:child")
+        end)
     end)
 
     test.describe("referenced node input provenance", function()

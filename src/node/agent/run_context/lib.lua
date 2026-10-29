@@ -124,6 +124,18 @@ local function copy_rows(rows)
     return copied
 end
 
+local function merge_into(target, source)
+    if type(source) ~= "table" then
+        return target
+    end
+    for key, value in pairs(source) do
+        if type(key) == "string" then
+            target[key] = value
+        end
+    end
+    return target
+end
+
 local function load_history_rows(dataflow_id, node_id)
     local ok, rows_or_err = pcall(function()
         return data_reader.with_dataflow(dataflow_id)
@@ -139,7 +151,10 @@ local function load_history_rows(dataflow_id, node_id)
     for _, row in ipairs(rows_or_err or {}) do
         local input_key = row.discriminator or row.key or "default"
         if row.content_type == consts.CONTENT_TYPE.REFERENCE then
-            row.metadata = row.ref_metadata or {}
+            local source_metadata = row.ref_metadata or {}
+            local metadata = merge_into(merge_into({}, source_metadata), row.metadata)
+            metadata.author = source_metadata.author
+            row.metadata = metadata
             row.content = row.ref_content
             row.content_type = row.ref_content_type
             input_key = row.discriminator or row.ref_key or row.key or "default"
@@ -383,17 +398,6 @@ local function node_row(dataflow_id, node_id)
     return row, nil
 end
 
-local function merge_into(target, source)
-    if type(source) ~= "table" then
-        return target
-    end
-    for key, value in pairs(source) do
-        if type(key) == "string" then
-            target[key] = value
-        end
-    end
-    return target
-end
 
 function M.get_context(args)
     local dataflow_id, node_id, id_err = host_ids(args)
