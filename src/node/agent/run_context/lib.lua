@@ -139,8 +139,7 @@ local function load_history_rows(dataflow_id, node_id)
     for _, row in ipairs(rows_or_err or {}) do
         local input_key = row.discriminator or row.key or "default"
         if row.content_type == consts.CONTENT_TYPE.REFERENCE then
-            row.metadata = row.metadata or {}
-            if not row.metadata.author then row.metadata.author = (row.ref_metadata or {}).author end
+            row.metadata = row.ref_metadata or {}
             row.content = row.ref_content
             row.content_type = row.ref_content_type
             input_key = row.discriminator or row.ref_key or row.key or "default"
