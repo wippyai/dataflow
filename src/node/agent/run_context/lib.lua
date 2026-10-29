@@ -264,7 +264,10 @@ local function normalize_event(row, formatter, calls)
             text = encoded
         end
         metadata.registry_id = call.registry_id
-        metadata.result = row.content_type == consts.CONTENT_TYPE.JSON and decode_json(row.content) or row.content
+        metadata.result = row.content
+        if row.content_type == consts.CONTENT_TYPE.JSON then
+            metadata.result = decode_json(row.content)
+        end
     end
     return {
         id = row.data_id,
