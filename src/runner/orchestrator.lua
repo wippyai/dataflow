@@ -127,6 +127,7 @@ end
 ---@return table result
 local function finish(state, result)
     if TERMINAL_STATUS[state.final_status] then fire_completion_hook(state, result) end
+    state.runtime.process.registry.unregister("dataflow." .. state.dataflow_id)
     return result
 end
 
@@ -363,6 +364,20 @@ local function load_startup_pending_commits(state: OrchestratorState)
         table.insert(state.incoming_commit_queue, commit_id)
     end
 
+    return true
+end
+
+local function recover_workflow_state(state: OrchestratorState)
+    if not load_startup_pending_commits(state) or not process_pending_commits(state) then
+        return false
+    end
+    local recovered, recovery_err = state.workflow_state:recover()
+    if not recovered then
+        local continue, reschedule = persist_fenced_failure(
+            state, "Failed to recover workflow state: " .. tostring(recovery_err))
+        state.reschedule_requested = reschedule == true
+        return continue
+    end
     return true
 end
 
@@ -718,6 +733,7 @@ function handle_complete_workflow(state: OrchestratorState, payload: any)
             return false, false
         end
         state.workflow_state = fresh_state
+        if not recover_workflow_state(state) then return false, false end
         state.reschedule_requested = true
         return true, true
     end
@@ -1376,22 +1392,12 @@ local function run(args, runtime_override: any?)
     end
 
     -- Recover commit backlog that may have accumulated while orchestrator was offline.
-    -- This must happen before empty-workflow detection because commits can create nodes.
-    local backlog_loaded = load_startup_pending_commits(runtime_state)
-    if not backlog_loaded then
+    -- Apply it before recovery classification and empty-workflow detection.
+    if not recover_workflow_state(runtime_state) then
         return finish(state, state.exit_result or {
             success = false,
             dataflow_id = dataflow_id,
-            error = "Failed to recover pending commits"
-        })
-    end
-
-    local pending_processed = process_pending_commits(runtime_state)
-    if not pending_processed then
-        return finish(state, state.exit_result or {
-            success = false,
-            dataflow_id = dataflow_id,
-            error = "Failed to process pending commits"
+            error = "Failed to recover workflow state",
         })
     end
 

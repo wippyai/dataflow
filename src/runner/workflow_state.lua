@@ -483,6 +483,19 @@ function methods:load_state()
 
     self:_load_existing_data()
 
+    self.loaded = true
+    return self, nil
+end
+
+function methods:recover()
+    for node_id in pairs(self.input_tracker.requirements) do
+        if not self.nodes[node_id] then
+            self.input_tracker.requirements[node_id] = nil
+        end
+    end
+    self.pending_signal_wake_keys = {}
+    self:_load_existing_data()
+
     local reset_err = self:_reset_running_nodes()
     if reset_err then
         return nil, reset_err
@@ -497,7 +510,6 @@ function methods:load_state()
 
     self:_reconstruct_active_yields()
 
-    self.loaded = true
     return self, nil
 end
 
@@ -775,7 +787,8 @@ function methods:_reconstruct_active_yields()
 end
 
 function methods:_update_input_availability()
-    for node_id, _ in pairs(self.input_tracker.requirements) do
+    self.input_tracker.available = {}
+    for node_id in pairs(self.input_tracker.requirements) do
         self.input_tracker.available[node_id] = {}
     end
 
