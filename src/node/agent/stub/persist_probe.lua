@@ -40,6 +40,7 @@ local function handler(payload)
         iteration = payload.refs and payload.refs.iteration,
         history_error = history_err and tostring(history_err) or nil,
         found_role = found and found.role or nil,
+        found_author = found and found.author or nil,
         found_key = found and found.key or nil,
         outcome_state = payload.outcome and payload.outcome.state,
         memory_recall_error = payload.outcome and payload.outcome.memory_recall_error,

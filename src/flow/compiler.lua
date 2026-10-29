@@ -5,6 +5,10 @@ local consts = require("df_consts")
 
 local compiler = {}
 
+local function system_author_metadata()
+    return { author = { kind = "system" } }
+end
+
 compiler.OP_TYPES = {
     WITH_INPUT = "with_input",
     WITH_DATA = "with_data",
@@ -995,7 +999,8 @@ function compiler.compile_to_commands(graph, session_context)
                 data_id = input_data_id,
                 data_type = consts.DATA_TYPE.WORKFLOW_INPUT,
                 content = (graph :: any).input_data,
-                content_type = type((graph :: any).input_data) == "table" and consts.CONTENT_TYPE.JSON or consts.CONTENT_TYPE.TEXT
+                content_type = type((graph :: any).input_data) == "table" and consts.CONTENT_TYPE.JSON or consts.CONTENT_TYPE.TEXT,
+                metadata = system_author_metadata()
             }
         })
     end
@@ -1190,7 +1195,8 @@ function compiler.compile_to_commands(graph, session_context)
                     node_id = target_node_id,
                     discriminator = first_route.input_key,
                     content = content,
-                    content_type = type(content) == "table" and consts.CONTENT_TYPE.JSON or consts.CONTENT_TYPE.TEXT
+                    content_type = type(content) == "table" and consts.CONTENT_TYPE.JSON or consts.CONTENT_TYPE.TEXT,
+                    metadata = system_author_metadata()
                 }
             })
 
@@ -1210,7 +1216,8 @@ function compiler.compile_to_commands(graph, session_context)
                         discriminator = route.input_key,
                         key = data_id,
                         content = "",
-                        content_type = consts.CONTENT_TYPE.REFERENCE
+                        content_type = consts.CONTENT_TYPE.REFERENCE,
+                        metadata = system_author_metadata()
                     }
                 })
             end
@@ -1248,7 +1255,8 @@ function compiler.compile_to_commands(graph, session_context)
                         node_id = target_node_id,
                         discriminator = route_entry.input_key,
                         content = content,
-                        content_type = type(content) == "table" and consts.CONTENT_TYPE.JSON or consts.CONTENT_TYPE.TEXT
+                        content_type = type(content) == "table" and consts.CONTENT_TYPE.JSON or consts.CONTENT_TYPE.TEXT,
+                        metadata = system_author_metadata()
                     }
                 })
             end
@@ -1268,7 +1276,8 @@ function compiler.compile_to_commands(graph, session_context)
                         discriminator = "default",
                         content = (graph :: any).input_data,
                         content_type = type((graph :: any).input_data) == "table" and consts.CONTENT_TYPE.JSON or
-                            consts.CONTENT_TYPE.TEXT
+                            consts.CONTENT_TYPE.TEXT,
+                        metadata = system_author_metadata()
                     }
                 })
             end
@@ -1299,7 +1308,8 @@ function compiler.compile_to_commands(graph, session_context)
                         key = input_data_id,
                         discriminator = route_entry.input_key,
                         content = "",
-                        content_type = "dataflow/reference"
+                        content_type = "dataflow/reference",
+                        metadata = system_author_metadata()
                     }
                 })
             end
@@ -1314,7 +1324,8 @@ function compiler.compile_to_commands(graph, session_context)
                         key = input_data_id,
                         discriminator = "default",
                         content = "",
-                        content_type = "dataflow/reference"
+                        content_type = "dataflow/reference",
+                        metadata = system_author_metadata()
                     }
                 })
             end

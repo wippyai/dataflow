@@ -123,6 +123,7 @@ function control_handler.process_memory_operations(control, node_sdk, iteration)
                     discriminator = memory_item.type,
                     node_id = node_sdk.node_id,
                     metadata = {
+                        author = { kind = "system" },
                         memory_type = memory_item.type,
                         created_by_control = true,
                         iteration = iteration
