@@ -23,7 +23,10 @@ entries:
       - uuid
     imports:
       agent_consts: userspace.dataflow.node.agent:consts
+      commit: userspace.dataflow.persist:commit
       consts: userspace.dataflow:consts
+      data_reader: userspace.dataflow.persist:data_reader
+      node: userspace.dataflow:node
       test: wippy.test:test
       wait_for_boot: app:wait_for_boot
     method: run_tests

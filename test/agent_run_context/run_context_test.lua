@@ -5,11 +5,27 @@ local test = require("test")
 local time = require("time")
 local uuid = require("uuid")
 local agent_consts = require("agent_consts")
+local commit = require("commit")
 local consts = require("consts")
+local data_reader = require("data_reader")
+local node = require("node")
 local wait_for_boot = require("wait_for_boot")
 
 local CONTRACT_ID = "wippy.agent:run_context"
 local BINDING_ID = "userspace.dataflow.node.agent.run_context:binding"
+
+type TestYieldChannel = Channel<any>
+
+type TestProcessDeps = {
+    listen: (topic: string, options: any?) -> (TestYieldChannel, any?),
+    send: (pid: string, topic: string, payload: any) -> (boolean, any?),
+}
+
+type TestNodeDeps = {
+    commit: any,
+    data_reader: any,
+    process: TestProcessDeps,
+}
 
 local function get_db()
     local db, err = sql.get("app:db")
@@ -40,6 +56,30 @@ local function open_binding()
     local instance, open_err = def:open(BINDING_ID)
     test.is_nil(open_err, "contract.open: " .. tostring(open_err))
     test.not_nil(instance)
+    return instance
+end
+
+local function open_node(dataflow_id, node_id)
+    local instance, err = node.new({
+        dataflow_id = dataflow_id,
+        node_id = node_id,
+    }, {
+        commit = {
+            submit = function(flow_id, operation_id, commands)
+                return commit.execute(flow_id, operation_id, commands, { publish = false })
+            end,
+        },
+        data_reader = {},
+        process = {
+            listen = function()
+                return {}
+            end,
+            send = function()
+                return true
+            end,
+        },
+    } :: TestNodeDeps)
+    test.is_nil(err, tostring(err))
     return instance
 end
 
@@ -546,7 +586,7 @@ local function define_tests()
         end)
     end)
     test.describe("normalized native conversation history", function()
-        local flow_id, node_id
+        local flow_id, node_id, input_source_id
         local ids = {}
         test.before_all(function()
             wait_for_boot.run()
@@ -560,7 +600,7 @@ local function define_tests()
                     type = consts.DATA_TYPE.NODE_INPUT, key = "control", discriminator = key,
                     content = "Runtime control", content_type = consts.CONTENT_TYPE.TEXT, metadata = "{}", created_at = now})
             end
-            local input_source_id = uuid.v7()
+            input_source_id = uuid.v7()
             insert(db, "dataflow_data", {data_id = input_source_id, dataflow_id = flow_id, type = consts.DATA_TYPE.WORKFLOW_INPUT, content = "Study the orchard", content_type = consts.CONTENT_TYPE.TEXT, metadata = "{}", created_at = now})
             local rows = {
                 {type = consts.DATA_TYPE.NODE_INPUT, key = input_source_id, content = "", content_type = consts.CONTENT_TYPE.REFERENCE},
@@ -571,7 +611,7 @@ local function define_tests()
             }
             for index, row in ipairs(rows) do
                 ids[index] = uuid.v7()
-                insert(db, "dataflow_data", {data_id = ids[index], dataflow_id = flow_id, node_id = node_id, type = row.type, key = row.key or tostring(index), content = row.content, content_type = row.content_type, metadata = json.encode(row.metadata or {}), created_at = now})
+                insert(db, "dataflow_data", {data_id = ids[index], dataflow_id = flow_id, node_id = node_id, type = row.type, key = row.key or tostring(index), content = row.content, content_type = row.content_type, metadata = json.encode(row.metadata or (row.type == agent_consts.DATA_TYPE.AGENT_ACTION and {agent_id = "agent:researcher"}) or {}), created_at = now})
             end
             db:release()
         end)
@@ -593,15 +633,15 @@ local function define_tests()
             local expected = {
                 {role = "user", text = "Study the orchard"},
                 {role = "assistant", text = "Reading the page"},
-                {role = "function", text = "Orchard notes"},
+                {role = "tool", text = "Orchard notes"},
                 {role = "assistant", text = "Asking the researcher"},
-                {role = "function", text = "Prune in winter"},
+                {role = "tool", text = "Prune in winter"},
             }
             for index, want in ipairs(expected) do
                 local event = result.events[index]
                 test.eq(event.id, ids[index])
                 test.eq(event.role, want.role)
-                if want.role == "function" then
+                if want.role == "tool" then
                     test.eq(type(event.content), "table")
                     test.eq(type(event.raw_content), "string")
                 else
@@ -661,19 +701,158 @@ local function define_tests()
             test.eq(result.count, 1)
             test.eq(result.events[1].metadata.result, false)
         end)
+        test.it("surfaces historical rows without persisted authors as unknown", function()
+            local result = read({mode = "all"})
+            test.eq(result.events[1].author.kind, "unknown")
+            test.eq(result.events[2].author.kind, "unknown")
+            test.eq(result.events[3].author.kind, "unknown")
+        end)
+        test.it("preserves failed tool outcomes through the normalized role", function()
+            local db = get_db()
+            local metadata = {tool_call_id = "read-call", tool_name = "read_page", is_error = true}
+            local _, update_err = db:execute("UPDATE dataflow_data SET metadata = $1 WHERE data_id = $2",
+                {json.encode(metadata), ids[3]})
+            test.is_nil(update_err)
+            db:release()
+
+            local result = read({mode = "all"})
+            local event = result.events[3]
+            test.eq(event.role, "tool")
+            test.eq(event.metadata.function_name, "read_page")
+            test.eq(event.metadata.status, "error")
+            test.eq(event.content.url, "https://example.org")
+            test.eq(event.metadata.result.text, "Orchard notes")
+
+            db = get_db()
+            local _, reset_err = db:execute("UPDATE dataflow_data SET metadata = $1 WHERE data_id = $2",
+                {json.encode({tool_call_id = "read-call", tool_name = "read_page"}), ids[3]})
+            db:release()
+            test.is_nil(reset_err)
+        end)
+        test.it("preserves parent and human authors on referenced input events", function()
+            local db = get_db()
+            for _, author in ipairs({{kind = "agent", id = "agent:coordinator"}, {kind = "user", id = "human:test"}}) do
+                local _, update_err = db:execute("UPDATE dataflow_data SET metadata = $1 WHERE data_id = $2",
+                    {json.encode({author = author}), input_source_id})
+                test.is_nil(update_err)
+                local result = read({mode = "all"})
+                test.eq(result.events[1].role, "user")
+                test.eq(result.events[1].author.kind, author.kind)
+                test.eq(result.events[1].author.id, author.id)
+            end
+            local _, reset_err = db:execute("UPDATE dataflow_data SET metadata = $1 WHERE data_id = $2", {"{}", input_source_id})
+            db:release()
+            test.is_nil(reset_err)
+        end)
         test.it("keeps native source ids stable across bounded selectors", function()
             local result = read({mode = "range", from_id = ids[1], to_id = ids[3]})
             test.eq(result.count, 2)
             test.eq(result.events[1].id, ids[2])
             test.eq(result.events[2].id, ids[3])
             test.eq(result.events[1].role, "assistant")
-            test.eq(result.events[2].role, "function")
+            test.eq(result.events[2].role, "tool")
             test.eq(read({mode = "since_id", from_id = ids[3]}).count, 2)
             test.eq(read({mode = "window", last = 1}).events[1].id, ids[5])
             local bounded = read({mode = "all", max_chars = #"Study the orchard"})
             test.eq(bounded.count, 1)
             test.is_true(bounded.truncated)
             test.eq(bounded.range.to_id, ids[1])
+        end)
+    end)
+
+    test.describe("referenced node input provenance", function()
+        local flow_id, source_node_id, target_node_id, source_id
+
+        test.before_all(function()
+            wait_for_boot.run()
+            local db = get_db()
+            local now = time.now():format(time.RFC3339)
+            flow_id, source_node_id, target_node_id, source_id = uuid.v7(), uuid.v7(), uuid.v7(), uuid.v7()
+            insert(db, "dataflows", {
+                dataflow_id = flow_id,
+                actor_id = "reference-provenance-test",
+                type = "workflow",
+                status = "active",
+                metadata = "{}",
+                created_at = now,
+                updated_at = now,
+            })
+            for _, id in ipairs({source_node_id, target_node_id}) do
+                insert(db, "dataflow_nodes", {
+                    node_id = id,
+                    dataflow_id = flow_id,
+                    type = "userspace.dataflow.node.agent:node",
+                    status = "active",
+                    config = "{}",
+                    metadata = "{}",
+                    created_at = now,
+                    updated_at = now,
+                })
+            end
+            db:release()
+        end)
+
+        test.after_all(function()
+            if not flow_id then return end
+            local db = get_db()
+            local _, data_err = db:execute("DELETE FROM dataflow_data WHERE dataflow_id = $1", {flow_id})
+            test.is_nil(data_err)
+            local _, node_err = db:execute("DELETE FROM dataflow_nodes WHERE dataflow_id = $1", {flow_id})
+            test.is_nil(node_err)
+            local _, flow_err = db:execute("DELETE FROM dataflows WHERE dataflow_id = $1", {flow_id})
+            test.is_nil(flow_err)
+            db:release()
+        end)
+
+        test.it("uses source provenance for references through the run-context binding", function()
+            local author = {kind = "agent", id = "agent:coordinator"}
+            local source = open_node(flow_id, source_node_id)
+            local _, source_err = source:data(consts.DATA_TYPE.NODE_INPUT, "Coordinate the task", {
+                data_id = source_id,
+                node_id = source_node_id,
+                metadata = {author = author},
+            })
+            test.is_nil(source_err, tostring(source_err))
+            local submitted_source, submit_source_err = source:submit()
+            test.is_true(submitted_source, tostring(submit_source_err))
+
+            local target = open_node(flow_id, target_node_id)
+            local reference_ids = {}
+            for _, reference_author in ipairs({
+                {kind = "system"},
+                {kind = "unknown"},
+            }) do
+                local reference_id = uuid.v7()
+                local _, reference_err = target:data(consts.DATA_TYPE.NODE_INPUT, "", {
+                    data_id = reference_id,
+                    node_id = target_node_id,
+                    content_type = consts.CONTENT_TYPE.REFERENCE,
+                    key = source_id,
+                    metadata = {author = reference_author},
+                })
+                test.is_nil(reference_err, tostring(reference_err))
+                reference_ids[#reference_ids + 1] = reference_id
+            end
+            local submitted_reference, submit_reference_err = target:submit()
+            test.is_true(submitted_reference, tostring(submit_reference_err))
+
+            local persisted_unknown = data_reader.with_dataflow(flow_id)
+                :with_data(reference_ids[2])
+                :fetch_options({resolve_references = false})
+                :one()
+            test.eq(persisted_unknown.metadata.author.kind, "unknown")
+
+            local history, history_err = open_binding():get_history({
+                host = {kind = "dataflow", dataflow_id = flow_id, node_id = target_node_id},
+                selector = {mode = "all"},
+            })
+            test.is_nil(history_err, tostring(history_err))
+            test.eq(history.count, 2)
+            for _, event in ipairs(history.events) do
+                test.eq(event.content, "Coordinate the task")
+                test.eq(event.author.kind, author.kind)
+                test.eq(event.author.id, author.id)
+            end
         end)
     end)
 

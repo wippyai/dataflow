@@ -139,6 +139,7 @@ local function load_history_rows(dataflow_id, node_id)
     for _, row in ipairs(rows_or_err or {}) do
         local input_key = row.discriminator or row.key or "default"
         if row.content_type == consts.CONTENT_TYPE.REFERENCE then
+            row.metadata = row.ref_metadata or {}
             row.content = row.ref_content
             row.content_type = row.ref_content_type
             input_key = row.discriminator or row.ref_key or row.key or "default"
@@ -239,11 +240,11 @@ local function normalize_event(row, formatter, calls)
     for key, value in pairs(row.metadata or {}) do metadata[key] = value end
     for _, message in ipairs(builder:get_messages()) do
         if message.role ~= prompt.ROLE.FUNCTION_CALL and message.role ~= prompt.ROLE.CACHE_MARKER then
-            role = message.role == prompt.ROLE.FUNCTION_RESULT and "function" or message.role
+            role = message.role == prompt.ROLE.FUNCTION_RESULT and "tool" or message.role
             for _, part in ipairs(message.content or {}) do
                 if part.text then texts[#texts + 1] = part.text end
             end
-            if role == "function" then
+            if role == "tool" then
                 metadata.function_name = message.name
                 metadata.status = metadata.is_error and "error" or "success"
                 metadata.call_id = message.function_call_id
@@ -252,7 +253,7 @@ local function normalize_event(row, formatter, calls)
     end
     local text = table.concat(texts, "\n")
     local content = text
-    if role == "function" then
+    if role == "tool" then
         local call = calls[metadata.call_id]
         if not call then return nil, "Function result has no stored call: " .. tostring(metadata.call_id) end
         content = decode_json(call.arguments)
@@ -269,9 +270,14 @@ local function normalize_event(row, formatter, calls)
             metadata.result = decode_json(row.content)
         end
     end
+    local author = metadata.author
+    if type(author) ~= "table" then
+        author = { kind = "unknown" }
+    end
     return {
         id = row.data_id,
         role = role,
+        author = author,
         content = content,
         raw_content = text,
         content_type = row.content_type,
@@ -291,8 +297,8 @@ local function content_length(event)
     local length = #content
     -- Normalized tool events put arguments in content and the stored result in
     -- metadata. Both belong to the bounded conversation, including get_prompt.
-    local result = event.role == "function" and event.metadata and event.metadata.result
-    if result ~= nil and event.role == "function" then
+    local result = event.role == "tool" and event.metadata and event.metadata.result
+    if result ~= nil and event.role == "tool" then
         if type(result) ~= "string" then
             local encoded = json.encode(result)
             result = encoded or tostring(result)

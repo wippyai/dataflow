@@ -1073,6 +1073,23 @@ local function define_tests()
                 end
             end)
 
+            it("records an unknown author for unauthenticated node input", function()
+                local _, err = test_node:data(consts.DATA_TYPE.NODE_INPUT, "unattributed input")
+                test.is_nil(err)
+                local metadata = test_node._queued_commands[#test_node._queued_commands].payload.metadata
+                test.eq(metadata.author.kind, "unknown")
+            end)
+
+            it("preserves a declared node input author", function()
+                local _, err = test_node:data(consts.DATA_TYPE.NODE_INPUT, "submitted input", {
+                    metadata = { author = { kind = "agent", id = "agent:submitter" } }
+                })
+                test.is_nil(err)
+                local metadata = test_node._queued_commands[#test_node._queued_commands].payload.metadata
+                test.eq(metadata.author.kind, "agent")
+                test.eq(metadata.author.id, "agent:submitter")
+            end)
+
             it("should determine content type automatically", function()
                 test.not_nil(test_node)
                 test_node:data(consts.DATA_TYPE.NODE_OUTPUT, { message = "test" })

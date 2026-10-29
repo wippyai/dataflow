@@ -454,6 +454,12 @@ local function build_data_command(self, data_type, content, options)
         end
     end
 
+    local metadata = options.metadata
+    if data_type == consts.DATA_TYPE.NODE_INPUT and content_type ~= consts.CONTENT_TYPE.REFERENCE and
+        (type(metadata) ~= "table" or type(metadata.author) ~= "table") then
+        metadata = merge_metadata(metadata, { author = { kind = "unknown" } })
+    end
+
     return {
         type = consts.COMMAND_TYPES.CREATE_DATA,
         payload = {
@@ -464,7 +470,7 @@ local function build_data_command(self, data_type, content, options)
             content_type = content_type,
             discriminator = options.discriminator,
             node_id = options.node_id,
-            metadata = options.metadata
+            metadata = metadata
         }
     }, nil
 end
