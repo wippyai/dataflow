@@ -14,6 +14,8 @@ exclude_meta:
   scope:
     - dev
 exclude:
+  # Native fixtures link to production sources and are not module source input.
+  - "test/**"
   - "app:**"
   - "userspace.dataflow.node.agent.stub:**"
   - "userspace.dataflow.node.cycle.stub:**"

@@ -1855,6 +1855,28 @@ local function define_tests()
                 test.eq(data_command.payload.data_id, fixed_data_id)
             end)
 
+            it("defaults error routes to their producer and preserves explicit target nodes", function()
+                local n = node.new({
+                    node_id = "failed-node",
+                    dataflow_id = "failed-workflow",
+                    node = { config = { error_targets = {
+                        { data_type = consts.DATA_TYPE.WORKFLOW_OUTPUT, key = "error", discriminator = "error" },
+                        { data_type = consts.DATA_TYPE.NODE_INPUT, node_id = "handler-node", key = "error" },
+                    } } },
+                }, mock_deps)
+                local result, fail_err = n:fail("Committed failure")
+                test.is_nil(fail_err)
+                test.is_false(result.success)
+                local routes = {}
+                for _, command in ipairs(captured_calls.commit_submit[1].commands) do
+                    if command.type == consts.COMMAND_TYPES.CREATE_DATA then
+                        routes[command.payload.data_type] = command.payload
+                    end
+                end
+                test.eq(routes[consts.DATA_TYPE.WORKFLOW_OUTPUT].node_id, "failed-node")
+                test.eq(routes[consts.DATA_TYPE.NODE_INPUT].node_id, "handler-node")
+            end)
+
             for _, case in ipairs({
                 { name = "retryable", retryable = true },
                 { name = "non-retryable", retryable = false },
