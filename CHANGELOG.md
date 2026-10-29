@@ -5,6 +5,19 @@
 * Preserve an agent node's successful fallback route across iterations and recovery, clearing it when the configured agent or model changes. Requires Agent 0.5.5 or later.
 * Wake an existing orchestrator when it claims a signal generation. A clean exit that released an older generation no longer fails newly activated work; actual owner crashes still fail without restarting the workflow.
 
+## [0.7.33](https://github.com/wippyai/dataflow/compare/v0.7.32...v0.7.33) (2026-10-29)
+
+
+### Features
+
+* **func:** add retry policy with durable backoff ([#127](https://github.com/wippyai/dataflow/issues/127)) ([400b865](https://github.com/wippyai/dataflow/commit/400b865e92c2f692f2fef604ce732b76d3eb559b))
+
+
+### Bug Fixes
+
+* **package:** exclude native fixtures from local module trees ([#128](https://github.com/wippyai/dataflow/issues/128)) ([3486c6e](https://github.com/wippyai/dataflow/commit/3486c6ef8d896cfa6a62e007167335bfe8119400))
+* **runner:** recover nodes from applied durable outcomes ([#124](https://github.com/wippyai/dataflow/issues/124)) ([117f7a1](https://github.com/wippyai/dataflow/commit/117f7a1dafa2e29302a2742b6c671e0565e91ffa))
+
 ## [0.7.32](https://github.com/wippyai/dataflow/compare/v0.7.31...v0.7.32) (2026-10-28)
 
 
