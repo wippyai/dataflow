@@ -1,7 +1,23 @@
-version: "0.7.32" # x-release-please-version
+version: "0.7.33" # x-release-please-version
 namespace: userspace.dataflow
 
 entries:
+  - name: retry_test
+    kind: function.lua
+    meta: {type: test, suite: dataflow}
+    source: file://retry_test.lua
+    imports:
+      test: wippy.test:test
+      retry: userspace.dataflow:retry
+    method: run_tests
+
+  - name: retry
+    kind: library.lua
+    meta:
+      comment: Pure func retry policy normalization and decisions.
+    source: file://retry.lua
+    modules: [time]
+
   - name: definition
     kind: ns.definition
     readme: file://README.md
@@ -221,6 +237,7 @@ entries:
       commit: userspace.dataflow.persist:commit
       consts: userspace.dataflow:consts
       data_reader: userspace.dataflow.persist:data_reader
+      retry: userspace.dataflow:retry
 
   # userspace.dataflow:node_test
   - name: node_test

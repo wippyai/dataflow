@@ -14,6 +14,8 @@ local constants = {
 }
 
 -- Module to export
+local retry = require("retry")
+
 local ops = {}
 
 -- Export constants for external use
@@ -298,6 +300,15 @@ handlers[constants.COMMAND_TYPES.CREATE_NODE] = function(tx, dataflow_id, op_id,
     end
     metadata = encoding.ensure_utf8(metadata)
 
+    local declaration = payload.config or {}
+    if type(declaration) == "string" then
+        local decoded, decode_err = json.decode(declaration)
+        if decode_err then return nil, "Invalid node config: " .. tostring(decode_err) end
+        declaration = decoded
+    end
+    local valid, validation_err = retry.validate(declaration, payload.node_type)
+    if not valid then return nil, validation_err end
+
     local config = payload.config or "{}"
     if type(config) == "table" then
         local encoded, err_encode = json.encode(config)
@@ -569,6 +580,26 @@ handlers[constants.COMMAND_TYPES.CREATE_DATA] = function(tx, dataflow_id, op_id,
         metadata = encoded
     end
     metadata = encoding.ensure_utf8(metadata)
+
+    if payload.data_type == consts.DATA_TYPE.NODE_YIELD and type(raw_content) == "table" and
+       type(raw_content.yield_context) == "table" and raw_content.yield_context.wait_for_timer == true then
+        local rows, lookup_err = sql.builder.select("data_id", "node_id", "type", "discriminator", "key",
+                "content", "content_type", "metadata")
+            :from("dataflow_data")
+            :where("dataflow_id = ?", dataflow_id)
+            :where("node_id = ?", payload.node_id)
+            :where("type = ?", consts.DATA_TYPE.NODE_YIELD)
+            :where("key = ?", payload.key)
+            :limit(1):run_with(tx):query()
+        if lookup_err then return nil, "Failed to query timer yield: " .. tostring(lookup_err) end
+        local existing = rows and rows[1]
+        if existing then
+            if not matches_explicit_data_replay(existing, payload, content_value, content_type, metadata) then
+                return nil, "Timer yield key has conflicting payload"
+            end
+            return {data_id = existing.data_id, changes_made = false, op_id = op_id, deduplicated = true}
+        end
+    end
 
     if is_iteration_terminal_unique_slot(payload) then
         local existing_row, existing_err = find_existing_unique_data_row(tx, dataflow_id, payload)

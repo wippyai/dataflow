@@ -73,7 +73,7 @@ entries:
       type: test
       group: Workflow
     source: file://orchestrator_recovery_test.lua
-    modules: [uuid]
+    modules: [uuid, time]
     imports:
       test: wippy.test:test
       client: userspace.dataflow:client

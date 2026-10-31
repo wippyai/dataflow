@@ -3,6 +3,7 @@ local uuid = require("uuid")
 local ctx = require("ctx")
 local agent_ref = require("agent_ref")
 local compiler = require("df_compiler")
+local retry = require("retry")
 local client = require("df_client")
 local consts = require("df_consts")
 
@@ -73,13 +74,22 @@ function FlowBuilder:with_data(data)
     return self:_add_operation(compiler.OP_TYPES.WITH_DATA, { data = data })
 end
 
+local function validate_retry(config, kind)
+    local valid, err = retry.validate(config, kind)
+    if not valid then error(err) end
+end
+
 function FlowBuilder:func(func_id, config)
+    validate_retry(config, "func")
     if not func_id or func_id == "" then
         error("Function ID is required")
     end
 
     local func_config = {
         func_id = func_id,
+        retry_policy = config and config.retry_policy,
+        start_to_close_timeout = config and config.start_to_close_timeout,
+        schedule_to_close_timeout = config and config.schedule_to_close_timeout,
         args = config and config.args,
         inputs = config and config.inputs,
         context = config and config.context,
@@ -101,6 +111,7 @@ function FlowBuilder:func(func_id, config)
 end
 
 function FlowBuilder:agent(agent_id, config)
+    validate_retry(config, "agent")
     agent_id = agent_id or ""
     config = config or {}
     local arena_config = config.arena or {}
@@ -148,6 +159,7 @@ function FlowBuilder:agent(agent_id, config)
 end
 
 function FlowBuilder:cycle(config)
+    validate_retry(config, "cycle")
     if not config then
         error("Cycle configuration is required")
     end
@@ -194,6 +206,7 @@ function FlowBuilder:cycle(config)
 end
 
 function FlowBuilder:parallel(config)
+    validate_retry(config, "parallel")
     if not config then
         error("Parallel configuration is required")
     end
@@ -236,6 +249,7 @@ function FlowBuilder:parallel(config)
 end
 
 function FlowBuilder:signal(config)
+    validate_retry(config, "signal")
     config = config or {}
 
     local signal_config = {
@@ -257,6 +271,7 @@ function FlowBuilder:signal(config)
 end
 
 function FlowBuilder:join(config)
+    validate_retry(config, "state")
     config = config or {}
 
     local join_config = {

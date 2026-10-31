@@ -50,6 +50,83 @@ local function define_tests()
             end)
         end
 
+        it("preserves func retry declarations through the builder and nested templates", function()
+            local config = { retry_policy = { maximum_attempts = 3 },
+                start_to_close_timeout = "30s", schedule_to_close_timeout = "6h" }
+            local template = (flow.template() :: any):func("example:call", config)
+            for _, builder in ipairs({
+                (flow.create() :: any):with_input({}):func("example:call", config),
+                (flow.create() :: any):with_input({items = {1}}):parallel({source_array_key = "items", template = template}),
+                (flow.create() :: any):with_input({}):cycle({template = template, max_iterations = 2}),
+            }) do
+                local result, err = compiler.compile(builder.operations, {})
+                test.is_nil(err)
+                local found = false
+                for _, node in pairs(result.graph.nodes) do
+                    if node.node_type == "userspace.dataflow.node.func:node" then
+                        found = true
+                        test.eq(node.config.start_to_close_timeout, "30s")
+                        test.eq(node.config.schedule_to_close_timeout, "6h")
+                        test.eq(node.config.retry_policy.maximum_attempts, 3)
+                    end
+                end
+                test.is_true(found)
+            end
+        end)
+
+        it("inlines reusable templates with the same func retry declarations at every depth", function()
+            local declaration = {retry_policy = {maximum_attempts = 3}, start_to_close_timeout = "30s"}
+            local template = (flow.template() :: any):func("example:call", declaration)
+            local nested = (flow.template() :: any):use(template)
+            for _, builder in ipairs({
+                (flow.create() :: any):with_input({}):use(template),
+                (flow.create() :: any):with_input({items = {1}}):parallel({source_array_key = "items", template = nested}),
+            }) do
+                local result, err = compiler.compile(builder.operations, {})
+                test.is_nil(err)
+                local found = false
+                for _, node in pairs(result.graph.nodes) do
+                    if node.node_type == "userspace.dataflow.node.func:node" then
+                        found = true
+                        test.eq(node.config.start_to_close_timeout, "30s")
+                        test.eq(node.config.retry_policy.maximum_attempts, 3)
+                    end
+                end
+                test.is_true(found)
+            end
+        end)
+
+        it("rejects retry declarations before non-func builders discard them", function()
+            for _, method in ipairs({"agent", "cycle", "parallel", "signal", "join"}) do
+                for _, field in ipairs({"retry_policy", "start_to_close_timeout", "schedule_to_close_timeout"}) do
+                    local builder = flow.create() :: any
+                    local config = {[field] = field == "retry_policy" and {} or "1s"}
+                    local ok, err = pcall(function()
+                        if method == "agent" then builder:agent("example.agent", config)
+                        else builder[method](builder, config) end
+                    end)
+                    test.is_false(ok)
+                    test.contains(tostring(err), "only on func")
+                end
+            end
+        end)
+
+        it("rejects retry declarations on other node kinds including nested operations", function()
+            for _, kind in ipairs({ "agent", "cycle", "parallel", "signal", "state" }) do
+                for _, field in ipairs({ "retry_policy", "start_to_close_timeout", "schedule_to_close_timeout" }) do
+                    local config: any = { func_id = "example:call", agent_id = "example.agent" }
+                    config[field] = field == "retry_policy" and {} or "1s"
+                    local _, err = compiler.compile({{type = kind, config = config}}, {})
+                    test.not_nil(err)
+                    test.contains(err, "func")
+                    _, err = compiler.compile({{type = "cycle", config = { template = {
+                        operations = {{type = kind, config = config}} }}}}, {})
+                    test.not_nil(err)
+                    test.contains(err, "func")
+                end
+            end
+        end)
+
         it("preserves explicit agent capability overlays", function()
             local builder = (flow.create() :: any):agent("example.agent", {
                 active_traits = {},
