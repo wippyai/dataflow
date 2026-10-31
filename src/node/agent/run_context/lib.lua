@@ -2,6 +2,7 @@ local json = require("json")
 local data_reader = require("data_reader")
 local node_reader = require("node_reader")
 local prompt_builder = require("prompt_builder")
+local prompt = require("prompt")
 local agent_consts = require("agent_consts")
 local consts = require("consts")
 
@@ -17,6 +18,7 @@ type Selector = {
 }
 
 local HISTORY_TYPES = {
+    consts.DATA_TYPE.NODE_INPUT,
     agent_consts.DATA_TYPE.AGENT_ACTION,
     agent_consts.DATA_TYPE.AGENT_OBSERVATION,
     agent_consts.DATA_TYPE.AGENT_MEMORY,
@@ -125,7 +127,7 @@ end
 local function load_history_rows(dataflow_id, node_id)
     local ok, rows_or_err = pcall(function()
         return data_reader.with_dataflow(dataflow_id)
-            :fetch_options({ replace_references = true })
+            :fetch_options({ replace_references = false })
             :with_nodes(node_id)
             :with_data_types(HISTORY_TYPES)
             :all()
@@ -133,7 +135,19 @@ local function load_history_rows(dataflow_id, node_id)
     if not ok then
         return nil, tostring(rows_or_err)
     end
-    return sort_rows(rows_or_err or {}), nil
+    local rows = {}
+    for _, row in ipairs(rows_or_err or {}) do
+        local input_key = row.discriminator or row.key or "default"
+        if row.content_type == consts.CONTENT_TYPE.REFERENCE then
+            row.content = row.ref_content
+            row.content_type = row.ref_content_type
+            input_key = row.discriminator or row.ref_key or row.key or "default"
+        end
+        if row.type ~= consts.DATA_TYPE.NODE_INPUT or prompt_builder.is_conversation_input(input_key) then
+            rows[#rows + 1] = row
+        end
+    end
+    return sort_rows(rows), nil
 end
 
 local function slice_rows(rows, sel: Selector)
@@ -208,30 +222,64 @@ local function slice_rows(rows, sel: Selector)
     return nil, "unknown selector mode: " .. tostring(mode)
 end
 
-local function decode_content(row)
-    local content = row.content
-    if type(content) == "string"
-       and (row.content_type == consts.CONTENT_TYPE.JSON or row.content_type == "application/json") then
-        local decoded, err = json.decode(content)
-        if not err then
-            return decoded
-        end
-    end
-    return content
+local function decode_json(content)
+    if type(content) ~= "string" then return content end
+    local decoded, err = json.decode(content)
+    if err then return content end
+    return decoded
 end
 
-local function normalize_event(row)
+local function normalize_event(row, formatter, calls)
+    local builder = prompt.new()
+    local err = formatter:format_history_item(row, builder)
+    if err then return nil, err end
+    local texts = {}
+    local role
+    local metadata = {}
+    for key, value in pairs(row.metadata or {}) do metadata[key] = value end
+    for _, message in ipairs(builder:get_messages()) do
+        if message.role ~= prompt.ROLE.FUNCTION_CALL and message.role ~= prompt.ROLE.CACHE_MARKER then
+            role = message.role == prompt.ROLE.FUNCTION_RESULT and "function" or message.role
+            for _, part in ipairs(message.content or {}) do
+                if part.text then texts[#texts + 1] = part.text end
+            end
+            if role == "function" then
+                metadata.function_name = message.name
+                metadata.status = metadata.is_error and "error" or "success"
+                metadata.call_id = message.function_call_id
+            end
+        end
+    end
+    local text = table.concat(texts, "\n")
+    local content = text
+    if role == "function" then
+        local call = calls[metadata.call_id]
+        if not call then return nil, "Function result has no stored call: " .. tostring(metadata.call_id) end
+        content = decode_json(call.arguments)
+        if type(call.arguments) == "string" then
+            text = call.arguments
+        else
+            local encoded, encode_err = json.encode(call.arguments)
+            if encode_err then return nil, encode_err end
+            text = encoded
+        end
+        metadata.registry_id = call.registry_id
+        metadata.result = row.content
+        if row.content_type == consts.CONTENT_TYPE.JSON then
+            metadata.result = decode_json(row.content)
+        end
+    end
     return {
         id = row.data_id,
-        role = row.type,
-        content = decode_content(row),
-        raw_content = row.content,
+        role = role,
+        content = content,
+        raw_content = text,
         content_type = row.content_type,
         key = row.key,
         discriminator = row.discriminator,
-        metadata = type(row.metadata) == "table" and row.metadata or {},
+        metadata = metadata,
         created_at = row.created_at
-    }
+    }, nil
 end
 
 local function content_length(event)
@@ -240,7 +288,18 @@ local function content_length(event)
         local encoded = json.encode(content)
         content = encoded or tostring(content)
     end
-    return #content
+    local length = #content
+    -- Normalized tool events put arguments in content and the stored result in
+    -- metadata. Both belong to the bounded conversation, including get_prompt.
+    local result = event.role == "function" and event.metadata and event.metadata.result
+    if result ~= nil and event.role == "function" then
+        if type(result) ~= "string" then
+            local encoded = json.encode(result)
+            result = encoded or tostring(result)
+        end
+        length = length + #result
+    end
+    return length
 end
 
 local function clamp_rows(rows, events, max_chars)
@@ -275,6 +334,17 @@ local function history_rows(args)
         return nil, nil, nil, load_err
     end
 
+    local calls = {}
+    for _, row in ipairs(all_rows) do
+        if row.type == agent_consts.DATA_TYPE.AGENT_ACTION then
+            local action = row.content_type == consts.CONTENT_TYPE.JSON and decode_json(row.content) or row.content
+            if type(action) == "table" then
+                for _, list in ipairs({ action.tool_calls or {}, action.delegate_calls or {} }) do
+                    for _, call in ipairs(list) do calls[call.id] = call end
+                end
+            end
+        end
+    end
     local sel = selector(args)
     local rows, slice_err = slice_rows(all_rows, sel)
     if slice_err then
@@ -282,8 +352,12 @@ local function history_rows(args)
     end
 
     local events = {}
+    local formatter, formatter_err = prompt_builder.new(dataflow_id, node_id, { node_id })
+    if formatter_err then return nil, nil, nil, formatter_err end
     for _, row in ipairs(rows or {}) do
-        events[#events + 1] = normalize_event(row)
+        local event, event_err = normalize_event(row, formatter, calls)
+        if event_err then return nil, nil, nil, event_err end
+        events[#events + 1] = event
     end
 
     local truncated

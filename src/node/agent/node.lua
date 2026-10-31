@@ -510,8 +510,7 @@ local function process_multiple_inputs(inputs)
 
     local parts = {}
     for key, input in pairs(inputs) do
-        if key ~= "context" and key ~= "agent_id" and key ~= "model" and key ~= "max_iterations"
-            and input.content ~= nil then
+        if prompt_builder.is_conversation_input(key) and input.content ~= nil then
             local content = input.content
             if type(content) == "table" then
                 content = json.encode(content)

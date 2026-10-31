@@ -2,6 +2,7 @@ local prompt_lib = require("prompt")
 local data_reader = require("data_reader")
 local json = require("json")
 local agent_consts = require("agent_consts")
+local consts = require("consts")
 
 local prompt_builder = {}
 local mt = { __index = prompt_builder }
@@ -192,6 +193,10 @@ end
 function prompt_builder:with_history(history)
     self._history_override = history or {}
     return self
+end
+
+function prompt_builder.is_conversation_input(key)
+    return key ~= "context" and key ~= "agent_id" and key ~= "model" and key ~= "max_iterations"
 end
 
 function prompt_builder:_parse_json_content(content, content_type)
@@ -412,6 +417,35 @@ function prompt_builder:_format_delegation(delegation_item, builder)
     return nil
 end
 
+function prompt_builder:_format_input(content, builder)
+    if content == nil then return nil end
+    local text = content
+    if type(content) == "table" then
+        local encoded, err = json.encode(content)
+        if err then return "Failed to encode input: " .. tostring(err) end
+        text = encoded
+    end
+    builder:add_user(tostring(text))
+    return nil
+end
+
+function prompt_builder:format_history_item(item, builder)
+    if item.type == consts.DATA_TYPE.NODE_INPUT then
+        local content, err = self:_parse_json_content(item.content, item.content_type)
+        if err then return err end
+        return self:_format_input(content, builder)
+    elseif item.type == agent_consts.DATA_TYPE.AGENT_ACTION then
+        return self:_format_action(item, builder)
+    elseif item.type == agent_consts.DATA_TYPE.AGENT_OBSERVATION then
+        return self:_format_observation(item, builder)
+    elseif item.type == agent_consts.DATA_TYPE.AGENT_MEMORY then
+        return self:_format_memory(item, builder)
+    elseif item.type == agent_consts.DATA_TYPE.AGENT_DELEGATION then
+        return self:_format_delegation(item, builder)
+    end
+    return nil
+end
+
 function prompt_builder:build_prompt(system_prompt, initial_input)
     local input_content = initial_input or self._initial_input
 
@@ -458,17 +492,7 @@ function prompt_builder:build_prompt(system_prompt, initial_input)
     builder:add_cache_marker("user_complete")
 
     for i, item in ipairs(history_items) do
-        local process_err = nil
-
-        if item.type == agent_consts.DATA_TYPE.AGENT_ACTION then
-            process_err = self:_format_action(item, builder)
-        elseif item.type == agent_consts.DATA_TYPE.AGENT_OBSERVATION then
-            process_err = self:_format_observation(item, builder)
-        elseif item.type == agent_consts.DATA_TYPE.AGENT_MEMORY then
-            process_err = self:_format_memory(item, builder)
-        elseif item.type == agent_consts.DATA_TYPE.AGENT_DELEGATION then
-            process_err = self:_format_delegation(item, builder)
-        end
+        local process_err = self:format_history_item(item, builder)
 
         if process_err then
             return nil, process_err
