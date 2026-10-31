@@ -1,5 +1,5 @@
 name: Setup verified Wippy runtime
-description: Installs Wippy v0.3.47a after signature verification.
+description: Installs Wippy v0.3.55a after signature verification.
 
 outputs:
   path:
@@ -24,7 +24,7 @@ runs:
         GH_TOKEN: ${{ github.token }}
       run: |
         set -euo pipefail
-        wippy_version="v0.3.47a"
+        wippy_version="v0.3.55a"
         test -n "$wippy_version"
 
         tmp="$(mktemp -d)"
