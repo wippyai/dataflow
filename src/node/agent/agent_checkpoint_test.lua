@@ -552,6 +552,7 @@ local function define_tests()
             local metrics = get_metrics(workflow.scenario_id)
             test.gt(metrics.checkpoint_calls, 0, "summarizer invoked")
             test.eq(metrics.last_checkpoint_prompt_tokens, 500, "prompt_tokens recorded")
+            test.eq(metrics.last_checkpoint_context_tokens, 500, "context_tokens reach the summarizer")
         end)
 
         it("checkpoint marker sits at correct cut line - history before is dropped", function()
@@ -628,6 +629,8 @@ local function define_tests()
 
             local metrics = get_metrics(workflow.scenario_id)
             test.gt(metrics.checkpoint_calls, 0, "a 5200-token context exceeds the 1000-token threshold")
+            test.eq(metrics.last_checkpoint_context_tokens, 5200, "context_tokens reach the summarizer")
+            test.eq(metrics.last_checkpoint_prompt_tokens, 200, "prompt_tokens reach the summarizer")
 
             local marker = latest_checkpoint_marker(load_history(workflow.dataflow_id, workflow.node_id))
             test.not_nil(marker, "marker exists")

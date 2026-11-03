@@ -82,10 +82,11 @@ local function handler(args)
         "Create a concise operational checkpoint for a dataflow agent. Preserve task state, decisions, tool effects, blockers, and next actions. Return only the checkpoint text."
     )
     p:add_user(string.format(
-        "dataflow_id=%s\nnode_id=%s\niteration=%s\nprompt_tokens=%s\nhistory_count=%s\n\n%s",
+        "dataflow_id=%s\nnode_id=%s\niteration=%s\ncontext_tokens=%s\nprompt_tokens=%s\nhistory_count=%s\n\n%s",
         tostring(args.dataflow_id or ""),
         tostring(args.node_id or ""),
         tostring(args.iteration or ""),
+        tostring(args.context_tokens or ""),
         tostring(args.prompt_tokens or ""),
         tostring(args.history_count or #args.history),
         history_text(args.history, cfg.max_row_chars)
