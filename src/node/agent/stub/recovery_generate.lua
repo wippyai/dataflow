@@ -1,9 +1,14 @@
 local helpers = require("helpers")
 
+-- scenario.cache_read_tokens reports cached prompt input next to the uncached
+-- prompt_tokens, as providers do when the prompt cache is hit.
+local cache_read_tokens = 0
+
 local function response_tokens(prompt_tokens, completion_tokens)
     return {
         prompt_tokens = prompt_tokens,
         completion_tokens = completion_tokens,
+        cache_read_tokens = cache_read_tokens,
         thinking_tokens = 0,
         total_tokens = prompt_tokens + completion_tokens
     }
@@ -96,6 +101,7 @@ local function handler(contract_args)
     -- scenario.prompt_tokens override lets checkpoint tests force the per-turn
     -- prompt token count above the checkpoint threshold deterministically
     local base_prompt = tonumber(scenario.prompt_tokens) or nil
+    cache_read_tokens = tonumber(scenario.cache_read_tokens) or 0
 
     -- Exercise the real persisted-history path: reject the first finish, then
     -- refuse the next request unless every call in that turn has one result.

@@ -215,7 +215,8 @@ local function define_tests()
                             mode = opts.mode or "checkpoint_stress",
                             max_steps = opts.max_steps or 3,
                             tool_delay_ms = opts.tool_delay_ms or 0,
-                            prompt_tokens = opts.prompt_tokens or 500
+                            prompt_tokens = opts.prompt_tokens or 500,
+                            cache_read_tokens = opts.cache_read_tokens
                         },
                         content_type = consts.CONTENT_TYPE.JSON
                     }
@@ -609,6 +610,31 @@ local function define_tests()
         end)
 
         -- === data-level verification ===
+
+        it("threshold counts cached prompt tokens", function()
+            local workflow = create_workflow({
+                max_iterations = 4,
+                max_steps = 2,
+                prompt_tokens = 200,
+                cache_read_tokens = 5000,
+                checkpoint = {
+                    token_threshold = 1000,
+                    function_id = "userspace.dataflow.node.agent.stub:checkpoint_summarizer"
+                }
+            })
+
+            c:start(workflow.dataflow_id)
+            test.is_true(wait_complete(workflow.dataflow_id), "completed")
+
+            local metrics = get_metrics(workflow.scenario_id)
+            test.gt(metrics.checkpoint_calls, 0, "a 5200-token context exceeds the 1000-token threshold")
+
+            local marker = latest_checkpoint_marker(load_history(workflow.dataflow_id, workflow.node_id))
+            test.not_nil(marker, "marker exists")
+            local meta = marker.metadata or {}
+            test.eq(tonumber(meta.checkpoint_at_context_tokens), 5200, "context tokens recorded")
+            test.eq(tonumber(meta.checkpoint_at_prompt_tokens), 200, "uncached prompt tokens recorded")
+        end)
 
         it("marker stores summary text from summarizer", function()
             local workflow = create_workflow({
