@@ -153,7 +153,15 @@ function helpers.get_metrics(scenario_id)
         step1_effect = tonumber(helpers.get_metric(scenario_id,
             "effect_applied:" .. helpers.call_id(scenario_id, 1), 0)) or 0,
         step2_effect = tonumber(helpers.get_metric(scenario_id,
-            "effect_applied:" .. helpers.call_id(scenario_id, 2), 0)) or 0
+            "effect_applied:" .. helpers.call_id(scenario_id, 2), 0)) or 0,
+        step1_started = tonumber(helpers.get_metric(scenario_id,
+            "tool_started:" .. helpers.call_id(scenario_id, 1), 0)) or 0,
+        step1_finished = tonumber(helpers.get_metric(scenario_id,
+            "tool_finished:" .. helpers.call_id(scenario_id, 1), 0)) or 0,
+        step2_started = tonumber(helpers.get_metric(scenario_id,
+            "tool_started:" .. helpers.call_id(scenario_id, 2), 0)) or 0,
+        step2_finished = tonumber(helpers.get_metric(scenario_id,
+            "tool_finished:" .. helpers.call_id(scenario_id, 2), 0)) or 0
     }
 end
 

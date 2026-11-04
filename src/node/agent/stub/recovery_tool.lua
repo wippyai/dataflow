@@ -21,10 +21,12 @@ local function handler(input)
         effect_applied = true
     end
 
+    helpers.set_metric(scenario_id, "tool_started:" .. tostring(call_id), time.now():unix_nano())
     local delay_ms = tonumber(input.delay_ms) or 0
     if delay_ms > 0 then
         time.sleep(tostring(delay_ms) .. "ms")
     end
+    helpers.set_metric(scenario_id, "tool_finished:" .. tostring(call_id), time.now():unix_nano())
 
     if type(input.fail_message) == "string" and input.fail_message ~= "" then
         return nil, input.fail_message

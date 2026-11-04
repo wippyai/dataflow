@@ -218,6 +218,18 @@ local function handler(contract_args)
         return final_response(scenario.scenario_id, scenario.mode, result_count, 9, 4)
     end
 
+    -- Two tool calls in one turn, each holding its worker for tool_delay_ms.
+    if scenario.mode == "two_tools_one_turn" then
+        if result_count == 0 then
+            local first = tool_call_response(scenario.scenario_id, 1, scenario.tool_delay_ms, base_prompt or 13, 8)
+            local second = tool_call_response(scenario.scenario_id, 2, scenario.tool_delay_ms, base_prompt or 13, 8)
+            table.insert(first.result.tool_calls, second.result.tool_calls[1])
+            return first
+        end
+
+        return final_response(scenario.scenario_id, scenario.mode, result_count, base_prompt or 9, 4)
+    end
+
     if scenario.mode == "single_tool_then_final" then
         if result_count == 0 then
             return tool_call_response(scenario.scenario_id, 1, scenario.tool_delay_ms, base_prompt or 13, 8)

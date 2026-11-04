@@ -2149,6 +2149,8 @@ local function run(args)
 
     builder:with_arena_config(config.arena):with_initial_input(input_data)
     local caller = tool_caller.new()
+    -- The tool calls of one model turn run concurrently, as in the session host.
+    caller:set_strategy(tool_caller.STRATEGY.PARALLEL)
 
     local saved_state = ((args.node or {}).metadata or {}).state or {}
     local iteration = saved_state.current_iteration or 0

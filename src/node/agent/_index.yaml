@@ -311,6 +311,25 @@ entries:
       test: wippy.test:test
     method: run_tests
 
+  - name: agent_parallel_tools_test
+    kind: function.lua
+    meta:
+      name: Agent parallel tool calls
+      type: test
+      comment: The tool calls of one model turn run concurrently.
+      group: Workflow / Agent Node
+      timeout: "120s"
+    source: file://agent_parallel_tools_test.lua
+    modules:
+      - uuid
+      - time
+      - funcs
+    imports:
+      client: userspace.dataflow:client
+      consts: userspace.dataflow:consts
+      test: wippy.test:test
+    method: run_tests
+
   - name: agent_after_persist_test
     kind: function.lua
     meta:
