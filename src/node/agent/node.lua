@@ -1620,7 +1620,11 @@ local function process_tool_results(n, tool_results, iteration, exit_tool_name, 
                 end
 
                 if not (control_response and control_response.delegate) then
-                    local obs_content = cleaned_result or tool_error
+                    local obs_content = cleaned_result
+                    if obs_content == nil then
+                        -- The executor reports failures as error values; the observation stores their message.
+                        obs_content = type(tool_error) == "userdata" and (tool_error :: error):message() or tool_error
+                    end
                     if obs_content == nil then
                         obs_content = "nil"
                     end

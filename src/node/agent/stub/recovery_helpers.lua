@@ -77,6 +77,18 @@ function helpers.count_function_results(messages)
     return count
 end
 
+-- Records the result the model received for each call id, so tests can assert
+-- what reached the model rather than what the node stored.
+function helpers.record_function_results(scenario_id, messages)
+    for _, message in ipairs(messages or {}) do
+        if message.role == "function_result" and message.function_call_id then
+            local text = message.content and message.content[1] and message.content[1].text
+            local call_id = tostring(message.function_call_id)
+            helpers.set_metric(scenario_id, "result_text:" .. call_id, tostring(text))
+        end
+    end
+end
+
 function helpers.get_metric(scenario_id, metric_name, default_value)
     local s = helpers.get_store()
     local value = s:get(helpers.metric_key(scenario_id, metric_name))

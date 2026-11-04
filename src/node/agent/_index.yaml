@@ -330,6 +330,29 @@ entries:
       test: wippy.test:test
     method: run_tests
 
+  - name: agent_tool_recovery_test
+    kind: function.lua
+    meta:
+      name: Agent tool round recovery
+      type: test
+      comment: A recovered tool round runs its unresolved calls concurrently and keeps stored results.
+      group: Workflow / Agent Node
+      timeout: "120s"
+    source: file://agent_tool_recovery_test.lua
+    modules: [uuid, process]
+    imports:
+      test: wippy.test:test
+      client: userspace.dataflow:client
+      commit: userspace.dataflow.persist:commit
+      consts: userspace.dataflow:consts
+      data_reader: userspace.dataflow.persist:data_reader
+      node_reader: userspace.dataflow.persist:node_reader
+      node_sdk: userspace.dataflow:node
+      agent_node: userspace.dataflow.node.agent:node
+      agent_consts: userspace.dataflow.node.agent:consts
+      recovery_helpers: userspace.dataflow.node.agent.stub:recovery_helpers
+    method: run_tests
+
   - name: agent_after_persist_test
     kind: function.lua
     meta:

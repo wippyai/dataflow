@@ -82,6 +82,7 @@ local function handler(contract_args)
     local result_count = helpers.count_function_results(messages)
 
     local llm_calls = helpers.bump_metric(scenario.scenario_id, "llm_calls", 1)
+    helpers.record_function_results(scenario.scenario_id, messages)
     for _, message in ipairs(messages or {}) do
         local text = message.content and message.content[1] and message.content[1].text
         if type(text) == "string" and (
