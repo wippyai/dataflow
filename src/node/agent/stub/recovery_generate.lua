@@ -355,6 +355,8 @@ local function handler(contract_args)
             control_args = { memory_add = "added at " .. tostring(llm_calls) }
         elseif scenario.commands_memory_at == llm_calls then
             control_args = { commands_memory = "added at " .. tostring(llm_calls), child_delay_ms = scenario.child_delay_ms }
+        elseif scenario.two_children_at == llm_calls then
+            control_args = { commands_children = 2, child_delay_ms = 10 }
         end
         if scenario.delegate_and_memory_at == llm_calls then
             return tool_call_response(scenario.scenario_id, 1, 0, tokens, 4, "recovery_control_tool",

@@ -73,25 +73,28 @@ local function handler(input)
         return { accepted = true, replayed = true }
     end
 
-    if type(input.commands_memory) == "string" then
-        local child = uuid.v7()
+    if type(input.commands_memory) == "string" or tonumber(input.commands_children) then
+        local commands = {}
+        for index = 1, tonumber(input.commands_children) or 1 do
+            local child = uuid.v7()
+            table.insert(commands, { type = consts.COMMAND_TYPES.CREATE_NODE, payload = {
+                node_id = child, node_type = "userspace.dataflow.node.func:node",
+                parent_node_id = tostring(ctx.get("node_id") or ""), status = consts.STATUS.PENDING,
+                config = { func_id = "userspace.dataflow.node.func:test_func", data_targets = { {
+                    data_type = consts.DATA_TYPE.NODE_OUTPUT, node_id = child, discriminator = "result",
+                    content_type = consts.CONTENT_TYPE.JSON } } },
+            } })
+            table.insert(commands, { type = consts.COMMAND_TYPES.CREATE_DATA, payload = {
+                data_id = uuid.v7(), data_type = consts.DATA_TYPE.NODE_INPUT, node_id = child, key = "default",
+                content = { message = "child-output-" .. tostring(index), delay_ms = tonumber(input.child_delay_ms) or 6000 },
+                content_type = consts.CONTENT_TYPE.JSON } })
+        end
         return {
             accepted = true,
             _control = {
-                memory = { add = { { type = "fact", text = input.commands_memory } } },
-                commands = {
-                    { type = consts.COMMAND_TYPES.CREATE_NODE, payload = {
-                        node_id = child, node_type = "userspace.dataflow.node.func:node",
-                        parent_node_id = tostring(ctx.get("node_id") or ""), status = consts.STATUS.PENDING,
-                        config = { func_id = "userspace.dataflow.node.func:test_func", data_targets = { {
-                            data_type = consts.DATA_TYPE.NODE_OUTPUT, node_id = child, discriminator = "result",
-                            content_type = consts.CONTENT_TYPE.JSON } } },
-                    } },
-                    { type = consts.COMMAND_TYPES.CREATE_DATA, payload = {
-                        data_id = uuid.v7(), data_type = consts.DATA_TYPE.NODE_INPUT, node_id = child, key = "default",
-                        content = { message = "slow", delay_ms = tonumber(input.child_delay_ms) or 6000 },
-                        content_type = consts.CONTENT_TYPE.JSON } },
-                },
+                memory = input.commands_memory
+                    and { add = { { type = "fact", text = input.commands_memory } } } or nil,
+                commands = commands,
             },
         }
     end

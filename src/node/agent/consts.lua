@@ -89,6 +89,7 @@ consts.FEEDBACK = {
     ITERATIONS_WARNING = "Environment: You have %d iterations remaining before reaching the maximum limit. Plan accordingly.",
     FINAL_ITERATION = "Environment: You have 1 iteration remaining - this is your last chance. You must complete your task or call the finish tool now.",
     CRITICAL_FINAL = "CRITICAL: This is your FINAL iteration! You must call the finish tool now or the task will fail. Do not call any other tools.",
+    CONTINUE_WORKING = "Environment: This task needs more steps before it can finish. Continue working on it.",
     OUTPUT_TRUNCATED = "Your previous response was truncated because it exceeded the maximum token limit. The tool calls you attempted were incomplete and have been discarded. Please retry with a shorter response. Break your work into smaller steps if needed."
 }
 

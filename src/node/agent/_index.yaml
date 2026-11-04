@@ -356,7 +356,11 @@ entries:
       recovery_helpers: userspace.dataflow.node.agent.stub:recovery_helpers
       run_context: userspace.dataflow.node.agent.run_context:run_context_lib
       claude_mapper: wippy.llm.claude:mapper
+      bedrock_mapper: wippy.llm.bedrock:mapper
       agent_node: userspace.dataflow.node.agent:node
+      prompt_builder: userspace.dataflow.node.agent:prompt_builder
+      node_sdk: userspace.dataflow:node
+      agent_context: wippy.agent:context
     method: run_tests
 
   - name: agent_tool_recovery_test

@@ -259,7 +259,11 @@ local function clamp_rows(rows, events, max_chars)
     local kept_events = {}
     local total = 0
     for i, event in ipairs(events) do
-        local next_total = total + content_length(event)
+        -- The input and turn note are in every request whatever the budget allows.
+        local next_total = total
+        if not prompt_builder.is_kept_by_checkpoint(rows[i]) then
+            next_total = total + content_length(event)
+        end
         if next_total > limit then
             return kept_rows, kept_events, true
         end

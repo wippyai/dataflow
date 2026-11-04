@@ -8,9 +8,6 @@ local CONFIG = {
     max_row_chars = 2000,
 }
 
--- A cautious characters-per-token figure for stating what fits in an explicit max_tokens.
-local TOKEN_CHARS = 3
-
 local function positive_number(value, fallback)
     local n = tonumber(value)
     if not n or n <= 0 then
@@ -22,14 +19,13 @@ end
 local function config_from_args(args)
     local options = type(args) == "table" and type(args.options) == "table" and args.options or {}
     local max_memory_chars = positive_number(options.max_memory_chars, agent_consts.DEFAULTS.MAX_MEMORY_CHARS)
-    -- The output cap must hold a summary at the budget, or merging one always cuts off.
-    local max_tokens = positive_number(options.max_tokens, math.ceil(max_memory_chars / 2))
     return {
         model = type(options.model) == "string" and options.model ~= "" and options.model or CONFIG.model,
         temperature = tonumber(options.temperature) or CONFIG.temperature,
-        max_tokens = max_tokens,
+        -- Only a cap: a summary at the budget fits it even at one token per character.
+        max_tokens = positive_number(options.max_tokens, max_memory_chars * 2),
+        max_memory_chars = max_memory_chars,
         max_row_chars = positive_number(options.max_row_chars, CONFIG.max_row_chars),
-        summary_budget = math.floor(math.min(max_memory_chars, max_tokens * TOKEN_CHARS)),
     }
 end
 
@@ -84,6 +80,18 @@ local MERGE_INSTRUCTION = " The history contains the previous checkpoint. Merge 
     .. "in it that still holds, mark completed items done, and update progress and blockers. The events it covers are "
     .. "gone, so anything you drop is lost. Condense older detail first and keep the newest state."
 
+-- What the output can hold at two tokens per character. The route lowers max_tokens to
+-- the model's output limit, so the stated budget has to follow that too.
+local function summary_budget(cfg)
+    local card = llm.resolve_model(cfg.model)
+    local model_limit = type(card) == "table" and tonumber(card.output_tokens) or nil
+    local tokens = cfg.max_tokens
+    if model_limit and model_limit > 0 and model_limit < tokens then
+        tokens = model_limit
+    end
+    return math.floor(math.min(cfg.max_memory_chars, tokens / 2))
+end
+
 local function has_previous_checkpoint(history)
     for _, row in ipairs(history) do
         if type(row.metadata) == "table" and row.metadata.checkpoint_marker == true then
@@ -103,7 +111,7 @@ local function handler(args)
 
     local cfg = config_from_args(args)
     local p = prompt.new()
-    p:add_system(string.format(SUMMARY_INSTRUCTION, cfg.summary_budget)
+    p:add_system(string.format(SUMMARY_INSTRUCTION, summary_budget(cfg))
         .. (has_previous_checkpoint(args.history) and MERGE_INSTRUCTION or ""))
     p:add_user(string.format(
         "dataflow_id=%s\nnode_id=%s\niteration=%s\nprompt_tokens=%s\nhistory_count=%s\n\n%s",

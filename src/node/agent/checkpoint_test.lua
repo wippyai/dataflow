@@ -5,8 +5,8 @@ local function define_tests()
         it("uses stable defaults and option overrides", function()
             local defaults = checkpoint.config_from_args({})
             test.eq(defaults.model, "class:fast")
-            test.eq(defaults.max_tokens, 4096, "half the default memory budget")
-            test.eq(checkpoint.config_from_args({ options = { max_memory_chars = 1000 } }).max_tokens, 500)
+            test.eq(defaults.max_tokens, 16384, "two tokens per budgeted character")
+            test.eq(checkpoint.config_from_args({ options = { max_memory_chars = 1000 } }).max_tokens, 2000)
 
             local cfg = checkpoint.config_from_args({
                 options = {

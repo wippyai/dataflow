@@ -10,7 +10,7 @@ runtime_pid=""
 restart_wippy="${WIPPY:-wippy}"
 dialect="${DATAFLOW_RESTART_DIALECT:-sqlite}"
 scenario="${DATAFLOW_RESTART_SCENARIO:-rolling}"
-case "$scenario" in rolling|behavior|parallel_tools|stable_prefix|round_children|round_delegate|round_both|round_rerun|round_yield) ;; *) echo "unsupported restart scenario" >&2; exit 1 ;; esac
+case "$scenario" in rolling|behavior|parallel_tools|stable_prefix|round_children|round_delegate|round_both|round_rerun|round_yield|round_settle) ;; *) echo "unsupported restart scenario" >&2; exit 1 ;; esac
 pg_host="${DATAFLOW_PG_HOST:-127.0.0.1}"
 pg_port="${DATAFLOW_PG_PORT:-5432}"
 pg_database="${DATAFLOW_PG_DATABASE:-dataflow_restart_test}"
@@ -129,6 +129,14 @@ while [ "$attempts" -lt 200 ]; do
             WHERE a.desired_active AND n.status = 'running' AND $target_predicate
               AND (SELECT COUNT(*) FROM dataflow_data d WHERE d.node_id = n.node_id AND d.type = 'agent.action') = 1
               AND EXISTS (SELECT 1 FROM restart_recovery_store s WHERE s.store_key = 'agent_recovery:prefix-restart:request:2')
+            LIMIT 1;" 2>/dev/null || true)
+    elif [ "$scenario" = "round_settle" ]; then
+        # The call's result is committed and after_execute holds the round open.
+        phase1=$(query "SELECT a.dataflow_id || '|' || a.owner_epoch
+            FROM dataflow_activations a
+            WHERE a.desired_active
+              AND EXISTS (SELECT 1 FROM dataflow_data d WHERE d.dataflow_id = a.dataflow_id AND d.type = 'agent.observation')
+              AND EXISTS (SELECT 1 FROM restart_recovery_store s WHERE s.store_key = 'agent_recovery:round-settle:wrapper_attempts')
             LIMIT 1;" 2>/dev/null || true)
     elif [ "${scenario#round_}" != "$scenario" ]; then
         # The round's commit is durable and its slow child is running.
@@ -348,10 +356,24 @@ if [ "${scenario#round_}" != "$scenario" ]; then
         WHERE d.dataflow_id = '$dataflow_id' AND d.type = 'agent.memory' AND d.discriminator = 'fact' AND n.parent_node_id IS NULL;")
     warnings=$(query "SELECT COUNT(*) FROM dataflow_data d JOIN dataflow_nodes n ON n.node_id = d.node_id
         WHERE d.dataflow_id = '$dataflow_id' AND d.type = 'agent.observation' AND d.key = '1_iterations_warning' AND n.parent_node_id IS NULL;")
-    [ "$added|$warnings" = "1|1" ] || {
+    expected_added=1
+    [ "$scenario" = "round_settle" ] && expected_added=0
+    [ "$added|$warnings" = "$expected_added|1" ] || {
         echo "the round's text did not survive the restart: added=$added warnings=$warnings" >&2
         exit 1
     }
+    if [ "$scenario" = "round_settle" ]; then
+        if [ "$dialect" = "postgres" ]; then
+            settled_expr="metadata #>> '{session_context,settled_by}'"
+        else
+            settled_expr="json_extract(metadata, '$.session_context.settled_by')"
+        fi
+        settled=$(query "SELECT $settled_expr FROM dataflow_nodes WHERE dataflow_id = '$dataflow_id' AND parent_node_id IS NULL;")
+        [ "$settled" = "wrapper" ] || {
+            echo "the restart lost the after_execute proposal: ${settled:-none}" >&2
+            exit 1
+        }
+    fi
     if [ "$scenario" = "round_yield" ]; then
         if [ "$dialect" = "postgres" ]; then
             agent_expr="config->>'agent'"

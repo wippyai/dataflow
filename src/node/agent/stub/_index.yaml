@@ -152,6 +152,47 @@ entries:
   imports:
     helpers: userspace.dataflow.node.agent.stub:recovery_helpers
   method: handler
+- name: round_wrapper
+  kind: function.lua
+  meta:
+    test_only: true
+    comment: Tool wrapper a restart scenario kills the runtime inside
+  source: file://round_wrapper.lua
+  modules:
+  - time
+  imports:
+    helpers: userspace.dataflow.node.agent.stub:recovery_helpers
+  method: apply
+- name: round_wrapper_binding
+  kind: contract.binding
+  meta:
+    test_only: true
+  contracts:
+  - contract: wippy.agent:tool_wrapper
+    methods:
+      apply: userspace.dataflow.node.agent.stub:round_wrapper
+- name: round_wrapper_trait
+  kind: registry.entry
+  meta:
+    type: agent.trait
+    test_only: true
+  data:
+    behaviors:
+    - id: round_wrapper
+      handles: [after_execute]
+      handlers:
+        tool_wrapper: userspace.dataflow.node.agent.stub:round_wrapper_binding
+- name: recovery_small_output_model
+  kind: registry.entry
+  meta:
+    name: recovery-small-output-model
+    type: llm.model
+    test_only: true
+    comment: A model whose output limit is below the default summary budget
+  output_tokens: 1000
+  providers:
+  - id: userspace.dataflow.node.agent.stub:recovery_provider
+    provider_model: recovery-test-model
 - name: multibyte_summarizer
   kind: function.lua
   meta:

@@ -55,24 +55,34 @@ function prompt_builder.is_audit_row(row)
 end
 
 -- The first max_chars characters of a text, each whole, and whether any were left out.
--- Counts the bytes that start a character; the runtime has no utf8 library.
+-- Counts the bytes that start a character; the runtime has no utf8 library. The walk
+-- ends within max_chars * 4 bytes, the most that many characters can take, so its cost
+-- follows the cap and bytes that start no character cannot pass it.
 function prompt_builder.text_prefix(text, max_chars)
-    if #text <= max_chars then
+    local size = #text
+    if size <= max_chars then
         return text, false
     end
+    local window = math.min(size, max_chars * 4)
     local chars = 0
-    for start in text:gmatch("()[^\128-\191]") do
-        chars = chars + 1
-        if chars > max_chars then
-            return text:sub(1, start - 1), true
+    for position = 1, window do
+        local byte = string.byte(text, position)
+        if byte < 128 or byte > 191 then
+            chars = chars + 1
+            if chars > max_chars then
+                return text:sub(1, position - 1), true
+            end
         end
+    end
+    if size > window then
+        return text:sub(1, window), true
     end
     return text, false
 end
 
 -- Every request sends the pinned input and the note after it, whatever a checkpoint
 -- cut around them.
-local function is_kept_by_checkpoint(row)
+function prompt_builder.is_kept_by_checkpoint(row)
     return prompt_builder.is_turn_context_row(row)
         or (type(row) == "table" and row.type == agent_consts.DATA_TYPE.AGENT_INPUT)
 end
@@ -94,13 +104,13 @@ function prompt_builder.apply_latest_marker(history_rows)
     local cut_before = tostring((latest_marker.metadata or {}).checkpoint_before_data_id or "")
     local filtered = {}
     for _, item in ipairs(history_rows) do
-        if is_kept_by_checkpoint(item) then
+        if prompt_builder.is_kept_by_checkpoint(item) then
             filtered[#filtered + 1] = item
         end
     end
     filtered[#filtered + 1] = latest_marker
     for _, item in ipairs(history_rows) do
-        if item ~= latest_marker and not is_kept_by_checkpoint(item)
+        if item ~= latest_marker and not prompt_builder.is_kept_by_checkpoint(item)
             and prompt_builder.row_id(item) > cut_before then
             filtered[#filtered + 1] = item
         end
@@ -115,7 +125,7 @@ end
 function prompt_builder.checkpoint_source_rows(history_rows)
     local source_rows = {}
     for _, row in ipairs(prompt_builder.apply_latest_marker(history_rows)) do
-        if not is_kept_by_checkpoint(row) and not prompt_builder.is_audit_row(row) then
+        if not prompt_builder.is_kept_by_checkpoint(row) and not prompt_builder.is_audit_row(row) then
             source_rows[#source_rows + 1] = row
         end
     end
@@ -377,6 +387,15 @@ function prompt_builder:_format_action(action_item, builder)
     return nil
 end
 
+-- The text a table row sends: an array of command outputs has no other form.
+local function content_text(content)
+    if type(content) ~= "table" then
+        return tostring(content)
+    end
+    local encoded, encode_err = json.encode(content)
+    return encode_err and "[Failed to encode JSON result]" or encoded
+end
+
 function prompt_builder:_format_observation(obs_item, builder)
     local content, err = self:_parse_json_content(obs_item.content, obs_item.content_type)
     if err then
@@ -390,24 +409,17 @@ function prompt_builder:_format_observation(obs_item, builder)
     if tool_call_id and tool_name then
         local result_content
         if metadata.is_error then
-            result_content = "Error: " .. tostring(content)
+            result_content = "Error: " .. content_text(content)
         elseif content == nil then
             result_content = "nil"
-        elseif type(content) == "table" then
-            local json_str, json_err = json.encode(content)
-            if json_err then
-                result_content = "[Failed to encode JSON result]"
-            else
-                result_content = json_str
-            end
         else
-            result_content = tostring(content)
+            result_content = content_text(content)
         end
 
         local result_options = extract_message_meta(metadata)
         builder:add_function_result(tool_name, result_content, tool_call_id, result_options)
     else
-        local feedback_content = tostring(content)
+        local feedback_content = content_text(content)
         if feedback_content and feedback_content ~= "" then
             builder:add_developer(feedback_content, positional_meta(metadata))
         end
@@ -466,7 +478,7 @@ function prompt_builder:_format_delegation(delegation_item, builder)
 end
 
 function prompt_builder:_format_input(content, builder)
-    if content == nil then return nil end
+    if content == nil or content == "" then return nil end
     local text = content
     if type(content) == "table" then
         local encoded, err = json.encode(content)
@@ -540,7 +552,9 @@ function prompt_builder:build_prompt(system_prompt, initial_input)
         else
             input_text = tostring(input_content)
         end
-        builder:add_user(input_text)
+        if input_text ~= "" then
+            builder:add_user(input_text)
+        end
     end
     builder:add_cache_marker("user_complete")
 

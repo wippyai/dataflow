@@ -43,7 +43,7 @@ local function define_tests()
                 for _, method in ipairs({ "with_arena_config", "with_initial_input", "with_pending_history" }) do
                     builder[method] = function(self) return self end
                 end
-                builder.build_prompt = function() return {} end
+                builder.build_prompt = function() return { get_messages = function() return { { role = "user" } } end } end
                 local saved_node, saved_ctx, saved_builder = node_sdk.new, agent_context.new, prompt_builder.new
                 node_sdk.new = function() return n end
                 agent_context.new = function() return ctx end

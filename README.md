@@ -201,8 +201,9 @@ stay valid. This requires Agent 0.5.10 and LLM 0.5.13 or later.
   the marker: the default fingerprint comparison is sufficient and the node passes
   no `thinking_is_current`.
 - **Checkpoints.** No checkpoint runs while the newest action has a call with no
-  result, such as a finish whose node has not completed; a requested compaction waits for
-  the round to close. The summary replaces every row up to the cut, calls and results
+  result on a node that keeps running; a requested compaction waits for the round to
+  close. A compaction requested in the round that ends through the finish tool commits
+  with the node's completion, so a restart cannot run the finish against that cut. The summary replaces every row up to the cut, calls and results
   together, and a request carries the input, the turn note, the marker and the rows
   after the cut. A later checkpoint summarizes what requests carry: the earlier
   summary and the rows after its cut, so the earlier summary rolls forward. Nothing
@@ -210,9 +211,9 @@ stay valid. This requires Agent 0.5.10 and LLM 0.5.13 or later.
   summarizer's `max_row_chars` per row, which does not apply to the earlier summary.
   The host sets no limit of its own. `max_memory_chars` (default 8192) caps the stored
   summary in characters, never splitting one. The default summarizer states the
-  budget it has on every summary and sets `max_tokens` to half of `max_memory_chars`
-  unless the options give one; with a smaller explicit `max_tokens` the stated budget
-  is `max_tokens * 3`. A longer summary is cut at the cap and recorded in the marker's
+  budget it has on every summary and sets `max_tokens` to twice `max_memory_chars`
+  unless the options give one. The stated budget is the smaller of `max_memory_chars`
+  and half the tokens the output can use, counting the model's output limit. A longer summary is cut at the cap and recorded in the marker's
   `checkpoint_memory_truncated`. A summary the model cut off at its `max_tokens` is a
   failed checkpoint with no cut: a skipped checkpoint, or a node failure when
   `strict`. A failed checkpoint is tried again when new rows arrive, not for the same
@@ -222,6 +223,12 @@ stay valid. This requires Agent 0.5.10 and LLM 0.5.13 or later.
   also returns the input and the turn note, which a summary does not replace. A
   skipped checkpoint leaves an audit observation that stays out of the prompt and of
   the summary.
+- **Empty input.** A node with no conversation input sends no user message, because
+  Claude and Bedrock reject an empty text block: the turn note, or another note, is
+  the only content. A node with nothing to send at all fails naming that.
+- **Turns that do not finish.** A text turn below `min_iterations`, or an empty one
+  under `tool_calling = "none"`, is answered with a feedback row, so the next request
+  does not end on the assistant.
 - **Lifecycle notes.** Messages from `activate` and `before_step` are sent as
   positional notes after the history and stored, with the step's output, where they
   were sent: `agent.memory` rows with `metadata.role` set to `developer` or `system`,
@@ -247,6 +254,11 @@ requests after it extend each other again:
   away a call, a result or a note.
 - A step that a crash interrupts before its commit is lost with its notes; the
   restarted node sends that step again from the last committed row.
+
+A round whose results all committed before a kill, but whose closing commit did not,
+is settled on recovery: `round_settled` is missing, so the iteration warning is written
+if it is not stored and `after_execute` wrappers run again. Wrappers are at-least-once,
+and a run stored before `round_settled` gets this once on resume.
 
 A selection is durable: `agent_id` and `model` inputs choose only until the node's
 first commit, which stores the choice in the config, a `_control.config` switch commits with the results that carry it,

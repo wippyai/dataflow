@@ -11,7 +11,11 @@ local recovery_helpers = require("recovery_helpers")
 local run_context = require("run_context")
 local funcs = require("funcs")
 local claude_mapper = require("claude_mapper")
+local bedrock_mapper = require("bedrock_mapper")
 local agent_node = require("agent_node")
+local prompt_builder = require("prompt_builder")
+local node_sdk = require("node_sdk")
+local agent_context = require("agent_context")
 
 local STUB = "userspace.dataflow.node.agent.stub:"
 local AGENT = STUB .. "recovery_test_agent"
@@ -31,7 +35,7 @@ local function wait_terminal(c, dataflow_id)
 end
 
 type RunOptions = {
-    agent: string?,
+    agent: any,
     traits: {string}?,
     input: table?,
     extra_inputs: {string}?,
@@ -41,6 +45,7 @@ type RunOptions = {
     node_metadata: table?,
     max_iterations: number?,
     no_input: boolean?,
+    min_iterations: number?,
     named_inputs: {[string]: any}?,
     config: table?,
 }
@@ -77,6 +82,7 @@ local function run_node(options: RunOptions)
                     arena = {
                         prompt = "Run the stable prefix scenario.",
                         max_iterations = options.max_iterations or 8,
+                        min_iterations = options.min_iterations,
                         tool_calling = "auto",
                         tools = { STUB .. "recovery_tool", STUB .. "recovery_control_tool" },
                         exit_schema = options.arena and options.arena.exit_schema,
@@ -560,7 +566,7 @@ local function define_tests()
             }
         end
 
-        it("takes no cut while a finish has no result", function()
+        it("compacts with an accepted finish", function()
             local run = run_node({
                 input = { rounds = 0 },
                 arena = { exit_schema = { type = "object", properties = { answer = { type = "string" } } } },
@@ -570,11 +576,12 @@ local function define_tests()
                 extra_commands = seeded_finish,
             })
             test.eq(run.status, consts.STATUS.COMPLETED_SUCCESS, node_error(run))
+            local marker
             for _, row in ipairs(rows_of(run, agent_consts.DATA_TYPE.AGENT_MEMORY)) do
-                test.is_true(row.metadata.checkpoint_marker ~= true, "no summary while the round is open")
+                if row.metadata.checkpoint_marker == true then marker = row end
             end
-            test.eq(tonumber(recovery_helpers.get_metric(run.scenario_id, "checkpoint_calls", 0)) or 0, 0)
-            test.eq(node_row(run).metadata.checkpoint_requested, true, "the request stays")
+            test.not_nil(marker, "the requested compaction is not dropped")
+            test.eq(node_row(run).metadata.checkpoint_requested, false, "the request is served")
         end)
 
         it("compacts the whole round once a finish is rejected, each row once", function()
@@ -614,7 +621,7 @@ local function define_tests()
         end)
 
         describe("open rounds", function()
-            local function checkpoint_over(rows)
+            local function checkpoint_over(rows, completing)
                 local flags = {}
                 local query = {}
                 for _, method in ipairs({ "fetch_options", "with_nodes", "with_data_types" }) do
@@ -630,7 +637,7 @@ local function define_tests()
                     data = function(_, _, content) table.insert(written, content) end,
                 }
                 local marker = agent_node._test.maybe_checkpoint_history(n,
-                    { checkpoint = { function_id = STUB .. "checkpoint_summarizer" } }, {}, {}, "agent", "model", 3)
+                    { checkpoint = { function_id = STUB .. "checkpoint_summarizer" } }, {}, {}, "agent", "model", 3, completing)
                 return marker, flags
             end
 
@@ -650,6 +657,21 @@ local function define_tests()
                     action("01", 1, { tool_calls = { { id = "c", name = "tool", arguments = {} } } }),
                     result("02", 1, "c"),
                 })
+                test.not_nil(marker)
+            end)
+
+            it("takes no cut while a finish has no result on a node that keeps running", function()
+                local marker, flags = checkpoint_over({
+                    action("01", 1, { tool_calls = { { id = "f", name = "finish", arguments = {} } } }),
+                })
+                test.is_nil(marker)
+                test.eq(#flags, 0, "the request flag stays")
+            end)
+
+            it("cuts an open finish when the node completes with it", function()
+                local marker = checkpoint_over({
+                    action("01", 1, { tool_calls = { { id = "f", name = "finish", arguments = {} } } }),
+                }, true)
                 test.not_nil(marker)
             end)
 
@@ -725,23 +747,144 @@ local function define_tests()
             metadata = { checkpoint_marker = true } } }
         local FIRST = { { data_id = "1", type = agent_consts.DATA_TYPE.AGENT_OBSERVATION, content = "event", metadata = {} } }
 
+        describe("the node's commits", function()
+            -- Runs the node against a recording double, for the order of its commits.
+            local function run_recorded(options)
+                local events, rows = {}, {}
+                local query = {}
+                local kinds = {}
+                query.with_nodes = function(self) return self end
+                query.fetch_options = function(self) return self end
+                query.order_by = function(self) return self end
+                query.with_data_keys = function(self) return self end
+                query.with_data_types = function(self, ...)
+                    kinds = { ... }
+                    return self
+                end
+                local function matching()
+                    local out = {}
+                    for _, row in ipairs(rows) do
+                        for _, kind in ipairs(kinds) do
+                            if row.type == kind then out[#out + 1] = row end
+                        end
+                    end
+                    return out
+                end
+                query.all = matching
+                query.one = function() return matching()[1] end
+                local metadata = options.metadata or {}
+                local config = { agent = "agent:a", model = "m", checkpoint = options.checkpoint,
+                    arena = { tool_calling = "auto", max_iterations = 2, exit_schema = options.exit_schema } }
+                local n
+                n = {
+                    dataflow_id = "flow", node_id = "node", path = { "node" },
+                    config = function() return config end,
+                    inputs = function() return { task = { content = "do it", metadata = {} } } end,
+                    metadata = function() return metadata end,
+                    query = function() return query end,
+                    data = function(_, kind, content, data_options)
+                        local row = { data_id = uuid.v7(), type = kind, content = content,
+                            content_type = data_options.content_type, key = data_options.key,
+                            metadata = data_options.metadata }
+                        table.insert(rows, row)
+                        local marker = type(row.metadata) == "table" and row.metadata.checkpoint_marker
+                        table.insert(events, marker and "marker" or ("data:" .. tostring(kind)))
+                    end,
+                    update_config = function() end,
+                    update_metadata = function(_, updates)
+                        for key, value in pairs(updates) do metadata[key] = value end
+                    end,
+                    yield = function() table.insert(events, "yield"); return {}, nil end,
+                    submit = function() table.insert(events, "submit"); return true end,
+                    complete = function() table.insert(events, "complete"); return "completed" end,
+                    fail = function(_, _, message) table.insert(events, "fail:" .. tostring(message)); return message end,
+                }
+                local instance = { id = "agent:a", model = "m", step = function()
+                    table.insert(events, "step")
+                    return options.step_result
+                end }
+                local ctx = {
+                    configure_delegate_tools = function() end,
+                    get_current_agent = function() return instance end,
+                    load_agent = function() return instance end,
+                    get_config = function() return { current_agent_id = "agent:a", current_model = "m" } end,
+                    add_tools = function() end,
+                }
+                local original_node, original_context = node_sdk.new, agent_context.new
+                node_sdk.new = function() return n end
+                agent_context.new = function() return ctx end
+                local ok, result = pcall(agent_node.run, { node = { metadata = metadata } })
+                node_sdk.new, agent_context.new = original_node, original_context
+                test.is_true(ok, tostring(result))
+                return events
+            end
+
+            it("commits an accepted finish's marker with the completion", function()
+                local events = run_recorded({
+                    metadata = { checkpoint_requested = true },
+                    checkpoint = { function_id = STUB .. "checkpoint_summarizer" },
+                    exit_schema = { type = "object", properties = { answer = { type = "string" } } },
+                    step_result = { result = "", finish_reason = "tool_call", tokens = {},
+                        tool_calls = { { id = "f", name = "finish", arguments = { answer = "done" } } } },
+                })
+                local marker_at, complete_at
+                for index, event in ipairs(events) do
+                    if event == "marker" then marker_at = index end
+                    if event == "complete" then complete_at = index end
+                end
+                test.not_nil(marker_at, table.concat(events, ","))
+                test.not_nil(complete_at, table.concat(events, ","))
+                for index = marker_at, complete_at do
+                    test.is_true(events[index] ~= "yield" and events[index] ~= "submit",
+                        "no commit separates them: " .. table.concat(events, ","))
+                end
+            end)
+
+            it("commits the input pin before the first request of a resumed stored run", function()
+                local events = run_recorded({
+                    metadata = { state = { agent_id = "agent:a", model = "m", current_iteration = 1 } },
+                    step_result = { result = "done", finish_reason = "stop", tokens = {} },
+                })
+                local pin_at, yield_at, step_at
+                for index, event in ipairs(events) do
+                    if event == "data:" .. agent_consts.DATA_TYPE.AGENT_INPUT then pin_at = index end
+                    if event == "yield" and pin_at and not yield_at then yield_at = index end
+                    if event == "step" and not step_at then step_at = index end
+                end
+                test.not_nil(pin_at, table.concat(events, ","))
+                test.not_nil(yield_at, table.concat(events, ","))
+                test.is_true(yield_at < step_at, table.concat(events, ","))
+            end)
+        end)
+
         it("states the memory budget in the merge instruction", function()
             local system, max_tokens = stated_budget({ max_memory_chars = 4321 }, EARLIER)
             test.is_true(string.find(system, "4321", 1, true) ~= nil, system)
-            test.eq(max_tokens, 2161, "max_tokens follows the budget")
+            test.eq(max_tokens, 8642, "max_tokens follows the budget")
         end)
 
         it("states the memory budget on the first summary too", function()
             local system, max_tokens = stated_budget({}, FIRST)
             test.is_true(string.find(system, "8192", 1, true) ~= nil, system)
-            test.eq(max_tokens, 4096)
+            test.eq(max_tokens, 16384)
         end)
 
         it("states what fits when an explicit max_tokens is smaller", function()
             local system, max_tokens = stated_budget({ max_tokens = 1000 }, EARLIER)
             test.eq(max_tokens, 1000, "explicit max_tokens is honoured")
-            test.is_true(string.find(system, "3000", 1, true) ~= nil, system)
-            test.is_true(string.find(system, "8192", 1, true) == nil, system)
+            test.is_true(string.find(system, "fit in 500 characters", 1, true) ~= nil, system)
+        end)
+
+        it("states what fits under the model's output limit", function()
+            local node_id = uuid.v7()
+            local _, call_err = funcs.new():call("userspace.dataflow.node.agent:checkpoint", {
+                dataflow_id = uuid.v7(), node_id = node_id,
+                options = { model = "recovery-small-output-model" }, history = FIRST,
+            })
+            test.is_nil(call_err)
+            local _, system = find_message(recovery_helpers.get_request(node_id, 1),
+                function(message) return message.role == "system" end)
+            test.is_true(string.find(text_of(system), "fit in 500 characters", 1, true) ~= nil, text_of(system))
         end)
 
         local DEFAULT_SUMMARIZER = "userspace.dataflow.node.agent:checkpoint"
@@ -1026,6 +1169,19 @@ local function define_tests()
             test.eq(action.metadata.model, TARGET_MODEL)
         end)
 
+        it("keeps an inline agent's model on a run stored before the pin", function()
+            local inline = { id = "inline-agent", name = "inline-agent", model = INPUT_MODEL,
+                prompt = "Follow the deterministic scenario encoded in the user input." }
+            local run = run_node({
+                agent = inline,
+                input = { rounds = 1 },
+                node_metadata = { state = { current_iteration = 1, agent_id = "inline-agent", model = TARGET_MODEL } },
+                named_inputs = { model = TARGET_MODEL },
+            })
+            test.eq(run.status, consts.STATUS.COMPLETED_SUCCESS, node_error(run))
+            test.eq(rows_of(run, agent_consts.DATA_TYPE.AGENT_ACTION)[1].metadata.model, TARGET_MODEL)
+        end)
+
         it("ignores a model input after the first commit of a pinned run", function()
             local run = run_node({
                 agent = TARGET_AGENT,
@@ -1087,6 +1243,17 @@ local function define_tests()
             local _, user = find_message(requests_of(run)[1], function(message) return message.role == "user" end)
             test.eq(text_of(user), stored)
             test.eq(#rows_of(run, agent_consts.DATA_TYPE.AGENT_INPUT), 1)
+        end)
+
+        it("keeps a long input out of the run context's character budget", function()
+            local run = run_node({ input = { rounds = 1, padding = string.rep("p", 4000) } })
+            test.eq(run.status, consts.STATUS.COMPLETED_SUCCESS, node_error(run))
+            local history = run_context.get_history({
+                host = { dataflow_id = run.dataflow_id, node_id = run.node_id },
+                selector = { mode = "since_checkpoint", max_chars = 1000 },
+            })
+            test.gt(#history.events, 1, "the input does not empty the selection")
+            test.eq(history.events[1].role, "user")
         end)
 
         it("shows the run context the input first on a run stored before the pin", function()
@@ -1170,6 +1337,175 @@ local function define_tests()
             test.eq(block_texts(requests[1]), "stored-block", "the round in progress keeps its blocks")
             test.eq(block_texts(requests[2]), "block-1", "blocks with no fingerprint are stale after it")
             assert_extends(requests[1], requests[2], "the resumed request")
+        end)
+    end)
+
+    describe("text_prefix", function()
+        it("costs the same on a huge row as on a small one", function()
+            local huge = string.rep("a", 20 * 1024 * 1024)
+            local started = time.now():unix_nano()
+            local kept, clipped = prompt_builder.text_prefix(huge, 200)
+            local elapsed_ms = (time.now():unix_nano() - started) / 1000000
+            test.eq(#kept, 200)
+            test.is_true(clipped)
+            test.is_true(elapsed_ms < 200, "work follows the cap, not the row: " .. tostring(elapsed_ms) .. "ms")
+        end)
+
+        it("caps bytes that start no character", function()
+            local kept, clipped = prompt_builder.text_prefix(string.rep("\128", 50000), 200)
+            test.is_true(clipped)
+            test.is_true(#kept <= 800, "kept " .. tostring(#kept))
+        end)
+
+        it("keeps a text at exactly the cap, in four-byte characters", function()
+            local text = string.rep("\240\159\152\128", 200)
+            local kept, clipped = prompt_builder.text_prefix(text, 200)
+            test.is_false(clipped)
+            test.eq(kept, text)
+            local cut, cut_clipped = prompt_builder.text_prefix(text .. "x", 200)
+            test.is_true(cut_clipped)
+            test.eq(cut, text)
+        end)
+    end)
+
+    describe("command children", function()
+        it("sends the outputs of two children as text and keeps the prefix", function()
+            local run = run_node({ input = { rounds = 2, two_children_at = 1 } })
+            test.eq(run.status, consts.STATUS.COMPLETED_SUCCESS, node_error(run))
+            local requests = requests_of(run)
+            test.eq(#requests, 3)
+            assert_each_request_extends_the_last(requests)
+            local _, output = find_message(requests[2], with_text("child-output-1"))
+            test.not_nil(output, "the model reads the outputs")
+            test.is_true(string.find(text_of(output), "child-output-2", 1, true) ~= nil, text_of(output))
+            test.is_nil(find_message(requests[2], with_text("table: 0x")))
+        end)
+
+        it("renders a table in an error result as text", function()
+            local builder = prompt_builder.new("flow", "node", "agent") :: any
+            builder:with_history({
+                { data_id = "01", type = agent_consts.DATA_TYPE.AGENT_ACTION,
+                    content = { tool_calls = { { id = "c", name = "tool", arguments = {} } } }, metadata = {} },
+                { data_id = "02", type = agent_consts.DATA_TYPE.AGENT_OBSERVATION,
+                    content = { reason = "broke" }, metadata = { tool_call_id = "c", tool_name = "tool", is_error = true } },
+            })
+            local built = builder:build_prompt("system")
+            local _, result = find_message(built:get_messages(), function(m) return m.role == "function_result" end)
+            test.is_true(string.find(text_of(result), "broke", 1, true) ~= nil, text_of(result))
+        end)
+    end)
+
+    describe("rounds with nothing to answer", function()
+        it("answers a text turn below min_iterations, so the request stays valid", function()
+            local run = run_node({ input = { mode = "text_final" }, min_iterations = 3, max_iterations = 5 })
+            test.eq(run.status, consts.STATUS.COMPLETED_SUCCESS, node_error(run))
+            local requests = requests_of(run)
+            test.eq(#requests, 3)
+            for index, request in ipairs(requests) do
+                local messages = without_markers(request)
+                test.is_true(messages[#messages].role ~= "assistant", "request " .. tostring(index) .. " ends on assistant")
+            end
+            test.is_nil(recovery_helpers.prefix_error(requests[1], requests[2]))
+            test.is_nil(recovery_helpers.prefix_error(requests[2], requests[3]))
+        end)
+
+        it("sends no empty user message: the turn note is the only content", function()
+            local run = run_node({ agent = TIME_AGENT, no_input = true, extra_inputs = { "context" } })
+            test.eq(run.status, consts.STATUS.COMPLETED_SUCCESS, node_error(run))
+        end)
+
+        it("maps a note with no input to a request with content", function()
+            local builder = prompt_builder.new("flow", "node", "agent") :: any
+            builder:with_initial_input(""):with_history({
+                { data_id = "01", type = agent_consts.DATA_TYPE.AGENT_MEMORY, content = "the turn note",
+                    metadata = { turn_context = true, role = "system", llm_meta = { preserve_position = true } } },
+            })
+            local messages = builder:build_prompt("system"):get_messages()
+            local claude = claude_mapper.map_messages(messages)
+            test.eq(#claude.messages, 1)
+            test.eq(claude.messages[1].content[1].text, "the turn note")
+            local bedrock = bedrock_mapper.map_messages(messages)
+            test.eq(#bedrock.messages, 1)
+            test.eq(bedrock.messages[1].content[1].text, "the turn note")
+
+            local with_input = prompt_builder.new("flow", "node", "agent") :: any
+            with_input:with_initial_input("hello"):with_history({
+                { data_id = "01", type = agent_consts.DATA_TYPE.AGENT_MEMORY, content = "the turn note",
+                    metadata = { turn_context = true, role = "system", llm_meta = { preserve_position = true } } },
+            })
+            local stayed = false
+            for _, block in ipairs(bedrock_mapper.map_messages(with_input:build_prompt("system"):get_messages()).messages[1].content) do
+                if block.text == "the turn note" then stayed = true end
+            end
+            test.is_true(stayed, "the note stays in the user turn on Bedrock")
+        end)
+
+        it("fails a node with nothing to send, naming why", function()
+            local run = run_node({ no_input = true, extra_inputs = { "context" } })
+            test.eq(run.status, consts.STATUS.COMPLETED_FAILURE)
+            test.is_true(string.find(node_error(run), "nothing to send", 1, true) ~= nil, node_error(run))
+        end)
+    end)
+
+    describe("settling a round on recovery", function()
+        local function seeded_round(node_id, scenario_id)
+            return {
+                data_row(node_id, agent_consts.DATA_TYPE.AGENT_ACTION, "1_action", {
+                    result = "working", tool_calls = { { id = "stored", name = "recovery_tool",
+                        arguments = { scenario_id = scenario_id, step = 0 } } },
+                }, { iteration = 1, finish_reason = "tool_call" }),
+                data_row(node_id, agent_consts.DATA_TYPE.AGENT_OBSERVATION, "1_recovery_tool", { ok = true }, {
+                    iteration = 1, tool_call_id = "stored", tool_name = "recovery_tool" }),
+            }
+        end
+
+        local function warnings_of(run)
+            local count = 0
+            for _, row in ipairs(rows_of(run, agent_consts.DATA_TYPE.AGENT_OBSERVATION)) do
+                if row.metadata.remaining_iterations == 2 then count = count + 1 end
+            end
+            return count
+        end
+
+        it("writes the warning a killed round did not", function()
+            local run = run_node({
+                input = { rounds = 0 }, max_iterations = 3,
+                node_metadata = { state = { current_iteration = 1, agent_id = AGENT } },
+                extra_commands = seeded_round,
+            })
+            test.eq(run.status, consts.STATUS.COMPLETED_SUCCESS, node_error(run))
+            test.eq(warnings_of(run), 1)
+        end)
+
+        it("writes no second warning when one is stored", function()
+            local run = run_node({
+                input = { rounds = 0 }, max_iterations = 3,
+                node_metadata = { state = { current_iteration = 1, agent_id = AGENT } },
+                extra_commands = function(node_id, scenario_id)
+                    local rows = seeded_round(node_id, scenario_id)
+                    table.insert(rows, data_row(node_id, agent_consts.DATA_TYPE.AGENT_OBSERVATION, "1_iterations_warning",
+                        "stored warning", { iteration = 1, remaining_iterations = 2 }))
+                    return rows
+                end,
+            })
+            test.eq(run.status, consts.STATUS.COMPLETED_SUCCESS, node_error(run))
+            test.eq(warnings_of(run), 1)
+        end)
+
+        it("leaves a settled round alone", function()
+            local run = run_node({
+                input = { rounds = 0 }, max_iterations = 3,
+                node_metadata = { round_settled = 1, state = { current_iteration = 1, agent_id = AGENT } },
+                extra_commands = seeded_round,
+            })
+            test.eq(run.status, consts.STATUS.COMPLETED_SUCCESS, node_error(run))
+            test.eq(warnings_of(run), 0)
+        end)
+
+        it("records a settled round with its commit", function()
+            local run = run_node({ input = { rounds = 1 } })
+            test.eq(run.status, consts.STATUS.COMPLETED_SUCCESS, node_error(run))
+            test.gt(tonumber(node_row(run).metadata.round_settled) or 0, 0)
         end)
     end)
 

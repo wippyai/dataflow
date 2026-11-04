@@ -140,7 +140,7 @@ end
 
 -- The round's memory add waits behind slow work when the runtime is killed: a child
 -- DAG, or a delegate of a sibling call.
-local function create_round_text_workflow(scenario)
+local function create_round_text_workflow(scenario, active_traits)
     local db = assert(sql.get("app:db"))
     local bytes = db:type() == "postgres" and "BYTEA" or "BLOB"
     local _, table_err = db:execute("CREATE TABLE IF NOT EXISTS restart_recovery_store ("
@@ -155,6 +155,7 @@ local function create_round_text_workflow(scenario)
             node_id = node_id, node_type = "userspace.dataflow.node.agent:node", status = consts.STATUS.PENDING,
             config = {
                 agent = STUB .. "recovery_test_agent", show_tool_calls = false,
+                active_traits = active_traits,
                 data_targets = {{ data_type = consts.DATA_TYPE.WORKFLOW_OUTPUT, key = "result", content_type = consts.CONTENT_TYPE.TEXT }},
                 arena = { prompt = "Complete the restart scenario.", max_iterations = 3, tool_calling = "auto",
                     tools = { STUB .. "recovery_tool", STUB .. "recovery_control_tool" } },
@@ -308,6 +309,13 @@ function M.create_round_yield()
     prepare_runtime()
     create_round_text_workflow({ scenario_id = "round-yield", mode = "thinking_rounds", rounds = 1,
         yield_at = 1, switch_agent = STUB .. "stable_prefix_switch_target_agent" })
+    return hold_runtime()
+end
+
+function M.create_round_settle()
+    prepare_runtime()
+    create_round_text_workflow({ scenario_id = "round-settle", mode = "thinking_rounds", rounds = 1 },
+        { STUB .. "round_wrapper_trait" })
     return hold_runtime()
 end
 

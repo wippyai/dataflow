@@ -38,6 +38,12 @@ local function define_tests()
                         } },
                     },
                 },
+            }, {
+                type = consts.COMMAND_TYPES.CREATE_DATA,
+                payload = {
+                    data_id = uuid.v7(), data_type = consts.DATA_TYPE.NODE_INPUT, node_id = node_id, key = "task",
+                    content = "Do the task.", content_type = consts.CONTENT_TYPE.TEXT,
+                },
             } })
             test.is_nil(create_err)
 
@@ -201,8 +207,10 @@ local function define_tests()
         end
 
         for _, scenario in ipairs({
-            { name = "minimum iterations", min_iterations = 2 },
-            { name = "minimum iterations without tools", min_iterations = 2, tool_calling = "none" },
+            { name = "minimum iterations", min_iterations = 2, feedback = "1_continue_working",
+                feedback_text = agent_consts.FEEDBACK.CONTINUE_WORKING },
+            { name = "minimum iterations without tools", min_iterations = 2, tool_calling = "none",
+                feedback = "1_continue_working", feedback_text = agent_consts.FEEDBACK.CONTINUE_WORKING },
             { name = "required tool use", tool_calling = "any", feedback = "1_no_tools_called",
                 feedback_text = agent_consts.FEEDBACK.NO_TOOLS_CALLED .. " " ..
                     string.format(agent_consts.FEEDBACK.EXIT_AVAILABLE, "finish") },
