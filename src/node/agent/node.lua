@@ -1901,7 +1901,8 @@ local function finalize_iteration(n, agent_ctx, session_context, iteration, max_
         local delegation_infos = delegation_handler.create_delegation_batch(
             { delegate_calls = delegate_calls },
             n,
-            session_context
+            session_context,
+            iteration
         )
 
         local delegation_results, delegation_err = delegation_handler.execute_delegation_batch(delegation_infos, n)

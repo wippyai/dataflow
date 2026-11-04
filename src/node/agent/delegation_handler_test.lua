@@ -7,6 +7,7 @@ local node_reader = require("node_reader")
 local data_reader = require("data_reader")
 local commit = require("commit")
 local delegation_handler = require("delegation_handler")
+local agent_node = require("agent_node")
 local workflow_state = require("workflow_state")
 
 -- Applies the node's queued commands synchronously (the orchestrator is not running
@@ -56,6 +57,43 @@ local function children_for_tool_call(dataflow_id, parent_node_id, tool_call_id)
     return count
 end
 
+-- Runs one turn's delegation through the node up to the yield that would start
+-- the child, committing what the node queued. Returns the child node ids the
+-- yield would run.
+local function issue_delegation_turn(n, dataflow_id, parent_node_id, iteration, call_id)
+    local yields = 0
+    local run_nodes
+    n.yield = function(_, options)
+        yields = yields + 1
+        apply(n, dataflow_id)
+        if yields == 2 then
+            run_nodes = options.run_nodes
+            return nil, "stop before the children run"
+        end
+        return true, nil
+    end
+    local delegate_calls = { { id = call_id, name = "delegate_researcher", agent_id = "researcher",
+        arguments = { task = "investigate" } } }
+    local _, _, err = agent_node._test.finalize_iteration(n, {},
+        { dataflow_id = dataflow_id, node_id = parent_node_id }, iteration, 10, 0, "auto", nil,
+        { result = "", delegate_calls = delegate_calls }, delegate_calls, {}, {}, {}, {})
+    test.contains(tostring(err), "stop before the children run")
+    return run_nodes
+end
+
+local function create_child_row(dataflow_id, parent_node_id, node_type, metadata)
+    local child_id = uuid.v7()
+    local _, err = commit.execute(dataflow_id, uuid.v7(), { {
+        type = consts.COMMAND_TYPES.CREATE_NODE,
+        payload = {
+            node_id = child_id, node_type = node_type, parent_node_id = parent_node_id,
+            status = consts.STATUS.RUNNING, config = {}, metadata = metadata,
+        },
+    } }, { publish = false })
+    test.is_nil(err, "child row created: " .. tostring(err))
+    return child_id
+end
+
 local function define_tests()
     describe("Delegation Recovery Idempotency", function()
         before_each(function()
@@ -78,6 +116,7 @@ local function define_tests()
             local delegation = {
                 agent_id = "researcher",
                 tool_call_id = "call-abc",
+                iteration = 1,
                 input_data = { task = "investigate" },
                 system_prompt = "Complete the task"
             }
@@ -94,6 +133,67 @@ local function define_tests()
             test.eq(second.child_id, first.child_id, "recovery reuses the existing child id")
             test.eq(children_for_tool_call(dataflow_id, parent_node_id, "call-abc"), 1,
                 "no duplicate child agent created on recovery")
+        end)
+
+        it("starts a new child when a later turn reuses a delegate call id", function()
+            local n, dataflow_id, parent_node_id = setup_parent()
+
+            local first = issue_delegation_turn(n, dataflow_id, parent_node_id, 1, "call-reused")
+            local second = issue_delegation_turn(n, dataflow_id, parent_node_id, 2, "call-reused")
+
+            test.eq(children_for_tool_call(dataflow_id, parent_node_id, "call-reused"), 2,
+                "each turn's delegation has its own child")
+            test.is_true(first[1] ~= second[1], "the later turn runs its own child")
+
+            local rows = (node_reader.with_dataflow(dataflow_id) :: any):with_nodes(second[1]):all()
+            test.eq((rows[1].metadata or {}).iteration, 2, "the child records its turn")
+        end)
+
+        it("resumes the child of its own turn when recovery re-issues a reused call id", function()
+            local n, dataflow_id, parent_node_id = setup_parent()
+
+            issue_delegation_turn(n, dataflow_id, parent_node_id, 1, "call-reused")
+            local live = issue_delegation_turn(n, dataflow_id, parent_node_id, 2, "call-reused")
+            local recovered = issue_delegation_turn(n, dataflow_id, parent_node_id, 2, "call-reused")
+
+            test.eq(recovered[1], live[1], "recovery resumes the turn's existing child")
+            test.eq(children_for_tool_call(dataflow_id, parent_node_id, "call-reused"), 2,
+                "recovery creates no further child")
+        end)
+
+        it("resumes a persisted child that has no recorded turn", function()
+            local n, dataflow_id, parent_node_id = setup_parent()
+            local persisted = create_child_row(dataflow_id, parent_node_id, "userspace.dataflow.node.agent:node",
+                { tool_call_id = "call-persisted" })
+
+            local run_nodes = issue_delegation_turn(n, dataflow_id, parent_node_id, 3, "call-persisted")
+
+            test.eq(run_nodes[1], persisted, "recovery resumes the child rather than repeating its work")
+            test.eq(children_for_tool_call(dataflow_id, parent_node_id, "call-persisted"), 1)
+        end)
+
+        it("prefers the child of the same turn over one with no recorded turn", function()
+            local n, dataflow_id, parent_node_id = setup_parent()
+            create_child_row(dataflow_id, parent_node_id, "userspace.dataflow.node.agent:node",
+                { tool_call_id = "call-both" })
+            local same_turn = create_child_row(dataflow_id, parent_node_id, "userspace.dataflow.node.agent:node",
+                { tool_call_id = "call-both", iteration = 3 })
+
+            local run_nodes = issue_delegation_turn(n, dataflow_id, parent_node_id, 3, "call-both")
+
+            test.eq(run_nodes[1], same_turn)
+        end)
+
+        it("does not mistake the tool call node of a delegating tool for its child", function()
+            local n, dataflow_id, parent_node_id = setup_parent()
+            local tool_node = create_child_row(dataflow_id, parent_node_id, "tool.call",
+                { tool_call_id = "call-tool", iteration = 1 })
+
+            local run_nodes = issue_delegation_turn(n, dataflow_id, parent_node_id, 1, "call-tool")
+
+            test.is_true(run_nodes[1] ~= tool_node, "the delegation runs an agent child")
+            local rows = (node_reader.with_dataflow(dataflow_id) :: any):with_nodes(run_nodes[1]):all()
+            test.eq(rows[1].type, "userspace.dataflow.node.agent:node")
         end)
 
         it("creates distinct children for distinct tool_call_ids", function()

@@ -133,6 +133,7 @@ entries:
       - uuid
     imports:
       delegation_handler: userspace.dataflow.node.agent:delegation_handler
+      agent_node: userspace.dataflow.node.agent:node
       client: userspace.dataflow:client
       node: userspace.dataflow:node
       node_reader: userspace.dataflow.persist:node_reader
