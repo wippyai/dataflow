@@ -37,6 +37,11 @@ local function handler(input)
         return { success = false, error = input.soft_fail_message }
     end
 
+    if input.scalar_kind == "false" then return false end
+    if input.scalar_kind == "zero" then return 0 end
+    if input.scalar_kind == "empty" then return "" end
+    if input.scalar_kind == "nil" then return nil end
+
     return {
         ok = true,
         scenario_id = scenario_id,

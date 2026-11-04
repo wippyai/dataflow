@@ -59,16 +59,22 @@ local function memory_rows(dataflow_id, node_id)
         :all()
 end
 
+local function add_memory(n, items, iteration)
+    local directive = { memory = { add = items } }
+    control_handler.process_memory_operations(directive, n, iteration)
+    control_handler.queue_memory_additions(directive.memory.add, n, iteration)
+end
+
 local function define_tests()
     describe("Agent Control Handler Integration", function()
         it("persists added memory then clears it by type from the store", function()
             local n, dataflow_id, node_id = setup_node()
 
-            control_handler.process_memory_operations({ memory = { add = {
+            add_memory(n, {
                 { type = "fact", text = "alpha fact" },
                 { type = "fact", text = "beta fact" },
                 { type = "note", text = "a note" }
-            } } }, n, 1)
+            }, 1)
             apply(n, dataflow_id)
 
             local rows = memory_rows(dataflow_id, node_id)
@@ -93,9 +99,9 @@ local function define_tests()
         it("deletes a single memory row by data id", function()
             local n, dataflow_id, node_id = setup_node()
 
-            control_handler.process_memory_operations({ memory = { add = {
+            add_memory(n, {
                 { type = "fact", text = "deletable" }
-            } } }, n, 1)
+            }, 1)
             apply(n, dataflow_id)
 
             local rows = memory_rows(dataflow_id, node_id)
@@ -105,6 +111,23 @@ local function define_tests()
             apply(n, dataflow_id)
 
             test.eq(#memory_rows(dataflow_id, node_id), 0, "row removed by id")
+
+            local replay = control_handler.process_memory_operations({ memory = { delete = { rows[1].data_id } } }, n, 2)
+            test.is_nil(replay[1].error, "a crash replay finds the row gone and carries on")
+        end)
+
+        it("refuses to delete an existing row the directive did not add", function()
+            local n, dataflow_id, node_id = setup_node()
+            n:data(agent_consts.DATA_TYPE.AGENT_ACTION, { result = "stored" }, { key = "1_action", node_id = node_id })
+            apply(n, dataflow_id)
+            local action = data_reader.with_dataflow(dataflow_id):with_nodes(node_id)
+                :with_data_types(agent_consts.DATA_TYPE.AGENT_ACTION):one()
+
+            local changes = control_handler.process_memory_operations({ memory = { delete = { action.data_id } } }, n, 2)
+            test.not_nil(changes[1].error)
+            apply(n, dataflow_id)
+            test.not_nil(data_reader.with_dataflow(dataflow_id):with_nodes(node_id)
+                :with_data_types(agent_consts.DATA_TYPE.AGENT_ACTION):one(), "the action stays")
         end)
 
         it("merges session context into node metadata persisted in the store", function()
@@ -146,13 +169,14 @@ local function define_tests()
         it("applies a combined directive (context + memory) end to end", function()
             local n, dataflow_id, node_id = setup_node()
 
-            control_handler.process_control_directive({
+            local _, response = control_handler.process_control_directive({
                 result = "ok",
                 _control = {
                     context = { session = { set = { phase = "review" } } },
                     memory = { add = { { type = "fact", text = "remembered" } } }
                 }
             }, n, 1)
+            control_handler.queue_memory_additions(control_handler.memory_additions(response), n, 1)
             apply(n, dataflow_id)
 
             local row = node_reader.with_dataflow(dataflow_id):with_nodes(node_id):one()

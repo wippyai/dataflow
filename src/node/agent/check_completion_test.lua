@@ -55,8 +55,9 @@ local function define_tests()
         end)
 
         it("does not complete tool_calling=none on whitespace", function()
-            local complete = check(agent_consts.TOOL_CALLING.NONE, { result = " \n\t " })
+            local complete, _, recorded = check(agent_consts.TOOL_CALLING.NONE, { result = " \n\t " })
             test.is_false(complete)
+            test.eq(#recorded, 1, "the next request needs a user turn after the text")
         end)
 
         it("does not complete tool_calling=none on a nil result", function()
@@ -158,7 +159,8 @@ local function define_tests()
             local complete, _, recorded = check(agent_consts.TOOL_CALLING.AUTO, { result = "final answer" },
                 { iteration = 1, min_iterations = 2 })
             test.is_false(complete)
-            test.eq(#recorded, 0)
+            test.eq(#recorded, 1, "the next request needs a user turn after the text")
+            test.eq(recorded[1].content, agent_consts.FEEDBACK.CONTINUE_WORKING)
         end)
     end)
 

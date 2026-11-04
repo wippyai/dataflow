@@ -110,6 +110,50 @@ local function define_tests()
             delegation_handler._agent_ref = nil
         end)
 
+        it("accepts a delegated false result as a successful result", function()
+            local n, dataflow_id, parent_node_id = setup_parent()
+            local child_id, result_id = uuid.v7(), uuid.v7()
+            local _, err = commit.execute(dataflow_id, uuid.v7(), {
+                { type = consts.COMMAND_TYPES.CREATE_DATA, payload = {
+                    data_id = result_id, data_type = consts.DATA_TYPE.NODE_RESULT,
+                    content = "false", content_type = consts.CONTENT_TYPE.JSON,
+                } },
+                { type = consts.COMMAND_TYPES.CREATE_DATA, payload = {
+                    data_id = uuid.v7(), data_type = "node.yield.result", node_id = parent_node_id,
+                    content = { [child_id] = result_id }, content_type = consts.CONTENT_TYPE.JSON,
+                } },
+            }, { publish = false })
+            test.is_nil(err)
+            n.yield = function() return true end
+            local results, execute_err = delegation_handler.execute_delegation_batch({ {
+                child_id = child_id, agent_info = { title = "Delegate" }, tool_call_id = "scalar",
+            } }, n)
+            test.is_nil(execute_err)
+            test.eq(#results, 1)
+            test.is_true(results[1].success, "false is a successful delegated result")
+            test.eq(results[1].result, false)
+            test.is_nil(results[1].error)
+        end)
+
+        it("persists scalar delegation results as text without a reference target", function()
+            for _, item in ipairs({ { value = false, text = "false" }, { value = 0, text = "0" },
+                { value = "", text = "" }, { text = "nil" } }) do
+                local n, dataflow_id, parent_node_id = setup_parent()
+                delegation_handler.map_delegation_results_to_conversation({ {
+                    success = true, result = item.value,
+                    delegation_info = { child_id = uuid.v7(), delegate_tool_name = "delegate", tool_call_id = "scalar" },
+                } }, n, 1)
+                apply(n, dataflow_id)
+                local observation = data_reader.with_dataflow(dataflow_id):with_nodes(parent_node_id)
+                    :with_data_types("agent.observation"):one()
+                test.not_nil(observation)
+                test.eq(observation.content, item.text)
+                test.eq(observation.content_type, consts.CONTENT_TYPE.TEXT)
+                test.eq(observation.metadata.tool_call_id, "scalar")
+                test.is_false(observation.metadata.is_error == true)
+            end
+        end)
+
         it("reuses an existing in-flight child on a recovery re-issue", function()
             local n, dataflow_id, parent_node_id = setup_parent()
             local session_context = { dataflow_id = dataflow_id, node_id = parent_node_id }

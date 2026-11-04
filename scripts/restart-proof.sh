@@ -3,14 +3,16 @@ set -eu
 
 repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 test_dir="$repo_dir/test"
-db_file="$test_dir/.wippy/restart-proof.db"
-phase1_log="$test_dir/.wippy/restart-phase1.log"
-phase2_log="$test_dir/.wippy/restart-phase2.log"
+output_dir="${DATAFLOW_RESTART_DIR:-$test_dir/.wippy}"
+db_file="$output_dir/restart-proof.db"
+phase1_log="$output_dir/restart-phase1.log"
+phase2_log="$output_dir/restart-phase2.log"
+phase3_log="$output_dir/restart-phase3.log"
 runtime_pid=""
 restart_wippy="${WIPPY:-wippy}"
 dialect="${DATAFLOW_RESTART_DIALECT:-sqlite}"
 scenario="${DATAFLOW_RESTART_SCENARIO:-rolling}"
-case "$scenario" in rolling|behavior|parallel_tools) ;; *) echo "unsupported restart scenario" >&2; exit 1 ;; esac
+case "$scenario" in rolling|behavior|parallel_tools|stable_prefix|round_children|round_delegate|round_both|round_rerun|round_double_kill|round_yield|round_settle|round_yield_commands|round_artifact|round_command_delegate|round_yield_delegate|round_staggered_children|round_output_only) ;; *) echo "unsupported restart scenario" >&2; exit 1 ;; esac
 pg_host="${DATAFLOW_PG_HOST:-127.0.0.1}"
 pg_port="${DATAFLOW_PG_PORT:-5432}"
 pg_database="${DATAFLOW_PG_DATABASE:-dataflow_restart_test}"
@@ -65,6 +67,15 @@ start_runtime() {
     case "$scenario" in
         behavior) set -- --profile restart_behavior ;;
         parallel_tools) set -- --profile restart_parallel_tools ;;
+        stable_prefix) set -- --profile restart_stable_prefix ;;
+        round_double_kill)
+            set -- --profile restart_round_rerun \
+                --override "app:restart_probe.create:method=create_round_double_kill" ;;
+        round_command_delegate|round_yield_delegate|round_staggered_children|round_output_only)
+            set -- --profile restart_round_children \
+                --override "app:restart_probe.create:method=create_$scenario" \
+                --override "app:restart_probe.observe:method=observe_$scenario" ;;
+        round_*) set -- --profile "restart_$scenario" ;;
         *) set -- ;;
     esac
     if [ "$dialect" = "postgres" ]; then
@@ -76,12 +87,12 @@ start_runtime() {
             --set "vars.postgres_password=$pg_password" >"$runtime_log" 2>&1 &
     else
         "$restart_wippy" run -s --config "${DATAFLOW_RESTART_CONFIG:-.wippy.yaml}" --profile sqlite --profile "$restart_profile" "$@" \
-            --set vars.sqlite_file=./.wippy/restart-proof.db >"$runtime_log" 2>&1 &
+            --set "vars.sqlite_file=$db_file" >"$runtime_log" 2>&1 &
     fi
     runtime_pid=$!
 }
 
-rm -f "$db_file" "$db_file-wal" "$db_file-shm" "$phase1_log" "$phase2_log"
+rm -f "$db_file" "$db_file-wal" "$db_file-shm" "$phase1_log" "$phase2_log" "$phase3_log"
 
 if [ "$dialect" = "postgres" ]; then
     PGPASSWORD="$pg_password" dropdb --if-exists --force \
@@ -113,6 +124,55 @@ while [ "$attempts" -lt 200 ]; do
                           AND d.type = 'agent.observation' AND $fast_call)
               AND NOT EXISTS (SELECT 1 FROM dataflow_data d WHERE d.dataflow_id = a.dataflow_id
                               AND d.type = 'agent.observation' AND $slow_call)
+            LIMIT 1;" 2>/dev/null || true)
+    elif [ "$scenario" = "stable_prefix" ]; then
+        # The switch is committed and the first request of the new agent is in flight,
+        # with no action stored for it.
+        if [ "$dialect" = "postgres" ]; then
+            target_predicate="n.config->>'agent' = 'userspace.dataflow.node.agent.stub:stable_prefix_switch_target_agent'"
+        else
+            target_predicate="json_extract(n.config, '$.agent') = 'userspace.dataflow.node.agent.stub:stable_prefix_switch_target_agent'"
+        fi
+        phase1=$(query "SELECT a.dataflow_id || '|' || a.owner_epoch
+            FROM dataflow_activations a JOIN dataflow_nodes n ON n.dataflow_id = a.dataflow_id
+            WHERE a.desired_active AND n.status = 'running' AND $target_predicate
+              AND (SELECT COUNT(*) FROM dataflow_data d WHERE d.node_id = n.node_id AND d.type = 'agent.action') = 1
+              AND EXISTS (SELECT 1 FROM restart_recovery_store s WHERE s.store_key = 'agent_recovery:prefix-restart:request:2')
+            LIMIT 1;" 2>/dev/null || true)
+    elif [ "$scenario" = "round_settle" ]; then
+        # The call's result is committed and after_execute holds the round open.
+        phase1=$(query "SELECT a.dataflow_id || '|' || a.owner_epoch
+            FROM dataflow_activations a
+            WHERE a.desired_active
+              AND EXISTS (SELECT 1 FROM dataflow_data d WHERE d.dataflow_id = a.dataflow_id AND d.type = 'agent.observation')
+              AND EXISTS (SELECT 1 FROM restart_recovery_store s WHERE s.store_key = 'agent_recovery:round-settle:wrapper_attempts')
+            LIMIT 1;" 2>/dev/null || true)
+    elif [ "$scenario" = "round_command_delegate" ] || [ "$scenario" = "round_staggered_children" ] \
+        || [ "$scenario" = "round_output_only" ]; then
+        completed_child=""
+        if [ "$scenario" = "round_staggered_children" ] || [ "$scenario" = "round_output_only" ]; then
+            completed_child="AND EXISTS (SELECT 1 FROM dataflow_data r JOIN dataflow_nodes c ON c.node_id = r.node_id
+                WHERE c.dataflow_id = a.dataflow_id AND c.parent_node_id IS NOT NULL
+                  AND c.type = 'userspace.dataflow.node.func:node' AND c.status = 'completed'
+                  AND r.type = 'node.result')"
+        fi
+        phase1=$(query "SELECT a.dataflow_id || '|' || a.owner_epoch
+            FROM dataflow_activations a WHERE a.desired_active
+              $completed_child
+              AND EXISTS (SELECT 1 FROM dataflow_nodes c WHERE c.dataflow_id = a.dataflow_id
+                          AND c.parent_node_id IS NOT NULL AND c.type = 'userspace.dataflow.node.func:node'
+                          AND c.status = 'running')
+              AND EXISTS (SELECT 1 FROM dataflow_nodes c WHERE c.dataflow_id = a.dataflow_id
+                          AND c.parent_node_id IS NOT NULL AND c.type = 'userspace.dataflow.node.agent:node'
+                          AND c.status = 'running')
+            LIMIT 1;" 2>/dev/null || true)
+    elif [ "${scenario#round_}" != "$scenario" ]; then
+        # The round's commit is durable and its slow child is running.
+        phase1=$(query "SELECT a.dataflow_id || '|' || a.owner_epoch
+            FROM dataflow_activations a
+            WHERE a.desired_active
+              AND EXISTS (SELECT 1 FROM dataflow_nodes c WHERE c.dataflow_id = a.dataflow_id
+                          AND c.parent_node_id IS NOT NULL AND c.status = 'running')
             LIMIT 1;" 2>/dev/null || true)
     elif [ "$scenario" = "behavior" ]; then
         if [ "$dialect" = "postgres" ]; then
@@ -214,7 +274,8 @@ done
 [ "$rolling_refilled" = "1" ] || { echo "rolling window did not refill before the slow iteration completed" >&2; exit 1; }
 
 fi
-if [ "$scenario" = "behavior" ] || [ "$scenario" = "parallel_tools" ]; then
+if [ "$scenario" = "behavior" ] || [ "$scenario" = "parallel_tools" ] || [ "$scenario" = "stable_prefix" ] \
+    || [ "${scenario#round_}" != "$scenario" ]; then
     # Interrupt only this disposable runtime while its persisted round is pending.
     kill -KILL "$runtime_pid"
     wait "$runtime_pid" 2>/dev/null || true
@@ -222,6 +283,20 @@ else
     stop_runtime "$runtime_pid"
 fi
 runtime_pid=""
+
+if [ "$scenario" = "round_output_only" ]; then
+    # Seed the output-before-result window; the two commits have no deterministic pause point.
+    child_id=$(query "SELECT node_id FROM dataflow_nodes WHERE dataflow_id = '$dataflow_id'
+        AND parent_node_id IS NOT NULL AND type = 'userspace.dataflow.node.func:node' AND status = 'completed' LIMIT 1;")
+    [ -n "$child_id" ] || { echo "no completed command child to seed" >&2; exit 1; }
+    query "BEGIN;
+        DELETE FROM dataflow_data WHERE node_id = '$child_id' AND type = 'node.result';
+        UPDATE dataflow_nodes SET status = 'running' WHERE node_id = '$child_id';
+        COMMIT;"
+    output_only=$(query "SELECT COUNT(*) FROM dataflow_data WHERE node_id = '$child_id' AND type = 'node.output';")
+    [ "$output_only" = "1" ] || { echo "seeded child has no durable output" >&2; exit 1; }
+    echo "seeded output-before-result rows for command child $child_id"
+fi
 
 preserved=$(query "
     SELECT COUNT(*) FROM dataflow_activations a
@@ -233,6 +308,21 @@ preserved=$(query "
 ")
 [ "$preserved" = "1" ] || { echo "graceful runtime shutdown destroyed active intent" >&2; exit 1; }
 
+if [ "$scenario" = "stable_prefix" ]; then
+    # An input that arrives after the first request must not change the user message.
+    if [ "$dialect" = "postgres" ]; then
+        late_content="convert_to('late-input-text', 'UTF8')"
+        now_value="now()"
+    else
+        late_content="CAST('late-input-text' AS BLOB)"
+        now_value="CAST(strftime('%s', 'now') AS INTEGER)"
+    fi
+    query "INSERT INTO dataflow_data (data_id, dataflow_id, node_id, type, key, content, content_type, created_at)
+        SELECT '019a0000-0000-7000-8000-000000000001', n.dataflow_id, n.node_id, 'node.input', 'arrived_later',
+               $late_content, 'text/plain', $now_value
+        FROM dataflow_nodes n WHERE n.dataflow_id = '$dataflow_id';"
+fi
+
 start_runtime restart_observe "$phase2_log"
 
 second_epoch=""
@@ -241,7 +331,6 @@ while [ "$attempts" -lt 200 ]; do
     second_epoch=$(query "
         SELECT owner_epoch FROM dataflow_activations
         WHERE dataflow_id = '$dataflow_id'
-          AND desired_active
           AND owner_epoch IS NOT NULL
           AND owner_epoch <> '$first_epoch';
     " 2>/dev/null || true)
@@ -255,6 +344,47 @@ while [ "$attempts" -lt 200 ]; do
     sleep 0.1
 done
 [ -n "$second_epoch" ] || { echo "new runtime epoch did not take ownership" >&2; exit 1; }
+
+if [ "$scenario" = "round_double_kill" ]; then
+    if [ "$dialect" = "postgres" ]; then
+        result_call="d.metadata->>'tool_call_id'"
+        metric_text="convert_from(s.store_value, 'UTF8')"
+    else
+        result_call="json_extract(d.metadata, '$.tool_call_id')"
+        metric_text="CAST(s.store_value AS TEXT)"
+    fi
+    interrupted=""
+    attempts=0
+    while [ "$attempts" -lt 200 ]; do
+        interrupted=$(query "SELECT COUNT(*) FROM dataflow_nodes n
+            WHERE n.dataflow_id = '$dataflow_id' AND n.parent_node_id IS NULL
+              AND EXISTS (SELECT 1 FROM dataflow_data d WHERE d.node_id = n.node_id
+                  AND d.type = 'agent.observation' AND $result_call = 'call-round-double-kill-2')
+              AND EXISTS (SELECT 1 FROM restart_recovery_store s
+                  WHERE s.store_key = 'agent_recovery:round-double-kill:wrapper_attempts' AND $metric_text = '2');" 2>/dev/null || true)
+        [ "$interrupted" = "1" ] && break
+        attempts=$((attempts + 1))
+        sleep 0.1
+    done
+    [ "$interrupted" = "1" ] || { echo "recovery did not reach the second crash boundary" >&2; exit 1; }
+    kill -KILL "$runtime_pid"
+    wait "$runtime_pid" 2>/dev/null || true
+    runtime_pid=""
+    killed_epoch="$second_epoch"
+    start_runtime restart_observe "$phase3_log"
+    second_epoch=""
+    attempts=0
+    while [ "$attempts" -lt 200 ]; do
+        second_epoch=$(query "SELECT owner_epoch FROM dataflow_activations
+            WHERE dataflow_id = '$dataflow_id' AND owner_epoch IS NOT NULL
+              AND owner_epoch <> '$killed_epoch' AND owner_epoch <> '$first_epoch';" 2>/dev/null || true)
+        [ -n "$second_epoch" ] && break
+        attempts=$((attempts + 1))
+        sleep 0.1
+    done
+    [ -n "$second_epoch" ] || { echo "third runtime did not take ownership" >&2; exit 1; }
+    echo "double SIGKILL epochs: $first_epoch -> $killed_epoch -> $second_epoch"
+fi
 
 completed=""
 attempts=0
@@ -277,6 +407,134 @@ done
     tail -120 "$phase2_log" >&2 || true
     exit 1
 }
+
+if [ "$scenario" = "stable_prefix" ]; then
+    verdict=""
+    attempts=0
+    while [ "$attempts" -lt 100 ]; do
+        verdict=$(query "SELECT verdict FROM restart_prefix_verdict LIMIT 1;" 2>/dev/null || true)
+        [ -n "$verdict" ] && break
+        attempts=$((attempts + 1))
+        sleep 0.1
+    done
+    [ "$verdict" = "ok" ] || {
+        echo "requests across the restart do not extend each other: ${verdict:-no verdict}" >&2
+        tail -40 "$phase2_log" >&2 || true
+        exit 1
+    }
+    fold_rows=$(query "SELECT COUNT(*) FROM dataflow_data WHERE dataflow_id = '$dataflow_id' AND type = 'agent.input';")
+    turn_notes=$(query "SELECT COUNT(*) FROM dataflow_data WHERE dataflow_id = '$dataflow_id' AND type = 'agent.memory' AND key = 'turn_context';")
+    skipped=$(query "SELECT COUNT(*) FROM dataflow_data WHERE dataflow_id = '$dataflow_id' AND type = 'agent.observation' AND key LIKE '%_checkpoint_skipped';")
+    workflows=$(query "SELECT COUNT(*) FROM dataflows;")
+    [ "$fold_rows|$turn_notes|$workflows" = "1|1|1" ] && [ "$skipped" -gt 0 ] || {
+        echo "stable prefix rows are wrong: $fold_rows|$turn_notes|$skipped|$workflows" >&2
+        exit 1
+    }
+    echo "$dialect stable prefix restart proof passed: $dataflow_id $first_epoch -> $second_epoch"
+    exit 0
+fi
+
+if [ "${scenario#round_}" != "$scenario" ]; then
+    added=$(query "SELECT COUNT(*) FROM dataflow_data d JOIN dataflow_nodes n ON n.node_id = d.node_id
+        WHERE d.dataflow_id = '$dataflow_id' AND d.type = 'agent.memory' AND d.discriminator = 'fact' AND n.parent_node_id IS NULL;")
+    warnings=$(query "SELECT COUNT(*) FROM dataflow_data d JOIN dataflow_nodes n ON n.node_id = d.node_id
+        WHERE d.dataflow_id = '$dataflow_id' AND d.type = 'agent.observation' AND d.key = '1_iterations_warning' AND n.parent_node_id IS NULL;")
+    expected_added=1
+    case "$scenario" in round_settle|round_yield_commands|round_artifact|round_command_delegate|round_yield_delegate|round_staggered_children|round_output_only) expected_added=0 ;; esac
+    [ "$added|$warnings" = "$expected_added|1" ] || {
+        echo "the round's text did not survive the restart: added=$added warnings=$warnings" >&2
+        exit 1
+    }
+    if [ "$scenario" = "round_command_delegate" ] || [ "$scenario" = "round_yield_delegate" ] \
+        || [ "$scenario" = "round_staggered_children" ] || [ "$scenario" = "round_output_only" ]; then
+        outputs=$(query "SELECT COUNT(*) FROM dataflow_data WHERE dataflow_id = '$dataflow_id'
+            AND type = 'agent.observation' AND key = '1_commands_output';")
+        children=$(query "SELECT COUNT(*) FROM dataflow_nodes WHERE dataflow_id = '$dataflow_id'
+            AND parent_node_id IS NOT NULL;")
+        expected_children=2
+        if [ "$scenario" = "round_staggered_children" ] || [ "$scenario" = "round_output_only" ]; then expected_children=3; fi
+        [ "$outputs|$children" = "1|$expected_children" ] || {
+            echo "delegating round lost command output or duplicated children: outputs=$outputs children=$children" >&2
+            exit 1
+        }
+        if [ "$scenario" = "round_staggered_children" ] || [ "$scenario" = "round_output_only" ]; then
+            if [ "$dialect" = "postgres" ]; then
+                pending_expr="metadata->>'agent_pending'"
+            else
+                pending_expr="json_extract(metadata, '$.agent_pending')"
+            fi
+            pending=$(query "SELECT $pending_expr FROM dataflow_nodes WHERE dataflow_id = '$dataflow_id' AND parent_node_id IS NULL;")
+            case "$pending" in false|0) ;; *) echo "pending commands were not cleared: $pending" >&2; exit 1 ;; esac
+        fi
+        verdict=""
+        attempts=0
+        while [ "$attempts" -lt 100 ]; do
+            verdict=$(query "SELECT verdict FROM restart_command_verdict LIMIT 1;" 2>/dev/null || true)
+            [ -n "$verdict" ] && break
+            attempts=$((attempts + 1))
+            sleep 0.1
+        done
+        [ "$verdict" = "ok" ] || {
+            echo "recovered command output did not reach a paired request: ${verdict:-no verdict}" >&2
+            exit 1
+        }
+    fi
+    if [ "$scenario" = "round_double_kill" ]; then
+        if [ "$dialect" = "postgres" ]; then
+            pending_expr="metadata->>'memory_pending'"
+            request_text="convert_from(store_value, 'UTF8')"
+        else
+            pending_expr="json_extract(metadata, '$.memory_pending')"
+            request_text="CAST(store_value AS TEXT)"
+        fi
+        pending=$(query "SELECT $pending_expr FROM dataflow_nodes WHERE dataflow_id = '$dataflow_id' AND parent_node_id IS NULL;")
+        case "$pending" in false|0) ;; *) echo "pending memory was not cleared: $pending" >&2; exit 1 ;; esac
+        request=$(query "SELECT $request_text FROM restart_recovery_store
+            WHERE store_key = 'agent_recovery:round-double-kill:request:2';")
+        case "$request" in *'\"text\":\"added at 1\"'*) ;; *) echo "the next request lost surviving memory" >&2; exit 1 ;; esac
+        case "$request" in *'\"text\":\"superseded\"'*) echo "the next request contains replaced memory" >&2; exit 1 ;; esac
+    fi
+    if [ "$scenario" = "round_settle" ]; then
+        if [ "$dialect" = "postgres" ]; then
+            settled_expr="metadata #>> '{session_context,settled_by}'"
+        else
+            settled_expr="json_extract(metadata, '$.session_context.settled_by')"
+        fi
+        settled=$(query "SELECT $settled_expr FROM dataflow_nodes WHERE dataflow_id = '$dataflow_id' AND parent_node_id IS NULL;")
+        [ "$settled" = "wrapper" ] || {
+            echo "the restart lost the after_execute proposal: ${settled:-none}" >&2
+            exit 1
+        }
+    fi
+    if [ "$scenario" = "round_yield_commands" ]; then
+        outputs=$(query "SELECT COUNT(*) FROM dataflow_data WHERE dataflow_id = '$dataflow_id' AND type = 'agent.observation' AND key = '1_commands_output';")
+        [ "$outputs" = "1" ] || {
+            echo "recovery did not collect the output of the yielded command child: outputs=$outputs" >&2
+            exit 1
+        }
+    fi
+    if [ "$scenario" = "round_artifact" ]; then
+        artifacts=$(query "SELECT COUNT(*) FROM dataflow_data WHERE dataflow_id = '$dataflow_id' AND type = 'artifact.data';")
+        [ "$artifacts" = "1" ] || {
+            echo "the re-run tool duplicated its artifact: artifacts=$artifacts" >&2
+            exit 1
+        }
+    fi
+    if [ "$scenario" = "round_yield" ]; then
+        if [ "$dialect" = "postgres" ]; then
+            agent_expr="config->>'agent'"
+        else
+            agent_expr="json_extract(config, '$.agent')"
+        fi
+        selected=$(query "SELECT $agent_expr FROM dataflow_nodes WHERE dataflow_id = '$dataflow_id' AND parent_node_id IS NULL;")
+        [ "$selected" = "userspace.dataflow.node.agent.stub:stable_prefix_switch_target_agent" ] || {
+            echo "the restart lost the switch committed before the yield: $selected" >&2
+            exit 1
+        }
+    fi
+    echo "$dialect $scenario restart proof passed: $dataflow_id $first_epoch -> $second_epoch"
+    exit 0
+fi
 
 if [ "$scenario" = "parallel_tools" ]; then
     if [ "$dialect" = "postgres" ]; then

@@ -661,6 +661,48 @@ local function define_tests()
             test.eq(result.count, 1)
             test.eq(result.events[1].metadata.result, false)
         end)
+        for _, kind in ipairs({ "tool_calls", "delegate_calls" }) do
+            for _, with_iteration in ipairs({ true, false }) do
+                test.it("keeps earlier arguments for reused " .. kind .. (with_iteration and " with iteration" or " by preceding action"), function()
+                    local db = get_db()
+                    local inserted = {}
+                    local now = time.now():format(time.RFC3339)
+                    local rows = {
+                        { type = agent_consts.DATA_TYPE.AGENT_ACTION,
+                            content = { [kind] = { { id = "c", name = "delete", arguments = { path = "a" } } } },
+                            metadata = with_iteration and { iteration = 1 } or {} },
+                        { type = kind == "tool_calls" and agent_consts.DATA_TYPE.AGENT_OBSERVATION
+                                or agent_consts.DATA_TYPE.AGENT_DELEGATION,
+                            content = "deleted", metadata = { iteration = with_iteration and 1 or nil,
+                                tool_call_id = "c", tool_name = "delete" } },
+                        { type = agent_consts.DATA_TYPE.AGENT_ACTION,
+                            content = { [kind] = { { id = "c", name = "delete", arguments = { path = "b" } } } },
+                            metadata = with_iteration and { iteration = 2 } or {} },
+                    }
+                    for index, row in ipairs(rows) do
+                        inserted[index] = uuid.v7()
+                        insert(db, "dataflow_data", { data_id = inserted[index], dataflow_id = flow_id, node_id = node_id,
+                            type = row.type, key = "reused-" .. index, content = json.encode(row.content),
+                            content_type = consts.CONTENT_TYPE.JSON, metadata = json.encode(row.metadata), created_at = now })
+                    end
+                    db:release()
+                    local all = read({ mode = "all" })
+                    local sliced = read({ mode = "range", from_id = inserted[1], to_id = inserted[2] })
+                    db = get_db()
+                    for _, id in ipairs(inserted) do delete(db, "dataflow_data", "data_id", id) end
+                    db:release()
+                    local earlier
+                    for _, event in ipairs(all.events) do
+                        if event.id == inserted[2] then earlier = event end
+                    end
+                    test.not_nil(earlier)
+                    test.eq(earlier.content.path, "a", "iteration 1 result keeps iteration 1 arguments")
+                    test.eq(earlier.metadata.result, "deleted")
+                    test.eq(sliced.count, 1)
+                    test.eq(sliced.events[1].content.path, "a", "a slice resolves the preceding action outside the slice")
+                end)
+            end
+        end
         test.it("keeps native source ids stable across bounded selectors", function()
             local result = read({mode = "range", from_id = ids[1], to_id = ids[3]})
             test.eq(result.count, 2)

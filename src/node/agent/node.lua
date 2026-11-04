@@ -19,6 +19,7 @@ local consts = require("consts")
 local tools = require("tools")
 local funcs = require("funcs")
 local node_reader = require("node_reader")
+local turn_context = require("turn_context")
 
 type ToolCall = {
     id: string,
@@ -182,6 +183,8 @@ end
 local RUN_CONTEXT_CONTRACT = "wippy.agent:run_context"
 local DEFAULT_RUN_CONTEXT_BINDING = "userspace.dataflow.node.agent.run_context:binding"
 local DEFAULT_CHECKPOINT_FUNCTION_ENV = "userspace.dataflow.env:checkpoint_function_id"
+local TURN_CONTEXT_KEY = "turn_context"
+local CONVERSATION_INPUT_KEY = "conversation_input"
 
 local OUTCOME = {
     CONTINUES = "continues",
@@ -289,26 +292,88 @@ local function apply_agent_lifecycle(agent_instance: any, phase: string, n: any,
     return lifecycle_runtime.apply(agent_instance.bindings, payload :: any)
 end
 
-local function append_lifecycle_messages(builder: any, result: table?)
-    if not builder or type(result) ~= "table" or type(result.messages) ~= "table" then
-        return
-    end
+-- A note a step sends after the history. It is stored before the step output,
+-- so every later request replays it where this one sent it.
+type StepNote = {
+    role: string,
+    content: string,
+    metadata: table,
+    lifecycle_phase: string?,
+}
 
+local NOTE_ROLES = { system = true, developer = true }
+
+local function positional_metadata(source: any): table
+    local metadata = {}
+    if type(source) == "table" then
+        for key, value in pairs(source) do metadata[key] = value end
+    end
+    metadata.preserve_position = true
+    return metadata
+end
+
+-- Lifecycle messages are host notes: a user or assistant role would put words
+-- in either party's mouth, so only developer and system are accepted.
+local function lifecycle_notes(result: table?, phase: string, agent_id: any): ({StepNote}?, string?)
+    local notes: {StepNote} = {}
+    if type(result) ~= "table" or type(result.messages) ~= "table" then
+        return notes, nil
+    end
     for _, message in ipairs(result.messages) do
         if type(message) == "table" then
             local content = message.content or message.text or message.data
             if type(content) == "string" and content ~= "" then
                 local role = message.role or message.type or "developer"
-                if role == "system" and type(builder.add_system) == "function" then
-                    builder:add_system(content)
-                elseif role == "user" and type(builder.add_user) == "function" then
-                    builder:add_user(content)
-                elseif role == "assistant" and type(builder.add_assistant) == "function" then
-                    builder:add_assistant(content, message.metadata)
-                elseif type(builder.add_developer) == "function" then
-                    builder:add_developer(content, message.metadata)
+                if not NOTE_ROLES[role] then
+                    return nil, string.format("Lifecycle %s message for agent %s has role '%s'; "
+                        .. "lifecycle messages must be developer or system notes",
+                        phase, tostring(agent_id), tostring(role))
                 end
+                table.insert(notes, { role = role, content = content,
+                    metadata = positional_metadata(message.metadata), lifecycle_phase = phase })
             end
+        end
+    end
+    return notes, nil
+end
+
+-- Context notes are prompt messages the agent sent after the conversation.
+local function context_notes(result: any): ({StepNote}?, string?)
+    local notes: {StepNote} = {}
+    if type(result) ~= "table" or type(result.context_notes) ~= "table" then
+        return notes, nil
+    end
+    for index, message in ipairs(result.context_notes) do
+        local role = type(message) == "table" and message.role or nil
+        local content = type(message) == "table" and message.content or nil
+        if type(content) == "table" and #content == 1 and type(content[1]) == "table"
+            and content[1].type == "text" then
+            content = content[1].text
+        end
+        if not NOTE_ROLES[role] or type(content) ~= "string" then
+            return nil, "Context note " .. tostring(index) .. " is not a single-text developer or system message"
+        end
+        table.insert(notes, { role = role, content = content, metadata = positional_metadata(message.metadata) })
+    end
+    return notes, nil
+end
+
+local function has_conversation(prompt: any): boolean
+    for _, message in ipairs(prompt:get_messages()) do
+        if message.role ~= "cache_marker"
+            and (message.role ~= "system" or (message.metadata or {}).preserve_position == true) then
+            return true
+        end
+    end
+    return false
+end
+
+local function append_step_notes(prompt: any, notes: {StepNote})
+    for _, note in ipairs(notes) do
+        if note.role == "system" then
+            prompt:add_system(note.content, note.metadata)
+        else
+            prompt:add_developer(note.content, note.metadata)
         end
     end
 end
@@ -365,71 +430,6 @@ local function decode_json_content(content: any, content_type: any)
     end
 
     return decoded
-end
-
-local function checkpoint_row_id(row)
-    if type(row) ~= "table" then
-        return ""
-    end
-    return tostring(row.data_id or "")
-end
-
-local function sort_checkpoint_rows(history_rows)
-    table.sort(history_rows, function(a, b)
-        return checkpoint_row_id(a) < checkpoint_row_id(b)
-    end)
-    return history_rows
-end
-
-local function find_latest_checkpoint_marker(history_rows)
-    for i = #history_rows, 1, -1 do
-        local item = history_rows[i]
-        if item.type == agent_consts.DATA_TYPE.AGENT_MEMORY
-           and item.metadata
-           and item.metadata.checkpoint_marker == true then
-            return item
-        end
-    end
-
-    return nil
-end
-
-local function is_structured_result_row(row)
-    if type(row) ~= "table" then
-        return false
-    end
-
-    local metadata = row.metadata or {}
-    if type(metadata.tool_call_id) ~= "string" or metadata.tool_call_id == "" then
-        return false
-    end
-    if type(metadata.tool_name) ~= "string" or metadata.tool_name == "" then
-        return false
-    end
-
-    return row.type == agent_consts.DATA_TYPE.AGENT_OBSERVATION
-        or row.type == agent_consts.DATA_TYPE.AGENT_DELEGATION
-end
-
-local function last_checkpoint_data_id(history_rows)
-    local latest = ""
-    for _, row in ipairs(history_rows or {}) do
-        local rid = checkpoint_row_id(row)
-        if rid > latest then
-            latest = rid
-        end
-    end
-    return latest
-end
-
-local function checkpoint_source_rows(history_rows)
-    local source_rows = {}
-    for _, row in ipairs(history_rows or {}) do
-        if not is_structured_result_row(row) then
-            source_rows[#source_rows + 1] = row
-        end
-    end
-    return source_rows
 end
 
 local function build_status_message(iteration, max_iterations, total_tokens, tool_calls_count, is_final, task_complete)
@@ -512,17 +512,23 @@ local function process_multiple_inputs(inputs)
         max_iterations_override = max_iterations_content
     end
 
-    local parts = {}
+    local keys = {}
     for key, input in pairs(inputs) do
         if prompt_builder.is_conversation_input(key) and input.content ~= nil then
-            local content = input.content
-            if type(content) == "table" then
-                content = json.encode(content)
-            else
-                content = tostring(content)
-            end
-            table.insert(parts, string.format('<input key="%s">\n%s\n</input>', key, content))
+            table.insert(keys, key)
         end
+    end
+    table.sort(keys)
+
+    local parts = {}
+    for _, key in ipairs(keys) do
+        local content = inputs[key].content
+        if type(content) == "table" then
+            content = json.encode(content)
+        else
+            content = tostring(content)
+        end
+        table.insert(parts, string.format('<input key="%s">\n%s\n</input>', key, content))
     end
 
     if #parts == 0 then
@@ -669,13 +675,17 @@ local function store_agent_action(n, agent_result, iteration, agent_id, model_na
 
     local action_key = is_exit_action and (iteration .. "_final") or (iteration .. "_action")
 
+    local llm_meta = {}
+    for key, value in pairs(agent_result.metadata or {}) do llm_meta[key] = value end
+    llm_meta.prefix_fingerprint = agent_result.prefix_fingerprint
+
     local metadata = {
         iteration = iteration,
         agent_id = agent_id,
         model = model_name,
         tokens = agent_result.tokens,
         finish_reason = agent_result.finish_reason,
-        llm_meta = agent_result.metadata or {},
+        llm_meta = llm_meta,
         memory_recall_error = agent_result.memory_recall_error,
     }
 
@@ -706,21 +716,75 @@ local function persisted_action_id(n, action_key): (string?, string?)
     return row.data_id, nil
 end
 
-local function store_memory_recall(n, agent_result, iteration)
-    if not agent_result.memory_prompt then
-        return
+local function store_step_notes(n, notes: {StepNote}, iteration)
+    for index, note in ipairs(notes) do
+        n:data(agent_consts.DATA_TYPE.AGENT_MEMORY, note.content, {
+            key = iteration .. "_note_" .. index,
+            content_type = consts.CONTENT_TYPE.TEXT,
+            node_id = n.node_id,
+            metadata = {
+                iteration = iteration,
+                role = note.role,
+                lifecycle_phase = note.lifecycle_phase,
+                llm_meta = note.metadata
+            }
+        })
     end
+end
 
-    n:data(agent_consts.DATA_TYPE.AGENT_MEMORY, agent_result.memory_prompt.content, {
-        key = iteration .. "_memory",
+-- The stored row decides: a start before the first commit renders the note, and
+-- every start after it replays the minute the first request sent.
+local function store_turn_context(n, agent_instance: any): any
+    local note, render_err = turn_context.render(agent_instance.agent_options, time.now())
+    if render_err then
+        return "Failed to render turn context: " .. tostring(render_err)
+    end
+    if not note then
+        return nil
+    end
+    local stored = n:query()
+        :with_nodes(n.node_id)
+        :with_data_types(agent_consts.DATA_TYPE.AGENT_MEMORY)
+        :with_data_keys(TURN_CONTEXT_KEY)
+        :one()
+    if stored then
+        return nil
+    end
+    n:data(agent_consts.DATA_TYPE.AGENT_MEMORY, note, {
+        key = TURN_CONTEXT_KEY,
         content_type = consts.CONTENT_TYPE.TEXT,
         node_id = n.node_id,
         metadata = {
-            iteration = iteration,
-            memory_ids = agent_result.memory_prompt.metadata and agent_result.memory_prompt.metadata.memory_ids,
-            llm_meta = agent_result.memory_prompt.metadata or {}
+            turn_context = true,
+            role = "system",
+            llm_meta = { preserve_position = true }
         }
     })
+    local _, yield_err = n:yield()
+    return yield_err
+end
+
+local function load_pinned_input(n)
+    local stored = n:query()
+        :with_nodes(n.node_id)
+        :with_data_types(agent_consts.DATA_TYPE.AGENT_INPUT)
+        :all()
+    return stored and stored[1] or nil
+end
+
+-- The fold is the first user message of every request, so the first start pins it.
+-- It commits with the node's first commit; a start before that sent nothing that
+-- an output depends on and folds again.
+local function pin_conversation_input(n, pinned_input, folded: string): string
+    if pinned_input then
+        return pinned_input.content
+    end
+    n:data(agent_consts.DATA_TYPE.AGENT_INPUT, folded, {
+        key = CONVERSATION_INPUT_KEY,
+        content_type = consts.CONTENT_TYPE.TEXT,
+        node_id = n.node_id,
+    })
+    return folded
 end
 
 local function extract_checkpoint_scenario_id(history_rows)
@@ -778,14 +842,15 @@ local function clamp_memory_text(text, max_chars)
         return text
     end
     local cap = math.floor(max_chars)
-    if #text <= cap then
+    local _, over_cap = prompt_builder.text_prefix(text, cap)
+    if not over_cap then
         return text
     end
     local suffix = " ... [truncated]"
     if cap <= #suffix then
-        return text:sub(1, cap)
+        return (prompt_builder.text_prefix(text, cap))
     end
-    return text:sub(1, cap - #suffix) .. suffix
+    return (prompt_builder.text_prefix(text, cap - #suffix)) .. suffix
 end
 
 -- Record a checkpoint-skipped observation row so non-strict mode leaves an
@@ -817,7 +882,66 @@ local function default_checkpoint_function_id(): string?
     return nil
 end
 
-local function maybe_checkpoint_history(n, config, session_context, agent_instance, agent_id, model_name, iteration)
+local function load_action_payload(action_row)
+    if not action_row then
+        return nil
+    end
+
+    local content = decode_json_content(action_row.content, action_row.content_type)
+    if type(content) ~= "table" then
+        content = {
+            result = content
+        }
+    end
+
+    return {
+        content = content,
+        metadata = action_row.metadata or {},
+        row = action_row
+    }
+end
+
+local function collect_unresolved_calls(action_payload, observed_tool_call_ids)
+    local unresolved_tool_calls = {}
+    local unresolved_delegate_calls = {}
+
+    for _, tool_call in ipairs(action_payload.content.tool_calls or {}) do
+        if tool_call.id and not observed_tool_call_ids[tool_call.id] then
+            table.insert(unresolved_tool_calls, tool_call)
+        end
+    end
+
+    for _, delegate_call in ipairs(action_payload.content.delegate_calls or {}) do
+        if delegate_call.id and not observed_tool_call_ids[delegate_call.id] then
+            table.insert(unresolved_delegate_calls, delegate_call)
+        end
+    end
+
+    return unresolved_tool_calls, unresolved_delegate_calls
+end
+
+-- A call of the newest action with no result may still get one: a finish whose node
+-- has not completed runs again on recovery. An older unanswered call cannot, so it is
+-- summarized with its round.
+local function latest_action_is_open(action_row, rows)
+    local payload = load_action_payload(action_row)
+    local metadata = payload and payload.metadata or {}
+    if not payload or metadata.finish_reason == "length" then
+        return false
+    end
+    local observed = {}
+    for _, row in ipairs(rows) do
+        local row_metadata = row.metadata or {}
+        if row_metadata.tool_call_id and row_metadata.iteration == metadata.iteration then
+            observed[row_metadata.tool_call_id] = true
+        end
+    end
+    local tools, delegates = collect_unresolved_calls(payload, observed)
+    return #tools > 0 or #delegates > 0
+end
+
+local function maybe_checkpoint_history(n, config, session_context, agent_instance, agent_id, model_name, iteration,
+                                        completing)
     local checkpoint_cfg = config and config.checkpoint
     if type(checkpoint_cfg) ~= "table" then
         return nil, nil
@@ -839,6 +963,7 @@ local function maybe_checkpoint_history(n, config, session_context, agent_instan
     end
 
     local history_rows = (n:query() :: any)
+        :fetch_options({ replace_references = true })
         :with_nodes(n.node_id)
         :with_data_types(
             agent_consts.DATA_TYPE.AGENT_ACTION,
@@ -852,7 +977,7 @@ local function maybe_checkpoint_history(n, config, session_context, agent_instan
         return nil, nil
     end
 
-    sort_checkpoint_rows(history_rows)
+    prompt_builder.sort_history_rows(history_rows)
 
     local latest_action = nil
     for i = #history_rows, 1, -1 do
@@ -874,37 +999,39 @@ local function maybe_checkpoint_history(n, config, session_context, agent_instan
         return nil, nil
     end
 
-    local cut_before = last_checkpoint_data_id(history_rows)
-    if cut_before == "" then
+    local source_rows = prompt_builder.checkpoint_source_rows(history_rows)
+
+    -- The result needs its call in the request. The request flag waits for the round
+    -- to close, unless this is the node's last commit and no request follows.
+    if not completing and latest_action_is_open(latest_action, source_rows) then
         return nil, nil
     end
 
-    local latest_marker = find_latest_checkpoint_marker(history_rows)
-    if latest_marker
-       and tostring((latest_marker.metadata or {}).checkpoint_before_data_id or "") == cut_before then
+    -- A summary with nothing after it has nothing to replace.
+    local latest_marker = prompt_builder.find_latest_checkpoint_marker(history_rows)
+    if #source_rows == (latest_marker and 1 or 0) then
         if compact_requested then n:update_metadata({ checkpoint_requested = false }) end
         return nil, nil
     end
 
-    local source_rows = checkpoint_source_rows(history_rows)
-    if #source_rows == 0 then
+    -- A failed summary of these same rows would fail again. New rows bring a new try.
+    local attempted_rows = prompt_builder.row_id(source_rows[#source_rows])
+    if n._failed_checkpoint_rows == attempted_rows then
         return nil, nil
     end
-
-    local retained_result_count = 0
-    for _, row in ipairs(history_rows) do
-        if is_structured_result_row(row) then
-            retained_result_count = retained_result_count + 1
-        end
+    local function failed(message, strict)
+        n._failed_checkpoint_rows = attempted_rows
+        return nil, message, strict
     end
 
-    -- Build a serialization-safe projection of history for the summarizer.
-    -- The function only receives rows that will actually be checkpointed; structured
-    -- call results remain in the prompt to preserve tool/result continuity.
+    local cut_before = prompt_builder.row_id(history_rows[#history_rows])
+
+    -- A serialization-safe projection of the rows the summary replaces, calls and
+    -- results together.
     local history_payload = {}
     for i, row in ipairs(source_rows) do
         history_payload[i] = {
-            data_id = tostring(row.data_id or ""),
+            data_id = prompt_builder.row_id(row),
             type = tostring(row.type or ""),
             content = stringify_history_content(row),
             content_type = tostring(row.content_type or ""),
@@ -950,14 +1077,13 @@ local function maybe_checkpoint_history(n, config, session_context, agent_instan
                 iteration = checkpoint_iteration,
                 prompt_tokens = prompt_tokens,
                 history_count = #history_payload,
-                retained_result_count = retained_result_count,
                 checkpoint_before_data_id = cut_before
             },
             history = history_payload,
             options = checkpoint_cfg,
         })
         if runtime_err then
-            return nil, "checkpoint binding failed: " .. error_message(runtime_err, "unknown"), true
+            return failed("checkpoint binding failed: " .. error_message(runtime_err, "unknown"), true)
         end
         if runtime_result and runtime_result.result then
             summary_result = runtime_result.result
@@ -972,7 +1098,7 @@ local function maybe_checkpoint_history(n, config, session_context, agent_instan
             if binding_failed then
                 -- Strict binding failures returned above. A non-strict failure
                 -- remains skippable unless the host requires strict checkpointing.
-                return nil, "checkpoint binding failed and no fallback function is configured"
+                return failed("checkpoint binding failed and no fallback function is configured")
             end
             return nil, nil
         end
@@ -988,14 +1114,13 @@ local function maybe_checkpoint_history(n, config, session_context, agent_instan
                 iteration = checkpoint_iteration,
                 prompt_tokens = prompt_tokens,
                 history_count = #history_payload,
-                retained_result_count = retained_result_count,
                 checkpoint_before_data_id = cut_before,
                 history = history_payload,
                 options = checkpoint_cfg,
             })
 
         if call_err then
-        return nil, "checkpoint function " .. func_id .. " failed: " .. error_message(call_err, "unknown")
+            return failed("checkpoint function " .. func_id .. " failed: " .. error_message(call_err, "unknown"))
         end
         checkpoint_source = "function"
     end
@@ -1007,13 +1132,13 @@ local function maybe_checkpoint_history(n, config, session_context, agent_instan
         memory_text = summary_result
     end
 
-    if type(memory_text) ~= "string" or memory_text == "" then
-        return nil, "checkpoint provider returned empty memory"
+    if type(memory_text) ~= "string" or not memory_text:match("%S") then
+        return failed("checkpoint provider returned empty memory")
     end
 
     -- Hard cap on stored memory to prevent hostile/buggy summarizers from
     -- bloating every future prompt. Default 8192 chars; configurable.
-    local max_memory_chars = tonumber(checkpoint_cfg.max_memory_chars) or 8192
+    local max_memory_chars = tonumber(checkpoint_cfg.max_memory_chars) or agent_consts.DEFAULTS.MAX_MEMORY_CHARS
     local original_memory_len = #memory_text
     memory_text = clamp_memory_text(memory_text, max_memory_chars)
     local memory_truncated = #memory_text < original_memory_len
@@ -1025,9 +1150,8 @@ local function maybe_checkpoint_history(n, config, session_context, agent_instan
         checkpoint_at_prompt_tokens = prompt_tokens,
         checkpoint_before_data_id = cut_before,
         checkpoint_history_count = #history_payload,
-        checkpoint_first_data_id = tostring((source_rows[1] or {}).data_id or ""),
-        checkpoint_last_data_id = tostring((source_rows[#source_rows] or {}).data_id or ""),
-        checkpoint_retained_result_count = retained_result_count,
+        checkpoint_first_data_id = prompt_builder.row_id(source_rows[1]),
+        checkpoint_last_data_id = prompt_builder.row_id(source_rows[#source_rows]),
         checkpoint_source_action_data_id = tostring(latest_action.data_id or ""),
         checkpoint_function_id = func_id,
         checkpoint_source = checkpoint_source,
@@ -1085,44 +1209,6 @@ local function load_observed_tool_call_ids(n, iteration)
     end
 
     return observed_ids
-end
-
-local function load_action_payload(action_row)
-    if not action_row then
-        return nil
-    end
-
-    local content = decode_json_content(action_row.content, action_row.content_type)
-    if type(content) ~= "table" then
-        content = {
-            result = content
-        }
-    end
-
-    return {
-        content = content,
-        metadata = action_row.metadata or {},
-        row = action_row
-    }
-end
-
-local function collect_unresolved_calls(action_payload, observed_tool_call_ids)
-    local unresolved_tool_calls = {}
-    local unresolved_delegate_calls = {}
-
-    for _, tool_call in ipairs(action_payload.content.tool_calls or {}) do
-        if tool_call.id and not observed_tool_call_ids[tool_call.id] then
-            table.insert(unresolved_tool_calls, tool_call)
-        end
-    end
-
-    for _, delegate_call in ipairs(action_payload.content.delegate_calls or {}) do
-        if delegate_call.id and not observed_tool_call_ids[delegate_call.id] then
-            table.insert(unresolved_delegate_calls, delegate_call)
-        end
-    end
-
-    return unresolved_tool_calls, unresolved_delegate_calls
 end
 
 local function queue_iteration_warning(n, iteration, max_iterations)
@@ -1191,12 +1277,9 @@ end
 
 local function collect_control_outputs(n, child_node_ids, yield_results)
     local output_data, output_err = child_output.collect_outputs(n, child_node_ids, yield_results)
-    if output_err then return nil, output_err end
-    if (type(yield_results) ~= "table" or next(yield_results) == nil)
-        and (not output_data or #output_data == 0) then
-        return nil, nil
-    end
-    return output_data or {}, nil
+    -- This callback runs after every recorded child has a terminal result.
+    n:update_metadata({ agent_pending = false })
+    return output_data, output_err
 end
 
 local function resume_control_commands(n, child_node_ids, iteration)
@@ -1228,16 +1311,18 @@ local function resume_control_commands(n, child_node_ids, iteration)
         })
     end
 
-    n:update_metadata({ agent_pending = false })
     local _, flush_err = n:yield()
     return flush_err
 end
 
-local function run_control_response_commands(control_responses, agent_ctx, n, iteration)
-    local _changes_summary, changes_err = control_handler.apply_control_responses(control_responses, agent_ctx, n)
-    if changes_err then return changes_err end
-
+local function apply_control_response_commands(control_responses, agent_ctx, n, iteration)
     local created_node_ids = {}
+    local pending = (n:metadata() or {}).agent_pending
+    if type(pending) == "table" then
+        for _, node_id in ipairs(pending.child_node_ids or {}) do
+            table.insert(created_node_ids, node_id)
+        end
+    end
     for _, response in ipairs(control_responses) do
         if response.changes_applied and response.changes_applied.commands and response.changes_applied.created_nodes then
             for _, node_id in ipairs(response.changes_applied.created_nodes) do
@@ -1246,18 +1331,29 @@ local function run_control_response_commands(control_responses, agent_ctx, n, it
         end
     end
 
-    if #created_node_ids == 0 then return nil end
+    -- Persist the exact child set in the same commit that creates it, ahead of any
+    -- yield directive. A restarted Agent must resume this DAG and collect its output,
+    -- not ask the model to compose a replacement.
+    if #created_node_ids > 0 then
+        n:update_metadata({
+            agent_pending = {
+                iteration = iteration,
+                child_node_ids = created_node_ids
+            }
+        })
+    end
 
-    -- Persist the exact child set in the same commit that creates it. A restarted
-    -- Agent must resume this DAG, not ask the model to compose a replacement.
-    n:update_metadata({
-        agent_pending = {
-            iteration = iteration,
-            child_node_ids = created_node_ids
-        }
-    })
+    local _changes_summary, changes_err = control_handler.apply_control_responses(control_responses, agent_ctx, n)
+    return changes_err
+end
 
-    local resume_err = resume_control_commands(n, created_node_ids, iteration)
+local function resume_pending_control_commands(n, iteration)
+    local pending = (n:metadata() or {}).agent_pending
+    if type(pending) ~= "table" or type(pending.child_node_ids) ~= "table"
+        or #pending.child_node_ids == 0 then return nil end
+
+    iteration = tonumber(pending.iteration) or iteration
+    local resume_err = resume_control_commands(n, pending.child_node_ids, iteration)
     if resume_err then
         n:data(agent_consts.DATA_TYPE.AGENT_OBSERVATION,
             "Command execution failed: " .. error_message(resume_err, "unknown"), {
@@ -1302,12 +1398,12 @@ local function load_tool_viz_nodes(n, iteration): ({[string]: string}?, string?)
     return node_ids, nil
 end
 
--- A call listed in `committed_node_ids` keeps the node a previous run created
--- for it; every other call gets a new node.
 local function tool_error_text(tool_error: any): string
     return error_message(tool_error, "Tool call failed")
 end
 
+-- A call listed in `committed_node_ids` keeps its existing node;
+-- every other call gets a new node.
 local function create_tool_viz_nodes(n, tool_calls: { ToolCall }?, iteration, show_tool_calls, exit_tool_name,
                                      committed_node_ids: {[string]: string}?)
     local tool_call_to_node_id = {}
@@ -1405,6 +1501,17 @@ local function update_tool_viz_nodes(n, tool_results, tool_call_to_node_id, pers
     end
 end
 
+local function cancel_unfinished_tool_viz_nodes(n, finished_call_ids, tool_call_to_node_id)
+    for call_id, viz_node_id in pairs(tool_call_to_node_id) do
+        if not finished_call_ids[call_id] then
+            n:command({
+                type = consts.COMMAND_TYPES.UPDATE_NODE,
+                payload = { node_id = viz_node_id, status = consts.STATUS.CANCELLED }
+            })
+        end
+    end
+end
+
 -- Provider responses are external input. Validate call metadata before any
 -- phase uses it for routing, persistence, invocation, or observation keys.
 -- In particular, do not turn a malformed call into an observation with an
@@ -1454,10 +1561,6 @@ local function split_exit_tool_calls(tool_calls: {ToolCall}?, exit_tool_name: st
 end
 
 local function prepare_tools(agent_result: { tool_calls: { ToolCall }? }, caller): (any, {ToolCall}, string?)
-    if not agent_result.tool_calls or #agent_result.tool_calls == 0 then
-        return {}, {}, nil
-    end
-
     local validated_tools, validate_err = caller:validate(agent_result.tool_calls)
     if validate_err then
         return {}, {}, validate_err
@@ -1560,8 +1663,8 @@ local function record_tool_observation(n, iteration, tool_call, content, tool_er
     local obs_content = content
     if tool_error ~= nil then
         obs_content = tool_error_text(tool_error)
-    elseif obs_content == nil then
-        obs_content = "nil"
+    elseif type(obs_content) ~= "table" then
+        obs_content = tostring(obs_content)
     end
 
     n:data(agent_consts.DATA_TYPE.AGENT_OBSERVATION, obs_content, {
@@ -1694,10 +1797,12 @@ local function process_tool_results(n, tool_results, iteration, exit_tool_name, 
                 local tool_result = result_data.result
                 local tool_error = result_data.error
 
-                local cleaned_result, control_response = control_handler.process_control_directive(
-                    tool_result, n, iteration
+                local cleaned_result, control_response, control_err = control_handler.process_control_directive(
+                    tool_result, n, iteration, call_id
                 )
+                if control_err then return nil, nil, false, nil, control_err end
                 if control_response then
+                    control_response.tool_call_id = call_id
                     table.insert(control_responses, control_response)
 
                     if control_response.delegate then
@@ -1727,7 +1832,7 @@ end
 -- directive stays with the after-batch pass, which applies directives in model
 -- order. In a round with an exit call a valid finish drops sibling
 -- observations, so only argument failures, which that rule keeps, commit early.
--- Returns the listener and the set of call ids it committed.
+-- Returns the listener, committed call ids, and calls with queued visualization results.
 local function tool_result_persister(n, iteration, tool_calls: {ToolCall}, has_exit_call: boolean,
                                      tool_call_to_node_id, show_tool_calls)
     local calls_by_id = {}
@@ -1735,6 +1840,7 @@ local function tool_result_persister(n, iteration, tool_calls: {ToolCall}, has_e
         calls_by_id[tool_call.id] = tool_call
     end
     local persisted: {[string]: boolean} = {}
+    local finished_viz_calls: {[string]: boolean} = {}
 
     local function listener(call_id, result)
         local tool_call = calls_by_id[call_id]
@@ -1747,8 +1853,17 @@ local function tool_result_persister(n, iteration, tool_calls: {ToolCall}, has_e
         end
         if show_tool_calls then
             update_tool_viz_nodes(n, { [call_id] = result }, tool_call_to_node_id)
+            finished_viz_calls[call_id] = true
         end
         record_tool_observation(n, iteration, tool_call, result_data.result, result_data.error, tool_call_to_node_id)
+        local pending = (n:metadata() or {}).memory_pending
+        if type(pending) == "table" and pending.iteration == iteration and (pending.by_call or {})[call_id] then
+            local by_call = {}
+            for pending_call_id, items in pairs(pending.by_call) do
+                if pending_call_id ~= call_id then by_call[pending_call_id] = items end
+            end
+            n:update_metadata({ memory_pending = { iteration = iteration, by_call = by_call } })
+        end
         local submitted, submit_err = n:submit()
         if not submitted then
             return nil, error_message(submit_err, "unknown")
@@ -1757,7 +1872,7 @@ local function tool_result_persister(n, iteration, tool_calls: {ToolCall}, has_e
         return true, nil
     end
 
-    return listener, persisted
+    return listener, persisted, finished_viz_calls
 end
 
 local function tools_were_attempted(agent_result)
@@ -1790,13 +1905,21 @@ local function has_usable_result(result)
 end
 
 local function completion_decision(tool_calling, agent_result: any, iteration, min_iterations, exit_tool_name)
+    -- A turn that gets no feedback leaves the next request ending on the assistant.
     if iteration < min_iterations then
-        return false, nil, nil, nil
+        if tools_were_attempted(agent_result) then
+            return false, nil, nil, nil
+        end
+        return false, nil, agent_consts.FEEDBACK.CONTINUE_WORKING, "_continue_working"
     end
 
     if tool_calling == agent_consts.TOOL_CALLING.NONE then
         if has_usable_result(agent_result.result) then
             return true, agent_result.result, nil, nil
+        end
+        -- Empty text stores no assistant message, so only other unusable text needs this.
+        if agent_result.result ~= nil and agent_result.result ~= "" then
+            return false, nil, agent_consts.FEEDBACK.EMPTY_RESULT, "_empty_result"
         end
     elseif tool_calling == agent_consts.TOOL_CALLING.AUTO then
         if not tools_were_attempted(agent_result) then
@@ -1857,6 +1980,41 @@ local function is_unproductive_turn(tool_calling, agent_result: any, iteration, 
     return tool_calling == agent_consts.TOOL_CALLING.ANY
 end
 
+local function action_call_ids(tool_calls): {string}
+    local ids = {}
+    for _, tool_call in ipairs(tool_calls or {}) do table.insert(ids, tool_call.id) end
+    return ids
+end
+
+-- The round's memory additions in the action's call order, and the same additions by
+-- call id. A call that ran again replaces whatever it added on its earlier run.
+local function round_memory_additions(n, iteration, agent_result: any, control_responses): ({any}, {[string]: any})
+    local by_call = {}
+    local pending = (n:metadata() or {}).memory_pending
+    if type(pending) == "table" and pending.iteration == iteration then
+        for call_id, items in pairs(pending.by_call or {}) do by_call[call_id] = items end
+    end
+    for _, tool_call in ipairs(agent_result.tool_calls or {}) do by_call[tool_call.id] = nil end
+    for _, response in ipairs(control_responses) do
+        local items = control_handler.memory_additions(response)
+        if #items > 0 then by_call[response.tool_call_id] = items end
+    end
+
+    local additions = {}
+    local function take(call_id)
+        for _, item in ipairs(by_call[call_id] or {}) do table.insert(additions, item) end
+    end
+    local listed = {}
+    for _, call_id in ipairs(agent_result.action_call_ids or {}) do
+        listed[call_id] = true
+        take(call_id)
+    end
+    for _, response in ipairs(control_responses) do
+        if not listed[response.tool_call_id] then take(response.tool_call_id) end
+    end
+    return additions, by_call
+end
+
 local function finalize_iteration(n, agent_ctx, session_context, iteration, max_iterations, min_iterations, tool_calling,
                                   exit_tool_name, agent_result: any, delegate_calls: any, tool_results, arena_config,
                                   tool_call_to_node_id, proposed_controls, persisted_call_ids: {[string]: boolean}?)
@@ -1869,7 +2027,7 @@ local function finalize_iteration(n, agent_ctx, session_context, iteration, max_
     end
     local prepared, prepare_err = behavior_controls.prepare(proposed_controls)
     if not prepared then return nil, nil, prepare_err end
-    local control_responses, control_delegations, task_complete, final_result = process_tool_results(
+    local control_responses, control_delegations, task_complete, final_result, results_err = process_tool_results(
         n,
         tool_results,
         iteration,
@@ -1881,23 +2039,44 @@ local function finalize_iteration(n, agent_ctx, session_context, iteration, max_
         #prepared > 0,
         persisted_call_ids
     )
+    if results_err then return nil, nil, results_err end
 
     append_control_delegations(delegate_calls, control_delegations)
-    queue_iteration_warning(n, iteration, max_iterations)
+    local has_delegations = #delegate_calls > 0
+
+    -- Host text follows every result of the round; between a call and its result it
+    -- makes the request invalid. Without a delegation every result is written here. A
+    -- delegate's result comes later, so the additions wait in the node metadata.
+    local additions, pending_by_call = round_memory_additions(n, iteration, agent_result, control_responses)
+    local had_pending = type((n:metadata() or {}).memory_pending) == "table"
+    if has_delegations then
+        if #additions > 0 then
+            n:update_metadata({ memory_pending = { iteration = iteration, by_call = pending_by_call } })
+        elseif had_pending then
+            n:update_metadata({ memory_pending = false })
+        end
+    else
+        control_handler.queue_memory_additions(additions, n, iteration)
+        queue_iteration_warning(n, iteration, max_iterations)
+        n:update_metadata({ round_settled = iteration })
+        if had_pending then n:update_metadata({ memory_pending = false }) end
+    end
     if #prepared > 0 then n:update_metadata({ behavior_pending = { iteration = iteration, controls = prepared } }) end
+
+    -- Everything above commits before anything waits, together with the results and
+    -- any switch: the stored results no longer hold the directive, so recovery could
+    -- not apply it again.
+    if #control_responses > 0 then
+        local changes_err = apply_control_response_commands(control_responses, agent_ctx, n, iteration)
+        if changes_err then
+            return nil, nil, changes_err
+        end
+    end
+
     local _, persist_err = n:yield()
     if persist_err then return nil, nil, persist_err end
 
-    local has_delegations = #delegate_calls > 0
-
     if has_delegations then
-        if #control_responses > 0 then
-            local _changes_summary, changes_err = control_handler.apply_control_responses(control_responses, agent_ctx, n)
-            if changes_err then
-                return nil, nil, changes_err
-            end
-        end
-
         local delegation_infos = delegation_handler.create_delegation_batch(
             { delegate_calls = delegate_calls },
             n,
@@ -1911,14 +2090,17 @@ local function finalize_iteration(n, agent_ctx, session_context, iteration, max_
         end
 
         delegation_handler.map_delegation_results_to_conversation(delegation_results, n, iteration)
+        control_handler.queue_memory_additions(additions, n, iteration)
+        queue_iteration_warning(n, iteration, max_iterations)
+        n:update_metadata({ round_settled = iteration })
+        if #additions > 0 then n:update_metadata({ memory_pending = false }) end
         local _, delegation_persist_err = n:yield()
         if delegation_persist_err then return nil, nil, delegation_persist_err end
-    elseif #control_responses > 0 then
-        local changes_err = run_control_response_commands(control_responses, agent_ctx, n, iteration)
-        if changes_err then
-            return nil, nil, changes_err
-        end
     end
+
+    -- Command output is host text, so it follows every call's result, including delegates.
+    local commands_err = resume_pending_control_commands(n, iteration)
+    if commands_err then return nil, nil, commands_err end
 
     if #prepared > 0 then
         local applied, control_err = control_handler.apply_behavior_controls(prepared, agent_ctx, n, iteration)
@@ -1947,6 +2129,96 @@ local function finalize_iteration(n, agent_ctx, session_context, iteration, max_
     return task_complete, final_result, nil
 end
 
+-- A kill after the last per-call commit and before finalize's commit leaves a resolved
+-- round with no iteration warning and no after_execute proposals. Replay is at-least-once,
+-- as for every wrapper; a run stored without round_settled gets it once on resume.
+-- A recovered call in the shape the caller validated it to, so after_execute sees what it
+-- sees live. The context and provider data are those stored with the call.
+local function validated_call(tool_call: any): table
+    local validated = {
+        call_id = tool_call.id,
+        name = tool_call.name,
+        args = tool_call.arguments,
+        registry_id = tool_call.registry_id,
+        context = tool_call.context,
+        provider_metadata = tool_call.provider_metadata,
+        meta = {},
+        valid = false,
+    }
+    if tool_call.arguments_error then
+        validated.error = "Failed to parse arguments: " .. tool_call.arguments_error
+        return validated
+    end
+    local schema, schema_err = tools.get_tool_schema(tool_call.registry_id)
+    if schema_err then
+        validated.error = "Failed to get tool schema: " .. tostring(schema_err)
+        return validated
+    end
+    validated.meta = schema and schema.meta or {}
+    validated.valid = true
+    return validated
+end
+
+local function settle_recovered_round(n, caller, agent_instance, action_payload, iteration, max_iterations,
+                                      proposed_controls, agent_id, model_name, run_context_binding, exit_tool_name)
+    local tool_calls = split_exit_tool_calls(action_payload.content.tool_calls, exit_tool_name)
+    local calls_by_id = {}
+    for _, tool_call in ipairs(tool_calls) do calls_by_id[tool_call.id] = tool_call end
+    local tool_results = {}
+    local observations = n:query()
+        :with_nodes(n.node_id)
+        :with_data_types(agent_consts.DATA_TYPE.AGENT_OBSERVATION)
+        :all()
+    for _, row in ipairs(observations or {}) do
+        local metadata = row.metadata or {}
+        local tool_call = calls_by_id[metadata.tool_call_id]
+        if tool_call and metadata.iteration == iteration then
+            local content = row.content
+            if row.content_type == consts.CONTENT_TYPE.JSON then
+                content = decode_json_content(row.content, row.content_type)
+            end
+            tool_results[tool_call.id] = {
+                result = not metadata.is_error and content or nil,
+                error = metadata.is_error and content or nil,
+                tool_call = validated_call(tool_call),
+            }
+        end
+    end
+    configure_tool_wrappers(caller, agent_instance, n, agent_id, model_name, iteration, nil, run_context_binding)
+    caller:apply_tool_wrappers(tool_caller.PHASE.AFTER_EXECUTE, {
+        tool_calls = tool_calls,
+        tool_results = tool_results,
+    })
+    local controls = {}
+    for _, control in ipairs(proposed_controls) do controls[#controls + 1] = control end
+    for _, control in ipairs(caller:get_wrapper_controls()) do controls[#controls + 1] = control end
+    local prepared, prepare_err = behavior_controls.prepare(controls)
+    if not prepared then return nil, prepare_err end
+
+    local additions = round_memory_additions(n, iteration, {
+        action_call_ids = action_call_ids(action_payload.content.tool_calls),
+    }, {})
+    control_handler.queue_memory_additions(additions, n, iteration)
+    if type((n:metadata() or {}).memory_pending) == "table" then
+        n:update_metadata({ memory_pending = false })
+    end
+    local stored_warning = n:query()
+        :with_nodes(n.node_id)
+        :with_data_types(agent_consts.DATA_TYPE.AGENT_OBSERVATION)
+        :with_data_keys(iteration .. "_iterations_warning", iteration .. "_final_warning")
+        :one()
+    if not stored_warning then
+        queue_iteration_warning(n, iteration, max_iterations)
+    end
+    n:update_metadata({ round_settled = iteration })
+    if #prepared > 0 then
+        n:update_metadata({ behavior_pending = { iteration = iteration, controls = prepared } })
+    end
+    local _, persist_err = n:yield()
+    if persist_err then return nil, persist_err end
+    return prepared, nil
+end
+
 local function recover_persisted_action(n, agent_ctx, agent_instance, caller, session_context, config, iteration, max_iterations,
                                         min_iterations, tool_calling, exit_tool_name, show_tool_calls, agent_id, model_name)
     local latest_action_row = load_latest_agent_action(n)
@@ -1962,7 +2234,12 @@ local function recover_persisted_action(n, agent_ctx, agent_instance, caller, se
     local action_iteration = (action_payload.metadata and action_payload.metadata.iteration) or iteration or 0
     local finish_reason = action_payload.metadata and action_payload.metadata.finish_reason
     if finish_reason == "length" then
-        return false, nil, action_iteration, nil
+        local warning = n:query()
+            :with_nodes(n.node_id)
+            :with_data_types(agent_consts.DATA_TYPE.AGENT_OBSERVATION)
+            :with_data_keys(action_iteration .. "_truncation_warning")
+            :one()
+        if warning then return false, nil, action_iteration, nil end
     end
 
     local calls_valid, calls_err = validate_tool_calls(action_payload.content.tool_calls)
@@ -1973,18 +2250,6 @@ local function recover_persisted_action(n, agent_ctx, agent_instance, caller, se
         }
     end
 
-    local pending = (n:metadata() or {}).agent_pending
-    if type(pending) == "table"
-        and type(pending.child_node_ids) == "table"
-        and #pending.child_node_ids > 0 then
-        local pending_iteration = tonumber(pending.iteration) or action_iteration
-        local resume_err = resume_control_commands(n, pending.child_node_ids, pending_iteration)
-        if resume_err then
-            return false, nil, action_iteration,
-                "Failed to resume control commands: " .. error_message(resume_err, "unknown")
-        end
-    end
-
     local observed_tool_call_ids = load_observed_tool_call_ids(n, action_iteration)
     local unresolved_tool_calls, unresolved_delegate_calls = collect_unresolved_calls(action_payload, observed_tool_call_ids)
 
@@ -1993,6 +2258,18 @@ local function recover_persisted_action(n, agent_ctx, agent_instance, caller, se
     local proposed_controls = type(behavior_pending) == "table" and
         behavior_pending.iteration == action_iteration and behavior_pending.controls or {}
     if not has_unresolved_work then
+        local resume_err = resume_pending_control_commands(n, action_iteration)
+        if resume_err then
+            return false, nil, action_iteration,
+                "Failed to resume control commands: " .. error_message(resume_err, "unknown")
+        end
+        if tools_were_attempted(action_payload.content) and (n:metadata() or {}).round_settled ~= action_iteration then
+            local settle_err
+            proposed_controls, settle_err = settle_recovered_round(n, caller, agent_instance, action_payload,
+                action_iteration, max_iterations, proposed_controls, agent_id, model_name,
+                string_or_nil(config.run_context_binding), exit_tool_name)
+            if settle_err then return false, nil, action_iteration, settle_err end
+        end
         if #proposed_controls > 0 then
             local applied, control_err = control_handler.apply_behavior_controls(proposed_controls, agent_ctx, n, action_iteration)
             if not applied then return false, nil, action_iteration, control_err end
@@ -2038,10 +2315,11 @@ local function recover_persisted_action(n, agent_ctx, agent_instance, caller, se
     end
     local tool_call_to_node_id = create_tool_viz_nodes(n, effective_tool_calls, action_iteration, show_tool_calls,
         exit_tool_name, committed_node_ids)
-    local result_listener, persisted_call_ids = tool_result_persister(n, action_iteration, effective_tool_calls,
+    local result_listener, persisted_call_ids, finished_viz_calls = tool_result_persister(n, action_iteration, effective_tool_calls,
         #exit_tool_calls > 0, tool_call_to_node_id, show_tool_calls)
     local tool_results, execute_err = execute_tools(caller, session_context, validated_tools, result_listener)
     if execute_err then
+        cancel_unfinished_tool_viz_nodes(n, finished_viz_calls, tool_call_to_node_id)
         return false, nil, action_iteration, execute_err
     end
     local combined_controls = {}
@@ -2063,7 +2341,8 @@ local function recover_persisted_action(n, agent_ctx, agent_instance, caller, se
     local recovered_agent_result = {
         result = action_payload.content.result,
         tool_calls = recovered_tool_calls,
-        delegate_calls = unresolved_delegate_calls
+        delegate_calls = unresolved_delegate_calls,
+        action_call_ids = action_call_ids(action_payload.content.tool_calls)
     }
 
     local delegate_calls = {} :: { any }
@@ -2160,10 +2439,41 @@ local function run(args)
         }, input_err)
     end
 
-    if agent_id_override then
-        n:update_config({ agent = agent_id_override })
+    local saved_state = ((args.node or {}).metadata or {}).state or {}
 
-        n:update_metadata({ title = agent_ref.resolve(agent_id_override).title })
+    -- Inputs choose the agent and model until the node's first commit, which stores
+    -- that choice and the input pin; after it the config holds the selection, including
+    -- any switch. A run stored before the pin stores the model it was using now, unless
+    -- its config has moved on.
+    local pinned_input = load_pinned_input(n)
+    if saved_state.agent_id == nil then
+        if agent_id_override then
+            n:update_config({ agent = agent_id_override })
+
+            n:update_metadata({ title = agent_ref.resolve(agent_id_override).title })
+        end
+        if model_override then
+            n:update_config({ model = model_override })
+        end
+    else
+        agent_id_override = nil
+        if pinned_input then
+            model_override = config.model
+        else
+            -- The state is older than a switch the config already holds.
+            local config_agent = config.agent
+            if type(config_agent) == "table" then
+                config_agent = config_agent.id or config_agent.name
+            end
+            if saved_state.agent_id ~= config_agent or (not model_override and config.model) then
+                model_override = config.model
+            else
+                model_override = saved_state.model
+                if model_override then
+                    n:update_config({ model = model_override })
+                end
+            end
+        end
     end
 
     model_override = model_override or config.model or config.arena.model
@@ -2259,12 +2569,27 @@ local function run(args)
         }, "Failed to initialize prompt builder")
     end
 
-    builder:with_arena_config(config.arena):with_initial_input(input_data)
+    -- An empty fold cannot be a user turn; the arena prompt is the node's instruction.
+    local first_message = input_data
+    if first_message == "" and type(config.arena.prompt) == "string" and config.arena.prompt:match("%S") then
+        first_message = config.arena.prompt
+    end
+    builder:with_arena_config(config.arena):with_initial_input(pin_conversation_input(n, pinned_input, first_message))
+    -- A resumed stored run has sent this input already: pin it before anything else
+    -- happens on this resume, so a later input cannot change it.
+    if not pinned_input and saved_state.agent_id ~= nil then
+        local _, pin_err = n:yield()
+        if pin_err then
+            return n:fail({
+                code = agent_consts.ERROR.AGENT_EXEC_FAILED,
+                message = error_message(pin_err, "Failed to store the conversation input")
+            }, error_message(pin_err, "Failed to store the conversation input"))
+        end
+    end
     local caller = tool_caller.new()
     -- The tool calls of one model turn run concurrently, as in the session host.
     caller:set_strategy(tool_caller.STRATEGY.PARALLEL)
 
-    local saved_state = ((args.node or {}).metadata or {}).state or {}
     local iteration = saved_state.current_iteration or 0
     local max_iterations = max_iterations_override or config.arena.max_iterations or agent_consts.DEFAULTS.MAX_ITERATIONS
     local min_iterations = config.arena.min_iterations or agent_consts.DEFAULTS.MIN_ITERATIONS
@@ -2437,7 +2762,7 @@ local function run(args)
         return true
     end
 
-    local function flush_requested_checkpoint()
+    local function flush_requested_checkpoint(completing)
         if (n:metadata() or {}).checkpoint_requested ~= true then return true end
         -- A proposal may switch agent/model/overlays before requesting compact.
         -- Resolve the committed target here, as recovery does at node startup,
@@ -2448,12 +2773,17 @@ local function run(args)
         local marker, checkpoint_err, strict_err = maybe_checkpoint_history(n, {
             checkpoint = options, run_context_binding = config.run_context_binding,
         }, context_with_agent_run(session_context, n, agent_id, model_name, iteration,
-            config.run_context_binding), agent_instance, agent_id, model_name, iteration)
+            config.run_context_binding), agent_instance, agent_id, model_name, iteration, completing)
         if checkpoint_err then
-            if strict_err or (options and options.strict == true) then return nil, checkpoint_err end
+            -- No request follows a completing node, so strict has nothing left to protect.
+            if not completing and (strict_err or (options and options.strict == true)) then
+                return nil, checkpoint_err
+            end
             record_checkpoint_skip(n, iteration, checkpoint_err)
         end
-        if marker or checkpoint_err or (n:metadata() or {}).checkpoint_requested ~= true then
+        -- A completing node commits the marker with its completion, so no restart can run
+        -- the finish again against a cut that holds its call.
+        if not completing and (marker or checkpoint_err or (n:metadata() or {}).checkpoint_requested ~= true) then
             local _, persist_err = n:yield()
             if persist_err then return nil, persist_err end
         end
@@ -2498,7 +2828,7 @@ local function run(args)
         return fail_with_lifecycle({ code = agent_consts.ERROR.AGENT_LOAD_FAILED, message = recovered_agent_err },
             recovered_agent_err, REASON.HOST_FAILED, iteration)
     end
-    local recovered_checkpoint_ok, recovered_checkpoint_err = flush_requested_checkpoint()
+    local recovered_checkpoint_ok, recovered_checkpoint_err = flush_requested_checkpoint(recovered_complete == true)
     if not recovered_checkpoint_ok then
         local checkpoint_message = recovered_checkpoint_err or "Requested checkpoint failed"
         return fail_with_lifecycle({ code = agent_consts.ERROR.CHECKPOINT_FAILED, message = checkpoint_message },
@@ -2513,6 +2843,18 @@ local function run(args)
     -- before failing resolves the same way it would have without the restart.
     if not task_complete and unproductive_steps >= max_unproductive_steps then
         return fail_unproductive()
+    end
+
+    -- A run past its first iteration already sent its input, with or without a note.
+    if iteration == 0 and not task_complete then
+        local turn_context_err = store_turn_context(n, agent_instance)
+        if turn_context_err then
+            local turn_context_message = error_message(turn_context_err, "Failed to store turn context")
+            return fail_with_lifecycle({
+                code = agent_consts.ERROR.AGENT_EXEC_FAILED,
+                message = turn_context_message
+            }, turn_context_message, REASON.HOST_FAILED, iteration)
+        end
     end
 
     while iteration < max_iterations and not task_complete do
@@ -2560,7 +2902,13 @@ local function run(args)
                 message = activate_err
             }, activate_err, REASON.HOST_FAILED, iteration)
         end
-        append_lifecycle_messages(prompt, activate_result)
+        local step_notes, activate_notes_err = lifecycle_notes(activate_result, lifecycle_runtime.PHASE.ACTIVATE, agent_id)
+        if not step_notes then
+            return fail_with_lifecycle({
+                code = agent_consts.ERROR.AGENT_EXEC_FAILED,
+                message = activate_notes_err
+            }, activate_notes_err, REASON.HOST_FAILED, iteration)
+        end
 
         local before_result, before_err = apply_agent_lifecycle(
             agent_instance,
@@ -2587,9 +2935,30 @@ local function run(args)
                 message = before_err
             }, before_err, REASON.HOST_FAILED, iteration)
         end
-        append_lifecycle_messages(prompt, before_result)
+        local before_notes, before_notes_err = lifecycle_notes(before_result, lifecycle_runtime.PHASE.BEFORE_STEP, agent_id)
+        if not before_notes then
+            return fail_with_lifecycle({
+                code = agent_consts.ERROR.AGENT_EXEC_FAILED,
+                message = before_notes_err
+            }, before_notes_err, REASON.HOST_FAILED, iteration)
+        end
+        for _, note in ipairs(before_notes) do table.insert(step_notes, note) end
+        append_step_notes(prompt, step_notes)
 
-        local step_options = { tool_call = tool_calling, context = run_session_context }
+        -- The system text is not a turn, and Claude and Bedrock reject an empty one.
+        if not has_conversation(prompt) then
+            local nothing_message = "Agent node has nothing to send: no conversation input, note or history"
+            return fail_with_lifecycle({
+                code = agent_consts.ERROR.INPUT_VALIDATION_FAILED,
+                message = nothing_message
+            }, nothing_message, REASON.HOST_FAILED, iteration)
+        end
+
+        local step_options = {
+            tool_call = tool_calling,
+            context = run_session_context,
+            drop_stale_thinking = true
+        }
         -- "any" is enforced here: the arena answers a text-only turn with feedback
         -- and completes only through the finish tool. A model that cannot be
         -- forced may therefore be asked with "auto" (see the llm model_profile).
@@ -2617,6 +2986,15 @@ local function run(args)
             }, calls_err, REASON.HOST_FAILED, iteration)
         end
         route_pin = carry_route_pin(route_pin, agent_result)
+
+        local sent_notes, sent_notes_err = context_notes(agent_result)
+        if not sent_notes then
+            return fail_with_lifecycle({
+                code = agent_consts.ERROR.AGENT_EXEC_FAILED,
+                message = sent_notes_err
+            }, sent_notes_err, REASON.HOST_FAILED, iteration)
+        end
+        for _, note in ipairs(sent_notes) do table.insert(step_notes, note) end
 
         local after_result, after_err = apply_agent_lifecycle(
             agent_instance,
@@ -2651,6 +3029,7 @@ local function run(args)
             update_node_progress(n, iteration, max_iterations, total_tokens, tool_calls_count, status_msg, agent_id,
                 model_name, unproductive_steps, route_pin)
 
+            store_step_notes(n, step_notes, iteration)
             local truncated_action_key = store_agent_action(n, agent_result, iteration, agent_id, model_name,
                 exit_tool_name, {})
 
@@ -2709,7 +3088,7 @@ local function run(args)
         update_node_progress(n, iteration, max_iterations, total_tokens, tool_calls_count, status_msg, agent_id,
             model_name, unproductive_steps, route_pin)
 
-        store_memory_recall(n, agent_result, iteration)
+        store_step_notes(n, step_notes, iteration)
         local action_key = store_agent_action(n, agent_result, iteration, agent_id, model_name, exit_tool_name, {})
         local proposed_controls = {}
         for _, summary in ipairs({ before_result or {}, after_result or {} }) do
@@ -2774,10 +3153,11 @@ local function run(args)
 
         local tool_call_to_node_id = create_tool_viz_nodes(n, effective_tool_calls, iteration, show_tool_calls,
             exit_tool_name)
-        local result_listener, persisted_call_ids = tool_result_persister(n, iteration, effective_tool_calls,
+        local result_listener, persisted_call_ids, finished_viz_calls = tool_result_persister(n, iteration, effective_tool_calls,
             #exit_tool_calls > 0, tool_call_to_node_id, show_tool_calls)
         local tool_results, execute_err = execute_tools(caller, run_session_context, validated_tools, result_listener)
         if execute_err then
+            cancel_unfinished_tool_viz_nodes(n, finished_viz_calls, tool_call_to_node_id)
             return fail_with_lifecycle({
                 code = agent_consts.ERROR.AGENT_EXEC_FAILED,
                 message = execute_err
@@ -2809,7 +3189,8 @@ local function run(args)
             {
                 result = agent_result.result,
                 tool_calls = finalized_tool_calls,
-                delegate_calls = delegate_calls
+                delegate_calls = delegate_calls,
+                action_call_ids = action_call_ids(regular_tool_calls)
             },
             delegate_calls,
             tool_results,
@@ -2833,7 +3214,7 @@ local function run(args)
             task_complete = true
             final_result = finalized_result
         end
-        local checkpoint_ok, requested_checkpoint_err = flush_requested_checkpoint()
+        local checkpoint_ok, requested_checkpoint_err = flush_requested_checkpoint(task_complete)
         if not checkpoint_ok then
             local checkpoint_message = requested_checkpoint_err or "Requested checkpoint failed"
             return fail_with_lifecycle({ code = agent_consts.ERROR.CHECKPOINT_FAILED, message = checkpoint_message },

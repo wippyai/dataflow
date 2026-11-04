@@ -319,6 +319,7 @@ entries:
       - uuid
       - time
     imports:
+      func: userspace.dataflow.node.func:node
       commit: userspace.dataflow.persist:commit
       consts: userspace.dataflow:consts
       data_reader: userspace.dataflow.persist:data_reader

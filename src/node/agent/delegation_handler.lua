@@ -143,6 +143,11 @@ local function find_existing_child(parent_node_sdk, tool_call_id, iteration)
     return without_iteration
 end
 
+-- A child node with no input never starts.
+function delegation_handler.has_input(delegation)
+    return delegation.input_data ~= nil and delegation.input_data ~= false
+end
+
 function delegation_handler.create_child_node(parent_node_sdk, delegation, delegation_index, session_context)
     local existing_child_id = find_existing_child(parent_node_sdk, delegation.tool_call_id, delegation.iteration)
     local child_id = existing_child_id or uuid.v7()
@@ -195,7 +200,7 @@ function delegation_handler.create_child_node(parent_node_sdk, delegation, deleg
             }
         })
 
-        if delegation.input_data then
+        if delegation_handler.has_input(delegation) then
             parent_node_sdk:data("node.input", delegation.input_data, {
                 node_id = child_id,
                 key = ""
@@ -299,7 +304,7 @@ function delegation_handler.execute_delegation_batch(delegation_infos, parent_no
     local delegation_results = {}
     for _, info in ipairs(delegation_infos) do
         local result, err = delegation_handler.collect_delegation_result(info, parent_node_sdk)
-        if result then
+        if err == nil then
             table.insert(delegation_results, {
                 delegation_info = info,
                 result = result,
@@ -387,7 +392,9 @@ function delegation_handler.map_delegation_results_to_conversation(delegation_re
                     (iteration .. "_" .. info.delegate_tool_name) or
                     (iteration .. "_delegation_" .. info.delegation_index)
 
-                parent_node_sdk:data(agent_consts.DATA_TYPE.AGENT_OBSERVATION, delegation_result.result, {
+                local content = delegation_result.result
+                if type(content) ~= "table" then content = tostring(content) end
+                parent_node_sdk:data(agent_consts.DATA_TYPE.AGENT_OBSERVATION, content, {
                     key = tool_key,
                     node_id = parent_node_sdk.node_id,
                     metadata = {

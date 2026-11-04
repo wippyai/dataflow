@@ -19,6 +19,7 @@ type Selector = {
 
 local HISTORY_TYPES = {
     consts.DATA_TYPE.NODE_INPUT,
+    agent_consts.DATA_TYPE.AGENT_INPUT,
     agent_consts.DATA_TYPE.AGENT_ACTION,
     agent_consts.DATA_TYPE.AGENT_OBSERVATION,
     agent_consts.DATA_TYPE.AGENT_MEMORY,
@@ -40,73 +41,8 @@ local function host_ids(args)
     return dataflow_id, node_id, nil
 end
 
-local function row_id(row)
-    if type(row) ~= "table" then
-        return ""
-    end
-    return tostring(row.data_id or "")
-end
-
-local function sort_rows(rows)
-    table.sort(rows, function(a, b)
-        return row_id(a) < row_id(b)
-    end)
-    return rows
-end
-
-local function find_latest_checkpoint_marker(rows)
-    for i = #rows, 1, -1 do
-        local row = rows[i]
-        if row.type == agent_consts.DATA_TYPE.AGENT_MEMORY
-           and type(row.metadata) == "table"
-           and row.metadata.checkpoint_marker == true then
-            return row
-        end
-    end
-    return nil
-end
-
-local function is_structured_result_row(row)
-    if type(row) ~= "table" then
-        return false
-    end
-
-    local metadata = row.metadata or {}
-    if type(metadata.tool_call_id) ~= "string" or metadata.tool_call_id == "" then
-        return false
-    end
-    if type(metadata.tool_name) ~= "string" or metadata.tool_name == "" then
-        return false
-    end
-
-    return row.type == agent_consts.DATA_TYPE.AGENT_OBSERVATION
-        or row.type == agent_consts.DATA_TYPE.AGENT_DELEGATION
-end
-
-local function apply_latest_marker(rows)
-    if #rows == 0 then
-        return rows
-    end
-
-    sort_rows(rows)
-    local latest_marker = find_latest_checkpoint_marker(rows)
-    if not latest_marker then
-        return rows
-    end
-
-    local cut_before = tostring((latest_marker.metadata or {}).checkpoint_before_data_id or "")
-    local filtered = { latest_marker }
-    for _, row in ipairs(rows) do
-        if row ~= latest_marker then
-            local keep = row_id(row) > cut_before or is_structured_result_row(row)
-            if keep then
-                filtered[#filtered + 1] = row
-            end
-        end
-    end
-
-    return sort_rows(filtered)
-end
+local row_id = prompt_builder.row_id
+local sort_rows = prompt_builder.sort_history_rows
 
 local function selector(args): Selector
     local raw = type(args) == "table" and args.selector or nil
@@ -127,7 +63,7 @@ end
 local function load_history_rows(dataflow_id, node_id)
     local ok, rows_or_err = pcall(function()
         return data_reader.with_dataflow(dataflow_id)
-            :fetch_options({ replace_references = false })
+            :fetch_options({ replace_references = true })
             :with_nodes(node_id)
             :with_data_types(HISTORY_TYPES)
             :all()
@@ -136,18 +72,32 @@ local function load_history_rows(dataflow_id, node_id)
         return nil, tostring(rows_or_err)
     end
     local rows = {}
+    local pin = nil
     for _, row in ipairs(rows_or_err or {}) do
-        local input_key = row.discriminator or row.key or "default"
-        if row.content_type == consts.CONTENT_TYPE.REFERENCE then
-            row.content = row.ref_content
-            row.content_type = row.ref_content_type
-            input_key = row.discriminator or row.ref_key or row.key or "default"
-        end
-        if row.type ~= consts.DATA_TYPE.NODE_INPUT or prompt_builder.is_conversation_input(input_key) then
+        if row.type == agent_consts.DATA_TYPE.AGENT_INPUT then
+            pin = row
+        elseif not prompt_builder.is_audit_row(row)
+            and (row.type ~= consts.DATA_TYPE.NODE_INPUT
+                or prompt_builder.is_conversation_input(row.discriminator or row.key or "default")) then
             rows[#rows + 1] = row
         end
     end
-    return sort_rows(rows), nil
+    sort_rows(rows)
+    if not pin then
+        return rows, nil
+    end
+    -- The pinned fold is the user message every request sends first; the input rows
+    -- are only its source, and one that arrived later never reached the model.
+    local pinned = {}
+    if pin.content ~= "" then
+        pinned[1] = pin
+    end
+    for _, row in ipairs(rows) do
+        if row.type ~= consts.DATA_TYPE.NODE_INPUT then
+            pinned[#pinned + 1] = row
+        end
+    end
+    return pinned, nil
 end
 
 local function slice_rows(rows, sel: Selector)
@@ -155,7 +105,7 @@ local function slice_rows(rows, sel: Selector)
     local source = copy_rows(rows)
 
     if mode == "since_checkpoint" then
-        return apply_latest_marker(source)
+        return prompt_builder.apply_latest_marker(source)
     end
 
     if mode == "checkpoint" then
@@ -253,7 +203,7 @@ local function normalize_event(row, formatter, calls)
     local text = table.concat(texts, "\n")
     local content = text
     if role == "function" then
-        local call = calls[metadata.call_id]
+        local call = calls[row_id(row)]
         if not call then return nil, "Function result has no stored call: " .. tostring(metadata.call_id) end
         content = decode_json(call.arguments)
         if type(call.arguments) == "string" then
@@ -270,7 +220,7 @@ local function normalize_event(row, formatter, calls)
         end
     end
     return {
-        id = row.data_id,
+        id = row_id(row),
         role = role,
         content = content,
         raw_content = text,
@@ -282,7 +232,28 @@ local function normalize_event(row, formatter, calls)
     }, nil
 end
 
-local function content_length(event)
+local function action_arguments_length(row)
+    if row.type ~= agent_consts.DATA_TYPE.AGENT_ACTION then
+        return 0
+    end
+    local action = decode_json(row.content)
+    if type(action) ~= "table" then
+        return 0
+    end
+    local length = 0
+    for _, list in ipairs({ action.tool_calls or {}, action.delegate_calls or {} }) do
+        for _, call in ipairs(list) do
+            local arguments = call.arguments
+            if type(arguments) ~= "string" then
+                arguments = json.encode(arguments) or ""
+            end
+            length = length + #arguments
+        end
+    end
+    return length
+end
+
+local function content_length(event, row)
     local content = event.raw_content or event.content or ""
     if type(content) ~= "string" then
         local encoded = json.encode(content)
@@ -299,28 +270,52 @@ local function content_length(event)
         end
         length = length + #result
     end
-    return length
+    return length + action_arguments_length(row)
 end
 
+-- Rows accumulate from the oldest until the bound, as the contract states. The input and
+-- turn note take what room is left, so a long input cannot empty the selection.
 local function clamp_rows(rows, events, max_chars)
     local limit = tonumber(max_chars)
     if not limit or limit <= 0 then
         return rows, events, false
     end
 
+    local keep = {}
+    local total = 0
+    local truncated = false
+    for index, row in ipairs(rows) do
+        if not prompt_builder.is_kept_by_checkpoint(row) then
+            local next_total = total + content_length(events[index], row)
+            if next_total > limit then
+                truncated = true
+                break
+            end
+            total = next_total
+            keep[index] = true
+        end
+    end
+    for index, row in ipairs(rows) do
+        if prompt_builder.is_kept_by_checkpoint(row) then
+            local next_total = total + content_length(events[index], row)
+            if next_total > limit then
+                truncated = true
+            else
+                total = next_total
+                keep[index] = true
+            end
+        end
+    end
+
     local kept_rows = {}
     local kept_events = {}
-    local total = 0
-    for i, event in ipairs(events) do
-        local next_total = total + content_length(event)
-        if next_total > limit then
-            return kept_rows, kept_events, true
+    for index, row in ipairs(rows) do
+        if keep[index] then
+            kept_rows[#kept_rows + 1] = row
+            kept_events[#kept_events + 1] = events[index]
         end
-        total = next_total
-        kept_rows[#kept_rows + 1] = rows[i]
-        kept_events[#kept_events + 1] = event
     end
-    return kept_rows, kept_events, false
+    return kept_rows, kept_events, truncated
 end
 
 local function history_rows(args)
@@ -334,7 +329,7 @@ local function history_rows(args)
         return nil, nil, nil, load_err
     end
 
-    local calls = {}
+    local calls, result_calls = {}, {}
     for _, row in ipairs(all_rows) do
         if row.type == agent_consts.DATA_TYPE.AGENT_ACTION then
             local action = row.content_type == consts.CONTENT_TYPE.JSON and decode_json(row.content) or row.content
@@ -343,6 +338,8 @@ local function history_rows(args)
                     for _, call in ipairs(list) do calls[call.id] = call end
                 end
             end
+        elseif row.metadata and row.metadata.tool_call_id then
+            result_calls[row_id(row)] = calls[row.metadata.tool_call_id]
         end
     end
     local sel = selector(args)
@@ -355,7 +352,7 @@ local function history_rows(args)
     local formatter, formatter_err = prompt_builder.new(dataflow_id, node_id, { node_id })
     if formatter_err then return nil, nil, nil, formatter_err end
     for _, row in ipairs(rows or {}) do
-        local event, event_err = normalize_event(row, formatter, calls)
+        local event, event_err = normalize_event(row, formatter, result_calls)
         if event_err then return nil, nil, nil, event_err end
         events[#events + 1] = event
     end
@@ -502,8 +499,8 @@ function M.get_prompt(args)
     local last = rows and rows[#rows] or nil
     local result = {
         range = {
-            from_id = first and first.data_id or nil,
-            to_id = last and last.data_id or nil,
+            from_id = first and row_id(first) or nil,
+            to_id = last and row_id(last) or nil,
             checkpoint_id = sel and sel.checkpoint_id or nil
         },
         truncated = truncated == true

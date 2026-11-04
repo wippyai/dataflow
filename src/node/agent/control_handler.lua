@@ -3,6 +3,7 @@ local uuid = require("uuid")
 local agent_consts = require("agent_consts")
 local consts = require("consts")
 local behavior_controls = require("behavior_controls")
+local delegation_handler = require("delegation_handler")
 
 local control_handler = {}
 
@@ -115,19 +116,10 @@ function control_handler.process_memory_operations(control, node_sdk, iteration)
         table.insert(memory_changes, { action = "compact" })
     end
 
+    -- The row itself waits for the end of the round: see queue_memory_additions.
     if control.memory.add then
         for _, memory_item in ipairs(control.memory.add) do
             if memory_item.type and memory_item.text then
-                node_sdk:data(agent_consts.DATA_TYPE.AGENT_MEMORY, memory_item.text, {
-                    key = memory_item.type .. "_" .. iteration,
-                    discriminator = memory_item.type,
-                    node_id = node_sdk.node_id,
-                    metadata = {
-                        memory_type = memory_item.type,
-                        created_by_control = true,
-                        iteration = iteration
-                    }
-                })
                 table.insert(memory_changes, {
                     action = "add",
                     type = memory_item.type,
@@ -155,12 +147,21 @@ function control_handler.process_memory_operations(control, node_sdk, iteration)
         end
     end
 
+    -- Only rows added here can be removed: any other row may be a call, a result or
+    -- a note a stored output depends on. A row already gone is a replay after a crash.
     if control.memory.delete then
         for _, memory_id in ipairs(control.memory.delete) do
-            node_sdk:delete_data(memory_id)
+            local row = node_sdk:query():with_nodes(node_sdk.node_id):with_data(memory_id):one()
+            local added = row and type(row.metadata) == "table" and row.metadata.created_by_control == true
+            if added then
+                node_sdk:delete_data(memory_id)
+            end
             table.insert(memory_changes, {
                 action = "delete",
-                memory_id = memory_id
+                memory_id = memory_id,
+                error = row and not added
+                    and ("Memory delete refused: " .. tostring(memory_id) .. " was not added by a memory directive")
+                    or nil
             })
         end
     end
@@ -168,33 +169,69 @@ function control_handler.process_memory_operations(control, node_sdk, iteration)
     return memory_changes
 end
 
+function control_handler.memory_additions(response)
+    local additions = {}
+    local control = response._original_control or {}
+    for _, memory_item in ipairs(control.memory and control.memory.add or {}) do
+        if memory_item.type and memory_item.text then
+            table.insert(additions, memory_item)
+        end
+    end
+    return additions
+end
+
+-- Called after every result of the round is written, so an added row cannot land
+-- between a call and its result.
+function control_handler.queue_memory_additions(additions, node_sdk, iteration)
+    for _, memory_item in ipairs(additions) do
+        node_sdk:data(agent_consts.DATA_TYPE.AGENT_MEMORY, memory_item.text, {
+            key = memory_item.type .. "_" .. iteration,
+            discriminator = memory_item.type,
+            node_id = node_sdk.node_id,
+            metadata = {
+                memory_type = memory_item.type,
+                created_by_control = true,
+                iteration = iteration
+            }
+        })
+    end
+end
+
 -- Process artifact creation
-function control_handler.process_artifacts(control, node_sdk, iteration)
+-- A re-run call returns its artifacts again, so their ids come from the call. The stored
+-- artifact stands: a re-run that returns other content changes nothing.
+function control_handler.process_artifacts(control, node_sdk, iteration, call_id)
     if not control.artifacts then
         return {}
     end
 
     local artifact_changes = {}
 
-    for _, artifact in ipairs(control.artifacts) do
+    for index, artifact in ipairs(control.artifacts) do
         if artifact.content then
             local content_type = artifact.content_type or consts.CONTENT_TYPE.TEXT
-            local artifact_id = uuid.v7()
+            local artifact_id, artifact_err = uuid.v5(node_sdk.node_id, string.format("%s:%s:%d", tostring(iteration),
+                tostring(call_id), index))
             local title = artifact.title or "Untitled"
+            if not artifact_id then
+                return nil, string.format("Failed to generate id for artifact %q: %s", title, tostring(artifact_err))
+            end
 
-            node_sdk:data(consts.DATA_TYPE.ARTIFACT, artifact.content, {
-                data_id = artifact_id,
-                key = title,
-                content_type = content_type,
-                node_id = node_sdk.node_id,
-                metadata = {
-                    title = title,
-                    comment = artifact.description,
-                    artifact_type = artifact.type or "inline",
-                    created_in_control = true,
-                    iteration = iteration
-                }
-            })
+            if not node_sdk:query():with_data(artifact_id):one() then
+                node_sdk:data(consts.DATA_TYPE.ARTIFACT, artifact.content, {
+                    data_id = artifact_id,
+                    key = title,
+                    content_type = content_type,
+                    node_id = node_sdk.node_id,
+                    metadata = {
+                        title = title,
+                        comment = artifact.description,
+                        artifact_type = artifact.type or "inline",
+                        created_in_control = true,
+                        iteration = iteration
+                    }
+                })
+            end
 
             table.insert(artifact_changes, {
                 artifact_id = artifact_id,
@@ -207,16 +244,15 @@ function control_handler.process_artifacts(control, node_sdk, iteration)
     return artifact_changes
 end
 
--- Process direct commands
 function control_handler.process_commands(control, node_sdk)
-    if not control.commands then
-        return {}
-    end
-
     local command_changes = {}
     local created_node_ids = {}
+    local commands = {}
+    for _, list in ipairs({ control.commands or {}, control.yield and control.yield.commands or {} }) do
+        for _, cmd in ipairs(list) do commands[#commands + 1] = cmd end
+    end
 
-    for _, cmd in ipairs(control.commands) do
+    for _, cmd in ipairs(commands) do
         if cmd.type and cmd.payload then
             node_sdk:command(cmd)
 
@@ -270,8 +306,8 @@ function control_handler._summarize_command_payload(payload)
 end
 
 -- Process a single control directive from tool result
--- Returns: cleaned_result, control_response
-function control_handler.process_control_directive(tool_result, node_sdk, iteration)
+-- Returns: cleaned_result, control_response, error
+function control_handler.process_control_directive(tool_result, node_sdk, iteration, call_id)
     if type(tool_result) ~= "table" or not tool_result._control then
         return tool_result, nil
     end
@@ -307,12 +343,12 @@ function control_handler.process_control_directive(tool_result, node_sdk, iterat
     end
 
     -- Process artifact creation
-    local artifact_changes = control_handler.process_artifacts(control, node_sdk, iteration)
+    local artifact_changes, artifact_err = control_handler.process_artifacts(control, node_sdk, iteration, call_id)
+    if artifact_err then return nil, nil, artifact_err end
     if #artifact_changes > 0 then
         control_response.changes_applied.artifacts = artifact_changes
     end
 
-    -- Process direct commands
     local command_result = control_handler.process_commands(control, node_sdk)
     if command_result.commands and #command_result.commands > 0 then
         control_response.changes_applied.commands = command_result.commands
@@ -341,20 +377,22 @@ function control_handler.process_control_directive(tool_result, node_sdk, iterat
     -- Handle yield requests
     if control.yield then
         control_response.yield = control.yield
-
-        -- Queue yield commands if any
-        if control.yield.commands then
-            for _, cmd in ipairs(control.yield.commands) do
-                if cmd.type and cmd.payload then
-                    node_sdk:command(cmd)
-                end
-            end
-        end
     end
 
     -- Handle delegate requests - pass through the entire delegate array
-    if control.delegate then
+    if control.delegate and #control.delegate > 0 then
         control_response.delegate = control.delegate
+        -- Each delegate's result answers the call, and a call takes one result.
+        if #control.delegate > 1 then
+            control_response.delegate_error = "Call " .. tostring(call_id) .. " returned "
+                .. tostring(#control.delegate) .. " delegates; a call can delegate to one agent"
+        end
+        for _, delegation in ipairs(control.delegate) do
+            if not delegation_handler.has_input(delegation) then
+                control_response.delegate_error = "Delegation to " .. tostring(delegation.agent_id)
+                    .. " has no input_data: a child node with no input never starts"
+            end
+        end
     end
 
     -- Remove _control from tool result
@@ -376,6 +414,15 @@ function control_handler.apply_control_responses(control_responses, agent_contex
     }
 
     for _, response in ipairs(control_responses) do
+        if response.delegate_error then
+            table.insert(changes_summary.errors, response.delegate_error)
+        end
+        for _, change in ipairs(response.changes_applied and response.changes_applied.memory or {}) do
+            if change.error then
+                table.insert(changes_summary.errors, change.error)
+            end
+        end
+
         -- Handle agent changes. Persisted to node config so a re-run/recovery loads
         -- the new agent (config.agent is read at node startup). switch_to_agent also
         -- resets any active trait/tool overlays, so it must run before they are set.
@@ -424,7 +471,12 @@ function control_handler.apply_control_responses(control_responses, agent_contex
             node_sdk:update_config({ active_tools = response.tools_change })
         end
 
-        -- Handle yield requests
+        -- Note: delegate is handled separately in node.lua main loop
+        -- It doesn't require any agent context changes, just child node creation
+    end
+
+    -- A yield directive commits and waits, so every response is applied before it.
+    for _, response in ipairs(control_responses) do
         if response.yield then
             local yield_options = {}
 
@@ -441,9 +493,6 @@ function control_handler.apply_control_responses(control_responses, agent_contex
                     string.format("Failed to yield: %s", yield_err or "unknown error"))
             end
         end
-
-        -- Note: delegate is handled separately in node.lua main loop
-        -- It doesn't require any agent context changes, just child node creation
     end
 
     return changes_summary, (#changes_summary.errors > 0) and table.concat(changes_summary.errors, "; ") or nil
@@ -468,7 +517,8 @@ function control_handler.apply_behavior_controls(controls, agent_context, node_s
             end
             control.config = next(changes) and changes or nil
         end
-        local _, response = control_handler.process_control_directive({ _control = control }, node_sdk, iteration)
+        local _, response, directive_err = control_handler.process_control_directive({ _control = control }, node_sdk, iteration)
+        if directive_err then return nil, directive_err end
         -- Evaluate the next proposal against this one's result, not the state
         -- from before the batch. Later hooks can deliberately restore a target.
         local result, apply_err = control_handler.apply_control_responses({ response }, agent_context, node_sdk, changes_summary)
