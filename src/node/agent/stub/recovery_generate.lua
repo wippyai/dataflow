@@ -590,7 +590,7 @@ local function handler(contract_args)
         local max_steps = tonumber(scenario.max_steps) or 3
         if llm_calls <= max_steps then
             return tool_call_response(scenario.scenario_id, llm_calls,
-                scenario.tool_delay_ms, base_prompt or 500, 8, nil, nil, tonumber(scenario.cache_read_tokens))
+                scenario.tool_delay_ms, base_prompt or 500, 8, nil, tonumber(scenario.cache_read_tokens))
         end
 
         return final_response(scenario.scenario_id, scenario.mode, result_count, base_prompt or 500, 4,
