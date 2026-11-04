@@ -88,7 +88,10 @@ local function load_history_rows(dataflow_id, node_id)
     end
     -- The pinned fold is the user message every request sends first; the input rows
     -- are only its source, and one that arrived later never reached the model.
-    local pinned = { pin }
+    local pinned = {}
+    if pin.content ~= "" then
+        pinned[1] = pin
+    end
     for _, row in ipairs(rows) do
         if row.type ~= consts.DATA_TYPE.NODE_INPUT then
             pinned[#pinned + 1] = row
@@ -249,29 +252,64 @@ local function content_length(event)
     return length
 end
 
+-- max_chars is a hard bound. Over it, the latest summary and the newest rows survive,
+-- and what they leave room for goes to the turn note and the input, which every request
+-- sends anyway. Host-side readers of a long run want where it is now.
 local function clamp_rows(rows, events, max_chars)
     local limit = tonumber(max_chars)
     if not limit or limit <= 0 then
         return rows, events, false
     end
 
-    local kept_rows = {}
-    local kept_events = {}
+    local keep = {}
     local total = 0
-    for i, event in ipairs(events) do
-        -- The input and turn note are in every request whatever the budget allows.
-        local next_total = total
-        if not prompt_builder.is_kept_by_checkpoint(rows[i]) then
-            next_total = total + content_length(event)
-        end
+    local truncated = false
+    local function take(index)
+        local next_total = total + content_length(events[index])
         if next_total > limit then
-            return kept_rows, kept_events, true
+            truncated = true
+            return false
         end
         total = next_total
-        kept_rows[#kept_rows + 1] = rows[i]
-        kept_events[#kept_events + 1] = event
+        keep[index] = true
+        return true
     end
-    return kept_rows, kept_events, false
+    local function is_input_side(row)
+        return prompt_builder.is_kept_by_checkpoint(row) or row.type == consts.DATA_TYPE.NODE_INPUT
+    end
+
+    local marker = prompt_builder.find_latest_checkpoint_marker(rows)
+    for index, row in ipairs(rows) do
+        if row == marker then take(index) end
+    end
+    for index = #rows, 1, -1 do
+        if rows[index] ~= marker and not is_input_side(rows[index]) and not take(index) then
+            break
+        end
+    end
+    for index = #rows, 1, -1 do
+        if is_input_side(rows[index]) then take(index) end
+    end
+
+    -- A result whose call fell outside the bound has no place in a prompt.
+    local kept_rows = {}
+    local kept_events = {}
+    local past_orphans = false
+    for index, row in ipairs(rows) do
+        if keep[index] then
+            local orphan = events[index].role == "function" and not past_orphans
+            if events[index].role == "assistant" then past_orphans = true end
+            if orphan then
+                truncated = true
+            else
+                kept_rows[#kept_rows + 1] = row
+                kept_events[#kept_events + 1] = events[index]
+            end
+        elseif not is_input_side(row) and row ~= marker then
+            truncated = true
+        end
+    end
+    return kept_rows, kept_events, truncated
 end
 
 local function history_rows(args)

@@ -1540,10 +1540,6 @@ local function split_exit_tool_calls(tool_calls: {ToolCall}?, exit_tool_name: st
 end
 
 local function prepare_tools(agent_result: { tool_calls: { ToolCall }? }, caller): (any, {ToolCall}, string?)
-    if not agent_result.tool_calls or #agent_result.tool_calls == 0 then
-        return {}, {}, nil
-    end
-
     local validated_tools, validate_err = caller:validate(agent_result.tool_calls)
     if validate_err then
         return {}, {}, validate_err
@@ -2107,7 +2103,10 @@ end
 -- round with no iteration warning and no after_execute proposals. Replay is at-least-once,
 -- as for every wrapper; a run stored without round_settled gets it once on resume.
 local function settle_recovered_round(n, caller, agent_instance, action_payload, iteration, max_iterations,
-                                      proposed_controls, agent_id, model_name, run_context_binding)
+                                      proposed_controls, agent_id, model_name, run_context_binding, exit_tool_name)
+    local tool_calls = split_exit_tool_calls(action_payload.content.tool_calls, exit_tool_name)
+    local calls_by_id = {}
+    for _, tool_call in ipairs(tool_calls) do calls_by_id[tool_call.id] = tool_call end
     local tool_results = {}
     local observations = n:query()
         :with_nodes(n.node_id)
@@ -2115,14 +2114,22 @@ local function settle_recovered_round(n, caller, agent_instance, action_payload,
         :all()
     for _, row in ipairs(observations or {}) do
         local metadata = row.metadata or {}
-        if metadata.tool_call_id and metadata.iteration == iteration then
-            local content = decode_json_content(row.content, row.content_type)
-            tool_results[metadata.tool_call_id] = metadata.is_error and { error = content } or { result = content }
+        local tool_call = calls_by_id[metadata.tool_call_id]
+        if tool_call and metadata.iteration == iteration then
+            local content = row.content
+            if row.content_type == consts.CONTENT_TYPE.JSON then
+                content = decode_json_content(row.content, row.content_type)
+            end
+            tool_results[tool_call.id] = {
+                result = not metadata.is_error and content or nil,
+                error = metadata.is_error and content or nil,
+                tool_call = tool_call,
+            }
         end
     end
     configure_tool_wrappers(caller, agent_instance, n, agent_id, model_name, iteration, nil, run_context_binding)
     caller:apply_tool_wrappers(tool_caller.PHASE.AFTER_EXECUTE, {
-        tool_calls = action_payload.content.tool_calls or {},
+        tool_calls = tool_calls,
         tool_results = tool_results,
     })
     local controls = {}
@@ -2198,7 +2205,7 @@ local function recover_persisted_action(n, agent_ctx, agent_instance, caller, se
             local settle_err
             proposed_controls, settle_err = settle_recovered_round(n, caller, agent_instance, action_payload,
                 action_iteration, max_iterations, proposed_controls, agent_id, model_name,
-                string_or_nil(config.run_context_binding))
+                string_or_nil(config.run_context_binding), exit_tool_name)
             if settle_err then return false, nil, action_iteration, settle_err end
         end
         if #proposed_controls > 0 then
@@ -2499,7 +2506,12 @@ local function run(args)
         }, "Failed to initialize prompt builder")
     end
 
-    builder:with_arena_config(config.arena):with_initial_input(pin_conversation_input(n, pinned_input, input_data))
+    -- An empty fold cannot be a user turn; the arena prompt is the node's instruction.
+    local first_message = input_data
+    if first_message == "" and type(config.arena.prompt) == "string" then
+        first_message = config.arena.prompt
+    end
+    builder:with_arena_config(config.arena):with_initial_input(pin_conversation_input(n, pinned_input, first_message))
     -- A resumed stored run has sent this input already: pin it before anything else
     -- happens on this resume, so a later input cannot change it.
     if not pinned_input and saved_state.agent_id ~= nil then
@@ -2700,7 +2712,10 @@ local function run(args)
         }, context_with_agent_run(session_context, n, agent_id, model_name, iteration,
             config.run_context_binding), agent_instance, agent_id, model_name, iteration, completing)
         if checkpoint_err then
-            if strict_err or (options and options.strict == true) then return nil, checkpoint_err end
+            -- No request follows a completing node, so strict has nothing left to protect.
+            if not completing and (strict_err or (options and options.strict == true)) then
+                return nil, checkpoint_err
+            end
             record_checkpoint_skip(n, iteration, checkpoint_err)
         end
         -- A completing node commits the marker with its completion, so no restart can run

@@ -12,6 +12,8 @@ local run_context = require("run_context")
 local funcs = require("funcs")
 local claude_mapper = require("claude_mapper")
 local bedrock_mapper = require("bedrock_mapper")
+local openai_mapper = require("openai_mapper")
+local compat_mapper = require("compat_mapper")
 local agent_node = require("agent_node")
 local prompt_builder = require("prompt_builder")
 local node_sdk = require("node_sdk")
@@ -45,6 +47,7 @@ type RunOptions = {
     node_metadata: table?,
     max_iterations: number?,
     no_input: boolean?,
+    no_prompt: boolean?,
     min_iterations: number?,
     named_inputs: {[string]: any}?,
     config: table?,
@@ -80,7 +83,7 @@ local function run_node(options: RunOptions)
                             content_type = consts.CONTENT_TYPE.TEXT },
                     },
                     arena = {
-                        prompt = "Run the stable prefix scenario.",
+                        prompt = not options.no_prompt and "Run the stable prefix scenario." or nil,
                         max_iterations = options.max_iterations or 8,
                         min_iterations = options.min_iterations,
                         tool_calling = "auto",
@@ -346,7 +349,7 @@ local function define_tests()
         end)
 
         it("stores the note for a node whose inputs hold no conversation", function()
-            local run = run_node({ agent = TIME_AGENT, no_input = true, extra_inputs = { "context" } })
+            local run = run_node({ agent = TIME_AGENT, no_input = true, no_prompt = true, extra_inputs = { "context" } })
             test.eq(run.status, consts.STATUS.COMPLETED_SUCCESS)
             test.eq(#rows_of(run, agent_consts.DATA_TYPE.AGENT_MEMORY), 1)
         end)
@@ -584,6 +587,31 @@ local function define_tests()
             test.eq(node_row(run).metadata.checkpoint_requested, false, "the request is served")
         end)
 
+        it("keeps an accepted finish when a strict compaction fails", function()
+            local run = run_node({
+                input = { rounds = 0 },
+                arena = { exit_schema = { type = "object", properties = { answer = { type = "string" } } } },
+                checkpoint = { function_id = STUB .. "no_such_summarizer", strict = true },
+                node_metadata = { checkpoint_requested = true, state = { current_iteration = 2, agent_id = AGENT } },
+                extra_commands = seeded_finish,
+            })
+            test.eq(run.status, consts.STATUS.COMPLETED_SUCCESS, node_error(run))
+            local skipped = 0
+            for _, row in ipairs(rows_of(run, agent_consts.DATA_TYPE.AGENT_OBSERVATION)) do
+                if row.metadata.checkpoint_skipped == true then skipped = skipped + 1 end
+            end
+            test.eq(skipped, 1, "the failure is recorded")
+        end)
+
+        it("keeps a text completion when a strict compaction fails", function()
+            local run = run_node({
+                input = { mode = "text_final" },
+                traits = { STUB .. "behavior_compaction_trait" },
+                checkpoint = { function_id = STUB .. "no_such_summarizer", strict = true },
+            })
+            test.eq(run.status, consts.STATUS.COMPLETED_SUCCESS, node_error(run))
+        end)
+
         it("compacts the whole round once a finish is rejected, each row once", function()
             local run = run_node({
                 input = { rounds = 0 },
@@ -733,7 +761,7 @@ local function define_tests()
 
         local function stated_budget(options, history)
             local node_id = uuid.v7()
-            options.model = "recovery-test-model"
+            options.model = options.model or "recovery-test-model"
             local _, call_err = funcs.new():call("userspace.dataflow.node.agent:checkpoint", {
                 dataflow_id = uuid.v7(), node_id = node_id, options = options, history = history,
             })
@@ -872,19 +900,25 @@ local function define_tests()
         it("states what fits when an explicit max_tokens is smaller", function()
             local system, max_tokens = stated_budget({ max_tokens = 1000 }, EARLIER)
             test.eq(max_tokens, 1000, "explicit max_tokens is honoured")
-            test.is_true(string.find(system, "fit in 500 characters", 1, true) ~= nil, system)
+            test.is_true(string.find(system, "fit in 1000 characters", 1, true) ~= nil, system)
         end)
 
         it("states what fits under the model's output limit", function()
-            local node_id = uuid.v7()
-            local _, call_err = funcs.new():call("userspace.dataflow.node.agent:checkpoint", {
-                dataflow_id = uuid.v7(), node_id = node_id,
-                options = { model = "recovery-small-output-model" }, history = FIRST,
-            })
-            test.is_nil(call_err)
-            local _, system = find_message(recovery_helpers.get_request(node_id, 1),
-                function(message) return message.role == "system" end)
-            test.is_true(string.find(text_of(system), "fit in 500 characters", 1, true) ~= nil, text_of(system))
+            local system, max_tokens = stated_budget({ model = "recovery-small-output-model" }, FIRST)
+            test.eq(max_tokens, 1000)
+            test.is_true(string.find(system, "fit in 1000 characters", 1, true) ~= nil, system)
+        end)
+
+        it("reserves at most half of a small context window", function()
+            local system, max_tokens = stated_budget({ model = "recovery-small-window-model" }, FIRST)
+            test.eq(max_tokens, 500)
+            test.is_true(string.find(system, "fit in 500 characters", 1, true) ~= nil, system)
+        end)
+
+        it("sends no unbounded default to a model with no limits", function()
+            local system, max_tokens = stated_budget({ max_memory_chars = 100000 }, FIRST)
+            test.eq(max_tokens, 32000)
+            test.is_true(string.find(system, "fit in 32000 characters", 1, true) ~= nil, system)
         end)
 
         local DEFAULT_SUMMARIZER = "userspace.dataflow.node.agent:checkpoint"
@@ -1245,15 +1279,66 @@ local function define_tests()
             test.eq(#rows_of(run, agent_consts.DATA_TYPE.AGENT_INPUT), 1)
         end)
 
-        it("keeps a long input out of the run context's character budget", function()
-            local run = run_node({ input = { rounds = 1, padding = string.rep("p", 4000) } })
+        local function chars_of(history)
+            local total = 0
+            for _, event in ipairs(history.events) do
+                total = total + #tostring(event.raw_content or "")
+                if event.role == "function" then total = total + #json.encode(event.metadata.result) end
+            end
+            return total
+        end
+
+        for _, mode in ipairs({ "since_checkpoint", "all", "window" }) do
+            it("keeps the newest rows over a long input in " .. mode .. " under max_chars", function()
+                local run = run_node({ input = { rounds = 3, padding = string.rep("p", 4000) } })
+                test.eq(run.status, consts.STATUS.COMPLETED_SUCCESS, node_error(run))
+                local history = run_context.get_history({
+                    host = { dataflow_id = run.dataflow_id, node_id = run.node_id },
+                    selector = { mode = mode, last = 64, max_chars = 1000 },
+                })
+                test.gt(#history.events, 1, "the input does not empty the selection")
+                test.is_true(history.truncated, "the dropped input is reported")
+                test.is_true(chars_of(history) <= 1000, "max_chars is a hard bound: " .. tostring(chars_of(history)))
+                test.is_true(history.events[1].role ~= "user", "the input is what is dropped")
+                test.is_true(history.events[1].role ~= "function", "no result is left without its call")
+                local actions = rows_of(run, agent_consts.DATA_TYPE.AGENT_ACTION)
+                test.eq(history.events[#history.events].id, actions[#actions].data_id, "the newest row survives")
+            end)
+        end
+
+        it("keeps the summary over older rows under max_chars", function()
+            local run = run_node({
+                input = { rounds = 4, checkpoint_at = 2, padding = string.rep("p", 4000) },
+                checkpoint = { token_threshold = 100, function_id = STUB .. "checkpoint_summarizer" },
+            })
             test.eq(run.status, consts.STATUS.COMPLETED_SUCCESS, node_error(run))
             local history = run_context.get_history({
                 host = { dataflow_id = run.dataflow_id, node_id = run.node_id },
-                selector = { mode = "since_checkpoint", max_chars = 1000 },
+                selector = { mode = "since_checkpoint", max_chars = 300 },
             })
-            test.gt(#history.events, 1, "the input does not empty the selection")
-            test.eq(history.events[1].role, "user")
+            local found = false
+            for _, event in ipairs(history.events) do
+                if string.find(tostring(event.raw_content), "checkpointed", 1, true) then found = true end
+            end
+            test.is_true(found, "the summary survives")
+            test.is_true(history.truncated)
+        end)
+
+        it("shows no event for an empty pin", function()
+            local run = run_node({ agent = TIME_AGENT, no_input = true, no_prompt = true, extra_inputs = { "context" } })
+            test.eq(run.status, consts.STATUS.COMPLETED_SUCCESS, node_error(run))
+            local history = run_context.get_history({ host = { dataflow_id = run.dataflow_id, node_id = run.node_id } })
+            for _, event in ipairs(history.events) do
+                test.is_true(event.role ~= nil and event.role ~= "user", "no empty input event")
+            end
+        end)
+
+        it("pins the arena prompt when the fold is empty", function()
+            local run = run_node({ no_input = true, extra_inputs = { "context" } })
+            test.eq(run.status, consts.STATUS.COMPLETED_SUCCESS, node_error(run))
+            local pins = rows_of(run, agent_consts.DATA_TYPE.AGENT_INPUT)
+            test.eq(#pins, 1)
+            test.eq(pins[1].content, "Run the stable prefix scenario.")
         end)
 
         it("shows the run context the input first on a run stored before the pin", function()
@@ -1410,7 +1495,7 @@ local function define_tests()
         end)
 
         it("sends no empty user message: the turn note is the only content", function()
-            local run = run_node({ agent = TIME_AGENT, no_input = true, extra_inputs = { "context" } })
+            local run = run_node({ agent = TIME_AGENT, no_input = true, no_prompt = true, extra_inputs = { "context" } })
             test.eq(run.status, consts.STATUS.COMPLETED_SUCCESS, node_error(run))
         end)
 
@@ -1427,6 +1512,10 @@ local function define_tests()
             local bedrock = bedrock_mapper.map_messages(messages)
             test.eq(#bedrock.messages, 1)
             test.eq(bedrock.messages[1].content[1].text, "the turn note")
+            test.is_true(string.find(json.encode(openai_mapper.map_messages(messages)), "the turn note", 1, true) ~= nil,
+                "the note reaches OpenAI")
+            test.is_true(string.find(json.encode(compat_mapper.map_messages(messages)), "the turn note", 1, true) ~= nil,
+                "the note reaches OpenAI-compatible drivers")
 
             local with_input = prompt_builder.new("flow", "node", "agent") :: any
             with_input:with_initial_input("hello"):with_history({
@@ -1440,8 +1529,30 @@ local function define_tests()
             test.is_true(stayed, "the note stays in the user turn on Bedrock")
         end)
 
+        it("renders no text for a whitespace turn and answers it", function()
+            local run = run_node({ input = { rounds = 2, whitespace_at = 1 } })
+            test.eq(run.status, consts.STATUS.COMPLETED_SUCCESS, node_error(run))
+            local requests = requests_of(run)
+            test.gt(#requests, 1)
+            for index, request in ipairs(requests) do
+                for _, message in ipairs(without_markers(request)) do
+                    test.is_true(message.role ~= "assistant" or string.find(text_of(message), "%S") ~= nil,
+                        "request " .. tostring(index) .. " has a blank assistant text")
+                end
+                local messages = without_markers(request)
+                test.is_true(messages[#messages].role ~= "assistant", "request " .. tostring(index) .. " ends on assistant")
+            end
+            test.is_nil(recovery_helpers.prefix_error(requests[1], requests[2]))
+        end)
+
+        it("fails a delegate with no input instead of waiting forever", function()
+            local run = run_node({ input = { rounds = 1, delegate_without_input_at = 1, delegate_to = AGENT } })
+            test.eq(run.status, consts.STATUS.COMPLETED_FAILURE)
+            test.is_true(string.find(node_error(run), "input_data", 1, true) ~= nil, node_error(run))
+        end)
+
         it("fails a node with nothing to send, naming why", function()
-            local run = run_node({ no_input = true, extra_inputs = { "context" } })
+            local run = run_node({ no_input = true, no_prompt = true, extra_inputs = { "context" } })
             test.eq(run.status, consts.STATUS.COMPLETED_FAILURE)
             test.is_true(string.find(node_error(run), "nothing to send", 1, true) ~= nil, node_error(run))
         end)
@@ -1490,6 +1601,49 @@ local function define_tests()
             })
             test.eq(run.status, consts.STATUS.COMPLETED_SUCCESS, node_error(run))
             test.eq(warnings_of(run), 1)
+        end)
+
+        local function wrapper_payload(run, number)
+            local encoded = recovery_helpers.get_metric(run.node_id, "wrapper_payload:" .. tostring(number), nil)
+            return encoded and json.decode(encoded) or nil
+        end
+
+        it("gives after_execute the live payload on recovery", function()
+            local run = run_node({
+                input = { rounds = 0 }, max_iterations = 3,
+                traits = { STUB .. "round_wrapper_trait" },
+                arena = { exit_schema = { type = "object", properties = { answer = { type = "string" } } } },
+                node_metadata = { state = { current_iteration = 1, agent_id = AGENT } },
+                extra_commands = function(node_id, scenario_id)
+                    return {
+                        data_row(node_id, agent_consts.DATA_TYPE.AGENT_ACTION, "1_action", {
+                            result = "working", tool_calls = {
+                                { id = "stored", name = "recovery_tool", arguments = { scenario_id = scenario_id, step = 0 } },
+                                { id = "rejected", name = "finish", arguments = {} },
+                            },
+                        }, { iteration = 1, finish_reason = "tool_call" }),
+                        data_row(node_id, agent_consts.DATA_TYPE.AGENT_OBSERVATION, "1_recovery_tool", "123", {
+                            iteration = 1, tool_call_id = "stored", tool_name = "recovery_tool" }),
+                        data_row(node_id, agent_consts.DATA_TYPE.AGENT_OBSERVATION, "1_exit", "rejected", {
+                            iteration = 1, tool_call_id = "rejected", tool_name = "finish", is_error = true }),
+                    }
+                end,
+            })
+            test.eq(run.status, consts.STATUS.COMPLETED_SUCCESS, node_error(run))
+            local payload = wrapper_payload(run, 1)
+            test.not_nil(payload, "after_execute ran on recovery")
+            test.eq(#payload.tool_calls, 1, "the exit call is not a tool")
+            test.eq(payload.tool_calls[1].id, "stored")
+            test.eq(payload.tool_results.stored.result, "123", "text stays text")
+            test.eq(payload.tool_results.stored.tool_call.id, "stored")
+        end)
+
+        it("gives after_execute no calls on a round without any", function()
+            local run = run_node({ traits = { STUB .. "round_wrapper_trait" }, input = { rounds = 1 } })
+            test.eq(run.status, consts.STATUS.COMPLETED_SUCCESS, node_error(run))
+            local last = tonumber(recovery_helpers.get_metric(run.node_id, "wrapper_payloads", 0)) or 0
+            test.gt(last, 1)
+            test.eq(#wrapper_payload(run, last).tool_calls, 0, "the previous round's calls are gone")
         end)
 
         it("leaves a settled round alone", function()

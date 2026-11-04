@@ -159,6 +159,7 @@ entries:
     comment: Tool wrapper a restart scenario kills the runtime inside
   source: file://round_wrapper.lua
   modules:
+  - json
   - time
   imports:
     helpers: userspace.dataflow.node.agent.stub:recovery_helpers
@@ -190,6 +191,17 @@ entries:
     test_only: true
     comment: A model whose output limit is below the default summary budget
   output_tokens: 1000
+  providers:
+  - id: userspace.dataflow.node.agent.stub:recovery_provider
+    provider_model: recovery-test-model
+- name: recovery_small_window_model
+  kind: registry.entry
+  meta:
+    name: recovery-small-window-model
+    type: llm.model
+    test_only: true
+    comment: A model whose context window is below the default output reservation
+  max_tokens: 1000
   providers:
   - id: userspace.dataflow.node.agent.stub:recovery_provider
     provider_model: recovery-test-model

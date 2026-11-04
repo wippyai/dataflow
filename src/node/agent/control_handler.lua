@@ -383,6 +383,12 @@ function control_handler.process_control_directive(tool_result, node_sdk, iterat
     -- Handle delegate requests - pass through the entire delegate array
     if control.delegate then
         control_response.delegate = control.delegate
+        for _, delegation in ipairs(control.delegate) do
+            if delegation.input_data == nil then
+                control_response.delegate_error = "Delegation to " .. tostring(delegation.agent_id)
+                    .. " has no input_data: a child node with no input never starts"
+            end
+        end
     end
 
     -- Remove _control from tool result
@@ -404,6 +410,9 @@ function control_handler.apply_control_responses(control_responses, agent_contex
     }
 
     for _, response in ipairs(control_responses) do
+        if response.delegate_error then
+            table.insert(changes_summary.errors, response.delegate_error)
+        end
         for _, change in ipairs(response.changes_applied and response.changes_applied.memory or {}) do
             if change.error then
                 table.insert(changes_summary.errors, change.error)

@@ -6,9 +6,10 @@ local CONFIG = {
     model = "class:fast",
     temperature = 0.2,
     max_row_chars = 2000,
+    max_tokens_ceiling = 32000,
 }
 
-local function positive_number(value, fallback)
+local function positive_number(value: any, fallback: any): any
     local n = tonumber(value)
     if not n or n <= 0 then
         return fallback
@@ -18,13 +19,26 @@ end
 
 local function config_from_args(args)
     local options = type(args) == "table" and type(args.options) == "table" and args.options or {}
+    local model = type(options.model) == "string" and options.model ~= "" and options.model or CONFIG.model
     local max_memory_chars = positive_number(options.max_memory_chars, agent_consts.DEFAULTS.MAX_MEMORY_CHARS)
+    -- llm.resolve_model names the first card of a class route; a later card with a
+    -- lower limit is not counted. A model that cannot resolve fails in generate.
+    local card = llm.resolve_model(model)
+    local output_limit = positive_number(type(card) == "table" and card.output_tokens, nil)
+    local window = positive_number(type(card) == "table" and card.max_tokens, nil)
+    local max_tokens = positive_number(options.max_tokens, nil)
+    if not max_tokens then
+        -- Only a cap, but admission reserves all of it against the context window.
+        max_tokens = math.min(max_memory_chars * 2, CONFIG.max_tokens_ceiling)
+        if window then max_tokens = math.min(max_tokens, math.floor(window / 2)) end
+    end
+    if output_limit then max_tokens = math.min(max_tokens, output_limit) end
     return {
-        model = type(options.model) == "string" and options.model ~= "" and options.model or CONFIG.model,
+        model = model,
         temperature = tonumber(options.temperature) or CONFIG.temperature,
-        -- Only a cap: a summary at the budget fits it even at one token per character.
-        max_tokens = positive_number(options.max_tokens, max_memory_chars * 2),
-        max_memory_chars = max_memory_chars,
+        max_tokens = max_tokens,
+        -- A summary fits at one token per character.
+        summary_budget = math.floor(math.min(max_memory_chars, max_tokens)),
         max_row_chars = positive_number(options.max_row_chars, CONFIG.max_row_chars),
     }
 end
@@ -80,18 +94,6 @@ local MERGE_INSTRUCTION = " The history contains the previous checkpoint. Merge 
     .. "in it that still holds, mark completed items done, and update progress and blockers. The events it covers are "
     .. "gone, so anything you drop is lost. Condense older detail first and keep the newest state."
 
--- What the output can hold at two tokens per character. The route lowers max_tokens to
--- the model's output limit, so the stated budget has to follow that too.
-local function summary_budget(cfg)
-    local card = llm.resolve_model(cfg.model)
-    local model_limit = type(card) == "table" and tonumber(card.output_tokens) or nil
-    local tokens = cfg.max_tokens
-    if model_limit and model_limit > 0 and model_limit < tokens then
-        tokens = model_limit
-    end
-    return math.floor(math.min(cfg.max_memory_chars, tokens / 2))
-end
-
 local function has_previous_checkpoint(history)
     for _, row in ipairs(history) do
         if type(row.metadata) == "table" and row.metadata.checkpoint_marker == true then
@@ -111,7 +113,7 @@ local function handler(args)
 
     local cfg = config_from_args(args)
     local p = prompt.new()
-    p:add_system(string.format(SUMMARY_INSTRUCTION, summary_budget(cfg))
+    p:add_system(string.format(SUMMARY_INSTRUCTION, cfg.summary_budget)
         .. (has_previous_checkpoint(args.history) and MERGE_INSTRUCTION or ""))
     p:add_user(string.format(
         "dataflow_id=%s\nnode_id=%s\niteration=%s\nprompt_tokens=%s\nhistory_count=%s\n\n%s",

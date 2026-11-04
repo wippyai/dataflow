@@ -89,7 +89,9 @@ Checkpoints run before the next model turn, after the preceding tool results
 have settled. Bindings run before the configured function fallback, and both
 receive the effective `options`; a strict binding failure never falls back.
 Without a function fallback, a non-strict binding failure is recorded as a
-skipped checkpoint; an explicit host `strict = true` still fails the workflow.
+skipped checkpoint; an explicit host `strict = true` still fails the workflow, unless
+the node is completing: no request follows, so the failure is recorded as a skip and an
+accepted finish or final text stands.
 The host still owns marker persistence and the summary length cap. Checkpointing
 is conversation compaction, not durable long-term recall or a hard spending limit.
 
@@ -211,21 +213,26 @@ stay valid. This requires Agent 0.5.10 and LLM 0.5.13 or later.
   summarizer's `max_row_chars` per row, which does not apply to the earlier summary.
   The host sets no limit of its own. `max_memory_chars` (default 8192) caps the stored
   summary in characters, never splitting one. The default summarizer states the
-  budget it has on every summary and sets `max_tokens` to twice `max_memory_chars`
-  unless the options give one. The stated budget is the smaller of `max_memory_chars`
-  and half the tokens the output can use, counting the model's output limit. A longer summary is cut at the cap and recorded in the marker's
+  budget it has on every summary. Unless the options give `max_tokens`, it uses the
+  smallest of twice `max_memory_chars`, half the model's context window and 32000, and
+  any `max_tokens` is capped by the model's output limit. The stated budget is the
+  smaller of `max_memory_chars` and that value. On a class route only the first model's
+  limits count. A longer summary is cut at the cap and recorded in the marker's
   `checkpoint_memory_truncated`. A summary the model cut off at its `max_tokens` is a
   failed checkpoint with no cut: a skipped checkpoint, or a node failure when
   `strict`. A failed checkpoint is tried again when new rows arrive, not for the same
   rows, within one process. Only the newest action can hold a checkpoint back; an
   older unanswered call is summarized with its round. The
   `since_checkpoint` run context selector reads the same cut, in request order, and
-  also returns the input and the turn note, which a summary does not replace. A
+  also returns the input and the turn note, which a summary does not replace. In every
+  mode `max_chars` is a hard bound: over it the latest summary and the newest rows stay,
+  the input and the note get what room is left, and `truncated` is set. A
   skipped checkpoint leaves an audit observation that stays out of the prompt and of
   the summary.
-- **Empty input.** A node with no conversation input sends no user message, because
-  Claude and Bedrock reject an empty text block: the turn note, or another note, is
-  the only content. A node with nothing to send at all fails naming that.
+- **Empty input.** A node with no conversation input pins its `arena.prompt` as the
+  first user message, on every driver, because Claude and Bedrock reject an empty text
+  block. With no `arena.prompt` it sends no user message and a note is the only content;
+  with no note either it fails naming that.
 - **Turns that do not finish.** A text turn below `min_iterations`, or an empty one
   under `tool_calling = "none"`, is answered with a feedback row, so the next request
   does not end on the assistant.
@@ -257,8 +264,10 @@ requests after it extend each other again:
 
 A round whose results all committed before a kill, but whose closing commit did not,
 is settled on recovery: `round_settled` is missing, so the iteration warning is written
-if it is not stored and `after_execute` wrappers run again. Wrappers are at-least-once,
-and a run stored before `round_settled` gets this once on resume.
+if it is not stored and `after_execute` wrappers run for the whole round. A run stored
+before `round_settled` gets this once on resume. After a kill with calls still unresolved,
+`after_execute` sees only the calls recovery runs: a call whose result committed before
+the kill is not shown to it again, so wrappers are not at-least-once per call.
 
 A selection is durable: `agent_id` and `model` inputs choose only until the node's
 first commit, which stores the choice in the config, a `_control.config` switch commits with the results that carry it,

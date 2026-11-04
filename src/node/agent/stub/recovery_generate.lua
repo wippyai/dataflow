@@ -355,8 +355,15 @@ local function handler(contract_args)
             control_args = { memory_add = "added at " .. tostring(llm_calls) }
         elseif scenario.commands_memory_at == llm_calls then
             control_args = { commands_memory = "added at " .. tostring(llm_calls), child_delay_ms = scenario.child_delay_ms }
+        elseif scenario.delegate_without_input_at == llm_calls then
+            control_args = { delegate_without_input = scenario.delegate_to }
         elseif scenario.two_children_at == llm_calls then
             control_args = { commands_children = 2, child_delay_ms = 10 }
+        end
+        if scenario.whitespace_at == llm_calls then
+            local blank = final_response(scenario.scenario_id, scenario.mode, result_count, tokens, 4)
+            blank.result.content = "  \n "
+            return blank
         end
         if scenario.delegate_and_memory_at == llm_calls then
             return tool_call_response(scenario.scenario_id, 1, 0, tokens, 4, "recovery_control_tool",

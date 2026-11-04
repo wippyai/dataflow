@@ -177,7 +177,10 @@ local function define_tests()
                 if not scenario.accepted then
                     test.eq(steps[2].iteration, 2, "recovery resumes at the next iteration")
                     local history = json.encode(steps[2].messages)
-                    test.contains(history, scenario.result or "rejected answer", "the prior action stays in history")
+                    local prior_text = scenario.result or "rejected answer"
+                    if prior_text:match("%S") then
+                        test.contains(history, prior_text, "the prior action stays in history")
+                    end
                     if scenario.feedback then
                         local observations = rows(agent_consts.DATA_TYPE.AGENT_OBSERVATION)
                         test.eq(#observations, 1, "recovery keeps one feedback row")

@@ -351,13 +351,15 @@ function prompt_builder:_format_action(action_item, builder)
 
     local has_tool_calls = #tool_calls > 0
     local has_delegate_calls = #delegate_calls > 0
-    local has_text_content = text_content and text_content ~= ""
+    -- Whitespace is an empty turn: providers reject it as text, and the feedback row
+    -- that answers it keeps the request valid.
+    local has_text_content = type(text_content) == "string" and text_content:match("%S") ~= nil
 
     -- Always add assistant message if there are tool calls, delegate calls, or text content
     -- This ensures tool calls have a proper assistant message to attach to
     if has_tool_calls or has_delegate_calls or has_text_content then
         local message_meta = extract_message_meta(metadata)
-        builder:add_assistant(text_content or "", message_meta)
+        builder:add_assistant(has_text_content and text_content or "", message_meta)
     end
 
     -- Process regular tool calls

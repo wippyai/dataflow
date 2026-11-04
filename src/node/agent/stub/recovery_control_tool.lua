@@ -99,6 +99,10 @@ local function handler(input)
         }
     end
 
+    if type(input.delegate_without_input) == "string" then
+        return { _control = { delegate = { { agent_id = input.delegate_without_input, tool_calling = "auto" } } } }
+    end
+
     if type(input.delegate_to) == "string" then
         return {
             _control = {
