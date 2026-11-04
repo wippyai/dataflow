@@ -298,6 +298,10 @@ function M.create_round_staggered_children()
     return create_command_delegate("round-staggered-children", false, true)
 end
 
+function M.create_round_output_only()
+    return create_command_delegate("round-output-only", false, true)
+end
+
 local function observe_command_outputs(scenario_id, expected)
     for _ = 1, 600 do
         local db = assert(sql.get("app:db"))
@@ -341,6 +345,10 @@ end
 
 function M.observe_round_staggered_children()
     return observe_command_outputs("round-staggered-children", { "child-output-1", "child-output-2" })
+end
+
+function M.observe_round_output_only()
+    return observe_command_outputs("round-output-only", { "child-output-1", "child-output-2" })
 end
 
 function M.create_round_children()

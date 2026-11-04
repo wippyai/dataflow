@@ -12,7 +12,7 @@ runtime_pid=""
 restart_wippy="${WIPPY:-wippy}"
 dialect="${DATAFLOW_RESTART_DIALECT:-sqlite}"
 scenario="${DATAFLOW_RESTART_SCENARIO:-rolling}"
-case "$scenario" in rolling|behavior|parallel_tools|stable_prefix|round_children|round_delegate|round_both|round_rerun|round_double_kill|round_yield|round_settle|round_yield_commands|round_artifact|round_command_delegate|round_yield_delegate|round_staggered_children) ;; *) echo "unsupported restart scenario" >&2; exit 1 ;; esac
+case "$scenario" in rolling|behavior|parallel_tools|stable_prefix|round_children|round_delegate|round_both|round_rerun|round_double_kill|round_yield|round_settle|round_yield_commands|round_artifact|round_command_delegate|round_yield_delegate|round_staggered_children|round_output_only) ;; *) echo "unsupported restart scenario" >&2; exit 1 ;; esac
 pg_host="${DATAFLOW_PG_HOST:-127.0.0.1}"
 pg_port="${DATAFLOW_PG_PORT:-5432}"
 pg_database="${DATAFLOW_PG_DATABASE:-dataflow_restart_test}"
@@ -71,7 +71,7 @@ start_runtime() {
         round_double_kill)
             set -- --profile restart_round_rerun \
                 --override "app:restart_probe.create:method=create_round_double_kill" ;;
-        round_command_delegate|round_yield_delegate|round_staggered_children)
+        round_command_delegate|round_yield_delegate|round_staggered_children|round_output_only)
             set -- --profile restart_round_children \
                 --override "app:restart_probe.create:method=create_$scenario" \
                 --override "app:restart_probe.observe:method=observe_$scenario" ;;
@@ -147,9 +147,10 @@ while [ "$attempts" -lt 200 ]; do
               AND EXISTS (SELECT 1 FROM dataflow_data d WHERE d.dataflow_id = a.dataflow_id AND d.type = 'agent.observation')
               AND EXISTS (SELECT 1 FROM restart_recovery_store s WHERE s.store_key = 'agent_recovery:round-settle:wrapper_attempts')
             LIMIT 1;" 2>/dev/null || true)
-    elif [ "$scenario" = "round_command_delegate" ] || [ "$scenario" = "round_staggered_children" ]; then
+    elif [ "$scenario" = "round_command_delegate" ] || [ "$scenario" = "round_staggered_children" ] \
+        || [ "$scenario" = "round_output_only" ]; then
         completed_child=""
-        if [ "$scenario" = "round_staggered_children" ]; then
+        if [ "$scenario" = "round_staggered_children" ] || [ "$scenario" = "round_output_only" ]; then
             completed_child="AND EXISTS (SELECT 1 FROM dataflow_data r JOIN dataflow_nodes c ON c.node_id = r.node_id
                 WHERE c.dataflow_id = a.dataflow_id AND c.parent_node_id IS NOT NULL
                   AND c.type = 'userspace.dataflow.node.func:node' AND c.status = 'completed'
@@ -282,6 +283,20 @@ else
     stop_runtime "$runtime_pid"
 fi
 runtime_pid=""
+
+if [ "$scenario" = "round_output_only" ]; then
+    # Seed the output-before-result window; the two commits have no deterministic pause point.
+    child_id=$(query "SELECT node_id FROM dataflow_nodes WHERE dataflow_id = '$dataflow_id'
+        AND parent_node_id IS NOT NULL AND type = 'userspace.dataflow.node.func:node' AND status = 'completed' LIMIT 1;")
+    [ -n "$child_id" ] || { echo "no completed command child to seed" >&2; exit 1; }
+    query "BEGIN;
+        DELETE FROM dataflow_data WHERE node_id = '$child_id' AND type = 'node.result';
+        UPDATE dataflow_nodes SET status = 'running' WHERE node_id = '$child_id';
+        COMMIT;"
+    output_only=$(query "SELECT COUNT(*) FROM dataflow_data WHERE node_id = '$child_id' AND type = 'node.output';")
+    [ "$output_only" = "1" ] || { echo "seeded child has no durable output" >&2; exit 1; }
+    echo "seeded output-before-result rows for command child $child_id"
+fi
 
 preserved=$(query "
     SELECT COUNT(*) FROM dataflow_activations a
@@ -425,24 +440,24 @@ if [ "${scenario#round_}" != "$scenario" ]; then
     warnings=$(query "SELECT COUNT(*) FROM dataflow_data d JOIN dataflow_nodes n ON n.node_id = d.node_id
         WHERE d.dataflow_id = '$dataflow_id' AND d.type = 'agent.observation' AND d.key = '1_iterations_warning' AND n.parent_node_id IS NULL;")
     expected_added=1
-    case "$scenario" in round_settle|round_yield_commands|round_artifact|round_command_delegate|round_yield_delegate|round_staggered_children) expected_added=0 ;; esac
+    case "$scenario" in round_settle|round_yield_commands|round_artifact|round_command_delegate|round_yield_delegate|round_staggered_children|round_output_only) expected_added=0 ;; esac
     [ "$added|$warnings" = "$expected_added|1" ] || {
         echo "the round's text did not survive the restart: added=$added warnings=$warnings" >&2
         exit 1
     }
     if [ "$scenario" = "round_command_delegate" ] || [ "$scenario" = "round_yield_delegate" ] \
-        || [ "$scenario" = "round_staggered_children" ]; then
+        || [ "$scenario" = "round_staggered_children" ] || [ "$scenario" = "round_output_only" ]; then
         outputs=$(query "SELECT COUNT(*) FROM dataflow_data WHERE dataflow_id = '$dataflow_id'
             AND type = 'agent.observation' AND key = '1_commands_output';")
         children=$(query "SELECT COUNT(*) FROM dataflow_nodes WHERE dataflow_id = '$dataflow_id'
             AND parent_node_id IS NOT NULL;")
         expected_children=2
-        if [ "$scenario" = "round_staggered_children" ]; then expected_children=3; fi
+        if [ "$scenario" = "round_staggered_children" ] || [ "$scenario" = "round_output_only" ]; then expected_children=3; fi
         [ "$outputs|$children" = "1|$expected_children" ] || {
             echo "delegating round lost command output or duplicated children: outputs=$outputs children=$children" >&2
             exit 1
         }
-        if [ "$scenario" = "round_staggered_children" ]; then
+        if [ "$scenario" = "round_staggered_children" ] || [ "$scenario" = "round_output_only" ]; then
             if [ "$dialect" = "postgres" ]; then
                 pending_expr="metadata->>'agent_pending'"
             else
