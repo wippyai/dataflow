@@ -169,6 +169,7 @@ entries:
       - funcs
     imports:
       agent_ref: userspace.dataflow:agent_ref
+      node_reader: userspace.dataflow.persist:node_reader
       tools: wippy.agent.discovery:tools
       agent_consts: userspace.dataflow.node.agent:consts
       agent_context: wippy.agent:context

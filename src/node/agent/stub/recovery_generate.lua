@@ -231,6 +231,25 @@ local function handler(contract_args)
         return final_response(scenario.scenario_id, scenario.mode, result_count, base_prompt or 9, 4)
     end
 
+    -- One turn with a fast and a slow call; the final answer reports how many
+    -- times each call ran, keyed by its original call id.
+    if scenario.mode == "fast_and_slow_one_turn" then
+        if result_count == 0 then
+            local fast = tool_call_response(scenario.scenario_id, 1, scenario.fast_delay_ms, base_prompt or 13, 8)
+            local slow = tool_call_response(scenario.scenario_id, 2, scenario.slow_delay_ms, base_prompt or 13, 8)
+            table.insert(fast.result.tool_calls, slow.result.tool_calls[1])
+            return fast
+        end
+
+        local final = final_response(scenario.scenario_id, scenario.mode, result_count, base_prompt or 9, 4)
+        final.result.content = string.format("%s:fast=%d:slow=%d", final.result.content,
+            tonumber(helpers.get_metric(scenario.scenario_id,
+                "tool_attempts:" .. helpers.call_id(scenario.scenario_id, 1), 0)) or 0,
+            tonumber(helpers.get_metric(scenario.scenario_id,
+                "tool_attempts:" .. helpers.call_id(scenario.scenario_id, 2), 0)) or 0)
+        return final
+    end
+
     if scenario.mode == "single_tool_then_final" then
         if result_count == 0 then
             return tool_call_response(scenario.scenario_id, 1, scenario.tool_delay_ms, base_prompt or 13, 8)

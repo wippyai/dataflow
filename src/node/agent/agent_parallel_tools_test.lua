@@ -86,7 +86,8 @@ local function define_tests()
             local status, metrics = run_two_tools()
 
             test.eq(status, consts.STATUS.COMPLETED_SUCCESS)
-            test.eq(metrics.tool_attempts, 2, "both calls run once")
+            test.eq(metrics.step1_attempts, 1, "the first call runs once")
+            test.eq(metrics.step2_attempts, 1, "the second call runs once")
             test.gt(metrics.step1_started, 0)
             test.gt(metrics.step2_started, 0)
             -- Each call holds its worker for TOOL_DELAY_MS; concurrent calls

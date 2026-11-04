@@ -14,7 +14,7 @@ local STUB = "userspace.dataflow.node.agent.stub:"
 local TOOL_DELAY_MS = 600
 local FAIL_MESSAGE = "Page returned status 403"
 
-local function create_workflow(input)
+local function create_workflow(input, show_tool_calls)
     local node_id = uuid.v7()
     local input_id = uuid.v7()
     local dataflow_id, create_err = client.new():create_workflow({
@@ -26,7 +26,7 @@ local function create_workflow(input)
                 status = consts.STATUS.RUNNING,
                 config = {
                     agent = STUB .. "recovery_test_agent",
-                    show_tool_calls = false,
+                    show_tool_calls = show_tool_calls == true,
                     data_targets = { {
                         data_type = consts.DATA_TYPE.WORKFLOW_OUTPUT,
                         key = "result",
@@ -83,20 +83,29 @@ end
 
 -- Runs the node in-process with synchronous commits and no orchestrator: a
 -- yield commits its rows and continues. `interrupt_after` is checked after
--- every durable commit; when it returns true the run raises, leaving exactly
--- the committed rows behind, as a runtime crash does.
-local function run_node(dataflow_id, node_id, interrupt_after)
+-- every durable commit; once it returns true that commit and every later one
+-- raise, leaving exactly the committed rows behind, as a runtime crash does.
+-- `refuse_commit` rejects a commit by its commands, as a failed write does.
+local function run_node(dataflow_id, node_id, interrupt_after, refuse_commit)
     local row, read_err = node_reader.with_dataflow(dataflow_id):with_nodes(node_id):one()
     test.is_nil(read_err)
     test.not_nil(row)
 
+    local stopped = false
     local saved_new = node_sdk.new
     node_sdk.new = function(run_args)
         local n, err = saved_new(run_args, {
             data_reader = data_reader,
             commit = { submit = function(df_id, op_id, commands)
+                if stopped then
+                    error("interrupt after commit")
+                end
+                if refuse_commit and refuse_commit(commands) then
+                    return nil, "commit refused"
+                end
                 local result, commit_err = commit.execute(df_id, op_id, commands, { publish = false })
                 if interrupt_after and interrupt_after() then
+                    stopped = true
                     error("interrupt after commit")
                 end
                 return result, commit_err
@@ -186,14 +195,16 @@ local function define_tests()
             end)
             test.is_false(first_ok, "the first run stops after the action commit")
             test.contains(tostring(first_result), "interrupt after commit")
-            test.eq(helpers.get_metrics(scenario_id).tool_attempts, 0, "no call ran before the interruption")
+            local interrupted = helpers.get_metrics(scenario_id)
+            test.eq(interrupted.step1_attempts + interrupted.step2_attempts, 0, "no call ran before the interruption")
 
             local ok, result = run_node(dataflow_id, node_id)
             test.is_true(ok, tostring(result))
             test.is_true(result.success, tostring(result.message))
 
             local metrics = helpers.get_metrics(scenario_id)
-            test.eq(metrics.tool_attempts, 2, "recovery runs each call once")
+            test.eq(metrics.step1_attempts, 1, "recovery runs the first call once")
+            test.eq(metrics.step2_attempts, 1, "recovery runs the second call once")
             local first_turn_actions = 0
             for _, action in ipairs(rows(dataflow_id, node_id, agent_consts.DATA_TYPE.AGENT_ACTION)) do
                 if action.metadata.iteration == 1 then first_turn_actions = first_turn_actions + 1 end
@@ -204,6 +215,100 @@ local function define_tests()
             test.gt(metrics.step2_started, 0)
             test.is_true(metrics.step2_started < metrics.step1_finished, "second call starts before the first ends")
             test.is_true(metrics.step1_started < metrics.step2_finished, "first call starts before the second ends")
+        end)
+
+        local function exercise_early_commit(show_tool_calls)
+            local scenario_id = "tool-recovery-early-" .. uuid.v7()
+            local fast_id = helpers.call_id(scenario_id, 1)
+            local slow_id = helpers.call_id(scenario_id, 2)
+            local dataflow_id, node_id = create_workflow({
+                scenario_id = scenario_id, mode = "fast_and_slow_one_turn", fast_delay_ms = 200, slow_delay_ms = 3000,
+            }, show_tool_calls)
+
+            local slow_finished_at_interrupt
+            local observed_at_interrupt
+            local first_ok = run_node(dataflow_id, node_id, function()
+                local observations = call_observations(dataflow_id, node_id)
+                for _, observation in ipairs(observations) do
+                    if observation.metadata.tool_call_id == fast_id then
+                        slow_finished_at_interrupt = tonumber(helpers.get_metric(scenario_id,
+                            "tool_finished:" .. slow_id, 0)) or 0
+                        observed_at_interrupt = #observations
+                        return true
+                    end
+                end
+                return false
+            end)
+            test.is_false(first_ok, "the first run stops after the fast call's observation commits")
+            test.eq(slow_finished_at_interrupt, 0, "the slow call is still running when the fast result commits")
+            test.eq(observed_at_interrupt, 1, "only the finished call is observed")
+
+            local ok, result = run_node(dataflow_id, node_id)
+            test.is_true(ok, tostring(result))
+            test.is_true(result.success, tostring(result.message))
+
+            test.eq(tonumber(helpers.get_metric(scenario_id, "tool_attempts:" .. fast_id, 0)), 1,
+                "recovery keeps the committed fast result")
+            test.eq(tonumber(helpers.get_metric(scenario_id, "tool_attempts:" .. slow_id, 0)), 2,
+                "recovery re-runs the unfinished call with its original id")
+            local per_call = {}
+            for _, observation in ipairs(call_observations(dataflow_id, node_id)) do
+                local call_id = observation.metadata.tool_call_id
+                per_call[call_id] = (per_call[call_id] or 0) + 1
+            end
+            test.eq(per_call[fast_id], 1)
+            test.eq(per_call[slow_id], 1)
+            return dataflow_id, node_id, fast_id, slow_id
+        end
+
+        it("commits a finished call's observation while a slower call of the turn still runs", function()
+            exercise_early_commit(false)
+        end)
+
+        it("keeps one tool call node per call across the restart", function()
+            local dataflow_id, node_id, fast_id, slow_id = exercise_early_commit(true)
+            local tool_nodes, read_err = node_reader.with_dataflow(dataflow_id):with_parent_nodes(node_id)
+                :with_node_types("tool.call"):all()
+            test.is_nil(read_err)
+            local per_call = {}
+            for _, tool_node in ipairs(tool_nodes or {}) do
+                local call_id = tool_node.metadata.tool_call_id
+                per_call[call_id] = (per_call[call_id] or 0) + 1
+                test.eq(tool_node.status, consts.STATUS.COMPLETED_SUCCESS, "tool call node " .. tostring(call_id))
+            end
+            test.eq(per_call[fast_id], 1, "the fast call keeps its node")
+            test.eq(per_call[slow_id], 1, "the recovered call reuses its node")
+        end)
+
+        it("fails the round when a finished call's observation cannot be committed", function()
+            local scenario_id = "tool-recovery-refused-" .. uuid.v7()
+            local fast_id = helpers.call_id(scenario_id, 1)
+            local slow_id = helpers.call_id(scenario_id, 2)
+            local dataflow_id, node_id = create_workflow({
+                scenario_id = scenario_id, mode = "fast_and_slow_one_turn", fast_delay_ms = 200, slow_delay_ms = 3000,
+            })
+
+            local refused = 0
+            local ok, result = run_node(dataflow_id, node_id, nil, function(commands)
+                for _, command in ipairs(commands) do
+                    local payload = command.payload or {}
+                    if command.type == consts.COMMAND_TYPES.CREATE_DATA
+                        and payload.data_type == agent_consts.DATA_TYPE.AGENT_OBSERVATION
+                        and payload.metadata and payload.metadata.tool_call_id == fast_id
+                        and refused == 0 then
+                        refused = refused + 1
+                        return true
+                    end
+                end
+                return false
+            end)
+            test.is_true(ok, tostring(result))
+            test.is_false(result.success, "the node fails when a tool result cannot be persisted")
+            test.contains(tostring(result.message), "Tool result listener failed for " .. fast_id)
+            test.contains(tostring(result.message), "commit refused")
+            test.eq(tonumber(helpers.get_metric(scenario_id, "tool_finished:" .. slow_id, 0)), 0,
+                "the slower call is cancelled with the round")
+            test.eq(helpers.get_metrics(scenario_id).llm_calls, 1, "the model gets no partial round")
         end)
     end)
 end

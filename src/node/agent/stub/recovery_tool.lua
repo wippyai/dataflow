@@ -12,6 +12,7 @@ local function handler(input)
     local call_id = ctx.get("call_id") or helpers.call_id(scenario_id, step)
 
     helpers.bump_metric(scenario_id, "tool_attempts", 1)
+    helpers.bump_metric(scenario_id, "tool_attempts:" .. tostring(call_id), 1)
 
     local effect_key = "effect_applied:" .. tostring(call_id)
     local effect_applied = false

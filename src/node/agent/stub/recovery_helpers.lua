@@ -104,6 +104,8 @@ function helpers.set_metric(scenario_id, metric_name, value)
     return value
 end
 
+-- Read-modify-write on the store: exact for one writer at a time. Calls that
+-- run concurrently count their attempts under per-call keys.
 function helpers.bump_metric(scenario_id, metric_name, amount)
     local step = amount or 1
     local current = tonumber(helpers.get_metric(scenario_id, metric_name, 0)) or 0
@@ -166,6 +168,10 @@ function helpers.get_metrics(scenario_id)
             "effect_applied:" .. helpers.call_id(scenario_id, 1), 0)) or 0,
         step2_effect = tonumber(helpers.get_metric(scenario_id,
             "effect_applied:" .. helpers.call_id(scenario_id, 2), 0)) or 0,
+        step1_attempts = tonumber(helpers.get_metric(scenario_id,
+            "tool_attempts:" .. helpers.call_id(scenario_id, 1), 0)) or 0,
+        step2_attempts = tonumber(helpers.get_metric(scenario_id,
+            "tool_attempts:" .. helpers.call_id(scenario_id, 2), 0)) or 0,
         step1_started = tonumber(helpers.get_metric(scenario_id,
             "tool_started:" .. helpers.call_id(scenario_id, 1), 0)) or 0,
         step1_finished = tonumber(helpers.get_metric(scenario_id,

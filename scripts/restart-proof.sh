@@ -10,7 +10,7 @@ runtime_pid=""
 restart_wippy="${WIPPY:-wippy}"
 dialect="${DATAFLOW_RESTART_DIALECT:-sqlite}"
 scenario="${DATAFLOW_RESTART_SCENARIO:-rolling}"
-case "$scenario" in rolling|behavior) ;; *) echo "unsupported restart scenario" >&2; exit 1 ;; esac
+case "$scenario" in rolling|behavior|parallel_tools) ;; *) echo "unsupported restart scenario" >&2; exit 1 ;; esac
 pg_host="${DATAFLOW_PG_HOST:-127.0.0.1}"
 pg_port="${DATAFLOW_PG_PORT:-5432}"
 pg_database="${DATAFLOW_PG_DATABASE:-dataflow_restart_test}"
@@ -62,7 +62,11 @@ query() {
 start_runtime() {
     restart_profile="$1"
     runtime_log="$2"
-    if [ "$scenario" = "behavior" ]; then set -- --profile restart_behavior; else set --; fi
+    case "$scenario" in
+        behavior) set -- --profile restart_behavior ;;
+        parallel_tools) set -- --profile restart_parallel_tools ;;
+        *) set -- ;;
+    esac
     if [ "$dialect" = "postgres" ]; then
         "$restart_wippy" run -s --config "${DATAFLOW_RESTART_CONFIG:-.wippy.yaml}" --profile postgres --profile "$restart_profile" "$@" \
             --set "vars.postgres_host=$pg_host" \
@@ -92,7 +96,25 @@ start_runtime restart_create "$phase1_log"
 phase1=""
 attempts=0
 while [ "$attempts" -lt 200 ]; do
-    if [ "$scenario" = "behavior" ]; then
+    if [ "$scenario" = "parallel_tools" ]; then
+        # The fast call's observation is committed while the slow call of the
+        # same turn has no observation yet.
+        if [ "$dialect" = "postgres" ]; then
+            fast_call="d.metadata->>'tool_call_id' = 'call-parallel-restart-1'"
+            slow_call="d.metadata->>'tool_call_id' = 'call-parallel-restart-2'"
+        else
+            fast_call="json_extract(d.metadata, '$.tool_call_id') = 'call-parallel-restart-1'"
+            slow_call="json_extract(d.metadata, '$.tool_call_id') = 'call-parallel-restart-2'"
+        fi
+        phase1=$(query "SELECT a.dataflow_id || '|' || a.owner_epoch
+            FROM dataflow_activations a
+            WHERE a.desired_active
+              AND EXISTS (SELECT 1 FROM dataflow_data d WHERE d.dataflow_id = a.dataflow_id
+                          AND d.type = 'agent.observation' AND $fast_call)
+              AND NOT EXISTS (SELECT 1 FROM dataflow_data d WHERE d.dataflow_id = a.dataflow_id
+                              AND d.type = 'agent.observation' AND $slow_call)
+            LIMIT 1;" 2>/dev/null || true)
+    elif [ "$scenario" = "behavior" ]; then
         if [ "$dialect" = "postgres" ]; then
             pending_predicate="n.metadata #>> '{behavior_pending,iteration}' = '1'"
         else
@@ -126,6 +148,10 @@ while [ "$attempts" -lt 200 ]; do
     attempts=$((attempts + 1))
     sleep 0.1
 done
+if [ -z "$phase1" ] && [ "$scenario" = "parallel_tools" ]; then
+    echo "timed out waiting for the fast call's observation to commit while the slow call runs" >&2
+    exit 1
+fi
 [ -n "$phase1" ] || { echo "timed out waiting for first runtime ownership" >&2; exit 1; }
 
 dataflow_id=${phase1%%|*}
@@ -188,8 +214,8 @@ done
 [ "$rolling_refilled" = "1" ] || { echo "rolling window did not refill before the slow iteration completed" >&2; exit 1; }
 
 fi
-if [ "$scenario" = "behavior" ]; then
-    # Interrupt only this disposable runtime while its persisted proposal is pending.
+if [ "$scenario" = "behavior" ] || [ "$scenario" = "parallel_tools" ]; then
+    # Interrupt only this disposable runtime while its persisted round is pending.
     kill -KILL "$runtime_pid"
     wait "$runtime_pid" 2>/dev/null || true
 else
@@ -251,6 +277,29 @@ done
     tail -120 "$phase2_log" >&2 || true
     exit 1
 }
+
+if [ "$scenario" = "parallel_tools" ]; then
+    if [ "$dialect" = "postgres" ]; then
+        call_id_expr="metadata->>'tool_call_id'"
+        output_text="convert_from(content, 'UTF8')"
+    else
+        call_id_expr="json_extract(metadata, '$.tool_call_id')"
+        output_text="CAST(content AS TEXT)"
+    fi
+    fast_observations=$(query "SELECT COUNT(*) FROM dataflow_data WHERE dataflow_id = '$dataflow_id' AND type = 'agent.observation' AND $call_id_expr = 'call-parallel-restart-1';")
+    slow_observations=$(query "SELECT COUNT(*) FROM dataflow_data WHERE dataflow_id = '$dataflow_id' AND type = 'agent.observation' AND $call_id_expr = 'call-parallel-restart-2';")
+    call_observations=$(query "SELECT COUNT(*) FROM dataflow_data WHERE dataflow_id = '$dataflow_id' AND type = 'agent.observation' AND $call_id_expr IS NOT NULL;")
+    # The model's final answer reports how many times each original call id ran.
+    attempts=$(query "SELECT COUNT(*) FROM dataflow_data WHERE dataflow_id = '$dataflow_id' AND type = 'dataflow.output' AND $output_text LIKE '%:fast=1:slow=2';")
+    workflows=$(query "SELECT COUNT(*) FROM dataflows;")
+    [ "$fast_observations|$slow_observations|$call_observations|$attempts|$workflows" = "1|1|2|1|1" ] || {
+        echo "parallel tool recovery re-ran a finished call or duplicated an observation: $fast_observations|$slow_observations|$call_observations|$attempts|$workflows" >&2
+        query "SELECT $output_text FROM dataflow_data WHERE dataflow_id = '$dataflow_id' AND type = 'dataflow.output';" >&2 || true
+        exit 1
+    }
+    echo "$dialect parallel tools restart proof passed: $dataflow_id $first_epoch -> $second_epoch"
+    exit 0
+fi
 
 if [ "$scenario" = "behavior" ]; then
     if [ "$dialect" = "postgres" ]; then
