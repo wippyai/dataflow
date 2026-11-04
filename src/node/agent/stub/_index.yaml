@@ -152,6 +152,13 @@ entries:
   imports:
     helpers: userspace.dataflow.node.agent.stub:recovery_helpers
   method: handler
+- name: multibyte_summarizer
+  kind: function.lua
+  meta:
+    test_only: true
+    comment: Returns a long summary of two-byte characters
+  source: file://multibyte_summarizer.lua
+  method: handler
 - name: empty_memory_summarizer
   kind: function.lua
   meta:

@@ -832,14 +832,15 @@ local function clamp_memory_text(text, max_chars)
         return text
     end
     local cap = math.floor(max_chars)
-    if #text <= cap then
+    local _, over_cap = prompt_builder.text_prefix(text, cap)
+    if not over_cap then
         return text
     end
     local suffix = " ... [truncated]"
     if cap <= #suffix then
-        return text:sub(1, cap)
+        return (prompt_builder.text_prefix(text, cap))
     end
-    return text:sub(1, cap - #suffix) .. suffix
+    return (prompt_builder.text_prefix(text, cap - #suffix)) .. suffix
 end
 
 -- Record a checkpoint-skipped observation row so non-strict mode leaves an
@@ -909,31 +910,24 @@ local function collect_unresolved_calls(action_payload, observed_tool_call_ids)
     return unresolved_tool_calls, unresolved_delegate_calls
 end
 
--- The first action with a call that has no result yet. A finish whose node has not
--- completed is one: recovery runs it again and may answer it with a result.
-local function first_open_action(rows)
+-- A call of the newest action with no result may still get one: a finish whose node
+-- has not completed runs again on recovery. An older unanswered call cannot, so it is
+-- summarized with its round.
+local function latest_action_is_open(action_row, rows)
+    local payload = load_action_payload(action_row)
+    local metadata = payload and payload.metadata or {}
+    if not payload or metadata.finish_reason == "length" then
+        return false
+    end
     local observed = {}
     for _, row in ipairs(rows) do
-        local metadata = row.metadata or {}
-        if metadata.tool_call_id then
-            local iteration = tostring(metadata.iteration)
-            observed[iteration] = observed[iteration] or {}
-            observed[iteration][metadata.tool_call_id] = true
+        local row_metadata = row.metadata or {}
+        if row_metadata.tool_call_id and row_metadata.iteration == metadata.iteration then
+            observed[row_metadata.tool_call_id] = true
         end
     end
-    for _, row in ipairs(rows) do
-        if row.type == agent_consts.DATA_TYPE.AGENT_ACTION then
-            local payload = load_action_payload(row)
-            local metadata = payload and payload.metadata or {}
-            if payload and metadata.finish_reason ~= "length" then
-                local tools, delegates = collect_unresolved_calls(payload, observed[tostring(metadata.iteration)] or {})
-                if #tools > 0 or #delegates > 0 then
-                    return row
-                end
-            end
-        end
-    end
-    return nil
+    local tools, delegates = collect_unresolved_calls(payload, observed)
+    return #tools > 0 or #delegates > 0
 end
 
 local function maybe_checkpoint_history(n, config, session_context, agent_instance, agent_id, model_name, iteration)
@@ -996,9 +990,9 @@ local function maybe_checkpoint_history(n, config, session_context, agent_instan
 
     local source_rows = prompt_builder.checkpoint_source_rows(history_rows)
 
-    -- A call with no result may still get one: recovery runs it again, and the result
-    -- needs its call in the request. The request flag waits for the round to close.
-    if first_open_action(source_rows) then
+    -- The result needs its call in the request. The request flag waits for the round
+    -- to close.
+    if latest_action_is_open(latest_action, source_rows) then
         return nil, nil
     end
 
@@ -1007,6 +1001,16 @@ local function maybe_checkpoint_history(n, config, session_context, agent_instan
     if #source_rows == (latest_marker and 1 or 0) then
         if compact_requested then n:update_metadata({ checkpoint_requested = false }) end
         return nil, nil
+    end
+
+    -- A failed summary of these same rows would fail again. New rows bring a new try.
+    local attempted_rows = prompt_builder.row_id(source_rows[#source_rows])
+    if n._failed_checkpoint_rows == attempted_rows then
+        return nil, nil
+    end
+    local function failed(message, strict)
+        n._failed_checkpoint_rows = attempted_rows
+        return nil, message, strict
     end
 
     local cut_before = prompt_builder.row_id(history_rows[#history_rows])
@@ -1068,7 +1072,7 @@ local function maybe_checkpoint_history(n, config, session_context, agent_instan
             options = checkpoint_cfg,
         })
         if runtime_err then
-            return nil, "checkpoint binding failed: " .. error_message(runtime_err, "unknown"), true
+            return failed("checkpoint binding failed: " .. error_message(runtime_err, "unknown"), true)
         end
         if runtime_result and runtime_result.result then
             summary_result = runtime_result.result
@@ -1083,7 +1087,7 @@ local function maybe_checkpoint_history(n, config, session_context, agent_instan
             if binding_failed then
                 -- Strict binding failures returned above. A non-strict failure
                 -- remains skippable unless the host requires strict checkpointing.
-                return nil, "checkpoint binding failed and no fallback function is configured"
+                return failed("checkpoint binding failed and no fallback function is configured")
             end
             return nil, nil
         end
@@ -1105,7 +1109,7 @@ local function maybe_checkpoint_history(n, config, session_context, agent_instan
             })
 
         if call_err then
-        return nil, "checkpoint function " .. func_id .. " failed: " .. error_message(call_err, "unknown")
+            return failed("checkpoint function " .. func_id .. " failed: " .. error_message(call_err, "unknown"))
         end
         checkpoint_source = "function"
     end
@@ -1118,7 +1122,7 @@ local function maybe_checkpoint_history(n, config, session_context, agent_instan
     end
 
     if type(memory_text) ~= "string" or memory_text == "" then
-        return nil, "checkpoint provider returned empty memory"
+        return failed("checkpoint provider returned empty memory")
     end
 
     -- Hard cap on stored memory to prevent hostile/buggy summarizers from
@@ -2296,7 +2300,8 @@ local function run(args)
 
     -- Inputs choose the agent and model until the node's first commit, which stores
     -- that choice and the input pin; after it the config holds the selection, including
-    -- any switch. A run stored before the pin stores the model it was using now.
+    -- any switch. A run stored before the pin stores the model it was using now, unless
+    -- its config has moved on.
     local pinned_input = load_pinned_input(n)
     if saved_state.agent_id == nil then
         if agent_id_override then
@@ -2312,9 +2317,14 @@ local function run(args)
         if pinned_input then
             model_override = config.model
         else
-            model_override = saved_state.model
-            if model_override then
-                n:update_config({ model = model_override })
+            -- The state is older than a switch the config already holds.
+            if saved_state.agent_id ~= config.agent or (not model_override and config.model) then
+                model_override = config.model
+            else
+                model_override = saved_state.model
+                if model_override then
+                    n:update_config({ model = model_override })
+                end
             end
         end
     end

@@ -91,8 +91,27 @@ local function handler(contract_args)
     local messages = contract_args and contract_args.messages or {}
     local summarized_node = summarizer_node(messages)
     if summarized_node then
-        helpers.record_request(summarized_node, 1, messages)
+        local attempt = helpers.bump_metric(summarized_node, "summarizer_calls", 1)
+        helpers.record_request(summarized_node, attempt, messages)
+        helpers.set_metric(summarized_node, "summarizer_max_tokens", (contract_args.options or {}).max_tokens)
         local summary = final_response(summarized_node, "summary", 0, 7, 4)
+        -- A model that keeps everything: each merge is the previous summary plus 1500
+        -- characters, cut off past max_tokens at 4 characters a token.
+        if helpers.count_text_matches(messages, "GROW-SUMMARY") > 0 then
+            local previous = 0
+            for _, message in ipairs(messages) do
+                local body = message.content and message.content[1] and message.content[1].text
+                if type(body) == "string" then
+                    for run_of_x in string.gmatch(body, "x+") do
+                        if #run_of_x > previous then previous = #run_of_x end
+                    end
+                end
+            end
+            local wanted = previous + 1500
+            local limit = tonumber((contract_args.options or {}).max_tokens) or 0
+            summary.result.content = string.rep("x", math.min(wanted, limit * 4))
+            if wanted > limit * 4 then summary.finish_reason = "length" end
+        end
         if helpers.count_text_matches(messages, "TRUNCATE-SUMMARY") > 0 then
             summary.finish_reason = "length"
         end

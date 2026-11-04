@@ -54,6 +54,22 @@ function prompt_builder.is_audit_row(row)
         and row.metadata.checkpoint_skipped == true
 end
 
+-- The first max_chars characters of a text, each whole, and whether any were left out.
+-- Counts the bytes that start a character; the runtime has no utf8 library.
+function prompt_builder.text_prefix(text, max_chars)
+    if #text <= max_chars then
+        return text, false
+    end
+    local chars = 0
+    for start in text:gmatch("()[^\128-\191]") do
+        chars = chars + 1
+        if chars > max_chars then
+            return text:sub(1, start - 1), true
+        end
+    end
+    return text, false
+end
+
 -- Every request sends the pinned input and the note after it, whatever a checkpoint
 -- cut around them.
 local function is_kept_by_checkpoint(row)
@@ -280,7 +296,7 @@ function prompt_builder:_load_conversation_history()
 
     local function append_rows(rows)
         for _, row in ipairs(rows or {}) do
-            local row_data_id = tostring(row.data_id or "")
+            local row_data_id = prompt_builder.row_id(row)
             if row_data_id == "" or not seen_data_ids[row_data_id] then
                 merged_history[#merged_history + 1] = row
                 if row_data_id ~= "" then

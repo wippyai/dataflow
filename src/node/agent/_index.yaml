@@ -202,6 +202,7 @@ entries:
       llm: wippy.llm:llm
       output: wippy.llm:output
       agent_consts: userspace.dataflow.node.agent:consts
+      prompt_builder: userspace.dataflow.node.agent:prompt_builder
     method: handler
 
   # userspace.dataflow.node.agent:checkpoint_test

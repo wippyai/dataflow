@@ -5,9 +5,11 @@ local llm = require("llm")
 local CONFIG = {
     model = "class:fast",
     temperature = 0.2,
-    max_tokens = 2000,
     max_row_chars = 2000,
 }
+
+-- A cautious characters-per-token figure for stating what fits in an explicit max_tokens.
+local TOKEN_CHARS = 3
 
 local function positive_number(value, fallback)
     local n = tonumber(value)
@@ -19,12 +21,15 @@ end
 
 local function config_from_args(args)
     local options = type(args) == "table" and type(args.options) == "table" and args.options or {}
+    local max_memory_chars = positive_number(options.max_memory_chars, agent_consts.DEFAULTS.MAX_MEMORY_CHARS)
+    -- The output cap must hold a summary at the budget, or merging one always cuts off.
+    local max_tokens = positive_number(options.max_tokens, math.ceil(max_memory_chars / 2))
     return {
         model = type(options.model) == "string" and options.model ~= "" and options.model or CONFIG.model,
         temperature = tonumber(options.temperature) or CONFIG.temperature,
-        max_tokens = positive_number(options.max_tokens, CONFIG.max_tokens),
+        max_tokens = max_tokens,
         max_row_chars = positive_number(options.max_row_chars, CONFIG.max_row_chars),
-        max_memory_chars = positive_number(options.max_memory_chars, agent_consts.DEFAULTS.MAX_MEMORY_CHARS),
+        summary_budget = math.floor(math.min(max_memory_chars, max_tokens * TOKEN_CHARS)),
     }
 end
 
@@ -39,8 +44,9 @@ local function row_content(row, max_chars)
         content = tostring(content)
     end
 
-    if max_chars and max_chars > 0 and #content > max_chars then
-        content = content:sub(1, max_chars) .. "..."
+    if max_chars and max_chars > 0 then
+        local kept, clipped = prompt_builder.text_prefix(content, max_chars)
+        content = clipped and (kept .. "...") or kept
     end
 
     return content
@@ -72,11 +78,11 @@ local function history_text(history, max_row_chars)
 end
 
 local SUMMARY_INSTRUCTION = "Create a concise operational checkpoint for a dataflow agent. "
-    .. "Preserve task state, decisions, tool effects, blockers, and next actions. Return only the checkpoint text."
+    .. "Preserve task state, decisions, tool effects, blockers, and next actions. Return only the checkpoint text. "
+    .. "The result must fit in %d characters: anything past that is cut off."
 local MERGE_INSTRUCTION = " The history contains the previous checkpoint. Merge it with the new events: keep everything "
     .. "in it that still holds, mark completed items done, and update progress and blockers. The events it covers are "
-    .. "gone, so anything you drop is lost. The result must fit in %d characters: anything past that is cut off, so "
-    .. "condense older detail first and keep the newest state."
+    .. "gone, so anything you drop is lost. Condense older detail first and keep the newest state."
 
 local function has_previous_checkpoint(history)
     for _, row in ipairs(history) do
@@ -97,8 +103,8 @@ local function handler(args)
 
     local cfg = config_from_args(args)
     local p = prompt.new()
-    p:add_system(SUMMARY_INSTRUCTION .. (has_previous_checkpoint(args.history)
-        and string.format(MERGE_INSTRUCTION, cfg.max_memory_chars) or ""))
+    p:add_system(string.format(SUMMARY_INSTRUCTION, cfg.summary_budget)
+        .. (has_previous_checkpoint(args.history) and MERGE_INSTRUCTION or ""))
     p:add_user(string.format(
         "dataflow_id=%s\nnode_id=%s\niteration=%s\nprompt_tokens=%s\nhistory_count=%s\n\n%s",
         tostring(args.dataflow_id or ""),

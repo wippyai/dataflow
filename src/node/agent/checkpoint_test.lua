@@ -5,7 +5,8 @@ local function define_tests()
         it("uses stable defaults and option overrides", function()
             local defaults = checkpoint.config_from_args({})
             test.eq(defaults.model, "class:fast")
-            test.eq(defaults.max_tokens, 2000)
+            test.eq(defaults.max_tokens, 4096, "half the default memory budget")
+            test.eq(checkpoint.config_from_args({ options = { max_memory_chars = 1000 } }).max_tokens, 500)
 
             local cfg = checkpoint.config_from_args({
                 options = {
@@ -18,6 +19,13 @@ local function define_tests()
             test.eq(cfg.model, "class:large")
             test.eq(cfg.max_tokens, 1234)
             test.eq(cfg.max_row_chars, 12)
+        end)
+
+        it("clamps a history row without splitting a character", function()
+            local text = checkpoint.history_text({
+                { data_id = "d1", type = "agent.action", content = string.rep("\209\143", 10), metadata = {} }
+            }, 8)
+            test.contains(text, string.rep("\209\143", 8) .. "...")
         end)
 
         it("formats bounded history rows for the summarizer", function()

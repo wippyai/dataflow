@@ -200,8 +200,8 @@ stay valid. This requires Agent 0.5.10 and LLM 0.5.13 or later.
   while a round is open, so every action row that survives a cut was produced after
   the marker: the default fingerprint comparison is sufficient and the node passes
   no `thinking_is_current`.
-- **Checkpoints.** No checkpoint runs while an action has a call with no result,
-  such as a finish whose node has not completed; a requested compaction waits for
+- **Checkpoints.** No checkpoint runs while the newest action has a call with no
+  result, such as a finish whose node has not completed; a requested compaction waits for
   the round to close. The summary replaces every row up to the cut, calls and results
   together, and a request carries the input, the turn note, the marker and the rows
   after the cut. A later checkpoint summarizes what requests carry: the earlier
@@ -209,10 +209,15 @@ stay valid. This requires Agent 0.5.10 and LLM 0.5.13 or later.
   else bounds the payload: the rows the requests already carry, plus the default
   summarizer's `max_row_chars` per row, which does not apply to the earlier summary.
   The host sets no limit of its own. `max_memory_chars` (default 8192) caps the stored
-  summary: the default summarizer states it when it merges, and a longer summary is
-  cut at the cap and recorded in the marker's `checkpoint_memory_truncated`. A summary
-  the model cut off at its `max_tokens` is a failed checkpoint with no cut: a skipped
-  checkpoint and another try at the next step, or a node failure when `strict`. The
+  summary in characters, never splitting one. The default summarizer states the
+  budget it has on every summary and sets `max_tokens` to half of `max_memory_chars`
+  unless the options give one; with a smaller explicit `max_tokens` the stated budget
+  is `max_tokens * 3`. A longer summary is cut at the cap and recorded in the marker's
+  `checkpoint_memory_truncated`. A summary the model cut off at its `max_tokens` is a
+  failed checkpoint with no cut: a skipped checkpoint, or a node failure when
+  `strict`. A failed checkpoint is tried again when new rows arrive, not for the same
+  rows, within one process. Only the newest action can hold a checkpoint back; an
+  older unanswered call is summarized with its round. The
   `since_checkpoint` run context selector reads the same cut, in request order, and
   also returns the input and the turn note, which a summary does not replace. A
   skipped checkpoint leaves an audit observation that stays out of the prompt and of
@@ -257,7 +262,8 @@ action rows carry no `prefix_fingerprint`, so their thinking blocks are stripped
 from the next request (except those of a tool round in progress). A resumed run
 past its first iteration gets no turn context note, because its input was already
 sent, and its fold is stored at that resume. It keeps the model its state recorded,
-over both the template and the `model` input. Results kept past an earlier checkpoint
+over both the template and the `model` input, unless the config holds a newer choice:
+a different agent than the state, or a model with no `model` input. Results kept past an earlier checkpoint
 leave the prompt on that resume too.
 
 A run stored by the previous release with text between a call and its result fails

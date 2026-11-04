@@ -136,7 +136,7 @@ local function run_node(options: RunOptions)
         })
     end
     if options.extra_commands then
-        for _, command in ipairs(options.extra_commands(node_id, scenario_id)) do
+        for _, command in ipairs(options.extra_commands(node_id, input.scenario_id)) do
             table.insert(commands, command)
         end
     end
@@ -661,6 +661,15 @@ local function define_tests()
                 test.eq(#flags, 0, "the request flag stays")
             end)
 
+            it("summarizes an older unanswered call instead of stopping every checkpoint", function()
+                local marker = checkpoint_over({
+                    action("01", 1, { tool_calls = { { id = "stale", name = "tool", arguments = {} } } }),
+                    action("02", 2, { tool_calls = { { id = "c", name = "tool", arguments = {} } } }),
+                    result("03", 2, "c"),
+                })
+                test.not_nil(marker, "only the latest action can be open")
+            end)
+
             it("matches a result to the call of its own iteration", function()
                 local marker = checkpoint_over({
                     action("01", 1, { tool_calls = { { id = "same", name = "tool", arguments = {} } } }),
@@ -700,18 +709,121 @@ local function define_tests()
             test.is_true(string.find(node_error(run), "CHECKPOINT_FAILED", 1, true) ~= nil, node_error(run))
         end)
 
-        it("states the memory budget in the merge instruction", function()
+        local function stated_budget(options, history)
             local node_id = uuid.v7()
+            options.model = "recovery-test-model"
             local _, call_err = funcs.new():call("userspace.dataflow.node.agent:checkpoint", {
-                dataflow_id = uuid.v7(), node_id = node_id,
-                options = { model = "recovery-test-model", max_memory_chars = 4321 },
-                history = { { data_id = "1", type = agent_consts.DATA_TYPE.AGENT_MEMORY, content = "earlier",
-                    metadata = { checkpoint_marker = true } } },
+                dataflow_id = uuid.v7(), node_id = node_id, options = options, history = history,
             })
             test.is_nil(call_err)
             local _, system = find_message(recovery_helpers.get_request(node_id, 1),
                 function(message) return message.role == "system" end)
-            test.is_true(string.find(text_of(system), "4321", 1, true) ~= nil, text_of(system))
+            return text_of(system), recovery_helpers.get_metric(node_id, "summarizer_max_tokens", nil)
+        end
+
+        local EARLIER = { { data_id = "1", type = agent_consts.DATA_TYPE.AGENT_MEMORY, content = "earlier",
+            metadata = { checkpoint_marker = true } } }
+        local FIRST = { { data_id = "1", type = agent_consts.DATA_TYPE.AGENT_OBSERVATION, content = "event", metadata = {} } }
+
+        it("states the memory budget in the merge instruction", function()
+            local system, max_tokens = stated_budget({ max_memory_chars = 4321 }, EARLIER)
+            test.is_true(string.find(system, "4321", 1, true) ~= nil, system)
+            test.eq(max_tokens, 2161, "max_tokens follows the budget")
+        end)
+
+        it("states the memory budget on the first summary too", function()
+            local system, max_tokens = stated_budget({}, FIRST)
+            test.is_true(string.find(system, "8192", 1, true) ~= nil, system)
+            test.eq(max_tokens, 4096)
+        end)
+
+        it("states what fits when an explicit max_tokens is smaller", function()
+            local system, max_tokens = stated_budget({ max_tokens = 1000 }, EARLIER)
+            test.eq(max_tokens, 1000, "explicit max_tokens is honoured")
+            test.is_true(string.find(system, "3000", 1, true) ~= nil, system)
+            test.is_true(string.find(system, "8192", 1, true) == nil, system)
+        end)
+
+        local DEFAULT_SUMMARIZER = "userspace.dataflow.node.agent:checkpoint"
+
+        local function assert_no_repeated_summary(run)
+            local calls = tonumber(recovery_helpers.get_metric(run.node_id, "summarizer_calls", 0)) or 0
+            test.gt(calls, 0, "the scenario summarizes")
+            local seen = {}
+            for number = 1, calls do
+                local request = json.encode(recovery_helpers.get_request(run.node_id, number))
+                test.is_nil(seen[request], "summarizer request " .. tostring(number) .. " repeats an earlier one")
+                seen[request] = true
+            end
+            return calls
+        end
+
+        it("does not repeat a failed summary on the threshold path", function()
+            local run = run_node({
+                input = { scenario_id = "TRUNCATE-SUMMARY-" .. uuid.v7(), rounds = 4, prompt_tokens = 500 },
+                checkpoint = { token_threshold = 100, function_id = DEFAULT_SUMMARIZER, model = "recovery-test-model" },
+            })
+            test.eq(run.status, consts.STATUS.COMPLETED_SUCCESS, node_error(run))
+            assert_no_repeated_summary(run)
+        end)
+
+        it("does not repeat a failed requested compaction for an unchanged history", function()
+            local run = run_node({
+                input = { scenario_id = "TRUNCATE-SUMMARY-" .. uuid.v7(), rounds = 2 },
+                checkpoint = { function_id = DEFAULT_SUMMARIZER, model = "recovery-test-model" },
+                node_metadata = { checkpoint_requested = true, state = { current_iteration = 1, agent_id = AGENT } },
+                extra_commands = function(node_id, scenario_id)
+                    return {
+                        data_row(node_id, agent_consts.DATA_TYPE.AGENT_ACTION, "1_action", {
+                            result = "working",
+                            tool_calls = { { id = "stored", name = "recovery_tool",
+                                arguments = { scenario_id = scenario_id, step = 0 } } },
+                        }, { iteration = 1, finish_reason = "tool_call" }),
+                        data_row(node_id, agent_consts.DATA_TYPE.AGENT_OBSERVATION, "1_recovery_tool", { ok = true }, {
+                            iteration = 1, tool_call_id = "stored", tool_name = "recovery_tool" }),
+                    }
+                end,
+            })
+            test.eq(run.status, consts.STATUS.COMPLETED_SUCCESS, node_error(run))
+            assert_no_repeated_summary(run)
+        end)
+
+        it("keeps compacting when the rolling summary reaches its budget", function()
+            local run = run_node({
+                input = { scenario_id = "GROW-SUMMARY-" .. uuid.v7(), rounds = 14, prompt_tokens = 500 },
+                checkpoint = { token_threshold = 100, function_id = DEFAULT_SUMMARIZER, model = "recovery-test-model" },
+                max_iterations = 20,
+            })
+            test.eq(run.status, consts.STATUS.COMPLETED_SUCCESS, node_error(run))
+            for _, row in ipairs(rows_of(run, agent_consts.DATA_TYPE.AGENT_OBSERVATION)) do
+                test.is_true(row.metadata.checkpoint_skipped ~= true, "no merge is cut off: " .. tostring(row.content))
+            end
+            local sizes = {}
+            for _, row in ipairs(rows_of(run, agent_consts.DATA_TYPE.AGENT_MEMORY)) do
+                if row.metadata.checkpoint_marker == true then sizes[#sizes + 1] = #row.content end
+            end
+            test.gt(#sizes, 8, "every step past the threshold compacts")
+            test.is_true(sizes[#sizes] <= 8192, "stored size " .. tostring(sizes[#sizes]))
+            test.eq(sizes[#sizes], sizes[#sizes - 1], "the size stabilizes at the cap")
+        end)
+
+        it("clamps a stored summary by characters, keeping each one whole", function()
+            local run = run_node({
+                input = { rounds = 2, prompt_tokens = 500 },
+                checkpoint = { token_threshold = 100, function_id = STUB .. "multibyte_summarizer", max_memory_chars = 200 },
+            })
+            test.eq(run.status, consts.STATUS.COMPLETED_SUCCESS, node_error(run))
+            local marker
+            for _, row in ipairs(rows_of(run, agent_consts.DATA_TYPE.AGENT_MEMORY)) do
+                if row.metadata.checkpoint_marker == true then marker = row end
+            end
+            test.not_nil(marker)
+            test.eq(marker.metadata.checkpoint_memory_truncated, true)
+            local chars = 0
+            for _ in string.gmatch(marker.content, "[\1-\127\194-\244][\128-\191]*") do chars = chars + 1 end
+            test.eq(chars, 200, "200 characters, not 200 bytes")
+            local body = marker.content:gsub(" %.%.%. %[truncated%]$", "")
+            test.eq(#body % 2, 1, "a leading a, then whole two-byte characters")
         end)
 
         it("holds no delegate result from before the cut in the run context", function()
@@ -890,6 +1002,30 @@ local function define_tests()
             test.eq(action.metadata.model, TARGET_MODEL, "a persisted switch stays over the input model")
         end)
 
+        it("keeps a committed model switch over a stale state on a run stored before the pin", function()
+            local run = run_node({
+                agent = TARGET_AGENT,
+                config = { model = TARGET_MODEL },
+                input = { rounds = 1 },
+                node_metadata = { state = { current_iteration = 1, agent_id = TARGET_AGENT, model = INPUT_MODEL } },
+            })
+            test.eq(run.status, consts.STATUS.COMPLETED_SUCCESS, node_error(run))
+            test.eq(rows_of(run, agent_consts.DATA_TYPE.AGENT_ACTION)[1].metadata.model, TARGET_MODEL)
+        end)
+
+        it("keeps a committed agent switch's model on a run stored before the pin", function()
+            local run = run_node({
+                agent = TARGET_AGENT,
+                config = { model = TARGET_MODEL },
+                input = { rounds = 1 },
+                node_metadata = { state = { current_iteration = 1, agent_id = AGENT, model = INPUT_MODEL } },
+            })
+            test.eq(run.status, consts.STATUS.COMPLETED_SUCCESS, node_error(run))
+            local action = rows_of(run, agent_consts.DATA_TYPE.AGENT_ACTION)[1]
+            test.eq(action.metadata.agent_id, TARGET_AGENT)
+            test.eq(action.metadata.model, TARGET_MODEL)
+        end)
+
         it("ignores a model input after the first commit of a pinned run", function()
             local run = run_node({
                 agent = TARGET_AGENT,
@@ -1034,6 +1170,41 @@ local function define_tests()
             test.eq(block_texts(requests[1]), "stored-block", "the round in progress keeps its blocks")
             test.eq(block_texts(requests[2]), "block-1", "blocks with no fingerprint are stale after it")
             assert_extends(requests[1], requests[2], "the resumed request")
+        end)
+    end)
+
+    describe("reference rows", function()
+        it("sends two reference rows to one target, each with its call", function()
+            local OBSERVATION = agent_consts.DATA_TYPE.AGENT_OBSERVATION
+            local function reference(node_id, target, iteration)
+                return {
+                    type = consts.COMMAND_TYPES.CREATE_DATA,
+                    payload = {
+                        data_id = uuid.v7(), data_type = OBSERVATION, node_id = node_id, key = target.payload.data_id,
+                        content = "", content_type = consts.CONTENT_TYPE.REFERENCE,
+                        metadata = { iteration = iteration, tool_call_id = "reused", tool_name = "delegate_x" },
+                    },
+                }
+            end
+            local function delegating(node_id, iteration)
+                return data_row(node_id, agent_consts.DATA_TYPE.AGENT_ACTION, iteration .. "_action", {
+                    result = "delegating",
+                    delegate_calls = { { id = "reused", name = "delegate_x", agent_id = AGENT, arguments = {} } },
+                }, { iteration = iteration, finish_reason = "tool_call" })
+            end
+            local run = run_node({
+                input = { rounds = 0 },
+                node_metadata = { state = { current_iteration = 2, agent_id = AGENT } },
+                extra_commands = function(node_id)
+                    local target = data_row(nil, agent_consts.DATA_TYPE.AGENT_DELEGATION, "delegation_result_1", { answer = "child" })
+                    return {
+                        delegating(node_id, 1), target, reference(node_id, target, 1),
+                        delegating(node_id, 2), reference(node_id, target, 2),
+                    }
+                end,
+            })
+            test.eq(run.status, consts.STATUS.COMPLETED_SUCCESS, node_error(run))
+            assert_paired(requests_of(run))
         end)
     end)
 
