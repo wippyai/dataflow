@@ -92,7 +92,11 @@ local function handler(contract_args)
     local summarized_node = summarizer_node(messages)
     if summarized_node then
         helpers.record_request(summarized_node, 1, messages)
-        return final_response(summarized_node, "summary", 0, 7, 4)
+        local summary = final_response(summarized_node, "summary", 0, 7, 4)
+        if helpers.count_text_matches(messages, "TRUNCATE-SUMMARY") > 0 then
+            summary.finish_reason = "length"
+        end
+        return summary
     end
     local scenario: any = helpers.parse_scenario(messages)
     local result_count = helpers.count_function_results(messages)
@@ -332,6 +336,30 @@ local function handler(contract_args)
             control_args = { memory_add = "added at " .. tostring(llm_calls) }
         elseif scenario.commands_memory_at == llm_calls then
             control_args = { commands_memory = "added at " .. tostring(llm_calls), child_delay_ms = scenario.child_delay_ms }
+        end
+        if scenario.delegate_and_memory_at == llm_calls then
+            return tool_call_response(scenario.scenario_id, 1, 0, tokens, 4, "recovery_control_tool",
+                { memory_and_delegate = "added at " .. tostring(llm_calls),
+                    delegate_to = scenario.delegate_to, delegate_input = scenario.delegate_input })
+        end
+        if scenario.delegate_once_at == llm_calls then
+            local memory = tool_call_response(scenario.scenario_id, 1, 0, tokens, 4, "recovery_control_tool",
+                { memory_add = "added at " .. tostring(llm_calls) })
+            local delegate = tool_call_response(scenario.scenario_id, 2, 0, tokens, 4, "recovery_control_tool",
+                { delegate_to = scenario.delegate_to, delegate_input = scenario.delegate_input, delegate_once = true })
+            table.insert(memory.result.tool_calls, delegate.result.tool_calls[1])
+            return memory
+        end
+        if scenario.yield_at == llm_calls then
+            local yielding = tool_call_response(scenario.scenario_id, 1, 0, tokens, 4, "recovery_control_tool",
+                { yield_child_ms = 6000 })
+            local switching = tool_call_response(scenario.scenario_id, 2, 0, tokens, 4, "recovery_control_tool",
+                { switch_agent = scenario.switch_agent })
+            local adding = tool_call_response(scenario.scenario_id, 3, 0, tokens, 4, "recovery_control_tool",
+                { memory_add = "added at " .. tostring(llm_calls) })
+            table.insert(yielding.result.tool_calls, switching.result.tool_calls[1])
+            table.insert(yielding.result.tool_calls, adding.result.tool_calls[1])
+            return yielding
         end
         if scenario.delegate_with_memory_at == llm_calls then
             local memory = tool_call_response(scenario.scenario_id, 1, 0, tokens, 4, "recovery_control_tool",

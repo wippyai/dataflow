@@ -105,6 +105,7 @@ entries:
   - uuid
   imports:
     consts: userspace.dataflow:consts
+    helpers: userspace.dataflow.node.agent.stub:recovery_helpers
   method: handler
 - name: recovery_metrics_reset
   kind: function.lua

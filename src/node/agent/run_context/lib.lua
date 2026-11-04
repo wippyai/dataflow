@@ -63,7 +63,7 @@ end
 local function load_history_rows(dataflow_id, node_id)
     local ok, rows_or_err = pcall(function()
         return data_reader.with_dataflow(dataflow_id)
-            :fetch_options({ replace_references = false })
+            :fetch_options({ replace_references = true })
             :with_nodes(node_id)
             :with_data_types(HISTORY_TYPES)
             :all()
@@ -72,32 +72,29 @@ local function load_history_rows(dataflow_id, node_id)
         return nil, tostring(rows_or_err)
     end
     local rows = {}
+    local pin = nil
     for _, row in ipairs(rows_or_err or {}) do
-        local input_key = row.discriminator or row.key or "default"
-        if row.content_type == consts.CONTENT_TYPE.REFERENCE then
-            row.content = row.ref_content
-            row.content_type = row.ref_content_type
-            input_key = row.discriminator or row.ref_key or row.key or "default"
-        end
-        if not prompt_builder.is_audit_row(row)
-            and (row.type ~= consts.DATA_TYPE.NODE_INPUT or prompt_builder.is_conversation_input(input_key)) then
+        if row.type == agent_consts.DATA_TYPE.AGENT_INPUT then
+            pin = row
+        elseif not prompt_builder.is_audit_row(row)
+            and (row.type ~= consts.DATA_TYPE.NODE_INPUT
+                or prompt_builder.is_conversation_input(row.discriminator or row.key or "default")) then
             rows[#rows + 1] = row
         end
     end
-    -- The pinned fold is the user message every request sends; the input rows are
-    -- only its source, and one that arrived later never reached the model.
+    sort_rows(rows)
+    if not pin then
+        return rows, nil
+    end
+    -- The pinned fold is the user message every request sends first; the input rows
+    -- are only its source, and one that arrived later never reached the model.
+    local pinned = { pin }
     for _, row in ipairs(rows) do
-        if row.type == agent_consts.DATA_TYPE.AGENT_INPUT then
-            local without_inputs = {}
-            for _, candidate in ipairs(rows) do
-                if candidate.type ~= consts.DATA_TYPE.NODE_INPUT then
-                    without_inputs[#without_inputs + 1] = candidate
-                end
-            end
-            return sort_rows(without_inputs), nil
+        if row.type ~= consts.DATA_TYPE.NODE_INPUT then
+            pinned[#pinned + 1] = row
         end
     end
-    return sort_rows(rows), nil
+    return pinned, nil
 end
 
 local function slice_rows(rows, sel: Selector)
@@ -105,7 +102,7 @@ local function slice_rows(rows, sel: Selector)
     local source = copy_rows(rows)
 
     if mode == "since_checkpoint" then
-        return sort_rows(prompt_builder.apply_latest_marker(source))
+        return prompt_builder.apply_latest_marker(source)
     end
 
     if mode == "checkpoint" then
@@ -220,7 +217,7 @@ local function normalize_event(row, formatter, calls)
         end
     end
     return {
-        id = row.data_id,
+        id = row_id(row),
         role = role,
         content = content,
         raw_content = text,
@@ -452,8 +449,8 @@ function M.get_prompt(args)
     local last = rows and rows[#rows] or nil
     local result = {
         range = {
-            from_id = first and first.data_id or nil,
-            to_id = last and last.data_id or nil,
+            from_id = first and row_id(first) or nil,
+            to_id = last and row_id(last) or nil,
             checkpoint_id = sel and sel.checkpoint_id or nil
         },
         truncated = truncated == true

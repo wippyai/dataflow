@@ -176,7 +176,7 @@ local function define_tests()
                     memory = { add = { { type = "fact", text = "remembered" } } }
                 }
             }, n, 1)
-            control_handler.queue_memory_additions(control_handler.memory_additions({ response }), n, 1)
+            control_handler.queue_memory_additions(control_handler.memory_additions(response), n, 1)
             apply(n, dataflow_id)
 
             local row = node_reader.with_dataflow(dataflow_id):with_nodes(node_id):one()

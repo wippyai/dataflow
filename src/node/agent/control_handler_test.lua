@@ -518,13 +518,13 @@ local function define_tests()
         describe("memory edge cases", function()
             it("skips memory items missing type or text", function()
                 local n = make_node({})
-                control_handler.queue_memory_additions(control_handler.memory_additions({ { _original_control = {
+                control_handler.queue_memory_additions(control_handler.memory_additions({ _original_control = {
                     memory = { add = {
                         { type = "ok", text = "valid" },
                         { text = "no type" },
                         { type = "no text" }
                     } }
-                } } }), n, 1)
+                } }), n, 1)
                 test.eq(#queued_of_type(n, consts.COMMAND_TYPES.CREATE_DATA), 1, "only valid item stored")
             end)
 

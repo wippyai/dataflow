@@ -11,6 +11,7 @@ local recovery_helpers = require("recovery_helpers")
 local run_context = require("run_context")
 local funcs = require("funcs")
 local claude_mapper = require("claude_mapper")
+local agent_node = require("agent_node")
 
 local STUB = "userspace.dataflow.node.agent.stub:"
 local AGENT = STUB .. "recovery_test_agent"
@@ -542,86 +543,205 @@ local function define_tests()
             test.is_true(string.find(text_of(system), "Merge", 1, true) ~= nil, "the prompt asks to merge")
         end)
 
-        it("does not cut through a finish that has no result yet", function()
-            local finish_key = "2_final"
+        local function seeded_finish(node_id, scenario_id)
+            return {
+                data_row(node_id, agent_consts.DATA_TYPE.AGENT_ACTION, "1_action", {
+                    result = "working",
+                    tool_calls = { { id = "stored-call", name = "recovery_tool",
+                        arguments = { scenario_id = scenario_id, step = 1 } } },
+                }, { iteration = 1, finish_reason = "tool_call" }),
+                data_row(node_id, agent_consts.DATA_TYPE.AGENT_OBSERVATION, "1_recovery_tool", { ok = true }, {
+                    iteration = 1, tool_call_id = "stored-call", tool_name = "recovery_tool",
+                }),
+                data_row(node_id, agent_consts.DATA_TYPE.AGENT_ACTION, "2_final", {
+                    result = "",
+                    tool_calls = { { id = "stored-finish", name = "finish", arguments = { answer = "done" } } },
+                }, { iteration = 2, finish_reason = "tool_call" }),
+            }
+        end
+
+        it("takes no cut while a finish has no result", function()
             local run = run_node({
                 input = { rounds = 0 },
                 arena = { exit_schema = { type = "object", properties = { answer = { type = "string" } } } },
                 checkpoint = CHECKPOINT,
                 node_metadata = { checkpoint_requested = true,
                     state = { current_iteration = 2, agent_id = AGENT } },
-                extra_commands = function(node_id, scenario_id)
-                    return {
-                        data_row(node_id, agent_consts.DATA_TYPE.AGENT_ACTION, "1_action", {
-                            result = "working",
-                            tool_calls = { { id = "stored-call", name = "recovery_tool",
-                                arguments = { scenario_id = scenario_id, step = 1 } } },
-                        }, { iteration = 1, finish_reason = "tool_call" }),
-                        data_row(node_id, agent_consts.DATA_TYPE.AGENT_OBSERVATION, "1_recovery_tool", { ok = true }, {
-                            iteration = 1, tool_call_id = "stored-call", tool_name = "recovery_tool",
-                        }),
-                        data_row(node_id, agent_consts.DATA_TYPE.AGENT_ACTION, finish_key, {
-                            result = "",
-                            tool_calls = { { id = "stored-finish", name = "finish", arguments = { answer = "done" } } },
-                        }, { iteration = 2, finish_reason = "tool_call" }),
-                    }
-                end,
+                extra_commands = seeded_finish,
             })
             test.eq(run.status, consts.STATUS.COMPLETED_SUCCESS, node_error(run))
-
-            local marker
             for _, row in ipairs(rows_of(run, agent_consts.DATA_TYPE.AGENT_MEMORY)) do
-                if row.metadata.checkpoint_marker == true then marker = row end
+                test.is_true(row.metadata.checkpoint_marker ~= true, "no summary while the round is open")
             end
-            test.not_nil(marker, "the requested compaction ran")
-            local finish
-            for _, row in ipairs(rows_of(run, agent_consts.DATA_TYPE.AGENT_ACTION)) do
-                if row.key == finish_key then finish = row end
-            end
-            test.is_true(marker.metadata.checkpoint_before_data_id < finish.data_id,
-                "the cut stops before the open finish")
-            for _, row in ipairs(recovery_helpers.get_checkpoint_history(run.scenario_id, 1)) do
-                test.is_true(row.data_id ~= finish.data_id, "the summary does not replace the open finish")
-            end
+            test.eq(tonumber(recovery_helpers.get_metric(run.scenario_id, "checkpoint_calls", 0)) or 0, 0)
+            test.eq(node_row(run).metadata.checkpoint_requested, true, "the request stays")
         end)
 
-        it("sends a call and its result when a recovered finish is rejected after a cut", function()
+        it("compacts the whole round once a finish is rejected, each row once", function()
             local run = run_node({
                 input = { rounds = 0 },
                 arena = {
                     exit_schema = { type = "object", properties = { answer = { type = "string" } } },
                     exit_func_id = STUB .. "exit_reject_validator",
                 },
-                node_metadata = { state = { current_iteration = 2, agent_id = AGENT } },
-                extra_commands = function(node_id)
-                    local earlier = data_row(node_id, agent_consts.DATA_TYPE.AGENT_OBSERVATION, "1_note", "earlier", {})
-                    return {
-                        earlier,
-                        data_row(node_id, agent_consts.DATA_TYPE.AGENT_ACTION, "2_final", {
-                            result = "",
-                            tool_calls = { { id = "stored-finish", name = "finish", arguments = { answer = "done" } } },
-                        }, { iteration = 2, finish_reason = "tool_call" }),
-                        data_row(node_id, agent_consts.DATA_TYPE.AGENT_MEMORY, "1_checkpoint", "the summary", {
-                            iteration = 1, checkpoint_marker = true,
-                            checkpoint_before_data_id = earlier.payload.data_id,
-                        }),
-                    }
-                end,
+                checkpoint = CHECKPOINT,
+                node_metadata = { checkpoint_requested = true,
+                    state = { current_iteration = 2, agent_id = AGENT } },
+                extra_commands = seeded_finish,
             })
+            test.eq(run.status, consts.STATUS.COMPLETED_SUCCESS, node_error(run))
+
+            local history = recovery_helpers.get_checkpoint_history(run.scenario_id, 1)
+            test.not_nil(history, "the requested compaction ran")
+            local seen, finish_result = {}, false
+            for _, row in ipairs(history) do
+                test.is_nil(seen[row.data_id], "row summarized once: " .. row.data_id)
+                seen[row.data_id] = true
+                if (row.metadata or {}).tool_call_id == "stored-finish" then finish_result = true end
+            end
+            test.eq(#history, 4, "both rounds with their results")
+            test.is_true(finish_result, "the rejection is summarized with its finish")
+
             local requests = requests_of(run)
-            test.gt(#requests, 0, node_error(run))
+            test.gt(#requests, 0)
             assert_paired(requests)
-            local seen_use, seen_result = false, false
             for _, turn in ipairs(claude_mapper.map_messages(requests[1]).messages) do
                 for _, block in ipairs(turn.content) do
-                    if block.type == "tool_use" then seen_use = true end
-                    if block.type == "tool_result" then
-                        test.is_true(seen_use, "tool_result follows its tool_use on the wire")
-                        seen_result = true
-                    end
+                    test.is_true(block.type ~= "tool_result" and block.type ~= "tool_use",
+                        "the request after the cut carries none of the round")
                 end
             end
-            test.is_true(seen_result, "the rejection reaches the model")
+        end)
+
+        describe("open rounds", function()
+            local function checkpoint_over(rows)
+                local flags = {}
+                local query = {}
+                for _, method in ipairs({ "fetch_options", "with_nodes", "with_data_types" }) do
+                    query[method] = function(self) return self end
+                end
+                query.all = function() return rows end
+                local written = {}
+                local n = {
+                    node_id = "node", dataflow_id = "flow",
+                    query = function() return query end,
+                    metadata = function() return { checkpoint_requested = true } end,
+                    update_metadata = function(_, updates) table.insert(flags, updates) end,
+                    data = function(_, _, content) table.insert(written, content) end,
+                }
+                local marker = agent_node._test.maybe_checkpoint_history(n,
+                    { checkpoint = { function_id = STUB .. "checkpoint_summarizer" } }, {}, {}, "agent", "model", 3)
+                return marker, flags
+            end
+
+            local function action(id, iteration, content)
+                return { data_id = id, type = agent_consts.DATA_TYPE.AGENT_ACTION, content = content,
+                    content_type = consts.CONTENT_TYPE.JSON, metadata = { iteration = iteration } }
+            end
+
+            local function result(id, iteration, call_id)
+                return { data_id = id, type = agent_consts.DATA_TYPE.AGENT_OBSERVATION, content = "ok",
+                    content_type = consts.CONTENT_TYPE.TEXT,
+                    metadata = { iteration = iteration, tool_call_id = call_id, tool_name = "tool" } }
+            end
+
+            it("cuts a closed round", function()
+                local marker = checkpoint_over({
+                    action("01", 1, { tool_calls = { { id = "c", name = "tool", arguments = {} } } }),
+                    result("02", 1, "c"),
+                })
+                test.not_nil(marker)
+            end)
+
+            it("counts an unanswered delegate call as open and keeps the request", function()
+                local marker, flags = checkpoint_over({
+                    action("01", 1, { delegate_calls = { { id = "d", name = "delegate", arguments = {} } } }),
+                })
+                test.is_nil(marker)
+                test.eq(#flags, 0, "the request flag stays")
+            end)
+
+            it("matches a result to the call of its own iteration", function()
+                local marker = checkpoint_over({
+                    action("01", 1, { tool_calls = { { id = "same", name = "tool", arguments = {} } } }),
+                    result("02", 1, "same"),
+                    action("03", 2, { tool_calls = { { id = "same", name = "tool", arguments = {} } } }),
+                })
+                test.is_nil(marker, "the second turn reused the id and has no result")
+            end)
+        end)
+
+        it("fails a summary the model cut off, with no cut", function()
+            local scenario_id = "TRUNCATE-SUMMARY-" .. uuid.v7()
+            local run = run_node({
+                input = { scenario_id = scenario_id, rounds = 2, prompt_tokens = 500 },
+                checkpoint = { token_threshold = 100, function_id = "userspace.dataflow.node.agent:checkpoint",
+                    model = "recovery-test-model" },
+            })
+            test.eq(run.status, consts.STATUS.COMPLETED_SUCCESS, node_error(run))
+            local skipped = 0
+            for _, row in ipairs(rows_of(run, agent_consts.DATA_TYPE.AGENT_OBSERVATION)) do
+                if row.metadata.checkpoint_skipped == true then skipped = skipped + 1 end
+            end
+            test.gt(skipped, 1, "a skip row per attempt: it retries")
+            for _, row in ipairs(rows_of(run, agent_consts.DATA_TYPE.AGENT_MEMORY)) do
+                test.is_true(row.metadata.checkpoint_marker ~= true, "no cut")
+            end
+        end)
+
+        it("fails the node on a summary the model cut off when strict", function()
+            local scenario_id = "TRUNCATE-SUMMARY-" .. uuid.v7()
+            local run = run_node({
+                input = { scenario_id = scenario_id, rounds = 2, prompt_tokens = 500 },
+                checkpoint = { token_threshold = 100, function_id = "userspace.dataflow.node.agent:checkpoint",
+                    model = "recovery-test-model", strict = true },
+            })
+            test.eq(run.status, consts.STATUS.COMPLETED_FAILURE)
+            test.is_true(string.find(node_error(run), "CHECKPOINT_FAILED", 1, true) ~= nil, node_error(run))
+        end)
+
+        it("states the memory budget in the merge instruction", function()
+            local node_id = uuid.v7()
+            local _, call_err = funcs.new():call("userspace.dataflow.node.agent:checkpoint", {
+                dataflow_id = uuid.v7(), node_id = node_id,
+                options = { model = "recovery-test-model", max_memory_chars = 4321 },
+                history = { { data_id = "1", type = agent_consts.DATA_TYPE.AGENT_MEMORY, content = "earlier",
+                    metadata = { checkpoint_marker = true } } },
+            })
+            test.is_nil(call_err)
+            local _, system = find_message(recovery_helpers.get_request(node_id, 1),
+                function(message) return message.role == "system" end)
+            test.is_true(string.find(text_of(system), "4321", 1, true) ~= nil, text_of(system))
+        end)
+
+        it("holds no delegate result from before the cut in the run context", function()
+            local run = run_node({
+                input = { rounds = 2, delegate_at = 1, delegate_to = AGENT, checkpoint_at = 1 },
+                checkpoint = CHECKPOINT,
+            })
+            test.eq(run.status, consts.STATUS.COMPLETED_SUCCESS, node_error(run))
+            assert_paired(requests_of(run))
+            local built = run_context.get_prompt({
+                host = { dataflow_id = run.dataflow_id, node_id = run.node_id },
+            })
+            test.is_nil(recovery_helpers.pairing_error(built.messages))
+        end)
+
+        it("shows the run context what the request after a cut sends, in that order", function()
+            local run = run_node({
+                agent = TIME_AGENT, input = { rounds = 2, checkpoint_at = 1 }, checkpoint = CHECKPOINT,
+            })
+            test.eq(run.status, consts.STATUS.COMPLETED_SUCCESS, node_error(run))
+            local requests = requests_of(run)
+            local built = run_context.get_prompt({
+                host = { dataflow_id = run.dataflow_id, node_id = run.node_id },
+            })
+            local shown = without_markers(built.messages)
+            local sent = without_markers(requests[#requests])
+            local shown_user = find_message(built.messages, function(m) return m.role == "user" end) or 0
+            local sent_user = find_message(requests[#requests], function(m) return m.role == "user" end) or 0
+            test.eq(text_of(shown[shown_user + 1]), text_of(sent[sent_user + 1]), "the turn note")
+            test.eq(text_of(shown[shown_user + 2]), text_of(sent[sent_user + 2]), "the summary")
         end)
 
         it("gives the run context the same rows after the cut", function()
@@ -756,6 +876,36 @@ local function define_tests()
             test.eq(action.metadata.model, TARGET_MODEL, "the template model does not take over")
             test.eq(node_row(run).config.model, TARGET_MODEL, "the next start finds the same model")
         end)
+
+        it("resumes a run stored before the pin with the model it was using", function()
+            local run = run_node({
+                agent = TARGET_AGENT,
+                config = { model = TARGET_MODEL },
+                input = { rounds = 1 },
+                node_metadata = { state = { current_iteration = 1, agent_id = TARGET_AGENT, model = TARGET_MODEL } },
+                named_inputs = { model = INPUT_MODEL },
+            })
+            test.eq(run.status, consts.STATUS.COMPLETED_SUCCESS, node_error(run))
+            local action = rows_of(run, agent_consts.DATA_TYPE.AGENT_ACTION)[1]
+            test.eq(action.metadata.model, TARGET_MODEL, "a persisted switch stays over the input model")
+        end)
+
+        it("ignores a model input after the first commit of a pinned run", function()
+            local run = run_node({
+                agent = TARGET_AGENT,
+                input = { rounds = 1 },
+                node_metadata = { state = { current_iteration = 1, agent_id = TARGET_AGENT, model = INPUT_MODEL } },
+                named_inputs = { model = TARGET_MODEL },
+                extra_commands = function(node_id, scenario_id)
+                    return { data_row(node_id, agent_consts.DATA_TYPE.AGENT_INPUT, "conversation_input",
+                        json.encode({ scenario_id = scenario_id, capture_requests = true,
+                            mode = "thinking_rounds", rounds = 1 })) }
+                end,
+            })
+            test.eq(run.status, consts.STATUS.COMPLETED_SUCCESS, node_error(run))
+            local action = rows_of(run, agent_consts.DATA_TYPE.AGENT_ACTION)[1]
+            test.eq(action.metadata.model, INPUT_MODEL, "the stored selection wins")
+        end)
     end)
 
     describe("iteration warnings", function()
@@ -801,6 +951,28 @@ local function define_tests()
             local _, user = find_message(requests_of(run)[1], function(message) return message.role == "user" end)
             test.eq(text_of(user), stored)
             test.eq(#rows_of(run, agent_consts.DATA_TYPE.AGENT_INPUT), 1)
+        end)
+
+        it("shows the run context the input first on a run stored before the pin", function()
+            local run = run_node({
+                input = { rounds = 1 },
+                node_metadata = { state = { current_iteration = 1, agent_id = AGENT } },
+                extra_commands = function(node_id, scenario_id)
+                    return {
+                        data_row(node_id, agent_consts.DATA_TYPE.AGENT_ACTION, "1_action", {
+                            result = "working", tool_calls = { { id = "stored", name = "recovery_tool",
+                                arguments = { scenario_id = scenario_id, step = 1 } } },
+                        }, { iteration = 1, finish_reason = "tool_call" }),
+                        data_row(node_id, agent_consts.DATA_TYPE.AGENT_OBSERVATION, "1_recovery_tool", { ok = true }, {
+                            iteration = 1, tool_call_id = "stored", tool_name = "recovery_tool" }),
+                    }
+                end,
+            })
+            test.eq(run.status, consts.STATUS.COMPLETED_SUCCESS, node_error(run))
+            local built = run_context.get_prompt({ host = { dataflow_id = run.dataflow_id, node_id = run.node_id } })
+            local user_at = find_message(built.messages, function(m) return m.role == "user" end) or 0
+            local assistant_at = find_message(built.messages, function(m) return m.role == "assistant" end) or 0
+            test.is_true(user_at < assistant_at, "user " .. tostring(user_at) .. ", assistant " .. tostring(assistant_at))
         end)
 
         it("shows the run context the pinned input, not a later one", function()
@@ -878,6 +1050,21 @@ local function define_tests()
     end)
 
     describe("memory directives", function()
+        it("clears the pending additions with the delegate's result", function()
+            local child = "stable-prefix-child-" .. uuid.v7()
+            local run = run_node({
+                input = { rounds = 1, delegate_with_memory_at = 1, delegate_to = AGENT,
+                    delegate_input = { scenario_id = child, mode = "text_final" } },
+                max_iterations = 1,
+            })
+            test.eq(node_row(run).metadata.memory_pending, false, "no later round clears it for this one")
+            local added = 0
+            for _, row in ipairs(rows_of(run, agent_consts.DATA_TYPE.AGENT_MEMORY)) do
+                if row.discriminator == "fact" then added = added + 1 end
+            end
+            test.eq(added, 1)
+        end)
+
         it("adds memory after the round's results", function()
             local run = run_node({ input = { rounds = 2, memory_at = 1 } })
             test.eq(run.status, consts.STATUS.COMPLETED_SUCCESS, node_error(run))

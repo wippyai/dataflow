@@ -168,14 +168,12 @@ function control_handler.process_memory_operations(control, node_sdk, iteration)
     return memory_changes
 end
 
-function control_handler.memory_additions(control_responses)
+function control_handler.memory_additions(response)
     local additions = {}
-    for _, response in ipairs(control_responses) do
-        local control = response._original_control or {}
-        for _, memory_item in ipairs(control.memory and control.memory.add or {}) do
-            if memory_item.type and memory_item.text then
-                table.insert(additions, memory_item)
-            end
+    local control = response._original_control or {}
+    for _, memory_item in ipairs(control.memory and control.memory.add or {}) do
+        if memory_item.type and memory_item.text then
+            table.insert(additions, memory_item)
         end
     end
     return additions

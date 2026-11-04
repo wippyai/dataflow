@@ -286,6 +286,31 @@ function M.create_round_delegate()
     return hold_runtime()
 end
 
+function M.create_round_both()
+    prepare_runtime()
+    create_round_text_workflow({ scenario_id = "round-both", mode = "thinking_rounds", rounds = 1,
+        delegate_and_memory_at = 1, delegate_to = STUB .. "recovery_test_agent",
+        delegate_input = { scenario_id = "round-both-child", mode = "thinking_rounds", rounds = 0,
+            slow_request = 1, slow_ms = 6000 } })
+    return hold_runtime()
+end
+
+function M.create_round_rerun()
+    prepare_runtime()
+    create_round_text_workflow({ scenario_id = "round-rerun", mode = "thinking_rounds", rounds = 1,
+        delegate_once_at = 1, delegate_to = STUB .. "recovery_test_agent",
+        delegate_input = { scenario_id = "round-rerun-child", mode = "thinking_rounds", rounds = 0,
+            slow_request = 1, slow_ms = 6000 } })
+    return hold_runtime()
+end
+
+function M.create_round_yield()
+    prepare_runtime()
+    create_round_text_workflow({ scenario_id = "round-yield", mode = "thinking_rounds", rounds = 1,
+        yield_at = 1, switch_agent = STUB .. "stable_prefix_switch_target_agent" })
+    return hold_runtime()
+end
+
 function M.create()
     prepare_runtime()
     local template = (flow.template() :: any):func("userspace.dataflow.node.func:test_func")

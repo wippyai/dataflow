@@ -22,7 +22,8 @@ consts.DEFAULTS = {
     MAX_ITERATIONS = 64,
     MIN_ITERATIONS = 1,
     TOOL_CALLING = "auto",
-    MAX_UNPRODUCTIVE_STEPS = 3
+    MAX_UNPRODUCTIVE_STEPS = 3,
+    MAX_MEMORY_CHARS = 8192
 }
 
 -- Input Configuration Defaults

@@ -7,11 +7,13 @@ local consts = require("consts")
 local prompt_builder = {}
 local mt = { __index = prompt_builder }
 
+-- A row's own id and write position: a resolved reference row carries its target's
+-- data_id, so the row it was stored as is in reference_row_id.
 function prompt_builder.row_id(row)
     if type(row) ~= "table" then
         return ""
     end
-    return tostring(row.data_id or "")
+    return tostring(row.reference_row_id or row.data_id or "")
 end
 
 -- UUID v7 order is write order, regardless of created_at resolution across backends.
@@ -60,15 +62,13 @@ local function is_kept_by_checkpoint(row)
 end
 
 -- The checkpoint summary replaces every row up to the cut, so a request carries the
--- input, the turn note, the marker and the rows after the cut. The checkpoint places
--- its cut before any action with an unresolved call, so it never separates a call
--- from its result.
+-- input, the turn note, the marker and the rows after the cut. No checkpoint runs
+-- while an action has an unresolved call, so a cut never separates a call from its
+-- result. The rows arrive sorted; the result is in request order.
 function prompt_builder.apply_latest_marker(history_rows)
     if not history_rows or #history_rows == 0 then
         return history_rows or {}
     end
-
-    prompt_builder.sort_history_rows(history_rows)
 
     local latest_marker = prompt_builder.find_latest_checkpoint_marker(history_rows)
     if not latest_marker then
@@ -257,7 +257,6 @@ function prompt_builder:_load_conversation_history()
         end
         append_rows(self._history_override)
         append_rows(self._pending_history)
-        prompt_builder.sort_history_rows(history)
         return history, nil
     end
 
@@ -300,6 +299,7 @@ function prompt_builder:_load_conversation_history()
 
     -- The latest checkpoint marker records the cut line as
     -- metadata.checkpoint_before_data_id.
+    prompt_builder.sort_history_rows(merged_history)
     local filtered = prompt_builder.apply_latest_marker(merged_history)
     return filtered, nil
 end

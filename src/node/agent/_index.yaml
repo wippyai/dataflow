@@ -200,6 +200,8 @@ entries:
     imports:
       prompt: wippy.llm:prompt
       llm: wippy.llm:llm
+      output: wippy.llm:output
+      agent_consts: userspace.dataflow.node.agent:consts
     method: handler
 
   # userspace.dataflow.node.agent:checkpoint_test
@@ -353,6 +355,7 @@ entries:
       recovery_helpers: userspace.dataflow.node.agent.stub:recovery_helpers
       run_context: userspace.dataflow.node.agent.run_context:run_context_lib
       claude_mapper: wippy.llm.claude:mapper
+      agent_node: userspace.dataflow.node.agent:node
     method: run_tests
 
   - name: agent_tool_recovery_test

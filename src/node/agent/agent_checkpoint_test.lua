@@ -223,7 +223,7 @@ local function define_tests()
             for i, row in ipairs(history) do
                 copy[i] = row
             end
-            return prompt_builder.apply_latest_marker(copy)
+            return prompt_builder.apply_latest_marker(prompt_builder.sort_history_rows(copy))
         end
 
         local function find_message_by_role(messages, role)
@@ -284,7 +284,7 @@ local function define_tests()
             test.eq(count_checkpoint_markers(history), 1)
             test.eq(get_metrics(workflow.scenario_id).checkpoint_calls, 1)
             test.eq(latest_checkpoint_marker(history).metadata.checkpoint_reason, "compaction_requested")
-            local filtered = prompt_builder.apply_latest_marker(history)
+            local filtered = prompt_builder.apply_latest_marker(prompt_builder.sort_history_rows(history))
             local kept_ids = {}
             for _, row in ipairs(filtered) do kept_ids[row.data_id] = true end
             local cut = latest_checkpoint_marker(history).metadata.checkpoint_before_data_id

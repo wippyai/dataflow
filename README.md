@@ -196,21 +196,27 @@ stay valid. This requires Agent 0.5.10 and LLM 0.5.13 or later.
   `metadata.llm_meta` next to `thinking_blocks`, and every step passes
   `drop_stale_thinking = true`. A changed system prompt or tool set (an agent
   switch) strips the earlier blocks before the next request; the current tool
-  round keeps its blocks. A checkpoint's cut is the newest row of a closed round, so
-  every action row that survives it was produced after the marker, except an open
-  round the cut stopped before: the default fingerprint comparison is sufficient
-  and the node passes no `thinking_is_current`.
-- **Checkpoints.** The cut stops before any action with an unresolved call, such
-  as a finish whose node has not completed. The summary replaces every row up to
-  the cut, calls and results together, and a request carries the input, the turn
-  note, the marker and the rows after the cut. A later checkpoint summarizes what
-  requests carry: the earlier summary and the rows after its cut, so the earlier
-  summary rolls forward. That is the whole bound on the payload: the rows the requests
-  already carry, plus the default summarizer's `max_row_chars` per row, which does
-  not apply to the earlier summary. The host sets no limit of its own. The
-  `since_checkpoint` run context selector reads the same cut and also returns the
-  input and the turn note, which a summary does not replace. A skipped checkpoint
-  leaves an audit observation that stays out of the prompt and of the summary.
+  round keeps its blocks. A checkpoint's cut is the newest row, and no checkpoint runs
+  while a round is open, so every action row that survives a cut was produced after
+  the marker: the default fingerprint comparison is sufficient and the node passes
+  no `thinking_is_current`.
+- **Checkpoints.** No checkpoint runs while an action has a call with no result,
+  such as a finish whose node has not completed; a requested compaction waits for
+  the round to close. The summary replaces every row up to the cut, calls and results
+  together, and a request carries the input, the turn note, the marker and the rows
+  after the cut. A later checkpoint summarizes what requests carry: the earlier
+  summary and the rows after its cut, so the earlier summary rolls forward. Nothing
+  else bounds the payload: the rows the requests already carry, plus the default
+  summarizer's `max_row_chars` per row, which does not apply to the earlier summary.
+  The host sets no limit of its own. `max_memory_chars` (default 8192) caps the stored
+  summary: the default summarizer states it when it merges, and a longer summary is
+  cut at the cap and recorded in the marker's `checkpoint_memory_truncated`. A summary
+  the model cut off at its `max_tokens` is a failed checkpoint with no cut: a skipped
+  checkpoint and another try at the next step, or a node failure when `strict`. The
+  `since_checkpoint` run context selector reads the same cut, in request order, and
+  also returns the input and the turn note, which a summary does not replace. A
+  skipped checkpoint leaves an audit observation that stays out of the prompt and of
+  the summary.
 - **Lifecycle notes.** Messages from `activate` and `before_step` are sent as
   positional notes after the history and stored, with the step's output, where they
   were sent: `agent.memory` rows with `metadata.role` set to `developer` or `system`,
@@ -238,18 +244,20 @@ requests after it extend each other again:
   restarted node sends that step again from the last committed row.
 
 A selection is durable: `agent_id` and `model` inputs choose only until the node's
-first commit, a `_control.config` switch commits with the results that carry it,
+first commit, which stores the choice in the config, a `_control.config` switch commits with the results that carry it,
 and a restart keeps the stored selection. `_control.memory.add` rows follow every
-result of their round. They commit with the round's results before the node waits
-on children; with a delegation they wait in the node metadata and are written with
-the delegate's result, so a crash in between loses none.
+result of their round, in the action's call order. They commit with the round's
+results before the node waits on children; with a delegation they wait in the node
+metadata by call id and are written with the delegate's result, so a crash in between
+loses none, and a call that recovery runs again replaces its own.
 
 After upgrading, a run stored by an earlier version restarts its cache once when it
 resumes: its earlier steps sent lifecycle notes that were never stored, and its
 action rows carry no `prefix_fingerprint`, so their thinking blocks are stripped
 from the next request (except those of a tool round in progress). A resumed run
 past its first iteration gets no turn context note, because its input was already
-sent, and its fold is stored at that resume. Results kept past an earlier checkpoint
+sent, and its fold is stored at that resume. It keeps the model its state recorded,
+over both the template and the `model` input. Results kept past an earlier checkpoint
 leave the prompt on that resume too.
 
 A run stored by the previous release with text between a call and its result fails

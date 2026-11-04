@@ -994,38 +994,29 @@ local function maybe_checkpoint_history(n, config, session_context, agent_instan
         return nil, nil
     end
 
-    local cut_before = prompt_builder.row_id(history_rows[#history_rows])
-    local latest_marker = prompt_builder.find_latest_checkpoint_marker(history_rows)
     local source_rows = prompt_builder.checkpoint_source_rows(history_rows)
 
-    -- The cut stops before an open round, which stays in the requests whole.
-    local open_action = first_open_action(source_rows)
-    if open_action then
-        local open_id = prompt_builder.row_id(open_action)
-        local closed_rows = {}
-        for _, row in ipairs(source_rows) do
-            if prompt_builder.row_id(row) < open_id or row == latest_marker then
-                closed_rows[#closed_rows + 1] = row
-            end
-        end
-        source_rows = closed_rows
-        for _, row in ipairs(history_rows) do
-            if prompt_builder.row_id(row) < open_id then cut_before = prompt_builder.row_id(row) end
-        end
+    -- A call with no result may still get one: recovery runs it again, and the result
+    -- needs its call in the request. The request flag waits for the round to close.
+    if first_open_action(source_rows) then
+        return nil, nil
     end
 
     -- A summary with nothing after it has nothing to replace.
+    local latest_marker = prompt_builder.find_latest_checkpoint_marker(history_rows)
     if #source_rows == (latest_marker and 1 or 0) then
-        if compact_requested and not open_action then n:update_metadata({ checkpoint_requested = false }) end
+        if compact_requested then n:update_metadata({ checkpoint_requested = false }) end
         return nil, nil
     end
+
+    local cut_before = prompt_builder.row_id(history_rows[#history_rows])
 
     -- A serialization-safe projection of the rows the summary replaces, calls and
     -- results together.
     local history_payload = {}
     for i, row in ipairs(source_rows) do
         history_payload[i] = {
-            data_id = tostring(row.data_id or ""),
+            data_id = prompt_builder.row_id(row),
             type = tostring(row.type or ""),
             content = stringify_history_content(row),
             content_type = tostring(row.content_type or ""),
@@ -1132,7 +1123,7 @@ local function maybe_checkpoint_history(n, config, session_context, agent_instan
 
     -- Hard cap on stored memory to prevent hostile/buggy summarizers from
     -- bloating every future prompt. Default 8192 chars; configurable.
-    local max_memory_chars = tonumber(checkpoint_cfg.max_memory_chars) or 8192
+    local max_memory_chars = tonumber(checkpoint_cfg.max_memory_chars) or agent_consts.DEFAULTS.MAX_MEMORY_CHARS
     local original_memory_len = #memory_text
     memory_text = clamp_memory_text(memory_text, max_memory_chars)
     local memory_truncated = #memory_text < original_memory_len
@@ -1144,8 +1135,8 @@ local function maybe_checkpoint_history(n, config, session_context, agent_instan
         checkpoint_at_prompt_tokens = prompt_tokens,
         checkpoint_before_data_id = cut_before,
         checkpoint_history_count = #history_payload,
-        checkpoint_first_data_id = tostring((source_rows[1] or {}).data_id or ""),
-        checkpoint_last_data_id = tostring((source_rows[#source_rows] or {}).data_id or ""),
+        checkpoint_first_data_id = prompt_builder.row_id(source_rows[1]),
+        checkpoint_last_data_id = prompt_builder.row_id(source_rows[#source_rows]),
         checkpoint_source_action_data_id = tostring(latest_action.data_id or ""),
         checkpoint_function_id = func_id,
         checkpoint_source = checkpoint_source,
@@ -1778,6 +1769,7 @@ local function process_tool_results(n, tool_results, iteration, exit_tool_name, 
                     tool_result, n, iteration
                 )
                 if control_response then
+                    control_response.tool_call_id = call_id
                     table.insert(control_responses, control_response)
 
                     if control_response.delegate then
@@ -1937,6 +1929,41 @@ local function is_unproductive_turn(tool_calling, agent_result: any, iteration, 
     return tool_calling == agent_consts.TOOL_CALLING.ANY
 end
 
+local function action_call_ids(tool_calls): {string}
+    local ids = {}
+    for _, tool_call in ipairs(tool_calls or {}) do table.insert(ids, tool_call.id) end
+    return ids
+end
+
+-- The round's memory additions in the action's call order, and the same additions by
+-- call id. A call that ran again replaces whatever it added on its earlier run.
+local function round_memory_additions(n, iteration, agent_result: any, control_responses): ({any}, {[string]: any})
+    local by_call = {}
+    local pending = (n:metadata() or {}).memory_pending
+    if type(pending) == "table" and pending.iteration == iteration then
+        for call_id, items in pairs(pending.by_call or {}) do by_call[call_id] = items end
+    end
+    for _, tool_call in ipairs(agent_result.tool_calls or {}) do by_call[tool_call.id] = nil end
+    for _, response in ipairs(control_responses) do
+        local items = control_handler.memory_additions(response)
+        if #items > 0 then by_call[response.tool_call_id] = items end
+    end
+
+    local additions = {}
+    local function take(call_id)
+        for _, item in ipairs(by_call[call_id] or {}) do table.insert(additions, item) end
+    end
+    local listed = {}
+    for _, call_id in ipairs(agent_result.action_call_ids or {}) do
+        listed[call_id] = true
+        take(call_id)
+    end
+    for _, response in ipairs(control_responses) do
+        if not listed[response.tool_call_id] then take(response.tool_call_id) end
+    end
+    return additions, by_call
+end
+
 local function finalize_iteration(n, agent_ctx, session_context, iteration, max_iterations, min_iterations, tool_calling,
                                   exit_tool_name, agent_result: any, delegate_calls: any, tool_results, arena_config,
                                   tool_call_to_node_id, proposed_controls, persisted_call_ids: {[string]: boolean}?)
@@ -1968,18 +1995,18 @@ local function finalize_iteration(n, agent_ctx, session_context, iteration, max_
     -- Host text follows every result of the round; between a call and its result it
     -- makes the request invalid. Without a delegation every result is written here. A
     -- delegate's result comes later, so the additions wait in the node metadata.
-    local additions = control_handler.memory_additions(control_responses)
+    local additions, pending_by_call = round_memory_additions(n, iteration, agent_result, control_responses)
+    local had_pending = type((n:metadata() or {}).memory_pending) == "table"
     if has_delegations then
-        local memory_pending = (n:metadata() or {}).memory_pending
-        if type(memory_pending) == "table" and memory_pending.iteration == iteration then
-            for _, memory_item in ipairs(memory_pending.additions) do table.insert(additions, memory_item) end
-        end
         if #additions > 0 then
-            n:update_metadata({ memory_pending = { iteration = iteration, additions = additions } })
+            n:update_metadata({ memory_pending = { iteration = iteration, by_call = pending_by_call } })
+        elseif had_pending then
+            n:update_metadata({ memory_pending = false })
         end
     else
         control_handler.queue_memory_additions(additions, n, iteration)
         queue_iteration_warning(n, iteration, max_iterations)
+        if had_pending then n:update_metadata({ memory_pending = false }) end
     end
     if #prepared > 0 then n:update_metadata({ behavior_pending = { iteration = iteration, controls = prepared } }) end
 
@@ -2167,7 +2194,8 @@ local function recover_persisted_action(n, agent_ctx, agent_instance, caller, se
     local recovered_agent_result = {
         result = action_payload.content.result,
         tool_calls = recovered_tool_calls,
-        delegate_calls = unresolved_delegate_calls
+        delegate_calls = unresolved_delegate_calls,
+        action_call_ids = action_call_ids(action_payload.content.tool_calls)
     }
 
     local delegate_calls = {} :: { any }
@@ -2268,19 +2296,27 @@ local function run(args)
 
     -- Inputs choose the agent and model until the node's first commit, which stores
     -- that choice and the input pin; after it the config holds the selection, including
-    -- any switch. A run stored before the pin keeps its input model and stores it now.
+    -- any switch. A run stored before the pin stores the model it was using now.
     local pinned_input = load_pinned_input(n)
-    if saved_state.agent_id == nil and agent_id_override then
-        n:update_config({ agent = agent_id_override })
+    if saved_state.agent_id == nil then
+        if agent_id_override then
+            n:update_config({ agent = agent_id_override })
 
-        n:update_metadata({ title = agent_ref.resolve(agent_id_override).title })
-    elseif saved_state.agent_id ~= nil then
+            n:update_metadata({ title = agent_ref.resolve(agent_id_override).title })
+        end
+        if model_override then
+            n:update_config({ model = model_override })
+        end
+    else
         agent_id_override = nil
-    end
-    if saved_state.agent_id ~= nil and pinned_input then
-        model_override = config.model or model_override
-    elseif model_override then
-        n:update_config({ model = model_override })
+        if pinned_input then
+            model_override = config.model
+        else
+            model_override = saved_state.model
+            if model_override then
+                n:update_config({ model = model_override })
+            end
+        end
     end
 
     model_override = model_override or config.model or config.arena.model
@@ -2965,7 +3001,8 @@ local function run(args)
             {
                 result = agent_result.result,
                 tool_calls = finalized_tool_calls,
-                delegate_calls = delegate_calls
+                delegate_calls = delegate_calls,
+                action_call_ids = action_call_ids(regular_tool_calls)
             },
             delegate_calls,
             tool_results,

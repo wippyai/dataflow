@@ -24,6 +24,7 @@ local function config_from_args(args)
         temperature = tonumber(options.temperature) or CONFIG.temperature,
         max_tokens = positive_number(options.max_tokens, CONFIG.max_tokens),
         max_row_chars = positive_number(options.max_row_chars, CONFIG.max_row_chars),
+        max_memory_chars = positive_number(options.max_memory_chars, agent_consts.DEFAULTS.MAX_MEMORY_CHARS),
     }
 end
 
@@ -74,7 +75,8 @@ local SUMMARY_INSTRUCTION = "Create a concise operational checkpoint for a dataf
     .. "Preserve task state, decisions, tool effects, blockers, and next actions. Return only the checkpoint text."
 local MERGE_INSTRUCTION = " The history contains the previous checkpoint. Merge it with the new events: keep everything "
     .. "in it that still holds, mark completed items done, and update progress and blockers. The events it covers are "
-    .. "gone, so anything you drop is lost."
+    .. "gone, so anything you drop is lost. The result must fit in %d characters: anything past that is cut off, so "
+    .. "condense older detail first and keep the newest state."
 
 local function has_previous_checkpoint(history)
     for _, row in ipairs(history) do
@@ -95,7 +97,8 @@ local function handler(args)
 
     local cfg = config_from_args(args)
     local p = prompt.new()
-    p:add_system(SUMMARY_INSTRUCTION .. (has_previous_checkpoint(args.history) and MERGE_INSTRUCTION or ""))
+    p:add_system(SUMMARY_INSTRUCTION .. (has_previous_checkpoint(args.history)
+        and string.format(MERGE_INSTRUCTION, cfg.max_memory_chars) or ""))
     p:add_user(string.format(
         "dataflow_id=%s\nnode_id=%s\niteration=%s\nprompt_tokens=%s\nhistory_count=%s\n\n%s",
         tostring(args.dataflow_id or ""),
@@ -113,6 +116,9 @@ local function handler(args)
     })
     if err or not response or type(response.result) ~= "string" or response.result == "" then
         return nil, "failed to generate checkpoint: " .. tostring(err or "empty result")
+    end
+    if response.finish_reason == output.FINISH_REASON.LENGTH then
+        return nil, "failed to generate checkpoint: the summary reached max_tokens before it finished"
     end
 
     return {
