@@ -8,6 +8,14 @@ local function handler(input)
         return nil, "scenario_id is required"
     end
 
+    if input.empty_delegate then
+        return { accepted = true, _control = { delegate = {} } }
+    end
+
+    if input.artifact then
+        return { accepted = true, _control = { artifacts = { { title = "Report", content = "report body" } } } }
+    end
+
     if type(input.overlay_traits) == "table" then
         return {
             accepted = true,

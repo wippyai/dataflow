@@ -1319,8 +1319,14 @@ local function resume_control_commands(n, child_node_ids, iteration)
     return flush_err
 end
 
-local function run_control_response_commands(control_responses, agent_ctx, n, iteration)
+local function apply_control_response_commands(control_responses, agent_ctx, n, iteration)
     local created_node_ids = {}
+    local pending = (n:metadata() or {}).agent_pending
+    if type(pending) == "table" then
+        for _, node_id in ipairs(pending.child_node_ids or {}) do
+            table.insert(created_node_ids, node_id)
+        end
+    end
     for _, response in ipairs(control_responses) do
         if response.changes_applied and response.changes_applied.commands and response.changes_applied.created_nodes then
             for _, node_id in ipairs(response.changes_applied.created_nodes) do
@@ -1342,11 +1348,16 @@ local function run_control_response_commands(control_responses, agent_ctx, n, it
     end
 
     local _changes_summary, changes_err = control_handler.apply_control_responses(control_responses, agent_ctx, n)
-    if changes_err then return changes_err end
+    return changes_err
+end
 
-    if #created_node_ids == 0 then return nil end
+local function resume_pending_control_commands(n, iteration)
+    local pending = (n:metadata() or {}).agent_pending
+    if type(pending) ~= "table" or type(pending.child_node_ids) ~= "table"
+        or #pending.child_node_ids == 0 then return nil end
 
-    local resume_err = resume_control_commands(n, created_node_ids, iteration)
+    iteration = tonumber(pending.iteration) or iteration
+    local resume_err = resume_control_commands(n, pending.child_node_ids, iteration)
     if resume_err then
         n:data(agent_consts.DATA_TYPE.AGENT_OBSERVATION,
             "Command execution failed: " .. error_message(resume_err, "unknown"), {
@@ -1779,9 +1790,10 @@ local function process_tool_results(n, tool_results, iteration, exit_tool_name, 
                 local tool_result = result_data.result
                 local tool_error = result_data.error
 
-                local cleaned_result, control_response = control_handler.process_control_directive(
+                local cleaned_result, control_response, control_err = control_handler.process_control_directive(
                     tool_result, n, iteration, call_id
                 )
+                if control_err then return nil, nil, false, nil, control_err end
                 if control_response then
                     control_response.tool_call_id = call_id
                     table.insert(control_responses, control_response)
@@ -1998,7 +2010,7 @@ local function finalize_iteration(n, agent_ctx, session_context, iteration, max_
     end
     local prepared, prepare_err = behavior_controls.prepare(proposed_controls)
     if not prepared then return nil, nil, prepare_err end
-    local control_responses, control_delegations, task_complete, final_result = process_tool_results(
+    local control_responses, control_delegations, task_complete, final_result, results_err = process_tool_results(
         n,
         tool_results,
         iteration,
@@ -2010,6 +2022,7 @@ local function finalize_iteration(n, agent_ctx, session_context, iteration, max_
         #prepared > 0,
         persisted_call_ids
     )
+    if results_err then return nil, nil, results_err end
 
     append_control_delegations(delegate_calls, control_delegations)
     local has_delegations = #delegate_calls > 0
@@ -2036,15 +2049,8 @@ local function finalize_iteration(n, agent_ctx, session_context, iteration, max_
     -- Everything above commits before anything waits, together with the results and
     -- any switch: the stored results no longer hold the directive, so recovery could
     -- not apply it again.
-    if has_delegations then
-        if #control_responses > 0 then
-            local _changes_summary, changes_err = control_handler.apply_control_responses(control_responses, agent_ctx, n)
-            if changes_err then
-                return nil, nil, changes_err
-            end
-        end
-    elseif #control_responses > 0 then
-        local changes_err = run_control_response_commands(control_responses, agent_ctx, n, iteration)
+    if #control_responses > 0 then
+        local changes_err = apply_control_response_commands(control_responses, agent_ctx, n, iteration)
         if changes_err then
             return nil, nil, changes_err
         end
@@ -2074,6 +2080,10 @@ local function finalize_iteration(n, agent_ctx, session_context, iteration, max_
         local _, delegation_persist_err = n:yield()
         if delegation_persist_err then return nil, nil, delegation_persist_err end
     end
+
+    -- Command output is host text, so it follows every call's result, including delegates.
+    local commands_err = resume_pending_control_commands(n, iteration)
+    if commands_err then return nil, nil, commands_err end
 
     if #prepared > 0 then
         local applied, control_err = control_handler.apply_behavior_controls(prepared, agent_ctx, n, iteration)
@@ -2200,7 +2210,12 @@ local function recover_persisted_action(n, agent_ctx, agent_instance, caller, se
     local action_iteration = (action_payload.metadata and action_payload.metadata.iteration) or iteration or 0
     local finish_reason = action_payload.metadata and action_payload.metadata.finish_reason
     if finish_reason == "length" then
-        return false, nil, action_iteration, nil
+        local warning = n:query()
+            :with_nodes(n.node_id)
+            :with_data_types(agent_consts.DATA_TYPE.AGENT_OBSERVATION)
+            :with_data_keys(action_iteration .. "_truncation_warning")
+            :one()
+        if warning then return false, nil, action_iteration, nil end
     end
 
     local calls_valid, calls_err = validate_tool_calls(action_payload.content.tool_calls)
@@ -2211,18 +2226,6 @@ local function recover_persisted_action(n, agent_ctx, agent_instance, caller, se
         }
     end
 
-    local pending = (n:metadata() or {}).agent_pending
-    if type(pending) == "table"
-        and type(pending.child_node_ids) == "table"
-        and #pending.child_node_ids > 0 then
-        local pending_iteration = tonumber(pending.iteration) or action_iteration
-        local resume_err = resume_control_commands(n, pending.child_node_ids, pending_iteration)
-        if resume_err then
-            return false, nil, action_iteration,
-                "Failed to resume control commands: " .. error_message(resume_err, "unknown")
-        end
-    end
-
     local observed_tool_call_ids = load_observed_tool_call_ids(n, action_iteration)
     local unresolved_tool_calls, unresolved_delegate_calls = collect_unresolved_calls(action_payload, observed_tool_call_ids)
 
@@ -2231,6 +2234,11 @@ local function recover_persisted_action(n, agent_ctx, agent_instance, caller, se
     local proposed_controls = type(behavior_pending) == "table" and
         behavior_pending.iteration == action_iteration and behavior_pending.controls or {}
     if not has_unresolved_work then
+        local resume_err = resume_pending_control_commands(n, action_iteration)
+        if resume_err then
+            return false, nil, action_iteration,
+                "Failed to resume control commands: " .. error_message(resume_err, "unknown")
+        end
         if tools_were_attempted(action_payload.content) and (n:metadata() or {}).round_settled ~= action_iteration then
             local settle_err
             proposed_controls, settle_err = settle_recovered_round(n, caller, agent_instance, action_payload,

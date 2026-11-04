@@ -203,7 +203,7 @@ local function normalize_event(row, formatter, calls)
     local text = table.concat(texts, "\n")
     local content = text
     if role == "function" then
-        local call = calls[metadata.call_id]
+        local call = calls[row_id(row)]
         if not call then return nil, "Function result has no stored call: " .. tostring(metadata.call_id) end
         content = decode_json(call.arguments)
         if type(call.arguments) == "string" then
@@ -329,7 +329,7 @@ local function history_rows(args)
         return nil, nil, nil, load_err
     end
 
-    local calls = {}
+    local calls, result_calls = {}, {}
     for _, row in ipairs(all_rows) do
         if row.type == agent_consts.DATA_TYPE.AGENT_ACTION then
             local action = row.content_type == consts.CONTENT_TYPE.JSON and decode_json(row.content) or row.content
@@ -338,6 +338,8 @@ local function history_rows(args)
                     for _, call in ipairs(list) do calls[call.id] = call end
                 end
             end
+        elseif row.metadata and row.metadata.tool_call_id then
+            result_calls[row_id(row)] = calls[row.metadata.tool_call_id]
         end
     end
     local sel = selector(args)
@@ -350,7 +352,7 @@ local function history_rows(args)
     local formatter, formatter_err = prompt_builder.new(dataflow_id, node_id, { node_id })
     if formatter_err then return nil, nil, nil, formatter_err end
     for _, row in ipairs(rows or {}) do
-        local event, event_err = normalize_event(row, formatter, calls)
+        local event, event_err = normalize_event(row, formatter, result_calls)
         if event_err then return nil, nil, nil, event_err end
         events[#events + 1] = event
     end

@@ -1541,6 +1541,37 @@ local function define_tests()
     end)
 
     describe("command children", function()
+        for _, scenario in ipairs({
+            { name = "command children alongside a delegation", command_delegate_at = 1, output = "child-output-1" },
+            { name = "yield.commands children", yield_commands_at = 1, output = "slow" },
+            { name = "yield.commands children alongside a delegation", command_delegate_at = 1,
+                yield_commands = true, output = "slow" },
+        }) do
+            it("collects " .. scenario.name .. " before the next request", function()
+                local run = run_node({ input = {
+                    rounds = 1, command_delegate_at = scenario.command_delegate_at,
+                    yield_commands_at = scenario.yield_commands_at, yield_commands = scenario.yield_commands,
+                    delegate_to = AGENT, child_delay_ms = 10,
+                } })
+                test.eq(run.status, consts.STATUS.COMPLETED_SUCCESS, node_error(run))
+                local outputs = {}
+                for _, row in ipairs(rows_of(run, agent_consts.DATA_TYPE.AGENT_OBSERVATION)) do
+                    if row.key == "1_commands_output" then outputs[#outputs + 1] = row end
+                end
+                test.eq(#outputs, 1, "one durable command output reaches the conversation")
+                test.contains(json.encode(outputs[1].content), scenario.output)
+                test.eq(node_row(run).metadata.agent_pending, false)
+                local requests = requests_of(run)
+                test.eq(#requests, 2)
+                local has_output = with_text(scenario.output)
+                test.not_nil(find_message(requests[2], function(message)
+                    return message.role == "developer" and has_output(message)
+                end), "the next request includes child output")
+                assert_paired(requests)
+                assert_each_request_extends_the_last(requests)
+            end)
+        end
+
         it("sends the outputs of two children as text and keeps the prefix", function()
             local run = run_node({ input = { rounds = 2, two_children_at = 1 } })
             test.eq(run.status, consts.STATUS.COMPLETED_SUCCESS, node_error(run))
@@ -1568,6 +1599,23 @@ local function define_tests()
     end)
 
     describe("rounds with nothing to answer", function()
+        it("stores the ordinary result of an empty delegation and pairs the next request", function()
+            local run = run_node({ input = { rounds = 1, empty_delegate_at = 1 } })
+            test.eq(run.status, consts.STATUS.COMPLETED_SUCCESS, node_error(run))
+            local results = {}
+            for _, row in ipairs(rows_of(run, agent_consts.DATA_TYPE.AGENT_OBSERVATION)) do
+                if row.metadata.tool_call_id == recovery_helpers.call_id(run.scenario_id, 1) then
+                    results[#results + 1] = row
+                end
+            end
+            test.eq(#results, 1, "an empty delegation stores the ordinary call result")
+            local content = type(results[1].content) == "string" and json.decode(results[1].content) or results[1].content
+            test.is_true(content.accepted)
+            local requests = requests_of(run)
+            test.eq(#requests, 2)
+            assert_paired(requests)
+        end)
+
         it("answers a text turn below min_iterations, so the request stays valid", function()
             local run = run_node({ input = { mode = "text_final" }, min_iterations = 3, max_iterations = 5 })
             test.eq(run.status, consts.STATUS.COMPLETED_SUCCESS, node_error(run))

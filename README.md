@@ -230,16 +230,21 @@ stay valid. This requires Agent 0.5.10 and LLM 0.5.13 or later.
   oldest, so `since_id` and `range` page forward, and the list is empty if the first row
   exceeds it. The input and the note take what room is left, and `truncated` is set if
   anything is dropped. `get_prompt` with `window`, `since_id`, `range` or `max_chars` is a
-  view and may hold a call without its result; do not send it to a provider. A
-  skipped checkpoint leaves an audit observation that stays out of the prompt and of
-  the summary.
+  view and may hold a call without its result; do not send it to a provider.
+  `get_history` pairs a result with its preceding call, so reusing a call id in a
+  later iteration cannot replace the earlier result's arguments, even in a bounded
+  slice. A skipped checkpoint leaves an audit observation that stays out of the
+  prompt and of the summary.
 - **Empty input.** A node with no conversation input pins its `arena.prompt` as the
   first user message, on every driver, because Claude and Bedrock reject an empty text
   block. With no `arena.prompt` it sends no user message and a note is the only content;
   with no note either it fails naming that.
 - **Turns that do not finish.** A text turn below `min_iterations`, or an empty one
   under `tool_calling = "none"`, is answered with a feedback row, so the next request
-  does not end on the assistant.
+  does not end on the assistant. Recovery repeats that completion decision after
+  an action commit: a length-cut text answer accepted live still completes after a
+  restart. Recovery treats a length-cut turn as truncated only when its
+  `_truncation_warning` is stored.
 - **Lifecycle notes.** Messages from `activate` and `before_step` are sent as
   positional notes after the history and stored, with the step's output, where they
   were sent: `agent.memory` rows with `metadata.role` set to `developer` or `system`,
@@ -276,12 +281,20 @@ settled on recovery shows the wrapper its calls in the live shape, and results f
 stored rows, which cannot recover everything: `true` reads back as 1 on SQLite, and a
 `{success = false}` result is stored as its error text rather than its table.
 
-A `_control` directive that creates command children commits the child set before it
-can wait on them, and recovery collects their output. `_control.artifacts` take their ids
-from the call and its position, so a call that recovery runs again stores each artifact
-once and the first stored content stands. A call can return one `_control.delegate`:
-each delegate's result answers the call, so a call returning several fails the node with
-an error naming it, and `input_data` is required.
+A `_control` directive that creates children through `commands` or `yield.commands`
+commits their ids in `agent_pending` before any wait. Live execution and recovery
+collect their output into the next model request, including rounds with delegations.
+Command output follows every call's result; its observation and the clearing of
+`agent_pending` commit together, so a kill during either wait loses no output and
+creates no duplicate observation. The `round_command_delegate` and
+`round_yield_delegate` restart proofs kill the runtime during these waits.
+
+`_control.artifacts` take their ids from the call and its position, so a call that
+recovery runs again stores each artifact once and the first stored content stands.
+An id-generation failure fails the node with an error naming the artifact.
+A call can return one `_control.delegate`: each delegate's result answers the call,
+so a call returning several fails the node with an error naming it, and `input_data`
+is required. An empty delegate list stores the tool's ordinary result.
 
 A selection is durable: `agent_id` and `model` inputs choose only until the node's
 first commit, which stores the choice in the config, a `_control.config` switch commits with the results that carry it,

@@ -271,6 +271,67 @@ function M.create_stable_prefix()
     return hold_runtime()
 end
 
+local function create_command_delegate(scenario_id, yield_commands)
+    prepare_runtime()
+    local db = assert(sql.get("app:db"))
+    local _, err = db:execute("CREATE TABLE IF NOT EXISTS restart_command_verdict (verdict TEXT NOT NULL)")
+    db:release()
+    if err then error(err) end
+    create_round_text_workflow({ scenario_id = scenario_id, mode = "thinking_rounds", rounds = 1,
+        capture_requests = true, command_delegate_at = 1, yield_commands = yield_commands,
+        child_delay_ms = 6000, delegate_to = STUB .. "recovery_test_agent",
+        delegate_input = { scenario_id = scenario_id .. "-child", mode = "thinking_rounds", rounds = 0,
+            slow_request = 1, slow_ms = 6000 } })
+    return hold_runtime()
+end
+
+function M.create_round_command_delegate()
+    return create_command_delegate("round-command-delegate", false)
+end
+
+function M.create_round_yield_delegate()
+    return create_command_delegate("round-yield-delegate", true)
+end
+
+local function observe_command_outputs(scenario_id, expected)
+    for _ = 1, 600 do
+        local db = assert(sql.get("app:db"))
+        local rows = db:query("SELECT COUNT(*) AS done FROM dataflows WHERE status = 'completed'")
+        db:release()
+        if rows and rows[1] and tonumber(rows[1].done) == 1 then
+            local request = recovery_helpers.get_request(scenario_id, 2)
+            local verdict = "next request is missing"
+            if request then
+                verdict = recovery_helpers.pairing_error(request)
+                local count = 0
+                for _, message in ipairs(request) do
+                    if message.role == "developer" and string.find(text_of(message), expected, 1, true) then
+                        count = count + 1
+                    end
+                end
+                if count ~= 1 then verdict = "next request has " .. count .. " command outputs" end
+                if recovery_helpers.get_request(scenario_id, 3) then verdict = "an extra request is sent" end
+            end
+            local writer = assert(sql.get("app:db"))
+            local _, err = writer:execute("INSERT INTO restart_command_verdict (verdict) VALUES ('"
+                .. (verdict or "ok"):gsub("'", "''") .. "')")
+            writer:release()
+            if err then error(err) end
+            return hold_runtime()
+        end
+        time.sleep("100ms")
+    end
+    return hold_runtime()
+end
+
+function M.observe_round_command_delegate()
+    return observe_command_outputs("round-command-delegate", "child-output-1")
+end
+
+function M.observe_round_yield_delegate()
+    return observe_command_outputs("round-yield-delegate", "slow")
+end
+
 function M.create_round_children()
     prepare_runtime()
     create_round_text_workflow({ scenario_id = "round-children", mode = "thinking_rounds", rounds = 1,

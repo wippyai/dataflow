@@ -84,7 +84,7 @@ local function define_tests()
                         result = scenario.result or "rejected answer", tool_calls = scenario.exit and { {
                             id = "finish_first", name = "finish", arguments = { answer = "accepted exit" },
                         } } or {},
-                        truncated = scenario.truncated, finish_reason = scenario.truncated and "length" or "stop",
+                        truncated = scenario.truncated, finish_reason = scenario.finish_reason or (scenario.truncated and "length" or "stop"),
                     }
                 end
                 if arena.tool_calling == "any" then
@@ -226,6 +226,7 @@ local function define_tests()
                     string.format(agent_consts.FEEDBACK.EXIT_AVAILABLE, "finish") },
             { name = "whitespace output before feedback", result = "   ", feedback = "1_empty_result",
                 interrupt_after_action = true, feedback_text = agent_consts.FEEDBACK.EMPTY_RESULT },
+            { name = "accepted length-cut text", accepted = true, result = "accepted answer", finish_reason = "length" },
             { name = "accepted text", accepted = true, result = "accepted answer" },
             { name = "accepted text without tools", accepted = true, tool_calling = "none", result = "accepted answer" },
             { name = "accepted exit", accepted = true, tool_calling = "any", exit = true },

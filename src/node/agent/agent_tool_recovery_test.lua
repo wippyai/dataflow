@@ -10,6 +10,7 @@ local node_sdk = require("node_sdk")
 local agent_node = require("agent_node")
 local agent_consts = require("agent_consts")
 local helpers = require("recovery_helpers")
+local control_handler = require("control_handler")
 
 local STUB = "userspace.dataflow.node.agent.stub:"
 local TOOL_DELAY_MS = 600
@@ -41,7 +42,7 @@ local function create_workflow(input, show_tool_calls)
                         prompt = "Run the tool scenario.",
                         max_iterations = 4,
                         tool_calling = "auto",
-                        tools = { STUB .. "recovery_tool" },
+                        tools = { STUB .. "recovery_tool", STUB .. "recovery_control_tool" },
                     },
                 },
             },
@@ -152,6 +153,32 @@ end
 
 local function define_tests()
     describe("agent tool round recovery", function()
+        it("fails the node naming the artifact when its deterministic id cannot be generated", function()
+            local dataflow_id, node_id = create_workflow({
+                scenario_id = "artifact-id-failure-" .. uuid.v7(), mode = "thinking_rounds", rounds = 1, artifact_at = 1,
+            })
+            local _, id_error = uuid.v5("invalid-artifact-namespace", "artifact")
+            test.not_nil(id_error)
+            local saved_artifacts = control_handler.process_artifacts
+            control_handler.process_artifacts = function(control, n, iteration, call_id)
+                local node_id = n.node_id
+                n.node_id = "invalid-artifact-namespace"
+                local changes, err = saved_artifacts(control, n, iteration, call_id)
+                n.node_id = node_id
+                return changes, err
+            end
+            local ok, result = run_node(dataflow_id, node_id)
+            control_handler.process_artifacts = saved_artifacts
+            test.is_true(ok, tostring(result))
+            test.is_false(result.success, "artifact id failure fails the node")
+            test.contains(result.message, "Report")
+            test.contains(result.message, tostring(id_error))
+            test.eq(#rows(dataflow_id, node_id, consts.DATA_TYPE.ARTIFACT), 0)
+            test.eq(#rows(dataflow_id, node_id, consts.DATA_TYPE.WORKFLOW_OUTPUT), 0)
+            local failed = node_reader.with_dataflow(dataflow_id):with_nodes(node_id):one()
+            test.eq(failed.metadata.error.message, result.message, "the node persists the artifact failure")
+        end)
+
         it("runs a failing tool once and returns its error to the model as that call's result", function()
             local scenario_id = "tool-recovery-fail-" .. uuid.v7()
             local call_id = helpers.call_id(scenario_id, 1)

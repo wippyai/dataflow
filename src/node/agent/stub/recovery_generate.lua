@@ -350,7 +350,13 @@ local function handler(contract_args)
         end
         local tokens = checkpoint_here and 500 or base_prompt or 9
         local control_args = nil
-        if scenario.switch_at == llm_calls then
+        if scenario.empty_delegate_at == llm_calls then
+            control_args = { empty_delegate = true }
+        elseif scenario.artifact_at == llm_calls then
+            control_args = { artifact = true }
+        elseif scenario.yield_commands_at == llm_calls then
+            control_args = { yield_child_ms = scenario.child_delay_ms or 10 }
+        elseif scenario.switch_at == llm_calls then
             control_args = { switch_agent = scenario.switch_agent }
         elseif scenario.delegate_at == llm_calls then
             control_args = { delegate_to = scenario.delegate_to }
@@ -373,6 +379,15 @@ local function handler(contract_args)
             local blank = final_response(scenario.scenario_id, scenario.mode, result_count, tokens, 4)
             blank.result.content = "  \n "
             return blank
+        end
+        if scenario.command_delegate_at == llm_calls then
+            local commands = tool_call_response(scenario.scenario_id, 1, 0, tokens, 4, "recovery_control_tool",
+                scenario.yield_commands and { yield_child_ms = scenario.child_delay_ms or 10 }
+                    or { commands_children = 1, child_delay_ms = scenario.child_delay_ms or 10 })
+            local delegate = tool_call_response(scenario.scenario_id, 2, 0, tokens, 4, "recovery_control_tool",
+                { delegate_to = scenario.delegate_to, delegate_input = scenario.delegate_input })
+            table.insert(commands.result.tool_calls, delegate.result.tool_calls[1])
+            return commands
         end
         if scenario.delegate_and_memory_at == llm_calls then
             return tool_call_response(scenario.scenario_id, 1, 0, tokens, 4, "recovery_control_tool",

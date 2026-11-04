@@ -210,9 +210,12 @@ function control_handler.process_artifacts(control, node_sdk, iteration, call_id
     for index, artifact in ipairs(control.artifacts) do
         if artifact.content then
             local content_type = artifact.content_type or consts.CONTENT_TYPE.TEXT
-            local artifact_id = uuid.v5(node_sdk.node_id, string.format("%s:%s:%d", tostring(iteration),
+            local artifact_id, artifact_err = uuid.v5(node_sdk.node_id, string.format("%s:%s:%d", tostring(iteration),
                 tostring(call_id), index))
             local title = artifact.title or "Untitled"
+            if not artifact_id then
+                return nil, string.format("Failed to generate id for artifact %q: %s", title, tostring(artifact_err))
+            end
 
             if not node_sdk:query():with_data(artifact_id):one() then
                 node_sdk:data(consts.DATA_TYPE.ARTIFACT, artifact.content, {
@@ -241,16 +244,15 @@ function control_handler.process_artifacts(control, node_sdk, iteration, call_id
     return artifact_changes
 end
 
--- Process direct commands
 function control_handler.process_commands(control, node_sdk)
-    if not control.commands then
-        return {}
-    end
-
     local command_changes = {}
     local created_node_ids = {}
+    local commands = {}
+    for _, list in ipairs({ control.commands or {}, control.yield and control.yield.commands or {} }) do
+        for _, cmd in ipairs(list) do commands[#commands + 1] = cmd end
+    end
 
-    for _, cmd in ipairs(control.commands) do
+    for _, cmd in ipairs(commands) do
         if cmd.type and cmd.payload then
             node_sdk:command(cmd)
 
@@ -304,7 +306,7 @@ function control_handler._summarize_command_payload(payload)
 end
 
 -- Process a single control directive from tool result
--- Returns: cleaned_result, control_response
+-- Returns: cleaned_result, control_response, error
 function control_handler.process_control_directive(tool_result, node_sdk, iteration, call_id)
     if type(tool_result) ~= "table" or not tool_result._control then
         return tool_result, nil
@@ -341,12 +343,12 @@ function control_handler.process_control_directive(tool_result, node_sdk, iterat
     end
 
     -- Process artifact creation
-    local artifact_changes = control_handler.process_artifacts(control, node_sdk, iteration, call_id)
+    local artifact_changes, artifact_err = control_handler.process_artifacts(control, node_sdk, iteration, call_id)
+    if artifact_err then return nil, nil, artifact_err end
     if #artifact_changes > 0 then
         control_response.changes_applied.artifacts = artifact_changes
     end
 
-    -- Process direct commands
     local command_result = control_handler.process_commands(control, node_sdk)
     if command_result.commands and #command_result.commands > 0 then
         control_response.changes_applied.commands = command_result.commands
@@ -375,19 +377,10 @@ function control_handler.process_control_directive(tool_result, node_sdk, iterat
     -- Handle yield requests
     if control.yield then
         control_response.yield = control.yield
-
-        -- Queue yield commands if any
-        if control.yield.commands then
-            for _, cmd in ipairs(control.yield.commands) do
-                if cmd.type and cmd.payload then
-                    node_sdk:command(cmd)
-                end
-            end
-        end
     end
 
     -- Handle delegate requests - pass through the entire delegate array
-    if control.delegate then
+    if control.delegate and #control.delegate > 0 then
         control_response.delegate = control.delegate
         -- Each delegate's result answers the call, and a call takes one result.
         if #control.delegate > 1 then
@@ -524,7 +517,8 @@ function control_handler.apply_behavior_controls(controls, agent_context, node_s
             end
             control.config = next(changes) and changes or nil
         end
-        local _, response = control_handler.process_control_directive({ _control = control }, node_sdk, iteration)
+        local _, response, directive_err = control_handler.process_control_directive({ _control = control }, node_sdk, iteration)
+        if directive_err then return nil, directive_err end
         -- Evaluate the next proposal against this one's result, not the state
         -- from before the batch. Later hooks can deliberately restore a target.
         local result, apply_err = control_handler.apply_control_responses({ response }, agent_context, node_sdk, changes_summary)

@@ -385,6 +385,7 @@ entries:
       node_reader: userspace.dataflow.persist:node_reader
       node_sdk: userspace.dataflow:node
       agent_node: userspace.dataflow.node.agent:node
+      control_handler: userspace.dataflow.node.agent:control_handler
       agent_consts: userspace.dataflow.node.agent:consts
       recovery_helpers: userspace.dataflow.node.agent.stub:recovery_helpers
     method: run_tests

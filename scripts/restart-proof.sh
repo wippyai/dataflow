@@ -10,7 +10,7 @@ runtime_pid=""
 restart_wippy="${WIPPY:-wippy}"
 dialect="${DATAFLOW_RESTART_DIALECT:-sqlite}"
 scenario="${DATAFLOW_RESTART_SCENARIO:-rolling}"
-case "$scenario" in rolling|behavior|parallel_tools|stable_prefix|round_children|round_delegate|round_both|round_rerun|round_yield|round_settle|round_yield_commands|round_artifact) ;; *) echo "unsupported restart scenario" >&2; exit 1 ;; esac
+case "$scenario" in rolling|behavior|parallel_tools|stable_prefix|round_children|round_delegate|round_both|round_rerun|round_yield|round_settle|round_yield_commands|round_artifact|round_command_delegate|round_yield_delegate) ;; *) echo "unsupported restart scenario" >&2; exit 1 ;; esac
 pg_host="${DATAFLOW_PG_HOST:-127.0.0.1}"
 pg_port="${DATAFLOW_PG_PORT:-5432}"
 pg_database="${DATAFLOW_PG_DATABASE:-dataflow_restart_test}"
@@ -66,6 +66,10 @@ start_runtime() {
         behavior) set -- --profile restart_behavior ;;
         parallel_tools) set -- --profile restart_parallel_tools ;;
         stable_prefix) set -- --profile restart_stable_prefix ;;
+        round_command_delegate|round_yield_delegate)
+            set -- --profile restart_round_children \
+                --override "app:restart_probe.create:method=create_$scenario" \
+                --override "app:restart_probe.observe:method=observe_$scenario" ;;
         round_*) set -- --profile "restart_$scenario" ;;
         *) set -- ;;
     esac
@@ -137,6 +141,16 @@ while [ "$attempts" -lt 200 ]; do
             WHERE a.desired_active
               AND EXISTS (SELECT 1 FROM dataflow_data d WHERE d.dataflow_id = a.dataflow_id AND d.type = 'agent.observation')
               AND EXISTS (SELECT 1 FROM restart_recovery_store s WHERE s.store_key = 'agent_recovery:round-settle:wrapper_attempts')
+            LIMIT 1;" 2>/dev/null || true)
+    elif [ "$scenario" = "round_command_delegate" ]; then
+        phase1=$(query "SELECT a.dataflow_id || '|' || a.owner_epoch
+            FROM dataflow_activations a WHERE a.desired_active
+              AND EXISTS (SELECT 1 FROM dataflow_nodes c WHERE c.dataflow_id = a.dataflow_id
+                          AND c.parent_node_id IS NOT NULL AND c.type = 'userspace.dataflow.node.func:node'
+                          AND c.status = 'running')
+              AND EXISTS (SELECT 1 FROM dataflow_nodes c WHERE c.dataflow_id = a.dataflow_id
+                          AND c.parent_node_id IS NOT NULL AND c.type = 'userspace.dataflow.node.agent:node'
+                          AND c.status = 'running')
             LIMIT 1;" 2>/dev/null || true)
     elif [ "${scenario#round_}" != "$scenario" ]; then
         # The round's commit is durable and its slow child is running.
@@ -357,11 +371,33 @@ if [ "${scenario#round_}" != "$scenario" ]; then
     warnings=$(query "SELECT COUNT(*) FROM dataflow_data d JOIN dataflow_nodes n ON n.node_id = d.node_id
         WHERE d.dataflow_id = '$dataflow_id' AND d.type = 'agent.observation' AND d.key = '1_iterations_warning' AND n.parent_node_id IS NULL;")
     expected_added=1
-    case "$scenario" in round_settle|round_yield_commands|round_artifact) expected_added=0 ;; esac
+    case "$scenario" in round_settle|round_yield_commands|round_artifact|round_command_delegate|round_yield_delegate) expected_added=0 ;; esac
     [ "$added|$warnings" = "$expected_added|1" ] || {
         echo "the round's text did not survive the restart: added=$added warnings=$warnings" >&2
         exit 1
     }
+    if [ "$scenario" = "round_command_delegate" ] || [ "$scenario" = "round_yield_delegate" ]; then
+        outputs=$(query "SELECT COUNT(*) FROM dataflow_data WHERE dataflow_id = '$dataflow_id'
+            AND type = 'agent.observation' AND key = '1_commands_output';")
+        children=$(query "SELECT COUNT(*) FROM dataflow_nodes WHERE dataflow_id = '$dataflow_id'
+            AND parent_node_id IS NOT NULL;")
+        [ "$outputs|$children" = "1|2" ] || {
+            echo "delegating round lost command output or duplicated children: outputs=$outputs children=$children" >&2
+            exit 1
+        }
+        verdict=""
+        attempts=0
+        while [ "$attempts" -lt 100 ]; do
+            verdict=$(query "SELECT verdict FROM restart_command_verdict LIMIT 1;" 2>/dev/null || true)
+            [ -n "$verdict" ] && break
+            attempts=$((attempts + 1))
+            sleep 0.1
+        done
+        [ "$verdict" = "ok" ] || {
+            echo "recovered command output did not reach a paired request: ${verdict:-no verdict}" >&2
+            exit 1
+        }
+    fi
     if [ "$scenario" = "round_settle" ]; then
         if [ "$dialect" = "postgres" ]; then
             settled_expr="metadata #>> '{session_context,settled_by}'"
