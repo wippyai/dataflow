@@ -754,16 +754,20 @@ local function store_turn_context(n, agent_instance: any): any
     return yield_err
 end
 
--- The fold is the first user message of every request, so the first start pins it.
--- It commits with the node's first commit; a start before that sent nothing that
--- an output depends on and folds again.
-local function pin_conversation_input(n, folded: string): string
+local function load_pinned_input(n)
     local stored = n:query()
         :with_nodes(n.node_id)
         :with_data_types(agent_consts.DATA_TYPE.AGENT_INPUT)
         :all()
-    if stored and stored[1] then
-        return stored[1].content
+    return stored and stored[1] or nil
+end
+
+-- The fold is the first user message of every request, so the first start pins it.
+-- It commits with the node's first commit; a start before that sent nothing that
+-- an output depends on and folds again.
+local function pin_conversation_input(n, pinned_input, folded: string): string
+    if pinned_input then
+        return pinned_input.content
     end
     n:data(agent_consts.DATA_TYPE.AGENT_INPUT, folded, {
         key = CONVERSATION_INPUT_KEY,
@@ -867,6 +871,71 @@ local function default_checkpoint_function_id(): string?
     return nil
 end
 
+local function load_action_payload(action_row)
+    if not action_row then
+        return nil
+    end
+
+    local content = decode_json_content(action_row.content, action_row.content_type)
+    if type(content) ~= "table" then
+        content = {
+            result = content
+        }
+    end
+
+    return {
+        content = content,
+        metadata = action_row.metadata or {},
+        row = action_row
+    }
+end
+
+local function collect_unresolved_calls(action_payload, observed_tool_call_ids)
+    local unresolved_tool_calls = {}
+    local unresolved_delegate_calls = {}
+
+    for _, tool_call in ipairs(action_payload.content.tool_calls or {}) do
+        if tool_call.id and not observed_tool_call_ids[tool_call.id] then
+            table.insert(unresolved_tool_calls, tool_call)
+        end
+    end
+
+    for _, delegate_call in ipairs(action_payload.content.delegate_calls or {}) do
+        if delegate_call.id and not observed_tool_call_ids[delegate_call.id] then
+            table.insert(unresolved_delegate_calls, delegate_call)
+        end
+    end
+
+    return unresolved_tool_calls, unresolved_delegate_calls
+end
+
+-- The first action with a call that has no result yet. A finish whose node has not
+-- completed is one: recovery runs it again and may answer it with a result.
+local function first_open_action(rows)
+    local observed = {}
+    for _, row in ipairs(rows) do
+        local metadata = row.metadata or {}
+        if metadata.tool_call_id then
+            local iteration = tostring(metadata.iteration)
+            observed[iteration] = observed[iteration] or {}
+            observed[iteration][metadata.tool_call_id] = true
+        end
+    end
+    for _, row in ipairs(rows) do
+        if row.type == agent_consts.DATA_TYPE.AGENT_ACTION then
+            local payload = load_action_payload(row)
+            local metadata = payload and payload.metadata or {}
+            if payload and metadata.finish_reason ~= "length" then
+                local tools, delegates = collect_unresolved_calls(payload, observed[tostring(metadata.iteration)] or {})
+                if #tools > 0 or #delegates > 0 then
+                    return row
+                end
+            end
+        end
+    end
+    return nil
+end
+
 local function maybe_checkpoint_history(n, config, session_context, agent_instance, agent_id, model_name, iteration)
     local checkpoint_cfg = config and config.checkpoint
     if type(checkpoint_cfg) ~= "table" then
@@ -926,15 +995,28 @@ local function maybe_checkpoint_history(n, config, session_context, agent_instan
     end
 
     local cut_before = prompt_builder.row_id(history_rows[#history_rows])
-    if cut_before == "" then
-        return nil, nil
+    local latest_marker = prompt_builder.find_latest_checkpoint_marker(history_rows)
+    local source_rows = prompt_builder.checkpoint_source_rows(history_rows)
+
+    -- The cut stops before an open round, which stays in the requests whole.
+    local open_action = first_open_action(source_rows)
+    if open_action then
+        local open_id = prompt_builder.row_id(open_action)
+        local closed_rows = {}
+        for _, row in ipairs(source_rows) do
+            if prompt_builder.row_id(row) < open_id or row == latest_marker then
+                closed_rows[#closed_rows + 1] = row
+            end
+        end
+        source_rows = closed_rows
+        for _, row in ipairs(history_rows) do
+            if prompt_builder.row_id(row) < open_id then cut_before = prompt_builder.row_id(row) end
+        end
     end
 
     -- A summary with nothing after it has nothing to replace.
-    local latest_marker = prompt_builder.find_latest_checkpoint_marker(history_rows)
-    local source_rows = prompt_builder.checkpoint_source_rows(history_rows)
-    if #source_rows == 0 or (#source_rows == 1 and source_rows[1] == latest_marker) then
-        if compact_requested then n:update_metadata({ checkpoint_requested = false }) end
+    if #source_rows == (latest_marker and 1 or 0) then
+        if compact_requested and not open_action then n:update_metadata({ checkpoint_requested = false }) end
         return nil, nil
     end
 
@@ -1121,44 +1203,6 @@ local function load_observed_tool_call_ids(n, iteration)
     end
 
     return observed_ids
-end
-
-local function load_action_payload(action_row)
-    if not action_row then
-        return nil
-    end
-
-    local content = decode_json_content(action_row.content, action_row.content_type)
-    if type(content) ~= "table" then
-        content = {
-            result = content
-        }
-    end
-
-    return {
-        content = content,
-        metadata = action_row.metadata or {},
-        row = action_row
-    }
-end
-
-local function collect_unresolved_calls(action_payload, observed_tool_call_ids)
-    local unresolved_tool_calls = {}
-    local unresolved_delegate_calls = {}
-
-    for _, tool_call in ipairs(action_payload.content.tool_calls or {}) do
-        if tool_call.id and not observed_tool_call_ids[tool_call.id] then
-            table.insert(unresolved_tool_calls, tool_call)
-        end
-    end
-
-    for _, delegate_call in ipairs(action_payload.content.delegate_calls or {}) do
-        if delegate_call.id and not observed_tool_call_ids[delegate_call.id] then
-            table.insert(unresolved_delegate_calls, delegate_call)
-        end
-    end
-
-    return unresolved_tool_calls, unresolved_delegate_calls
 end
 
 local function queue_iteration_warning(n, iteration, max_iterations)
@@ -1921,8 +1965,27 @@ local function finalize_iteration(n, agent_ctx, session_context, iteration, max_
     append_control_delegations(delegate_calls, control_delegations)
     local has_delegations = #delegate_calls > 0
 
-    -- A switch commits with the results that carry it: the stored results no longer
-    -- hold the directive, so recovery could not apply it again.
+    -- Host text follows every result of the round; between a call and its result it
+    -- makes the request invalid. Without a delegation every result is written here. A
+    -- delegate's result comes later, so the additions wait in the node metadata.
+    local additions = control_handler.memory_additions(control_responses)
+    if has_delegations then
+        local memory_pending = (n:metadata() or {}).memory_pending
+        if type(memory_pending) == "table" and memory_pending.iteration == iteration then
+            for _, memory_item in ipairs(memory_pending.additions) do table.insert(additions, memory_item) end
+        end
+        if #additions > 0 then
+            n:update_metadata({ memory_pending = { iteration = iteration, additions = additions } })
+        end
+    else
+        control_handler.queue_memory_additions(additions, n, iteration)
+        queue_iteration_warning(n, iteration, max_iterations)
+    end
+    if #prepared > 0 then n:update_metadata({ behavior_pending = { iteration = iteration, controls = prepared } }) end
+
+    -- Everything above commits before anything waits, together with the results and
+    -- any switch: the stored results no longer hold the directive, so recovery could
+    -- not apply it again.
     if has_delegations then
         if #control_responses > 0 then
             local _changes_summary, changes_err = control_handler.apply_control_responses(control_responses, agent_ctx, n)
@@ -1937,15 +2000,6 @@ local function finalize_iteration(n, agent_ctx, session_context, iteration, max_
         end
     end
 
-    -- Host text follows every result of the round; between a call and its result
-    -- it makes the request invalid.
-    local function queue_round_text()
-        control_handler.queue_memory_additions(control_responses, n, iteration)
-        queue_iteration_warning(n, iteration, max_iterations)
-    end
-
-    if not has_delegations then queue_round_text() end
-    if #prepared > 0 then n:update_metadata({ behavior_pending = { iteration = iteration, controls = prepared } }) end
     local _, persist_err = n:yield()
     if persist_err then return nil, nil, persist_err end
 
@@ -1963,7 +2017,9 @@ local function finalize_iteration(n, agent_ctx, session_context, iteration, max_
         end
 
         delegation_handler.map_delegation_results_to_conversation(delegation_results, n, iteration)
-        queue_round_text()
+        control_handler.queue_memory_additions(additions, n, iteration)
+        queue_iteration_warning(n, iteration, max_iterations)
+        if #additions > 0 then n:update_metadata({ memory_pending = false }) end
         local _, delegation_persist_err = n:yield()
         if delegation_persist_err then return nil, nil, delegation_persist_err end
     end
@@ -2211,19 +2267,20 @@ local function run(args)
     local saved_state = ((args.node or {}).metadata or {}).state or {}
 
     -- Inputs choose the agent and model until the node's first commit, which stores
-    -- that choice; after it the config holds the selection, including any switch.
-    if saved_state.agent_id ~= nil then
-        agent_id_override = nil
-        model_override = config.model or model_override
-    else
-        if agent_id_override then
-            n:update_config({ agent = agent_id_override })
+    -- that choice and the input pin; after it the config holds the selection, including
+    -- any switch. A run stored before the pin keeps its input model and stores it now.
+    local pinned_input = load_pinned_input(n)
+    if saved_state.agent_id == nil and agent_id_override then
+        n:update_config({ agent = agent_id_override })
 
-            n:update_metadata({ title = agent_ref.resolve(agent_id_override).title })
-        end
-        if model_override then
-            n:update_config({ model = model_override })
-        end
+        n:update_metadata({ title = agent_ref.resolve(agent_id_override).title })
+    elseif saved_state.agent_id ~= nil then
+        agent_id_override = nil
+    end
+    if saved_state.agent_id ~= nil and pinned_input then
+        model_override = config.model or model_override
+    elseif model_override then
+        n:update_config({ model = model_override })
     end
 
     model_override = model_override or config.model or config.arena.model
@@ -2319,7 +2376,7 @@ local function run(args)
         }, "Failed to initialize prompt builder")
     end
 
-    builder:with_arena_config(config.arena):with_initial_input(pin_conversation_input(n, input_data))
+    builder:with_arena_config(config.arena):with_initial_input(pin_conversation_input(n, pinned_input, input_data))
     local caller = tool_caller.new()
     -- The tool calls of one model turn run concurrently, as in the session host.
     caller:set_strategy(tool_caller.STRATEGY.PARALLEL)

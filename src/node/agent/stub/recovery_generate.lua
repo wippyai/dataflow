@@ -77,8 +77,23 @@ local function offers_tool(contract_args, tool_name)
     return false
 end
 
+-- The default checkpoint summarizer names its node in the user message.
+local function summarizer_node(messages)
+    for _, message in ipairs(messages) do
+        local text = message.role == "user" and message.content and message.content[1] and message.content[1].text
+        local node_id = type(text) == "string" and text:match("^dataflow_id=%S*\nnode_id=(%S+)") or nil
+        if node_id then return node_id end
+    end
+    return nil
+end
+
 local function handler(contract_args)
     local messages = contract_args and contract_args.messages or {}
+    local summarized_node = summarizer_node(messages)
+    if summarized_node then
+        helpers.record_request(summarized_node, 1, messages)
+        return final_response(summarized_node, "summary", 0, 7, 4)
+    end
     local scenario: any = helpers.parse_scenario(messages)
     local result_count = helpers.count_function_results(messages)
 
@@ -315,6 +330,16 @@ local function handler(contract_args)
             control_args = { delegate_to = scenario.delegate_to }
         elseif scenario.memory_at == llm_calls then
             control_args = { memory_add = "added at " .. tostring(llm_calls) }
+        elseif scenario.commands_memory_at == llm_calls then
+            control_args = { commands_memory = "added at " .. tostring(llm_calls), child_delay_ms = scenario.child_delay_ms }
+        end
+        if scenario.delegate_with_memory_at == llm_calls then
+            local memory = tool_call_response(scenario.scenario_id, 1, 0, tokens, 4, "recovery_control_tool",
+                { memory_add = "added at " .. tostring(llm_calls) })
+            local delegate = tool_call_response(scenario.scenario_id, 2, 0, tokens, 4, "recovery_control_tool",
+                { delegate_to = scenario.delegate_to, delegate_input = scenario.delegate_input })
+            table.insert(memory.result.tool_calls, delegate.result.tool_calls[1])
+            return memory
         end
         local response
         if llm_calls <= (tonumber(scenario.rounds) or 1) then

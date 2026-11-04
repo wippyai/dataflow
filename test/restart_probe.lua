@@ -138,6 +138,42 @@ local function create_stable_prefix_workflow()
     if not started then error(start_err or "stable prefix workflow start failed") end
 end
 
+-- The round's memory add waits behind slow work when the runtime is killed: a child
+-- DAG, or a delegate of a sibling call.
+local function create_round_text_workflow(scenario)
+    local db = assert(sql.get("app:db"))
+    local bytes = db:type() == "postgres" and "BYTEA" or "BLOB"
+    local _, table_err = db:execute("CREATE TABLE IF NOT EXISTS restart_recovery_store ("
+        .. "store_key TEXT PRIMARY KEY, store_value " .. bytes .. " NOT NULL, expires_at TIMESTAMP NULL)")
+    db:release()
+    if table_err then error(table_err) end
+
+    local node_id, input_id = uuid.v7(), uuid.v7()
+    local c = client.new()
+    local id, err = c:create_workflow({
+        { type = consts.COMMAND_TYPES.CREATE_NODE, payload = {
+            node_id = node_id, node_type = "userspace.dataflow.node.agent:node", status = consts.STATUS.PENDING,
+            config = {
+                agent = STUB .. "recovery_test_agent", show_tool_calls = false,
+                data_targets = {{ data_type = consts.DATA_TYPE.WORKFLOW_OUTPUT, key = "result", content_type = consts.CONTENT_TYPE.TEXT }},
+                arena = { prompt = "Complete the restart scenario.", max_iterations = 3, tool_calling = "auto",
+                    tools = { STUB .. "recovery_tool", STUB .. "recovery_control_tool" } },
+            },
+        } },
+        { type = consts.COMMAND_TYPES.CREATE_DATA, payload = {
+            data_id = input_id, data_type = consts.DATA_TYPE.WORKFLOW_INPUT,
+            content = scenario, content_type = consts.CONTENT_TYPE.JSON,
+        } },
+        { type = consts.COMMAND_TYPES.CREATE_DATA, payload = {
+            data_id = uuid.v7(), data_type = consts.DATA_TYPE.NODE_INPUT, node_id = node_id, key = input_id,
+            content = "", content_type = consts.CONTENT_TYPE.REFERENCE,
+        } },
+    })
+    if not id then error(err or "round text workflow creation failed") end
+    local started, start_err = c:start(id)
+    if not started then error(start_err or "round text workflow start failed") end
+end
+
 local function text_of(message)
     local parts = {}
     for _, part in ipairs(message.content or {}) do
@@ -231,6 +267,22 @@ end
 function M.create_stable_prefix()
     prepare_runtime()
     create_stable_prefix_workflow()
+    return hold_runtime()
+end
+
+function M.create_round_children()
+    prepare_runtime()
+    create_round_text_workflow({ scenario_id = "round-children", mode = "thinking_rounds", rounds = 1,
+        commands_memory_at = 1, child_delay_ms = 6000 })
+    return hold_runtime()
+end
+
+function M.create_round_delegate()
+    prepare_runtime()
+    create_round_text_workflow({ scenario_id = "round-delegate", mode = "thinking_rounds", rounds = 1,
+        delegate_with_memory_at = 1, delegate_to = STUB .. "recovery_test_agent",
+        delegate_input = { scenario_id = "round-delegate-child", mode = "thinking_rounds", rounds = 0,
+            slow_request = 1, slow_ms = 6000 } })
     return hold_runtime()
 end
 

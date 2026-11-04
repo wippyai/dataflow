@@ -52,9 +52,17 @@ function prompt_builder.is_audit_row(row)
         and row.metadata.checkpoint_skipped == true
 end
 
--- The checkpoint summary replaces every row up to the cut, so a request carries
--- the turn note, the marker and the rows after the cut. A checkpoint runs only
--- between rounds, so the cut never separates a call from its result.
+-- Every request sends the pinned input and the note after it, whatever a checkpoint
+-- cut around them.
+local function is_kept_by_checkpoint(row)
+    return prompt_builder.is_turn_context_row(row)
+        or (type(row) == "table" and row.type == agent_consts.DATA_TYPE.AGENT_INPUT)
+end
+
+-- The checkpoint summary replaces every row up to the cut, so a request carries the
+-- input, the turn note, the marker and the rows after the cut. The checkpoint places
+-- its cut before any action with an unresolved call, so it never separates a call
+-- from its result.
 function prompt_builder.apply_latest_marker(history_rows)
     if not history_rows or #history_rows == 0 then
         return history_rows or {}
@@ -70,13 +78,13 @@ function prompt_builder.apply_latest_marker(history_rows)
     local cut_before = tostring((latest_marker.metadata or {}).checkpoint_before_data_id or "")
     local filtered = {}
     for _, item in ipairs(history_rows) do
-        if prompt_builder.is_turn_context_row(item) then
+        if is_kept_by_checkpoint(item) then
             filtered[#filtered + 1] = item
         end
     end
     filtered[#filtered + 1] = latest_marker
     for _, item in ipairs(history_rows) do
-        if item ~= latest_marker and not prompt_builder.is_turn_context_row(item)
+        if item ~= latest_marker and not is_kept_by_checkpoint(item)
             and prompt_builder.row_id(item) > cut_before then
             filtered[#filtered + 1] = item
         end
@@ -91,7 +99,7 @@ end
 function prompt_builder.checkpoint_source_rows(history_rows)
     local source_rows = {}
     for _, row in ipairs(prompt_builder.apply_latest_marker(history_rows)) do
-        if not prompt_builder.is_turn_context_row(row) and not prompt_builder.is_audit_row(row) then
+        if not is_kept_by_checkpoint(row) and not prompt_builder.is_audit_row(row) then
             source_rows[#source_rows + 1] = row
         end
     end
@@ -457,7 +465,9 @@ function prompt_builder:format_history_item(item, builder)
     if prompt_builder.is_audit_row(item) then
         return nil
     end
-    if item.type == consts.DATA_TYPE.NODE_INPUT then
+    if item.type == agent_consts.DATA_TYPE.AGENT_INPUT then
+        return self:_format_input(item.content, builder)
+    elseif item.type == consts.DATA_TYPE.NODE_INPUT then
         local content, err = self:_parse_json_content(item.content, item.content_type)
         if err then return err end
         return self:_format_input(content, builder)

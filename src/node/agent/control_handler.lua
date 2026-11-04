@@ -147,53 +147,54 @@ function control_handler.process_memory_operations(control, node_sdk, iteration)
     end
 
     -- Only rows added here can be removed: any other row may be a call, a result or
-    -- a note a stored output depends on.
+    -- a note a stored output depends on. A row already gone is a replay after a crash.
     if control.memory.delete then
-        local removable = {}
-        for _, row in ipairs(node_sdk:find_data(agent_consts.DATA_TYPE.AGENT_MEMORY) or {}) do
-            if type(row.metadata) == "table" and row.metadata.created_by_control == true then
-                removable[row.data_id] = true
-            end
-        end
         for _, memory_id in ipairs(control.memory.delete) do
-            if removable[memory_id] then
+            local row = node_sdk:query():with_nodes(node_sdk.node_id):with_data(memory_id):one()
+            local added = row and type(row.metadata) == "table" and row.metadata.created_by_control == true
+            if added then
                 node_sdk:delete_data(memory_id)
-                table.insert(memory_changes, {
-                    action = "delete",
-                    memory_id = memory_id
-                })
-            else
-                table.insert(memory_changes, {
-                    action = "delete",
-                    memory_id = memory_id,
-                    error = "Memory delete refused: " .. tostring(memory_id) .. " was not added by a memory directive"
-                })
             end
+            table.insert(memory_changes, {
+                action = "delete",
+                memory_id = memory_id,
+                error = row and not added
+                    and ("Memory delete refused: " .. tostring(memory_id) .. " was not added by a memory directive")
+                    or nil
+            })
         end
     end
 
     return memory_changes
 end
 
--- Called after every result of the round is written, so an added row cannot land
--- between a call and its result.
-function control_handler.queue_memory_additions(control_responses, node_sdk, iteration)
+function control_handler.memory_additions(control_responses)
+    local additions = {}
     for _, response in ipairs(control_responses) do
         local control = response._original_control or {}
         for _, memory_item in ipairs(control.memory and control.memory.add or {}) do
             if memory_item.type and memory_item.text then
-                node_sdk:data(agent_consts.DATA_TYPE.AGENT_MEMORY, memory_item.text, {
-                    key = memory_item.type .. "_" .. iteration,
-                    discriminator = memory_item.type,
-                    node_id = node_sdk.node_id,
-                    metadata = {
-                        memory_type = memory_item.type,
-                        created_by_control = true,
-                        iteration = iteration
-                    }
-                })
+                table.insert(additions, memory_item)
             end
         end
+    end
+    return additions
+end
+
+-- Called after every result of the round is written, so an added row cannot land
+-- between a call and its result.
+function control_handler.queue_memory_additions(additions, node_sdk, iteration)
+    for _, memory_item in ipairs(additions) do
+        node_sdk:data(agent_consts.DATA_TYPE.AGENT_MEMORY, memory_item.text, {
+            key = memory_item.type .. "_" .. iteration,
+            discriminator = memory_item.type,
+            node_id = node_sdk.node_id,
+            metadata = {
+                memory_type = memory_item.type,
+                created_by_control = true,
+                iteration = iteration
+            }
+        })
     end
 end
 
@@ -459,7 +460,12 @@ function control_handler.apply_control_responses(control_responses, agent_contex
             node_sdk:update_config({ active_tools = response.tools_change })
         end
 
-        -- Handle yield requests
+        -- Note: delegate is handled separately in node.lua main loop
+        -- It doesn't require any agent context changes, just child node creation
+    end
+
+    -- A yield directive commits and waits, so every response is applied before it.
+    for _, response in ipairs(control_responses) do
         if response.yield then
             local yield_options = {}
 
@@ -476,9 +482,6 @@ function control_handler.apply_control_responses(control_responses, agent_contex
                     string.format("Failed to yield: %s", yield_err or "unknown error"))
             end
         end
-
-        -- Note: delegate is handled separately in node.lua main loop
-        -- It doesn't require any agent context changes, just child node creation
     end
 
     return changes_summary, (#changes_summary.errors > 0) and table.concat(changes_summary.errors, "; ") or nil

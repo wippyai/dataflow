@@ -19,6 +19,7 @@ type Selector = {
 
 local HISTORY_TYPES = {
     consts.DATA_TYPE.NODE_INPUT,
+    agent_consts.DATA_TYPE.AGENT_INPUT,
     agent_consts.DATA_TYPE.AGENT_ACTION,
     agent_consts.DATA_TYPE.AGENT_OBSERVATION,
     agent_consts.DATA_TYPE.AGENT_MEMORY,
@@ -81,6 +82,19 @@ local function load_history_rows(dataflow_id, node_id)
         if not prompt_builder.is_audit_row(row)
             and (row.type ~= consts.DATA_TYPE.NODE_INPUT or prompt_builder.is_conversation_input(input_key)) then
             rows[#rows + 1] = row
+        end
+    end
+    -- The pinned fold is the user message every request sends; the input rows are
+    -- only its source, and one that arrived later never reached the model.
+    for _, row in ipairs(rows) do
+        if row.type == agent_consts.DATA_TYPE.AGENT_INPUT then
+            local without_inputs = {}
+            for _, candidate in ipairs(rows) do
+                if candidate.type ~= consts.DATA_TYPE.NODE_INPUT then
+                    without_inputs[#without_inputs + 1] = candidate
+                end
+            end
+            return sort_rows(without_inputs), nil
         end
     end
     return sort_rows(rows), nil

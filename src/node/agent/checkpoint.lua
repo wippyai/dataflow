@@ -49,12 +49,14 @@ local function history_text(history, max_row_chars)
     local parts = {}
     for index, row in ipairs(history or {}) do
         local meta = type(row.metadata) == "table" and row.metadata or {}
+        -- The earlier summary is the only record of the rows it replaced.
+        local row_limit = meta.checkpoint_marker ~= true and max_row_chars or nil
         parts[#parts + 1] = string.format(
             "[%d] %s %s\n%s",
             index,
             tostring(row.type or ""),
             tostring(row.data_id or ""),
-            row_content(row, max_row_chars)
+            row_content(row, row_limit)
         )
         if meta.tool_name or meta.iteration then
             parts[#parts + 1] = "metadata: " .. json.encode({
@@ -68,6 +70,21 @@ local function history_text(history, max_row_chars)
     return table.concat(parts, "\n\n")
 end
 
+local SUMMARY_INSTRUCTION = "Create a concise operational checkpoint for a dataflow agent. "
+    .. "Preserve task state, decisions, tool effects, blockers, and next actions. Return only the checkpoint text."
+local MERGE_INSTRUCTION = " The history contains the previous checkpoint. Merge it with the new events: keep everything "
+    .. "in it that still holds, mark completed items done, and update progress and blockers. The events it covers are "
+    .. "gone, so anything you drop is lost."
+
+local function has_previous_checkpoint(history)
+    for _, row in ipairs(history) do
+        if type(row.metadata) == "table" and row.metadata.checkpoint_marker == true then
+            return true
+        end
+    end
+    return false
+end
+
 local function handler(args)
     if type(args) ~= "table" then
         return nil, "checkpoint args are required"
@@ -78,9 +95,7 @@ local function handler(args)
 
     local cfg = config_from_args(args)
     local p = prompt.new()
-    p:add_system(
-        "Create a concise operational checkpoint for a dataflow agent. Preserve task state, decisions, tool effects, blockers, and next actions. Return only the checkpoint text."
-    )
+    p:add_system(SUMMARY_INSTRUCTION .. (has_previous_checkpoint(args.history) and MERGE_INSTRUCTION or ""))
     p:add_user(string.format(
         "dataflow_id=%s\nnode_id=%s\niteration=%s\nprompt_tokens=%s\nhistory_count=%s\n\n%s",
         tostring(args.dataflow_id or ""),

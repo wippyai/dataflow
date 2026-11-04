@@ -41,6 +41,16 @@ local function make_node(initial_metadata, find_rows)
             return reader_chain
         end,
         fetch_options = function(_) return reader_chain end,
+        with_data = function(_, data_id)
+            reader_chain.selected_id = data_id
+            return reader_chain
+        end,
+        one = function()
+            for _, row in ipairs(find_rows or {}) do
+                if row.data_id == reader_chain.selected_id then return row end
+            end
+            return nil
+        end,
         all = function() return find_rows or {} end
     }
 
@@ -297,7 +307,7 @@ local function define_tests()
                     "no row can land before the call's result")
                 test.eq(changes[1].action, "add")
 
-                control_handler.queue_memory_additions({ { _original_control = directive } }, n, 3)
+                control_handler.queue_memory_additions(directive.memory.add, n, 3)
                 local data_cmds = queued_of_type(n, consts.COMMAND_TYPES.CREATE_DATA)
                 test.eq(#data_cmds, 1, "one data command queued")
                 test.eq(data_cmds[1].payload.data_type, agent_consts.DATA_TYPE.AGENT_MEMORY)
@@ -320,7 +330,7 @@ local function define_tests()
             end)
 
             it("refuses to delete a row the memory directive did not add", function()
-                local n = make_node({}, { { data_id = "note-1", metadata = {} } })
+                local n = make_node({}, { { data_id = "note-1", metadata = {} }, { data_id = "action-1" } })
 
                 local _, response = control_handler.process_control_directive(
                     { _control = { memory = { delete = { "note-1", "action-1" } } } }, n, 1)
@@ -330,6 +340,17 @@ local function define_tests()
                 test.not_nil(apply_err, "the directive fails visibly")
                 test.is_true(tostring(apply_err):find("note-1", 1, true) ~= nil, tostring(apply_err))
                 test.is_true(tostring(apply_err):find("action-1", 1, true) ~= nil, tostring(apply_err))
+            end)
+
+            it("treats a delete of a row that is gone as done", function()
+                local n = make_node({}, {})
+
+                local _, response = control_handler.process_control_directive(
+                    { _control = { memory = { delete = { "already-gone" } } } }, n, 1)
+
+                test.eq(#queued_of_type(n, consts.COMMAND_TYPES.DELETE_DATA), 0)
+                local _, apply_err = control_handler.apply_control_responses({ response }, {}, n)
+                test.is_nil(apply_err, "a replayed delete does not fail the node")
             end)
 
             it("clears memory by type, deleting matching rows", function()
@@ -497,11 +518,13 @@ local function define_tests()
         describe("memory edge cases", function()
             it("skips memory items missing type or text", function()
                 local n = make_node({})
-                control_handler.queue_memory_additions({ { _original_control = { memory = { add = {
-                    { type = "ok", text = "valid" },
-                    { text = "no type" },
-                    { type = "no text" }
-                } } } } }, n, 1)
+                control_handler.queue_memory_additions(control_handler.memory_additions({ { _original_control = {
+                    memory = { add = {
+                        { type = "ok", text = "valid" },
+                        { text = "no type" },
+                        { type = "no text" }
+                    } }
+                } } }), n, 1)
                 test.eq(#queued_of_type(n, consts.COMMAND_TYPES.CREATE_DATA), 1, "only valid item stored")
             end)
 

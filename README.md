@@ -196,18 +196,21 @@ stay valid. This requires Agent 0.5.10 and LLM 0.5.13 or later.
   `metadata.llm_meta` next to `thinking_blocks`, and every step passes
   `drop_stale_thinking = true`. A changed system prompt or tool set (an agent
   switch) strips the earlier blocks before the next request; the current tool
-  round keeps its blocks. A checkpoint's cut is the newest row at that moment, so
-  every action row that survives it was produced after the marker: the default
-  fingerprint comparison is sufficient and the node passes no `thinking_is_current`.
-- **Checkpoints.** A checkpoint runs between rounds, after every call has its
-  result. The summary replaces every row up to the cut, calls and results together,
-  and a request carries the turn note, the marker and the rows after the cut. A later
-  checkpoint summarizes what requests carry: the earlier summary and the rows after
-  its cut, so the payload stays bounded and the earlier summary rolls forward. The
-  `since_checkpoint` run context selector reads the same cut, and also holds the turn
-  note and, before the first cut, the input, which a summary does not replace. A
-  skipped checkpoint leaves an audit observation that stays out of the prompt and
-  of the summary.
+  round keeps its blocks. A checkpoint's cut is the newest row of a closed round, so
+  every action row that survives it was produced after the marker, except an open
+  round the cut stopped before: the default fingerprint comparison is sufficient
+  and the node passes no `thinking_is_current`.
+- **Checkpoints.** The cut stops before any action with an unresolved call, such
+  as a finish whose node has not completed. The summary replaces every row up to
+  the cut, calls and results together, and a request carries the input, the turn
+  note, the marker and the rows after the cut. A later checkpoint summarizes what
+  requests carry: the earlier summary and the rows after its cut, so the earlier
+  summary rolls forward. That is the whole bound on the payload: the rows the requests
+  already carry, plus the default summarizer's `max_row_chars` per row, which does
+  not apply to the earlier summary. The host sets no limit of its own. The
+  `since_checkpoint` run context selector reads the same cut and also returns the
+  input and the turn note, which a summary does not replace. A skipped checkpoint
+  leaves an audit observation that stays out of the prompt and of the summary.
 - **Lifecycle notes.** Messages from `activate` and `before_step` are sent as
   positional notes after the history and stored, with the step's output, where they
   were sent: `agent.memory` rows with `metadata.role` set to `developer` or `system`,
@@ -228,16 +231,18 @@ requests after it extend each other again:
 - An agent switch or a trait, tool or overlay change replaces the top-level system
   text or the tool list; the fingerprint strips the earlier thinking blocks.
 - `_control.memory.clear` and `_control.memory.delete` remove rows the memory
-  directive added. A delete of any other row fails the node, so neither can take away
-  a call, a result or a note.
+  directive added. A delete of a row that is gone is a no-op, so a crash replay
+  carries on. A delete of any other existing row fails the node, so neither can take
+  away a call, a result or a note.
 - A step that a crash interrupts before its commit is lost with its notes; the
   restarted node sends that step again from the last committed row.
 
 A selection is durable: `agent_id` and `model` inputs choose only until the node's
 first commit, a `_control.config` switch commits with the results that carry it,
 and a restart keeps the stored selection. `_control.memory.add` rows follow every
-result of their round; an add from a round whose delegation is interrupted by a
-crash is not written.
+result of their round. They commit with the round's results before the node waits
+on children; with a delegation they wait in the node metadata and are written with
+the delegate's result, so a crash in between loses none.
 
 After upgrading, a run stored by an earlier version restarts its cache once when it
 resumes: its earlier steps sent lifecycle notes that were never stored, and its
@@ -246,6 +251,13 @@ from the next request (except those of a tool round in progress). A resumed run
 past its first iteration gets no turn context note, because its input was already
 sent, and its fold is stored at that resume. Results kept past an earlier checkpoint
 leave the prompt on that resume too.
+
+A run stored by the previous release with text between a call and its result fails
+on resume with a provider error, and there is no repair at render time. That shape
+comes from an iteration warning written before a delegate's result, or a
+`_control.memory.add` row written before its call's result. Claude already rejected
+it; Bedrock did not, because developer messages then went to `system` blocks. Now they
+render as user text there too.
 
 ## Live execution authority
 

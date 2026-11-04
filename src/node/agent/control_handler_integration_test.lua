@@ -62,7 +62,7 @@ end
 local function add_memory(n, items, iteration)
     local directive = { memory = { add = items } }
     control_handler.process_memory_operations(directive, n, iteration)
-    control_handler.queue_memory_additions({ { _original_control = directive } }, n, iteration)
+    control_handler.queue_memory_additions(directive.memory.add, n, iteration)
 end
 
 local function define_tests()
@@ -111,6 +111,23 @@ local function define_tests()
             apply(n, dataflow_id)
 
             test.eq(#memory_rows(dataflow_id, node_id), 0, "row removed by id")
+
+            local replay = control_handler.process_memory_operations({ memory = { delete = { rows[1].data_id } } }, n, 2)
+            test.is_nil(replay[1].error, "a crash replay finds the row gone and carries on")
+        end)
+
+        it("refuses to delete an existing row the directive did not add", function()
+            local n, dataflow_id, node_id = setup_node()
+            n:data(agent_consts.DATA_TYPE.AGENT_ACTION, { result = "stored" }, { key = "1_action", node_id = node_id })
+            apply(n, dataflow_id)
+            local action = data_reader.with_dataflow(dataflow_id):with_nodes(node_id)
+                :with_data_types(agent_consts.DATA_TYPE.AGENT_ACTION):one()
+
+            local changes = control_handler.process_memory_operations({ memory = { delete = { action.data_id } } }, n, 2)
+            test.not_nil(changes[1].error)
+            apply(n, dataflow_id)
+            test.not_nil(data_reader.with_dataflow(dataflow_id):with_nodes(node_id)
+                :with_data_types(agent_consts.DATA_TYPE.AGENT_ACTION):one(), "the action stays")
         end)
 
         it("merges session context into node metadata persisted in the store", function()
@@ -159,7 +176,7 @@ local function define_tests()
                     memory = { add = { { type = "fact", text = "remembered" } } }
                 }
             }, n, 1)
-            control_handler.queue_memory_additions({ response }, n, 1)
+            control_handler.queue_memory_additions(control_handler.memory_additions({ response }), n, 1)
             apply(n, dataflow_id)
 
             local row = node_reader.with_dataflow(dataflow_id):with_nodes(node_id):one()

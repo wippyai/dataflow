@@ -352,6 +352,7 @@ entries:
       agent_consts: userspace.dataflow.node.agent:consts
       recovery_helpers: userspace.dataflow.node.agent.stub:recovery_helpers
       run_context: userspace.dataflow.node.agent.run_context:run_context_lib
+      claude_mapper: wippy.llm.claude:mapper
     method: run_tests
 
   - name: agent_tool_recovery_test

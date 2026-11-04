@@ -30,7 +30,7 @@ function helpers.extract_input_payload(text)
         return nil
     end
 
-    local wrapped = text:match('<input key="[^"]+">%s*(.-)%s*</input>')
+    local wrapped = text:match('<input key="[^"]*">%s*(.-)%s*</input>')
     if wrapped and wrapped ~= "" then
         return wrapped
     end

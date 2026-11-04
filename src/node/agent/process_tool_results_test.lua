@@ -99,6 +99,25 @@ local function define_tests()
             test.is_true(config_at < yield_at, "the first commit carries the switch: " .. table.concat(events, ","))
         end)
 
+        it("queues the round's text before a yield directive waits", function()
+            local events = run_round(
+                { first = { result = {
+                    _control = { memory = { add = { { type = "fact", text = "x" } } }, yield = {} },
+                } } },
+                { { id = "first", name = "a", arguments = {} } },
+                {},
+                3
+            )
+            local yield_at
+            for index, event in ipairs(events) do
+                if event == "yield" and not yield_at then yield_at = index end
+            end
+            local before = {}
+            for index = 1, yield_at - 1 do before[events[index]] = true end
+            test.is_true(before.memory == true, table.concat(events, ","))
+            test.is_true(before.feedback == true, "the iteration warning: " .. table.concat(events, ","))
+        end)
+
         it("writes added memory after every result of the round", function()
             local events = run_round(
                 {

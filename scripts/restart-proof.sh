@@ -10,7 +10,7 @@ runtime_pid=""
 restart_wippy="${WIPPY:-wippy}"
 dialect="${DATAFLOW_RESTART_DIALECT:-sqlite}"
 scenario="${DATAFLOW_RESTART_SCENARIO:-rolling}"
-case "$scenario" in rolling|behavior|parallel_tools|stable_prefix) ;; *) echo "unsupported restart scenario" >&2; exit 1 ;; esac
+case "$scenario" in rolling|behavior|parallel_tools|stable_prefix|round_children|round_delegate) ;; *) echo "unsupported restart scenario" >&2; exit 1 ;; esac
 pg_host="${DATAFLOW_PG_HOST:-127.0.0.1}"
 pg_port="${DATAFLOW_PG_PORT:-5432}"
 pg_database="${DATAFLOW_PG_DATABASE:-dataflow_restart_test}"
@@ -66,6 +66,8 @@ start_runtime() {
         behavior) set -- --profile restart_behavior ;;
         parallel_tools) set -- --profile restart_parallel_tools ;;
         stable_prefix) set -- --profile restart_stable_prefix ;;
+        round_children) set -- --profile restart_round_children ;;
+        round_delegate) set -- --profile restart_round_delegate ;;
         *) set -- ;;
     esac
     if [ "$dialect" = "postgres" ]; then
@@ -128,6 +130,14 @@ while [ "$attempts" -lt 200 ]; do
             WHERE a.desired_active AND n.status = 'running' AND $target_predicate
               AND (SELECT COUNT(*) FROM dataflow_data d WHERE d.node_id = n.node_id AND d.type = 'agent.action') = 1
               AND EXISTS (SELECT 1 FROM restart_recovery_store s WHERE s.store_key = 'agent_recovery:prefix-restart:request:2')
+            LIMIT 1;" 2>/dev/null || true)
+    elif [ "$scenario" = "round_children" ] || [ "$scenario" = "round_delegate" ]; then
+        # The round's commit is durable and its slow child is running.
+        phase1=$(query "SELECT a.dataflow_id || '|' || a.owner_epoch
+            FROM dataflow_activations a
+            WHERE a.desired_active
+              AND EXISTS (SELECT 1 FROM dataflow_nodes c WHERE c.dataflow_id = a.dataflow_id
+                          AND c.parent_node_id IS NOT NULL AND c.status = 'running')
             LIMIT 1;" 2>/dev/null || true)
     elif [ "$scenario" = "behavior" ]; then
         if [ "$dialect" = "postgres" ]; then
@@ -229,7 +239,8 @@ done
 [ "$rolling_refilled" = "1" ] || { echo "rolling window did not refill before the slow iteration completed" >&2; exit 1; }
 
 fi
-if [ "$scenario" = "behavior" ] || [ "$scenario" = "parallel_tools" ] || [ "$scenario" = "stable_prefix" ]; then
+if [ "$scenario" = "behavior" ] || [ "$scenario" = "parallel_tools" ] || [ "$scenario" = "stable_prefix" ] \
+    || [ "$scenario" = "round_children" ] || [ "$scenario" = "round_delegate" ]; then
     # Interrupt only this disposable runtime while its persisted round is pending.
     kill -KILL "$runtime_pid"
     wait "$runtime_pid" 2>/dev/null || true
@@ -330,6 +341,19 @@ if [ "$scenario" = "stable_prefix" ]; then
         exit 1
     }
     echo "$dialect stable prefix restart proof passed: $dataflow_id $first_epoch -> $second_epoch"
+    exit 0
+fi
+
+if [ "$scenario" = "round_children" ] || [ "$scenario" = "round_delegate" ]; then
+    added=$(query "SELECT COUNT(*) FROM dataflow_data d JOIN dataflow_nodes n ON n.node_id = d.node_id
+        WHERE d.dataflow_id = '$dataflow_id' AND d.type = 'agent.memory' AND d.discriminator = 'fact' AND n.parent_node_id IS NULL;")
+    warnings=$(query "SELECT COUNT(*) FROM dataflow_data d JOIN dataflow_nodes n ON n.node_id = d.node_id
+        WHERE d.dataflow_id = '$dataflow_id' AND d.type = 'agent.observation' AND d.key = '1_iterations_warning' AND n.parent_node_id IS NULL;")
+    [ "$added|$warnings" = "1|1" ] || {
+        echo "the round's text did not survive the restart: added=$added warnings=$warnings" >&2
+        exit 1
+    }
+    echo "$dialect $scenario restart proof passed: $dataflow_id $first_epoch -> $second_epoch"
     exit 0
 fi
 
