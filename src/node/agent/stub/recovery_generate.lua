@@ -154,6 +154,26 @@ local function handler(contract_args)
         }
     end
 
+    -- The tool reports its failure as data: { success = false, error = ... }.
+    if scenario.mode == "soft_failing_tool_then_final" then
+        if result_count == 0 then
+            return tool_call_response(scenario.scenario_id, 1, scenario.tool_delay_ms, base_prompt or 13, 8, "recovery_tool", {
+                soft_fail_message = scenario.soft_fail_message
+            })
+        end
+
+        return final_response(scenario.scenario_id, scenario.mode, result_count, base_prompt or 9, 4)
+    end
+
+    -- Two turns issue the same call id, as a provider that reuses ids does.
+    if scenario.mode == "reused_call_id_then_final" then
+        if result_count < 2 then
+            return tool_call_response(scenario.scenario_id, 1, scenario.tool_delay_ms, base_prompt or 13, 8)
+        end
+
+        return final_response(scenario.scenario_id, scenario.mode, result_count, base_prompt or 9, 4)
+    end
+
     if scenario.mode == "failing_tool_then_final" then
         if result_count == 0 then
             return tool_call_response(scenario.scenario_id, 1, scenario.tool_delay_ms, base_prompt or 13, 8, "recovery_tool", {

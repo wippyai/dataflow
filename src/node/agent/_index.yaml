@@ -340,7 +340,7 @@ entries:
       group: Workflow / Agent Node
       timeout: "120s"
     source: file://agent_tool_recovery_test.lua
-    modules: [uuid, process]
+    modules: [uuid, time, process]
     imports:
       test: wippy.test:test
       client: userspace.dataflow:client

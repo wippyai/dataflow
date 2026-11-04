@@ -68,6 +68,9 @@ local function error_message(error_value: any, fallback: string)
     if type(error_value) == "string" then
         return error_value
     end
+    if type(error_value) == "userdata" then
+        return (error_value :: error):message()
+    end
     if type(error_value) == "table" then
         local error_table = error_value :: any
         if type(error_table.message) == "string" then
@@ -1065,7 +1068,9 @@ local function load_latest_agent_action(n)
     return nil
 end
 
-local function load_observed_tool_call_ids(n)
+-- Call ids are unique within one turn only, so a call is resolved by an
+-- observation of its own iteration.
+local function load_observed_tool_call_ids(n, iteration)
     local observed_ids = {}
     local observations = n:query()
         :with_nodes(n.node_id)
@@ -1074,7 +1079,7 @@ local function load_observed_tool_call_ids(n)
 
     for _, observation in ipairs(observations or {}) do
         local metadata = observation.metadata or {}
-        if metadata.tool_call_id then
+        if metadata.tool_call_id and metadata.iteration == iteration then
             observed_ids[metadata.tool_call_id] = true
         end
     end
@@ -1299,6 +1304,10 @@ end
 
 -- A call listed in `committed_node_ids` keeps the node a previous run created
 -- for it; every other call gets a new node.
+local function tool_error_text(tool_error: any): string
+    return error_message(tool_error, "Tool call failed")
+end
+
 local function create_tool_viz_nodes(n, tool_calls: { ToolCall }?, iteration, show_tool_calls, exit_tool_name,
                                      committed_node_ids: {[string]: string}?)
     local tool_call_to_node_id = {}
@@ -1387,7 +1396,7 @@ local function update_tool_viz_nodes(n, tool_results, tool_call_to_node_id, pers
                     status = final_status,
                     metadata = {
                         has_error = tool_error ~= nil,
-                        error_message = tool_error,
+                        error_message = tool_error ~= nil and tool_error_text(tool_error) or nil,
                         output_size_bytes = output_size
                     }
                 }
@@ -1549,11 +1558,9 @@ end
 local function record_tool_observation(n, iteration, tool_call, content, tool_error, tool_call_to_node_id)
     local call_id = tool_call.id
     local obs_content = content
-    if obs_content == nil then
-        -- The executor reports failures as error values; the observation stores their message.
-        obs_content = type(tool_error) == "userdata" and (tool_error :: error):message() or tool_error
-    end
-    if obs_content == nil then
+    if tool_error ~= nil then
+        obs_content = tool_error_text(tool_error)
+    elseif obs_content == nil then
         obs_content = "nil"
     end
 
@@ -1977,7 +1984,7 @@ local function recover_persisted_action(n, agent_ctx, agent_instance, caller, se
         end
     end
 
-    local observed_tool_call_ids = load_observed_tool_call_ids(n)
+    local observed_tool_call_ids = load_observed_tool_call_ids(n, action_iteration)
     local unresolved_tool_calls, unresolved_delegate_calls = collect_unresolved_calls(action_payload, observed_tool_call_ids)
 
     local has_unresolved_work = (#unresolved_tool_calls > 0) or (#unresolved_delegate_calls > 0)

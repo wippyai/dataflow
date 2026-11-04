@@ -33,6 +33,10 @@ local function handler(input)
         return nil, input.fail_message
     end
 
+    if type(input.soft_fail_message) == "string" and input.soft_fail_message ~= "" then
+        return { success = false, error = input.soft_fail_message }
+    end
+
     return {
         ok = true,
         scenario_id = scenario_id,
