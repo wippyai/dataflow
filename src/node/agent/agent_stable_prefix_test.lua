@@ -777,7 +777,7 @@ local function define_tests()
                     arena = { tool_calling = "auto", max_iterations = 2, exit_schema = options.exit_schema } }
                 local n
                 n = {
-                    dataflow_id = "flow", node_id = "node", path = { "node" },
+                    dataflow_id = uuid.v7(), node_id = uuid.v7(), path = { "node" },
                     config = function() return config end,
                     inputs = function() return { task = { content = "do it", metadata = {} } } end,
                     metadata = function() return metadata end,
