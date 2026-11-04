@@ -566,17 +566,23 @@ local function process_multiple_inputs(inputs)
         max_iterations_override = max_iterations_content
     end
 
-    local parts = {}
+    local keys = {}
     for key, input in pairs(inputs) do
         if prompt_builder.is_conversation_input(key) and input.content ~= nil then
-            local content = input.content
-            if type(content) == "table" then
-                content = json.encode(content)
-            else
-                content = tostring(content)
-            end
-            table.insert(parts, string.format('<input key="%s">\n%s\n</input>', key, content))
+            table.insert(keys, key)
         end
+    end
+    table.sort(keys)
+
+    local parts = {}
+    for _, key in ipairs(keys) do
+        local content = inputs[key].content
+        if type(content) == "table" then
+            content = json.encode(content)
+        else
+            content = tostring(content)
+        end
+        table.insert(parts, string.format('<input key="%s">\n%s\n</input>', key, content))
     end
 
     if #parts == 0 then
