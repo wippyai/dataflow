@@ -89,6 +89,16 @@ function helpers.record_function_results(scenario_id, messages)
     end
 end
 
+-- Records each request as the model received it, so tests can compare requests.
+function helpers.record_request(scenario_id, request_number, messages)
+    helpers.set_metric(scenario_id, "request:" .. tostring(request_number), json.encode(messages))
+end
+
+function helpers.get_request(scenario_id, request_number)
+    local encoded = helpers.get_metric(scenario_id, "request:" .. tostring(request_number), nil)
+    return encoded and json.decode(encoded) or nil
+end
+
 function helpers.get_metric(scenario_id, metric_name, default_value)
     local s = helpers.get_store()
     local value = s:get(helpers.metric_key(scenario_id, metric_name))

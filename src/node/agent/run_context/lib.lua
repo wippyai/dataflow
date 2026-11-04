@@ -54,60 +54,6 @@ local function sort_rows(rows)
     return rows
 end
 
-local function find_latest_checkpoint_marker(rows)
-    for i = #rows, 1, -1 do
-        local row = rows[i]
-        if row.type == agent_consts.DATA_TYPE.AGENT_MEMORY
-           and type(row.metadata) == "table"
-           and row.metadata.checkpoint_marker == true then
-            return row
-        end
-    end
-    return nil
-end
-
-local function is_structured_result_row(row)
-    if type(row) ~= "table" then
-        return false
-    end
-
-    local metadata = row.metadata or {}
-    if type(metadata.tool_call_id) ~= "string" or metadata.tool_call_id == "" then
-        return false
-    end
-    if type(metadata.tool_name) ~= "string" or metadata.tool_name == "" then
-        return false
-    end
-
-    return row.type == agent_consts.DATA_TYPE.AGENT_OBSERVATION
-        or row.type == agent_consts.DATA_TYPE.AGENT_DELEGATION
-end
-
-local function apply_latest_marker(rows)
-    if #rows == 0 then
-        return rows
-    end
-
-    sort_rows(rows)
-    local latest_marker = find_latest_checkpoint_marker(rows)
-    if not latest_marker then
-        return rows
-    end
-
-    local cut_before = tostring((latest_marker.metadata or {}).checkpoint_before_data_id or "")
-    local filtered = { latest_marker }
-    for _, row in ipairs(rows) do
-        if row ~= latest_marker then
-            local keep = row_id(row) > cut_before or is_structured_result_row(row)
-            if keep then
-                filtered[#filtered + 1] = row
-            end
-        end
-    end
-
-    return sort_rows(filtered)
-end
-
 local function selector(args): Selector
     local raw = type(args) == "table" and args.selector or nil
     if type(raw) ~= "table" then
@@ -155,7 +101,7 @@ local function slice_rows(rows, sel: Selector)
     local source = copy_rows(rows)
 
     if mode == "since_checkpoint" then
-        return apply_latest_marker(source)
+        return sort_rows((prompt_builder.apply_latest_marker(source)))
     end
 
     if mode == "checkpoint" then

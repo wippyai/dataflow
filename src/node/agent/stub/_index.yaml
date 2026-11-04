@@ -289,6 +289,120 @@ entries:
       handles: [recall]
       handlers:
         recall: userspace.dataflow.node.agent.stub:failing_memory_binding
+- name: note_memory
+  kind: function.lua
+  meta:
+    test_only: true
+    comment: Memory provider that recalls the first memory the conversation has not seen
+  source: file://note_memory.lua
+  method: recall
+- name: note_memory_binding
+  kind: contract.binding
+  meta:
+    test_only: true
+  contracts:
+  - contract: wippy.agent:memory
+    methods:
+      recall: userspace.dataflow.node.agent.stub:note_memory
+- name: recall_note_trait
+  kind: registry.entry
+  meta:
+    type: agent.trait
+    test_only: true
+  data:
+    behaviors:
+    - id: memory
+      handles: [recall]
+      handlers:
+        recall: userspace.dataflow.node.agent.stub:note_memory_binding
+- name: lifecycle_note_binding_fn
+  kind: function.lua
+  meta:
+    test_only: true
+    comment: Returns lifecycle messages in the roles its behavior options name per phase
+  source: file://lifecycle_notes.lua
+  modules:
+  - ctx
+  method: handler
+- name: lifecycle_note_binding
+  kind: contract.binding
+  meta:
+    test_only: true
+  contracts:
+  - contract: wippy.agent:lifecycle
+    methods:
+      apply: userspace.dataflow.node.agent.stub:lifecycle_note_binding_fn
+- name: lifecycle_notes_trait
+  kind: registry.entry
+  meta:
+    type: agent.trait
+    test_only: true
+  data:
+    behaviors:
+    - id: lifecycle_notes
+      handles: [activate, before_step]
+      handlers:
+        lifecycle: userspace.dataflow.node.agent.stub:lifecycle_note_binding
+      options:
+        activate: [developer]
+        before_step: [developer, system]
+- name: lifecycle_user_note_trait
+  kind: registry.entry
+  meta:
+    type: agent.trait
+    test_only: true
+  data:
+    behaviors:
+    - id: lifecycle_notes
+      handles: [before_step]
+      strict: true
+      handlers:
+        lifecycle: userspace.dataflow.node.agent.stub:lifecycle_note_binding
+      options:
+        before_step: [user]
+- name: lifecycle_assistant_note_trait
+  kind: registry.entry
+  meta:
+    type: agent.trait
+    test_only: true
+  data:
+    behaviors:
+    - id: lifecycle_notes
+      handles: [activate]
+      strict: true
+      handlers:
+        lifecycle: userspace.dataflow.node.agent.stub:lifecycle_note_binding
+      options:
+        activate: [assistant]
+- name: stable_prefix_time_agent
+  kind: registry.entry
+  meta:
+    type: agent.gen1
+    test_only: true
+  model: recovery-test-model
+  prompt: Follow the deterministic scenario encoded in the user input.
+  traits:
+  - id: wippy.agent.traits:time_aware
+    context:
+      timezone: UTC
+- name: stable_prefix_bad_time_agent
+  kind: registry.entry
+  meta:
+    type: agent.gen1
+    test_only: true
+  model: recovery-test-model
+  prompt: Follow the deterministic scenario encoded in the user input.
+  traits:
+  - id: wippy.agent.traits:time_aware
+    context:
+      timezone: Not/AZone
+- name: stable_prefix_switch_target_agent
+  kind: registry.entry
+  meta:
+    type: agent.gen1
+    test_only: true
+  model: recovery-test-model
+  prompt: A different system prompt, so the prefix fingerprint changes on this switch.
 - name: lifecycle_test_trait
   kind: registry.entry
   meta:

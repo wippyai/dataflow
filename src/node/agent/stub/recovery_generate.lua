@@ -83,6 +83,9 @@ local function handler(contract_args)
 
     local llm_calls = helpers.bump_metric(scenario.scenario_id, "llm_calls", 1)
     helpers.record_function_results(scenario.scenario_id, messages)
+    if scenario.capture_requests then
+        helpers.record_request(scenario.scenario_id, llm_calls, messages)
+    end
     for _, message in ipairs(messages or {}) do
         local text = message.content and message.content[1] and message.content[1].text
         if type(text) == "string" and (
@@ -291,6 +294,26 @@ local function handler(contract_args)
         end
 
         return final_response(scenario.scenario_id, scenario.mode, result_count, base_prompt or 9, 4)
+    end
+
+    -- Tool rounds whose responses each carry one thinking block; the round named
+    -- by switch_at calls the control tool to change the agent.
+    if scenario.mode == "thinking_rounds" then
+        local response
+        if llm_calls <= (tonumber(scenario.rounds) or 1) then
+            local switching = scenario.switch_at == llm_calls
+            response = tool_call_response(scenario.scenario_id, llm_calls, 0, base_prompt or 9, 4,
+                switching and "recovery_control_tool" or "recovery_tool",
+                switching and { switch_agent = scenario.switch_agent } or nil)
+        else
+            response = final_response(scenario.scenario_id, scenario.mode, result_count, base_prompt or 9, 4)
+        end
+        response.metadata = {
+            thinking_blocks = {
+                { type = "thinking", thinking = "block-" .. tostring(llm_calls), signature = "signature" }
+            }
+        }
+        return response
     end
 
     if scenario.mode == "lifecycle_overlay" then

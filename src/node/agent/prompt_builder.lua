@@ -51,7 +51,16 @@ local function is_structured_result_row(row)
         or row.type == agent_consts.DATA_TYPE.AGENT_DELEGATION
 end
 
-local function apply_latest_marker(history_rows)
+-- The turn context note follows the initial input, which every request sends,
+-- so it stays with the input when a checkpoint drops the rows around it.
+function prompt_builder.is_turn_context_row(row)
+    return type(row) == "table"
+        and row.type == agent_consts.DATA_TYPE.AGENT_MEMORY
+        and type(row.metadata) == "table"
+        and row.metadata.turn_context == true
+end
+
+function prompt_builder.apply_latest_marker(history_rows)
     if not history_rows or #history_rows == 0 then
         return history_rows or {}, nil
     end
@@ -64,9 +73,15 @@ local function apply_latest_marker(history_rows)
     end
 
     local cut_before = tostring((latest_marker.metadata or {}).checkpoint_before_data_id or "")
-    local filtered = { latest_marker }
+    local filtered = {}
     for _, item in ipairs(history_rows) do
-        if item ~= latest_marker then
+        if prompt_builder.is_turn_context_row(item) then
+            filtered[#filtered + 1] = item
+        end
+    end
+    filtered[#filtered + 1] = latest_marker
+    for _, item in ipairs(history_rows) do
+        if item ~= latest_marker and not prompt_builder.is_turn_context_row(item) then
             local keep = row_id(item) > cut_before or is_structured_result_row(item)
             if keep then
                 filtered[#filtered + 1] = item
@@ -270,7 +285,7 @@ function prompt_builder:_load_conversation_history()
     -- the history cut-line as metadata.checkpoint_before_data_id. rows at or
     -- before the cut-line are dropped, except structured function results
     -- which stay visible so the next turn keeps tool-call continuity.
-    local filtered = apply_latest_marker(merged_history)
+    local filtered = prompt_builder.apply_latest_marker(merged_history)
     return filtered, nil
 end
 
@@ -379,7 +394,11 @@ function prompt_builder:_format_memory(memory_item, builder)
 
     local metadata = memory_item.metadata or {}
     local message_meta = extract_message_meta(metadata)
-    builder:add_developer(content, message_meta)
+    if metadata.role == "system" then
+        builder:add_system(content, message_meta)
+    else
+        builder:add_developer(content, message_meta)
+    end
     return nil
 end
 

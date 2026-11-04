@@ -31,6 +31,11 @@ local function handler(args)
 
     if scenario_id then
         helpers.bump_metric(scenario_id, "checkpoint_calls", 1)
+        for _, row in ipairs(type(args.history) == "table" and args.history or {}) do
+            if type(row.metadata) == "table" and row.metadata.turn_context == true then
+                helpers.set_metric(scenario_id, "checkpoint_saw_turn_context", 1)
+            end
+        end
         helpers.set_metric(scenario_id, "last_checkpoint_history_count", history_count)
         helpers.set_metric(scenario_id, "last_checkpoint_prompt_tokens", prompt_tokens)
         local options = type(args.options) == "table" and args.options or {}

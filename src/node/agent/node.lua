@@ -19,6 +19,7 @@ local consts = require("consts")
 local tools = require("tools")
 local funcs = require("funcs")
 local node_reader = require("node_reader")
+local turn_context = require("turn_context")
 
 type ToolCall = {
     id: string,
@@ -182,6 +183,7 @@ end
 local RUN_CONTEXT_CONTRACT = "wippy.agent:run_context"
 local DEFAULT_RUN_CONTEXT_BINDING = "userspace.dataflow.node.agent.run_context:binding"
 local DEFAULT_CHECKPOINT_FUNCTION_ENV = "userspace.dataflow.env:checkpoint_function_id"
+local TURN_CONTEXT_KEY = "turn_context"
 
 local OUTCOME = {
     CONTINUES = "continues",
@@ -289,26 +291,78 @@ local function apply_agent_lifecycle(agent_instance: any, phase: string, n: any,
     return lifecycle_runtime.apply(agent_instance.bindings, payload :: any)
 end
 
-local function append_lifecycle_messages(builder: any, result: table?)
-    if not builder or type(result) ~= "table" or type(result.messages) ~= "table" then
-        return
-    end
+-- A note a step sends after the history. It is stored before the step output,
+-- so every later request replays it where this one sent it.
+type StepNote = {
+    role: string,
+    content: string,
+    metadata: table,
+}
 
+local NOTE_ROLES = { system = true, developer = true }
+
+local function positional_metadata(source: any): table
+    local metadata = {}
+    if type(source) == "table" then
+        for key, value in pairs(source) do metadata[key] = value end
+    end
+    metadata.preserve_position = true
+    return metadata
+end
+
+-- Lifecycle messages are host notes: a user or assistant role would put words
+-- in either party's mouth, so only developer and system are accepted.
+local function lifecycle_notes(result: table?, phase: string, agent_id: any): ({StepNote}?, string?)
+    local notes: {StepNote} = {}
+    if type(result) ~= "table" or type(result.messages) ~= "table" then
+        return notes, nil
+    end
     for _, message in ipairs(result.messages) do
         if type(message) == "table" then
             local content = message.content or message.text or message.data
             if type(content) == "string" and content ~= "" then
                 local role = message.role or message.type or "developer"
-                if role == "system" and type(builder.add_system) == "function" then
-                    builder:add_system(content)
-                elseif role == "user" and type(builder.add_user) == "function" then
-                    builder:add_user(content)
-                elseif role == "assistant" and type(builder.add_assistant) == "function" then
-                    builder:add_assistant(content, message.metadata)
-                elseif type(builder.add_developer) == "function" then
-                    builder:add_developer(content, message.metadata)
+                if not NOTE_ROLES[role] then
+                    return nil, string.format("Lifecycle %s message for agent %s has role '%s'; "
+                        .. "lifecycle messages must be developer or system notes",
+                        phase, tostring(agent_id), tostring(role))
                 end
+                local metadata = positional_metadata(message.metadata)
+                metadata.lifecycle_phase = phase
+                table.insert(notes, { role = role, content = content, metadata = metadata })
             end
+        end
+    end
+    return notes, nil
+end
+
+-- Context notes are prompt messages the agent sent after the conversation.
+local function context_notes(result: any): ({StepNote}?, string?)
+    local notes: {StepNote} = {}
+    if type(result) ~= "table" or type(result.context_notes) ~= "table" then
+        return notes, nil
+    end
+    for index, message in ipairs(result.context_notes) do
+        local role = type(message) == "table" and message.role or nil
+        local content = type(message) == "table" and message.content or nil
+        if type(content) == "table" and #content == 1 and type(content[1]) == "table"
+            and content[1].type == "text" then
+            content = content[1].text
+        end
+        if not NOTE_ROLES[role] or type(content) ~= "string" then
+            return nil, "Context note " .. tostring(index) .. " is not a single-text developer or system message"
+        end
+        table.insert(notes, { role = role, content = content, metadata = positional_metadata(message.metadata) })
+    end
+    return notes, nil
+end
+
+local function append_step_notes(prompt: any, notes: {StepNote})
+    for _, note in ipairs(notes) do
+        if note.role == "system" then
+            prompt:add_system(note.content, note.metadata)
+        else
+            prompt:add_developer(note.content, note.metadata)
         end
     end
 end
@@ -425,7 +479,7 @@ end
 local function checkpoint_source_rows(history_rows)
     local source_rows = {}
     for _, row in ipairs(history_rows or {}) do
-        if not is_structured_result_row(row) then
+        if not is_structured_result_row(row) and not prompt_builder.is_turn_context_row(row) then
             source_rows[#source_rows + 1] = row
         end
     end
@@ -669,13 +723,17 @@ local function store_agent_action(n, agent_result, iteration, agent_id, model_na
 
     local action_key = is_exit_action and (iteration .. "_final") or (iteration .. "_action")
 
+    local llm_meta = {}
+    for key, value in pairs(agent_result.metadata or {}) do llm_meta[key] = value end
+    llm_meta.prefix_fingerprint = agent_result.prefix_fingerprint
+
     local metadata = {
         iteration = iteration,
         agent_id = agent_id,
         model = model_name,
         tokens = agent_result.tokens,
         finish_reason = agent_result.finish_reason,
-        llm_meta = agent_result.metadata or {},
+        llm_meta = llm_meta,
         memory_recall_error = agent_result.memory_recall_error,
     }
 
@@ -706,21 +764,57 @@ local function persisted_action_id(n, action_key): (string?, string?)
     return row.data_id, nil
 end
 
-local function store_memory_recall(n, agent_result, iteration)
-    if not agent_result.memory_prompt then
-        return
+local function store_step_notes(n, notes: {StepNote}, iteration): any
+    for index, note in ipairs(notes) do
+        local _, data_err = n:data(agent_consts.DATA_TYPE.AGENT_MEMORY, note.content, {
+            key = iteration .. "_note_" .. index,
+            content_type = consts.CONTENT_TYPE.TEXT,
+            node_id = n.node_id,
+            metadata = {
+                iteration = iteration,
+                role = note.role,
+                lifecycle_phase = note.metadata.lifecycle_phase,
+                llm_meta = note.metadata
+            }
+        })
+        if data_err then return data_err end
     end
+    return nil
+end
 
-    n:data(agent_consts.DATA_TYPE.AGENT_MEMORY, agent_result.memory_prompt.content, {
-        key = iteration .. "_memory",
+-- Rendered once, before the first request, and committed so every later request
+-- and any restart replays the same minute.
+local function store_turn_context(n, agent_instance: any): any
+    local note, render_err = turn_context.render(agent_instance.agent_options, time.now())
+    if render_err then
+        return "Failed to render turn context: " .. tostring(render_err)
+    end
+    if not note then
+        return nil
+    end
+    local stored = n:query()
+        :with_nodes(n.node_id)
+        :with_data_types(agent_consts.DATA_TYPE.AGENT_MEMORY)
+        :with_data_keys(TURN_CONTEXT_KEY)
+        :one()
+    if stored then
+        return nil
+    end
+    local _, data_err = n:data(agent_consts.DATA_TYPE.AGENT_MEMORY, note, {
+        key = TURN_CONTEXT_KEY,
         content_type = consts.CONTENT_TYPE.TEXT,
         node_id = n.node_id,
         metadata = {
-            iteration = iteration,
-            memory_ids = agent_result.memory_prompt.metadata and agent_result.memory_prompt.metadata.memory_ids,
-            llm_meta = agent_result.memory_prompt.metadata or {}
+            turn_context = true,
+            role = "system",
+            llm_meta = { preserve_position = true }
         }
     })
+    if data_err then
+        return data_err
+    end
+    local _, yield_err = n:yield()
+    return yield_err
 end
 
 local function extract_checkpoint_scenario_id(history_rows)
@@ -2515,6 +2609,18 @@ local function run(args)
         return fail_unproductive()
     end
 
+    -- A run past its first iteration already sent its input, with or without a note.
+    if iteration == 0 and not task_complete then
+        local turn_context_err = store_turn_context(n, agent_instance)
+        if turn_context_err then
+            local turn_context_message = error_message(turn_context_err, "Failed to store turn context")
+            return fail_with_lifecycle({
+                code = agent_consts.ERROR.AGENT_EXEC_FAILED,
+                message = turn_context_message
+            }, turn_context_message, REASON.HOST_FAILED, iteration)
+        end
+    end
+
     while iteration < max_iterations and not task_complete do
         iteration = iteration + 1
         local run_session_context = context_with_agent_run(session_context, n, agent_id, model_name, iteration,
@@ -2560,7 +2666,13 @@ local function run(args)
                 message = activate_err
             }, activate_err, REASON.HOST_FAILED, iteration)
         end
-        append_lifecycle_messages(prompt, activate_result)
+        local step_notes, activate_notes_err = lifecycle_notes(activate_result, lifecycle_runtime.PHASE.ACTIVATE, agent_id)
+        if not step_notes then
+            return fail_with_lifecycle({
+                code = agent_consts.ERROR.AGENT_EXEC_FAILED,
+                message = activate_notes_err
+            }, activate_notes_err, REASON.HOST_FAILED, iteration)
+        end
 
         local before_result, before_err = apply_agent_lifecycle(
             agent_instance,
@@ -2587,9 +2699,21 @@ local function run(args)
                 message = before_err
             }, before_err, REASON.HOST_FAILED, iteration)
         end
-        append_lifecycle_messages(prompt, before_result)
+        local before_notes, before_notes_err = lifecycle_notes(before_result, lifecycle_runtime.PHASE.BEFORE_STEP, agent_id)
+        if not before_notes then
+            return fail_with_lifecycle({
+                code = agent_consts.ERROR.AGENT_EXEC_FAILED,
+                message = before_notes_err
+            }, before_notes_err, REASON.HOST_FAILED, iteration)
+        end
+        for _, note in ipairs(before_notes) do table.insert(step_notes, note) end
+        append_step_notes(prompt, step_notes)
 
-        local step_options = { tool_call = tool_calling, context = run_session_context }
+        local step_options = {
+            tool_call = tool_calling,
+            context = run_session_context,
+            drop_stale_thinking = true
+        }
         -- "any" is enforced here: the arena answers a text-only turn with feedback
         -- and completes only through the finish tool. A model that cannot be
         -- forced may therefore be asked with "auto" (see the llm model_profile).
@@ -2617,6 +2741,15 @@ local function run(args)
             }, calls_err, REASON.HOST_FAILED, iteration)
         end
         route_pin = carry_route_pin(route_pin, agent_result)
+
+        local sent_notes, sent_notes_err = context_notes(agent_result)
+        if not sent_notes then
+            return fail_with_lifecycle({
+                code = agent_consts.ERROR.AGENT_EXEC_FAILED,
+                message = sent_notes_err
+            }, sent_notes_err, REASON.HOST_FAILED, iteration)
+        end
+        for _, note in ipairs(sent_notes) do table.insert(step_notes, note) end
 
         local after_result, after_err = apply_agent_lifecycle(
             agent_instance,
@@ -2651,6 +2784,14 @@ local function run(args)
             update_node_progress(n, iteration, max_iterations, total_tokens, tool_calls_count, status_msg, agent_id,
                 model_name, unproductive_steps, route_pin)
 
+            local notes_store_err = store_step_notes(n, step_notes, iteration)
+            if notes_store_err then
+                local notes_store_message = "Failed to store step notes: " .. error_message(notes_store_err, "unknown")
+                return fail_with_lifecycle({
+                    code = agent_consts.ERROR.AGENT_EXEC_FAILED,
+                    message = notes_store_message
+                }, notes_store_message, REASON.HOST_FAILED, iteration)
+            end
             local truncated_action_key = store_agent_action(n, agent_result, iteration, agent_id, model_name,
                 exit_tool_name, {})
 
@@ -2709,7 +2850,14 @@ local function run(args)
         update_node_progress(n, iteration, max_iterations, total_tokens, tool_calls_count, status_msg, agent_id,
             model_name, unproductive_steps, route_pin)
 
-        store_memory_recall(n, agent_result, iteration)
+        local notes_store_err = store_step_notes(n, step_notes, iteration)
+        if notes_store_err then
+            local notes_store_message = "Failed to store step notes: " .. error_message(notes_store_err, "unknown")
+            return fail_with_lifecycle({
+                code = agent_consts.ERROR.AGENT_EXEC_FAILED,
+                message = notes_store_message
+            }, notes_store_message, REASON.HOST_FAILED, iteration)
+        end
         local action_key = store_agent_action(n, agent_result, iteration, agent_id, model_name, exit_tool_name, {})
         local proposed_controls = {}
         for _, summary in ipairs({ before_result or {}, after_result or {} }) do

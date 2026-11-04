@@ -14,6 +14,13 @@ local function handler(input)
         }
     end
 
+    if type(input.switch_agent) == "string" then
+        return {
+            accepted = true,
+            _control = { config = { agent = input.switch_agent } }
+        }
+    end
+
     local child_node_id = uuid.v7()
     return {
         accepted = true,

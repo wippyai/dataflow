@@ -185,6 +185,7 @@ entries:
       lifecycle_controller: wippy.agent:lifecycle_controller
       checkpoint_runtime: wippy.agent:checkpoint_runtime
       behavior_controls: wippy.agent:behavior_controls
+      turn_context: wippy.agent:turn_context
     method: run
 
   # userspace.dataflow.node.agent:checkpoint
@@ -330,6 +331,27 @@ entries:
       client: userspace.dataflow:client
       consts: userspace.dataflow:consts
       test: wippy.test:test
+    method: run_tests
+
+  - name: agent_stable_prefix_test
+    kind: function.lua
+    meta:
+      name: Agent stable request prefix
+      type: test
+      comment: Each request extends the previous one; notes replay in place and stale thinking is stripped.
+      group: Workflow / Agent Node
+      timeout: "120s"
+    source: file://agent_stable_prefix_test.lua
+    modules: [json, uuid, time, funcs]
+    imports:
+      test: wippy.test:test
+      client: userspace.dataflow:client
+      consts: userspace.dataflow:consts
+      data_reader: userspace.dataflow.persist:data_reader
+      node_reader: userspace.dataflow.persist:node_reader
+      agent_consts: userspace.dataflow.node.agent:consts
+      recovery_helpers: userspace.dataflow.node.agent.stub:recovery_helpers
+      run_context: userspace.dataflow.node.agent.run_context:run_context_lib
     method: run_tests
 
   - name: agent_tool_recovery_test

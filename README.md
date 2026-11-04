@@ -168,6 +168,49 @@ For an administrative preview, call the library
 `userspace.dataflow.retention:sweeper.run(db, {days=30, batch_size=1000, dry_run=true})`
 with an authorized database handle. The library is not a public HTTP endpoint.
 
+## Stable request prefix
+
+Each request an agent node sends extends the previous one: everything sent
+before the model's output is stored where it was sent and replayed unchanged, so
+the provider cache and earlier thinking blocks stay valid. This requires Agent
+0.5.10 and LLM 0.5.13 or later.
+
+- **Memory recall.** An agent with a memory contract recalls on each eligible
+  step and returns the note in `context_notes`. The notes are stored, in order,
+  as `agent.memory` rows whose `metadata.llm_meta` carries `preserve_position`
+  and `memory_ids`, after the step's lifecycle notes and before its action row,
+  including a truncated action. A malformed note fails the node.
+- **Turn context.** When the agent declares `agent_options.turn_context` (the
+  `time_aware` trait), the node renders the note once before its first request
+  and commits it as a positional system row with key `turn_context`. All of a
+  node's conversation inputs fold into one user message, so a node has one note,
+  right after that message, however many inputs it has and however many iterations
+  it runs. A restart replays the stored note. A checkpoint keeps it, because every
+  request sends the input it follows, and leaves it out of the summarized history.
+  A note that cannot render (an unknown timezone) fails the node before any request.
+- **Thinking blocks.** The action row stores `prefix_fingerprint` in
+  `metadata.llm_meta` next to `thinking_blocks`, and every step passes
+  `drop_stale_thinking = true`. A changed system prompt or tool set (an agent
+  switch) strips the earlier blocks before the next request; the current tool
+  round keeps its blocks. A checkpoint's cut is the newest row at that moment, so
+  every action row that survives it was produced after the marker: the default
+  fingerprint comparison is sufficient and the node passes no `thinking_is_current`.
+- **Lifecycle notes.** Messages from `activate` and `before_step` are sent as
+  positional notes after the history and stored once, where they were first sent:
+  `agent.memory` rows with `metadata.role` set to `developer` or `system`,
+  `metadata.lifecycle_phase`, and `preserve_position` in `metadata.llm_meta`. They
+  are appended, never rebuilt, so `before_step` adds one set of notes per step and
+  an activation note stays in the history after the step that activated the agent.
+  A system note is positional and no longer joins the top-level system prompt. A
+  lifecycle message in any other role fails the node with an error naming the phase,
+  the agent and the role: a host note must not speak as either party.
+
+After upgrading, a run stored by an earlier version restarts its cache once when it
+resumes: its earlier steps sent lifecycle notes that were never stored, and its
+action rows carry no `prefix_fingerprint`, so their thinking blocks are stripped
+from the next request (except those of a tool round in progress). A resumed run
+past its first iteration gets no turn context note; its input was already sent.
+
 ## Live execution authority
 
 Hosts with mutable permissions bind their native identity resolver through `execution_authority_imports` and set `refresh_perms: true` (default false). Dataflow resolves current authority at activation and resume boundaries and preserves explicit narrowing ceilings. The [host binding contract](src/README.md#live-execution-authority) describes capture, resolution and existing frame behavior.
