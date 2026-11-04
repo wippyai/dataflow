@@ -201,7 +201,11 @@ stay valid. This requires Agent 0.5.10 and LLM 0.5.13 or later.
   fingerprint comparison is sufficient and the node passes no `thinking_is_current`.
 - **Checkpoints.** A checkpoint runs between rounds, after every call has its
   result. The summary replaces every row up to the cut, calls and results together,
-  and a request carries the turn note, the marker and the rows after the cut. A
+  and a request carries the turn note, the marker and the rows after the cut. A later
+  checkpoint summarizes what requests carry: the earlier summary and the rows after
+  its cut, so the payload stays bounded and the earlier summary rolls forward. The
+  `since_checkpoint` run context selector reads the same cut, and also holds the turn
+  note and, before the first cut, the input, which a summary does not replace. A
   skipped checkpoint leaves an audit observation that stays out of the prompt and
   of the summary.
 - **Lifecycle notes.** Messages from `activate` and `before_step` are sent as

@@ -303,7 +303,11 @@ local function handler(contract_args)
         if scenario.slow_request == llm_calls then
             time.sleep(tostring(scenario.slow_ms) .. "ms")
         end
-        local tokens = scenario.checkpoint_at == llm_calls and 500 or base_prompt or 9
+        local checkpoint_here = scenario.checkpoint_at == llm_calls
+        for _, at in ipairs(type(scenario.checkpoint_at) == "table" and scenario.checkpoint_at or {}) do
+            if at == llm_calls then checkpoint_here = true end
+        end
+        local tokens = checkpoint_here and 500 or base_prompt or 9
         local control_args = nil
         if scenario.switch_at == llm_calls then
             control_args = { switch_agent = scenario.switch_agent }

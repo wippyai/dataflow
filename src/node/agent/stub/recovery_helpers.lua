@@ -99,6 +99,16 @@ function helpers.get_request(scenario_id, request_number)
     return encoded and json.decode(encoded) or nil
 end
 
+-- Records the rows each checkpoint was asked to summarize.
+function helpers.record_checkpoint_history(scenario_id, checkpoint_number, history)
+    helpers.set_metric(scenario_id, "checkpoint_history:" .. tostring(checkpoint_number), json.encode(history))
+end
+
+function helpers.get_checkpoint_history(scenario_id, checkpoint_number)
+    local encoded = helpers.get_metric(scenario_id, "checkpoint_history:" .. tostring(checkpoint_number), nil)
+    return encoded and json.decode(encoded) or nil
+end
+
 function helpers.conversation(request)
     local messages = {}
     for _, message in ipairs(request or {}) do

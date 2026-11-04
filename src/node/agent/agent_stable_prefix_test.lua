@@ -481,6 +481,66 @@ local function define_tests()
             test.eq(block_texts(requests[5]), "block-3,block-4")
         end)
 
+        it("summarizes the previous summary and the rows after its cut, nothing older", function()
+            local run = run_node({ input = { rounds = 5, checkpoint_at = { 2, 4 } }, checkpoint = CHECKPOINT })
+            test.eq(run.status, consts.STATUS.COMPLETED_SUCCESS, node_error(run))
+
+            local markers = {}
+            for _, row in ipairs(rows_of(run, agent_consts.DATA_TYPE.AGENT_MEMORY)) do
+                if row.metadata.checkpoint_marker == true then markers[#markers + 1] = row end
+            end
+            test.eq(#markers, 2)
+
+            local first = recovery_helpers.get_checkpoint_history(run.scenario_id, 1)
+            test.eq(#first, 4, "the first summary replaces two rounds")
+
+            local second = recovery_helpers.get_checkpoint_history(run.scenario_id, 2)
+            local cut = markers[1].metadata.checkpoint_before_data_id
+            test.eq(second[1].data_id, markers[1].data_id, "the first summary comes first")
+            test.eq(second[1].content, markers[1].content, "with its summary text")
+            local results = 0
+            for index = 2, #second do
+                test.is_true(second[index].data_id > cut, "no row before the first cut: " .. second[index].type)
+                if type((second[index].metadata or {}).tool_call_id) == "string" then results = results + 1 end
+            end
+            test.eq(#second, 5, "the summary plus the two rounds after its cut")
+            test.eq(results, 2, "the results after the cut are summarized")
+            test.eq(markers[2].metadata.checkpoint_history_count, 5)
+            test.eq(markers[2].metadata.checkpoint_first_data_id, markers[1].data_id)
+        end)
+
+        it("gives the run context the same rows after the cut", function()
+            local run = run_node({ input = { rounds = 5, checkpoint_at = { 2, 4 } }, checkpoint = CHECKPOINT })
+            test.eq(run.status, consts.STATUS.COMPLETED_SUCCESS, node_error(run))
+            local markers = {}
+            for _, row in ipairs(rows_of(run, agent_consts.DATA_TYPE.AGENT_MEMORY)) do
+                if row.metadata.checkpoint_marker == true then markers[#markers + 1] = row end
+            end
+            local history = run_context.get_history({
+                host = { dataflow_id = run.dataflow_id, node_id = run.node_id },
+            })
+            local cut = markers[2].metadata.checkpoint_before_data_id
+            test.eq(history.events[1].id, markers[2].data_id, "the selector starts at the latest summary")
+            for index = 2, #history.events do
+                test.is_true(history.events[index].id > cut, "the selector holds no row before the cut")
+            end
+        end)
+
+        it("leaves a fresh summary alone when nothing followed it", function()
+            local run = run_node({
+                traits = { STUB .. "behavior_compaction_trait" },
+                input = { rounds = 1, prompt_tokens = 500 },
+                checkpoint = CHECKPOINT,
+            })
+            test.eq(run.status, consts.STATUS.COMPLETED_SUCCESS, node_error(run))
+            local calls = tonumber(recovery_helpers.get_metric(run.scenario_id, "checkpoint_calls", 0)) or 0
+            test.gt(calls, 0, "the scenario checkpoints")
+            for number = 1, calls do
+                local history = recovery_helpers.get_checkpoint_history(run.scenario_id, number)
+                test.gt(#history, 1, "checkpoint " .. tostring(number) .. " has rows to replace")
+            end
+        end)
+
         it("closes a round of parallel calls before it cuts", function()
             local run = run_node({
                 input = { mode = "two_tools_one_turn", prompt_tokens = 500 },

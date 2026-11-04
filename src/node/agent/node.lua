@@ -422,16 +422,6 @@ local function decode_json_content(content: any, content_type: any)
     return decoded
 end
 
-local function checkpoint_source_rows(history_rows)
-    local source_rows = {}
-    for _, row in ipairs(history_rows or {}) do
-        if not prompt_builder.is_turn_context_row(row) and not prompt_builder.is_audit_row(row) then
-            source_rows[#source_rows + 1] = row
-        end
-    end
-    return source_rows
-end
-
 local function build_status_message(iteration, max_iterations, total_tokens, tool_calls_count, is_final, task_complete)
     local status_parts = {}
 
@@ -940,15 +930,11 @@ local function maybe_checkpoint_history(n, config, session_context, agent_instan
         return nil, nil
     end
 
+    -- A summary with nothing after it has nothing to replace.
     local latest_marker = prompt_builder.find_latest_checkpoint_marker(history_rows)
-    if latest_marker
-       and tostring((latest_marker.metadata or {}).checkpoint_before_data_id or "") == cut_before then
+    local source_rows = prompt_builder.checkpoint_source_rows(history_rows)
+    if #source_rows == 0 or (#source_rows == 1 and source_rows[1] == latest_marker) then
         if compact_requested then n:update_metadata({ checkpoint_requested = false }) end
-        return nil, nil
-    end
-
-    local source_rows = checkpoint_source_rows(history_rows)
-    if #source_rows == 0 then
         return nil, nil
     end
 

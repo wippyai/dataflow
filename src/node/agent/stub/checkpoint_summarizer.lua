@@ -30,7 +30,8 @@ local function handler(args)
     end
 
     if scenario_id then
-        helpers.bump_metric(scenario_id, "checkpoint_calls", 1)
+        local checkpoint_number = helpers.bump_metric(scenario_id, "checkpoint_calls", 1)
+        helpers.record_checkpoint_history(scenario_id, checkpoint_number, type(args.history) == "table" and args.history or {})
         for _, row in ipairs(type(args.history) == "table" and args.history or {}) do
             if type(row.metadata) == "table" and row.metadata.turn_context == true then
                 helpers.set_metric(scenario_id, "checkpoint_saw_turn_context", 1)

@@ -85,6 +85,19 @@ function prompt_builder.apply_latest_marker(history_rows)
     return filtered
 end
 
+-- The rows a new summary replaces: what requests carry since the latest cut, the
+-- earlier summary included so it rolls forward. The input and the turn note stay in
+-- every request, and an audit row was never in one.
+function prompt_builder.checkpoint_source_rows(history_rows)
+    local source_rows = {}
+    for _, row in ipairs(prompt_builder.apply_latest_marker(history_rows)) do
+        if not prompt_builder.is_turn_context_row(row) and not prompt_builder.is_audit_row(row) then
+            source_rows[#source_rows + 1] = row
+        end
+    end
+    return source_rows
+end
+
 local function clone_table(tbl)
     if type(tbl) ~= "table" then
         return nil
