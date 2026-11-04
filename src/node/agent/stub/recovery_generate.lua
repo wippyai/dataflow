@@ -1,16 +1,20 @@
 local helpers = require("helpers")
 local time = require("time")
 
-local function response_tokens(prompt_tokens, completion_tokens)
+-- cache_read_tokens reports cached prompt input next to the uncached
+-- prompt_tokens, as providers do when the prompt cache is hit.
+local function response_tokens(prompt_tokens, completion_tokens, cache_read_tokens)
     return {
         prompt_tokens = prompt_tokens,
         completion_tokens = completion_tokens,
+        cache_read_tokens = cache_read_tokens or 0,
         thinking_tokens = 0,
         total_tokens = prompt_tokens + completion_tokens
     }
 end
 
-local function tool_call_response(scenario_id, step, delay_ms, prompt_tokens, completion_tokens, tool_name, extra_args)
+local function tool_call_response(scenario_id, step, delay_ms, prompt_tokens, completion_tokens, tool_name, extra_args,
+                                  cache_read_tokens)
     local arguments = {
         scenario_id = scenario_id,
         step = step,
@@ -33,12 +37,13 @@ local function tool_call_response(scenario_id, step, delay_ms, prompt_tokens, co
             }
         },
         finish_reason = "tool_call",
-        tokens = response_tokens(prompt_tokens, completion_tokens),
+        tokens = response_tokens(prompt_tokens, completion_tokens, cache_read_tokens),
         metadata = {}
     }
 end
 
-local function final_response(scenario_id, mode, function_result_count, prompt_tokens, completion_tokens)
+local function final_response(scenario_id, mode, function_result_count, prompt_tokens, completion_tokens,
+                              cache_read_tokens)
     return {
         success = true,
         result = {
@@ -46,7 +51,7 @@ local function final_response(scenario_id, mode, function_result_count, prompt_t
             tool_calls = {}
         },
         finish_reason = "stop",
-        tokens = response_tokens(prompt_tokens, completion_tokens),
+        tokens = response_tokens(prompt_tokens, completion_tokens, cache_read_tokens),
         metadata = {}
     }
 end
@@ -585,10 +590,11 @@ local function handler(contract_args)
         local max_steps = tonumber(scenario.max_steps) or 3
         if llm_calls <= max_steps then
             return tool_call_response(scenario.scenario_id, llm_calls,
-                scenario.tool_delay_ms, base_prompt or 500, 8)
+                scenario.tool_delay_ms, base_prompt or 500, 8, nil, nil, tonumber(scenario.cache_read_tokens))
         end
 
-        return final_response(scenario.scenario_id, scenario.mode, result_count, base_prompt or 500, 4)
+        return final_response(scenario.scenario_id, scenario.mode, result_count, base_prompt or 500, 4,
+            tonumber(scenario.cache_read_tokens))
     end
 
     return final_response(scenario.scenario_id, scenario.mode or "text_final", result_count, base_prompt or 7, 4)

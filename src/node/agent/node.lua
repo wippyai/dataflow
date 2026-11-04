@@ -994,8 +994,11 @@ local function maybe_checkpoint_history(n, config, session_context, agent_instan
 
     local action_metadata = latest_action.metadata or {}
     local turn_tokens = action_metadata.tokens or {}
+    -- context_tokens is the full prompt size (uncached input plus cache reads
+    -- and writes); prompt_tokens alone counts only the uncached input.
+    local context_tokens = tonumber(turn_tokens.context_tokens) or 0
     local prompt_tokens = tonumber(turn_tokens.prompt_tokens) or 0
-    if not compact_requested and prompt_tokens <= threshold then
+    if not compact_requested and context_tokens <= threshold then
         return nil, nil
     end
 
@@ -1076,6 +1079,7 @@ local function maybe_checkpoint_history(n, config, session_context, agent_instan
                 scenario_id = scenario_id,
                 iteration = checkpoint_iteration,
                 prompt_tokens = prompt_tokens,
+                context_tokens = context_tokens,
                 history_count = #history_payload,
                 checkpoint_before_data_id = cut_before
             },
@@ -1113,6 +1117,7 @@ local function maybe_checkpoint_history(n, config, session_context, agent_instan
                 scenario_id = scenario_id,
                 iteration = checkpoint_iteration,
                 prompt_tokens = prompt_tokens,
+                context_tokens = context_tokens,
                 history_count = #history_payload,
                 checkpoint_before_data_id = cut_before,
                 history = history_payload,
@@ -1148,6 +1153,7 @@ local function maybe_checkpoint_history(n, config, session_context, agent_instan
         checkpoint_marker = true,
         checkpoint_reason = compact_requested and "compaction_requested" or "token_threshold_exceeded",
         checkpoint_at_prompt_tokens = prompt_tokens,
+        checkpoint_at_context_tokens = context_tokens,
         checkpoint_before_data_id = cut_before,
         checkpoint_history_count = #history_payload,
         checkpoint_first_data_id = prompt_builder.row_id(source_rows[1]),

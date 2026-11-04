@@ -29,6 +29,11 @@ local function handler(args)
         prompt_tokens = tonumber(args.prompt_tokens) or 0
     end
 
+    local context_tokens = 0
+    if type(args) == "table" and tonumber(args.context_tokens) then
+        context_tokens = tonumber(args.context_tokens) or 0
+    end
+
     if scenario_id then
         local checkpoint_number = helpers.bump_metric(scenario_id, "checkpoint_calls", 1)
         helpers.record_checkpoint_history(scenario_id, checkpoint_number, type(args.history) == "table" and args.history or {})
@@ -46,6 +51,7 @@ local function handler(args)
         end
         helpers.set_metric(scenario_id, "last_checkpoint_history_count", history_count)
         helpers.set_metric(scenario_id, "last_checkpoint_prompt_tokens", prompt_tokens)
+        helpers.set_metric(scenario_id, "last_checkpoint_context_tokens", context_tokens)
         local options = type(args.options) == "table" and args.options or {}
         helpers.set_metric(scenario_id, "last_checkpoint_max_tokens", tonumber(options.max_tokens) or 0)
         helpers.set_metric(scenario_id, "last_checkpoint_threshold", tonumber(options.token_threshold) or 0)
