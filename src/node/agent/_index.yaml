@@ -46,6 +46,7 @@ entries:
       behavior_controls: wippy.agent:behavior_controls
       agent_consts: userspace.dataflow.node.agent:consts
       consts: userspace.dataflow:consts
+      delegation_handler: userspace.dataflow.node.agent:delegation_handler
 
   # userspace.dataflow.node.agent:control_handler_test
   - name: control_handler_test
@@ -133,6 +134,7 @@ entries:
       - uuid
     imports:
       delegation_handler: userspace.dataflow.node.agent:delegation_handler
+      agent_node: userspace.dataflow.node.agent:node
       client: userspace.dataflow:client
       node: userspace.dataflow:node
       node_reader: userspace.dataflow.persist:node_reader
@@ -169,6 +171,7 @@ entries:
       - funcs
     imports:
       agent_ref: userspace.dataflow:agent_ref
+      node_reader: userspace.dataflow.persist:node_reader
       tools: wippy.agent.discovery:tools
       agent_consts: userspace.dataflow.node.agent:consts
       agent_context: wippy.agent:context
@@ -183,6 +186,7 @@ entries:
       lifecycle_controller: wippy.agent:lifecycle_controller
       checkpoint_runtime: wippy.agent:checkpoint_runtime
       behavior_controls: wippy.agent:behavior_controls
+      turn_context: wippy.agent:turn_context
     method: run
 
   # userspace.dataflow.node.agent:checkpoint
@@ -197,6 +201,9 @@ entries:
     imports:
       prompt: wippy.llm:prompt
       llm: wippy.llm:llm
+      output: wippy.llm:output
+      agent_consts: userspace.dataflow.node.agent:consts
+      prompt_builder: userspace.dataflow.node.agent:prompt_builder
     method: handler
 
   # userspace.dataflow.node.agent:checkpoint_test
@@ -309,6 +316,78 @@ entries:
       client: userspace.dataflow:client
       consts: userspace.dataflow:consts
       test: wippy.test:test
+    method: run_tests
+
+  - name: agent_parallel_tools_test
+    kind: function.lua
+    meta:
+      name: Agent parallel tool calls
+      type: test
+      comment: The tool calls of one model turn run concurrently.
+      group: Workflow / Agent Node
+      timeout: "120s"
+    source: file://agent_parallel_tools_test.lua
+    modules:
+      - uuid
+      - time
+      - funcs
+    imports:
+      client: userspace.dataflow:client
+      consts: userspace.dataflow:consts
+      test: wippy.test:test
+    method: run_tests
+
+  - name: agent_stable_prefix_test
+    kind: function.lua
+    meta:
+      name: Agent stable request prefix
+      type: test
+      comment: Each request extends the previous one; notes replay in place and stale thinking is stripped.
+      group: Workflow / Agent Node
+      timeout: "120s"
+    source: file://agent_stable_prefix_test.lua
+    modules: [json, uuid, time, funcs]
+    imports:
+      test: wippy.test:test
+      client: userspace.dataflow:client
+      consts: userspace.dataflow:consts
+      data_reader: userspace.dataflow.persist:data_reader
+      node_reader: userspace.dataflow.persist:node_reader
+      agent_consts: userspace.dataflow.node.agent:consts
+      recovery_helpers: userspace.dataflow.node.agent.stub:recovery_helpers
+      run_context: userspace.dataflow.node.agent.run_context:run_context_lib
+      claude_mapper: wippy.llm.claude:mapper
+      bedrock_mapper: wippy.llm.bedrock:mapper
+      openai_mapper: wippy.llm.openai:mapper
+      compat_mapper: wippy.llm.openai_compat:mapper
+      agent_node: userspace.dataflow.node.agent:node
+      prompt_builder: userspace.dataflow.node.agent:prompt_builder
+      node_sdk: userspace.dataflow:node
+      agent_context: wippy.agent:context
+    method: run_tests
+
+  - name: agent_tool_recovery_test
+    kind: function.lua
+    meta:
+      name: Agent tool round recovery
+      type: test
+      comment: A recovered tool round runs its unresolved calls concurrently and keeps stored results.
+      group: Workflow / Agent Node
+      timeout: "120s"
+    source: file://agent_tool_recovery_test.lua
+    modules: [uuid, time, process]
+    imports:
+      test: wippy.test:test
+      client: userspace.dataflow:client
+      commit: userspace.dataflow.persist:commit
+      consts: userspace.dataflow:consts
+      data_reader: userspace.dataflow.persist:data_reader
+      node_reader: userspace.dataflow.persist:node_reader
+      node_sdk: userspace.dataflow:node
+      agent_node: userspace.dataflow.node.agent:node
+      control_handler: userspace.dataflow.node.agent:control_handler
+      agent_consts: userspace.dataflow.node.agent:consts
+      recovery_helpers: userspace.dataflow.node.agent.stub:recovery_helpers
     method: run_tests
 
   - name: agent_after_persist_test
@@ -558,6 +637,7 @@ entries:
       - uuid
       - funcs
     imports:
+      recovery_helpers: userspace.dataflow.node.agent.stub:recovery_helpers
       agent_consts: userspace.dataflow.node.agent:consts
       client: userspace.dataflow:client
       consts: userspace.dataflow:consts

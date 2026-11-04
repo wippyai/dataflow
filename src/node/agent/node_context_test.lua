@@ -108,6 +108,40 @@ local function define_tests()
             test.is_true(input_data:find('<input key="empty">', 1, true) == nil)
         end)
 
+        it("folds conversation inputs in key order, whatever the insertion order", function()
+            local keys = { "zeta", "alpha", "mid", "beta", "omega", "kappa", "delta", "sigma" }
+            local forward = {}
+            for _, key in ipairs(keys) do forward[key] = { content = key, metadata = {} } end
+            local backward = {}
+            for index = #keys, 1, -1 do backward[keys[index]] = { content = keys[index], metadata = {} } end
+
+            local _, _, _, _, forward_data, forward_err = process(forward)
+            local _, _, _, _, backward_data, backward_err = process(backward)
+            test.is_nil(forward_err)
+            test.is_nil(backward_err)
+            test.eq(forward_data, backward_data, "the same inputs fold to the same bytes")
+
+            local seen = {}
+            for key in tostring(forward_data):gmatch('<input key="([^"]+)">') do table.insert(seen, key) end
+            local sorted = { "alpha", "beta", "delta", "kappa", "mid", "omega", "sigma", "zeta" }
+            test.eq(#seen, #sorted)
+            for index, key in ipairs(sorted) do
+                test.eq(seen[index], key)
+            end
+        end)
+
+        it("folds a table input to the same bytes, whatever its insertion order", function()
+            local keys = { "zeta", "alpha", "mid", "beta", "omega", "kappa", "delta", "sigma" }
+            local forward = {}
+            for _, key in ipairs(keys) do forward[key] = key end
+            local backward = {}
+            for index = #keys, 1, -1 do backward[keys[index]] = keys[index] end
+
+            local _, _, _, _, forward_data = process({ lead = { content = forward, metadata = {} } })
+            local _, _, _, _, backward_data = process({ lead = { content = backward, metadata = {} } })
+            test.eq(forward_data, backward_data)
+        end)
+
         it("still merges a table context and applies string overrides", function()
             local input_context, agent_id_override, model_override, max_iterations_override, input_data, err = process({
                 context = { content = { kb_ids = { "kb-1" } }, metadata = {} },

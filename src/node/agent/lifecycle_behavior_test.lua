@@ -144,7 +144,7 @@ local function define_tests()
                 { scenario_id = scenario_id }
             )
             test.is_nil(prompt_metrics_err)
-            test.eq(prompt_metrics.lifecycle_prompt_seen, 2, "activation context reaches both resumed prompts")
+            test.eq(prompt_metrics.lifecycle_prompt_seen, 4, "the activation note stays in the history of all four turns")
         end)
     end)
 end

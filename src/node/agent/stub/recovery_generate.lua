@@ -1,4 +1,5 @@
 local helpers = require("helpers")
+local time = require("time")
 
 -- cache_read_tokens reports cached prompt input next to the uncached
 -- prompt_tokens, as providers do when the prompt cache is hit.
@@ -81,12 +82,57 @@ local function offers_tool(contract_args, tool_name)
     return false
 end
 
+-- The default checkpoint summarizer names its node in the user message.
+local function summarizer_node(messages)
+    for _, message in ipairs(messages) do
+        local text = message.role == "user" and message.content and message.content[1] and message.content[1].text
+        local node_id = type(text) == "string" and text:match("^dataflow_id=%S*\nnode_id=(%S+)") or nil
+        if node_id then return node_id end
+    end
+    return nil
+end
+
 local function handler(contract_args)
     local messages = contract_args and contract_args.messages or {}
+    local summarized_node = summarizer_node(messages)
+    if summarized_node then
+        local attempt = helpers.bump_metric(summarized_node, "summarizer_calls", 1)
+        helpers.record_request(summarized_node, attempt, messages)
+        helpers.set_metric(summarized_node, "summarizer_max_tokens", (contract_args.options or {}).max_tokens)
+        local summary = final_response(summarized_node, "summary", 0, 7, 4)
+        -- A model that keeps everything: each merge is the previous summary plus 1500
+        -- characters, cut off past max_tokens at 4 characters a token.
+        if helpers.count_text_matches(messages, "GROW-SUMMARY") > 0 then
+            local previous = 0
+            for _, message in ipairs(messages) do
+                local body = message.content and message.content[1] and message.content[1].text
+                if type(body) == "string" then
+                    for run_of_x in string.gmatch(body, "x+") do
+                        if #run_of_x > previous then previous = #run_of_x end
+                    end
+                end
+            end
+            local wanted = previous + 1500
+            local limit = tonumber((contract_args.options or {}).max_tokens) or 0
+            summary.result.content = string.rep("x", math.min(wanted, limit * 4))
+            if wanted > limit * 4 then summary.finish_reason = "length" end
+        end
+        if helpers.count_text_matches(messages, "BLANK-SUMMARY") > 0 then
+            summary.result.content = "  \n "
+        end
+        if helpers.count_text_matches(messages, "TRUNCATE-SUMMARY") > 0 then
+            summary.finish_reason = "length"
+        end
+        return summary
+    end
     local scenario: any = helpers.parse_scenario(messages)
     local result_count = helpers.count_function_results(messages)
 
     local llm_calls = helpers.bump_metric(scenario.scenario_id, "llm_calls", 1)
+    helpers.record_function_results(scenario.scenario_id, messages)
+    if scenario.capture_requests then
+        helpers.record_request(scenario.scenario_id, llm_calls, messages)
+    end
     for _, message in ipairs(messages or {}) do
         local text = message.content and message.content[1] and message.content[1].text
         if type(text) == "string" and (
@@ -158,6 +204,26 @@ local function handler(contract_args)
         }
     end
 
+    -- The tool reports its failure as data: { success = false, error = ... }.
+    if scenario.mode == "soft_failing_tool_then_final" then
+        if result_count == 0 then
+            return tool_call_response(scenario.scenario_id, 1, scenario.tool_delay_ms, base_prompt or 13, 8, "recovery_tool", {
+                soft_fail_message = scenario.soft_fail_message
+            })
+        end
+
+        return final_response(scenario.scenario_id, scenario.mode, result_count, base_prompt or 9, 4)
+    end
+
+    -- Two turns issue the same call id, as a provider that reuses ids does.
+    if scenario.mode == "reused_call_id_then_final" then
+        if result_count < 2 then
+            return tool_call_response(scenario.scenario_id, 1, scenario.tool_delay_ms, base_prompt or 13, 8)
+        end
+
+        return final_response(scenario.scenario_id, scenario.mode, result_count, base_prompt or 9, 4)
+    end
+
     if scenario.mode == "failing_tool_then_final" then
         if result_count == 0 then
             return tool_call_response(scenario.scenario_id, 1, scenario.tool_delay_ms, base_prompt or 13, 8, "recovery_tool", {
@@ -203,10 +269,10 @@ local function handler(contract_args)
     end
 
     if scenario.mode == "behavior_restart" then
-        if result_count == 0 then
-            return tool_call_response(scenario.scenario_id, 1, scenario.tool_delay_ms, 13, 8)
-        end
         if helpers.count_text_matches(messages, "BEHAVIOR-RESTART-TARGET") == 0 then
+            if llm_calls == 1 then
+                return tool_call_response(scenario.scenario_id, 1, scenario.tool_delay_ms, 13, 8)
+            end
             return nil, "recovered proposal ran the previous agent"
         end
         return final_response(scenario.scenario_id, scenario.mode, result_count, 9, 4)
@@ -221,6 +287,61 @@ local function handler(contract_args)
             return truncated
         end
         return final_response(scenario.scenario_id, scenario.mode, result_count, 9, 4)
+    end
+
+    if scenario.mode == "commit_failure_round" then
+        local response = tool_call_response(scenario.scenario_id, 1, 0, 13, 8)
+        for step = 2, 12 do
+            local call = tool_call_response(scenario.scenario_id, step, step == 2 and 200 or 10000, 13, 8,
+                "recovery_tool", { fail_message = step == 2 and "tool failure before commit refusal" or nil })
+            table.insert(response.result.tool_calls, call.result.tool_calls[1])
+        end
+        return response
+    end
+
+    if scenario.mode == "scalar_tools" then
+        if result_count == 0 then
+            local response = tool_call_response(scenario.scenario_id, 1, 0, 13, 8)
+            response.result.tool_calls = {}
+            for step, kind in ipairs({ "false", "zero", "empty", "nil" }) do
+                local call = tool_call_response(scenario.scenario_id, step, 0, 13, 8, "recovery_tool",
+                    { scalar_kind = kind })
+                table.insert(response.result.tool_calls, call.result.tool_calls[1])
+            end
+            return response
+        end
+        return final_response(scenario.scenario_id, scenario.mode, result_count, 9, 4)
+    end
+
+    -- Two tool calls in one turn, each holding its worker for tool_delay_ms.
+    if scenario.mode == "two_tools_one_turn" then
+        if llm_calls == 1 then
+            local first = tool_call_response(scenario.scenario_id, 1, scenario.tool_delay_ms, base_prompt or 13, 8)
+            local second = tool_call_response(scenario.scenario_id, 2, scenario.tool_delay_ms, base_prompt or 13, 8)
+            table.insert(first.result.tool_calls, second.result.tool_calls[1])
+            return first
+        end
+
+        return final_response(scenario.scenario_id, scenario.mode, result_count, base_prompt or 9, 4)
+    end
+
+    -- One turn with a fast and a slow call; the final answer reports how many
+    -- times each call ran, keyed by its original call id.
+    if scenario.mode == "fast_and_slow_one_turn" then
+        if result_count == 0 then
+            local fast = tool_call_response(scenario.scenario_id, 1, scenario.fast_delay_ms, base_prompt or 13, 8)
+            local slow = tool_call_response(scenario.scenario_id, 2, scenario.slow_delay_ms, base_prompt or 13, 8)
+            table.insert(fast.result.tool_calls, slow.result.tool_calls[1])
+            return fast
+        end
+
+        local final = final_response(scenario.scenario_id, scenario.mode, result_count, base_prompt or 9, 4)
+        final.result.content = string.format("%s:fast=%d:slow=%d", final.result.content,
+            tonumber(helpers.get_metric(scenario.scenario_id,
+                "tool_attempts:" .. helpers.call_id(scenario.scenario_id, 1), 0)) or 0,
+            tonumber(helpers.get_metric(scenario.scenario_id,
+                "tool_attempts:" .. helpers.call_id(scenario.scenario_id, 2), 0)) or 0)
+        return final
     end
 
     if scenario.mode == "single_tool_then_final" then
@@ -244,6 +365,111 @@ local function handler(contract_args)
         end
 
         return final_response(scenario.scenario_id, scenario.mode, result_count, base_prompt or 9, 4)
+    end
+
+    -- Tool rounds whose responses each carry one thinking block; the round named
+    -- by switch_at calls the control tool to change the agent.
+    if scenario.mode == "thinking_rounds" then
+        if scenario.slow_request == llm_calls then
+            time.sleep(tostring(scenario.slow_ms) .. "ms")
+        end
+        local checkpoint_here = scenario.checkpoint_at == llm_calls
+        for _, at in ipairs(type(scenario.checkpoint_at) == "table" and scenario.checkpoint_at or {}) do
+            if at == llm_calls then checkpoint_here = true end
+        end
+        local tokens = checkpoint_here and 500 or base_prompt or 9
+        local control_args = nil
+        if scenario.empty_delegate_at == llm_calls then
+            control_args = { empty_delegate = true }
+        elseif scenario.artifact_at == llm_calls then
+            control_args = { artifact = true }
+        elseif scenario.yield_commands_at == llm_calls then
+            control_args = { yield_child_ms = scenario.child_delay_ms or 10 }
+        elseif scenario.switch_at == llm_calls then
+            control_args = { switch_agent = scenario.switch_agent }
+        elseif scenario.delegate_at == llm_calls then
+            control_args = { delegate_to = scenario.delegate_to }
+        elseif scenario.memory_at == llm_calls then
+            control_args = { memory_add = "added at " .. tostring(llm_calls) }
+        elseif scenario.commands_memory_at == llm_calls then
+            control_args = { commands_memory = "added at " .. tostring(llm_calls), child_delay_ms = scenario.child_delay_ms }
+        elseif scenario.delegate_without_input_at == llm_calls then
+            control_args = { delegate_without_input = scenario.delegate_to }
+        elseif scenario.commands_yield_at == llm_calls then
+            control_args = { commands_children = 1, commands_yield = true, child_delay_ms = scenario.child_delay_ms }
+        elseif scenario.artifact_delegate_at == llm_calls then
+            control_args = { delegate_with_artifact = scenario.delegate_to, delegate_input = scenario.delegate_input }
+        elseif scenario.two_delegates_at == llm_calls then
+            control_args = { two_delegates = scenario.delegate_to }
+        elseif scenario.two_children_at == llm_calls then
+            control_args = { commands_children = 2, child_delay_ms = 10 }
+        end
+        if scenario.whitespace_at == llm_calls then
+            local blank = final_response(scenario.scenario_id, scenario.mode, result_count, tokens, 4)
+            blank.result.content = "  \n "
+            return blank
+        end
+        if scenario.command_delegate_at == llm_calls then
+            local commands = tool_call_response(scenario.scenario_id, 1, 0, tokens, 4, "recovery_control_tool",
+                scenario.yield_commands and { yield_child_ms = scenario.child_delay_ms or 10 }
+                    or { commands_children = scenario.commands_children or 1,
+                        child_delay_ms = scenario.child_delay_ms or 10,
+                        child_delays = scenario.child_delays, failing_child = scenario.failing_child })
+            local delegate = tool_call_response(scenario.scenario_id, 2, 0, tokens, 4, "recovery_control_tool",
+                { delegate_to = scenario.delegate_to, delegate_input = scenario.delegate_input })
+            table.insert(commands.result.tool_calls, delegate.result.tool_calls[1])
+            return commands
+        end
+        if scenario.delegate_and_memory_at == llm_calls then
+            return tool_call_response(scenario.scenario_id, 1, 0, tokens, 4, "recovery_control_tool",
+                { memory_and_delegate = "added at " .. tostring(llm_calls),
+                    delegate_to = scenario.delegate_to, delegate_input = scenario.delegate_input })
+        end
+        if scenario.delegate_once_at == llm_calls then
+            local memory = tool_call_response(scenario.scenario_id, 1, 0, tokens, 4, "recovery_control_tool",
+                { memory_add = "added at " .. tostring(llm_calls) })
+            local delegate = tool_call_response(scenario.scenario_id, 2, 0, tokens, 4, "recovery_control_tool",
+                { delegate_to = scenario.delegate_to, delegate_input = scenario.delegate_input, delegate_once = true,
+                    delegate_memory = scenario.delegate_memory })
+            table.insert(memory.result.tool_calls, delegate.result.tool_calls[1])
+            return memory
+        end
+        if scenario.yield_at == llm_calls then
+            local yielding = tool_call_response(scenario.scenario_id, 1, 0, tokens, 4, "recovery_control_tool",
+                { yield_child_ms = 6000 })
+            local switching = tool_call_response(scenario.scenario_id, 2, 0, tokens, 4, "recovery_control_tool",
+                { switch_agent = scenario.switch_agent })
+            local adding = tool_call_response(scenario.scenario_id, 3, 0, tokens, 4, "recovery_control_tool",
+                { memory_add = "added at " .. tostring(llm_calls) })
+            table.insert(yielding.result.tool_calls, switching.result.tool_calls[1])
+            table.insert(yielding.result.tool_calls, adding.result.tool_calls[1])
+            return yielding
+        end
+        if scenario.delegate_with_memory_at == llm_calls then
+            local memory = tool_call_response(scenario.scenario_id, 1, 0, tokens, 4, "recovery_control_tool",
+                { memory_add = "added at " .. tostring(llm_calls) })
+            local delegate = tool_call_response(scenario.scenario_id, 2, 0, tokens, 4, "recovery_control_tool",
+                { delegate_to = scenario.delegate_to, delegate_input = scenario.delegate_input })
+            table.insert(memory.result.tool_calls, delegate.result.tool_calls[1])
+            return memory
+        end
+        if tonumber(scenario.pad) then
+            control_args = nil
+        end
+        local response
+        if llm_calls <= (tonumber(scenario.rounds) or 1) then
+            response = tool_call_response(scenario.scenario_id, llm_calls, 0, tokens, 4,
+                control_args and "recovery_control_tool" or "recovery_tool",
+                control_args or (tonumber(scenario.pad) and { pad = string.rep("p", tonumber(scenario.pad)) } or nil))
+        else
+            response = final_response(scenario.scenario_id, scenario.mode, result_count, tokens, 4)
+        end
+        response.metadata = {
+            thinking_blocks = {
+                { type = "thinking", thinking = "block-" .. tostring(llm_calls), signature = "signature" }
+            }
+        }
+        return response
     end
 
     if scenario.mode == "lifecycle_overlay" then
@@ -362,8 +588,8 @@ local function handler(contract_args)
     -- exceed config.checkpoint.token_threshold.
     if scenario.mode == "checkpoint_stress" then
         local max_steps = tonumber(scenario.max_steps) or 3
-        if result_count < max_steps then
-            return tool_call_response(scenario.scenario_id, result_count + 1,
+        if llm_calls <= max_steps then
+            return tool_call_response(scenario.scenario_id, llm_calls,
                 scenario.tool_delay_ms, base_prompt or 500, 8, nil, nil, tonumber(scenario.cache_read_tokens))
         end
 

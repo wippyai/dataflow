@@ -56,10 +56,166 @@ local function define_tests()
         end)
     end)
 
+    describe("scalar observations", function()
+        it("queues false, zero, empty and nil through the text path in the batch pass", function()
+            for _, item in ipairs({ { value = false, text = "false" }, { value = 0, text = "0" },
+                { value = "", text = "" }, { text = "nil" } }) do
+                local n, recorded = make_recording_node()
+                local _, _, _, _, err = agent_node._test.process_tool_results(n,
+                    { scalar = { result = item.value } }, 1, nil,
+                    { tool_calls = { { id = "scalar", name = "scalar" } } }, {}, {}, {})
+                test.is_nil(err)
+                local row = find_by_tool_call_id(recorded, "scalar")
+                test.not_nil(row)
+                test.eq(row.content, item.text, "scalar observation is text")
+                test.eq(row.opts.content_type, "text/plain")
+                test.is_false(row.opts.metadata.is_error)
+            end
+        end)
+    end)
+
+    describe("round commit", function()
+        local function run_round(tool_results, tool_calls, delegate_calls, max_iterations, node_metadata, action_call_ids)
+            local events = {}
+            local n = {
+                node_id = "test-node",
+                data = function(_self, data_type, content, opts)
+                    local meta = opts and opts.metadata or {}
+                    table.insert(events, data_type == agent_consts.DATA_TYPE.AGENT_MEMORY and ("memory:" .. tostring(content))
+                        or meta.tool_call_id and ("result:" .. meta.tool_call_id)
+                        or "feedback")
+                end,
+                update_metadata = function(_self, updates)
+                    if updates.memory_pending == false then table.insert(events, "pending-cleared") end
+                end,
+                update_config = function() table.insert(events, "config") end,
+                yield = function() table.insert(events, "yield"); return true end,
+                metadata = function() return node_metadata or {} end,
+            }
+            local agent_ctx = {
+                switch_to_agent = function() return true end,
+                current_model = "model",
+            }
+            local _, _, err = agent_node._test.finalize_iteration(
+                n, agent_ctx, {}, 1, max_iterations or 10, 0, "auto", nil,
+                { tool_calls = tool_calls, action_call_ids = action_call_ids }, delegate_calls or {}, tool_results, {}, {}, {}
+            )
+            test.is_nil(err)
+            return events
+        end
+
+        it("commits a control switch together with the results of its round", function()
+            local events = run_round(
+                { switch = { result = { _control = { config = { agent = "agent:next" } } } } },
+                { { id = "switch", name = "switch", arguments = {} } }
+            )
+            local config_at, yield_at
+            for index, event in ipairs(events) do
+                if event == "config" and not config_at then config_at = index end
+                if event == "yield" and not yield_at then yield_at = index end
+            end
+            test.not_nil(config_at, "the switch is applied")
+            test.not_nil(yield_at, "the round is committed")
+            test.is_true(config_at < yield_at, "the first commit carries the switch: " .. table.concat(events, ","))
+        end)
+
+        it("queues the round's text before a yield directive waits", function()
+            local events = run_round(
+                { first = { result = {
+                    _control = { memory = { add = { { type = "fact", text = "x" } } }, yield = {} },
+                } } },
+                { { id = "first", name = "a", arguments = {} } },
+                {},
+                3
+            )
+            local yield_at
+            for index, event in ipairs(events) do
+                if event == "yield" and not yield_at then yield_at = index end
+            end
+            local before = {}
+            for index = 1, yield_at - 1 do before[events[index]] = true end
+            test.is_true(before["memory:x"] == true, table.concat(events, ","))
+            test.is_true(before.feedback == true, "the iteration warning: " .. table.concat(events, ","))
+        end)
+
+        it("writes a sibling's pending addition when the re-run call no longer delegates", function()
+            local events = run_round(
+                { second = { result = { ok = true } } },
+                { { id = "second", name = "b", arguments = {} } },
+                {}, 10,
+                { memory_pending = { iteration = 1, by_call = { first = { { type = "fact", text = "pending" } } } } },
+                { "first", "second" }
+            )
+            test.is_true(table.concat(events, ","):find("memory:pending", 1, true) ~= nil, table.concat(events, ","))
+            test.is_true(table.concat(events, ","):find("pending-cleared", 1, true) ~= nil, table.concat(events, ","))
+        end)
+
+        it("replaces a re-run call's own pending addition", function()
+            local events = run_round(
+                { both = { result = { _control = { memory = { add = { { type = "fact", text = "again" } } } } } } },
+                { { id = "both", name = "b", arguments = {} } },
+                {}, 10,
+                { memory_pending = { iteration = 1, by_call = { both = { { type = "fact", text = "again" } } } } },
+                { "both" }
+            )
+            local added = 0
+            for _, event in ipairs(events) do
+                if event == "memory:again" then added = added + 1 end
+            end
+            test.eq(added, 1, table.concat(events, ","))
+        end)
+
+        it("drops a re-run call's pending addition when its new result has none", function()
+            local events = run_round(
+                { both = { result = { ok = true } } },
+                { { id = "both", name = "b", arguments = {} } },
+                {}, 10,
+                { memory_pending = { iteration = 1, by_call = { both = { { type = "fact", text = "old" } } } } },
+                { "both" }
+            )
+            test.is_true(table.concat(events, ","):find("memory:old", 1, true) == nil, table.concat(events, ","))
+        end)
+
+        it("writes pending additions in the action's call order", function()
+            local events = run_round(
+                { first = { result = { _control = { memory = { add = { { type = "fact", text = "one" } } } } } } },
+                { { id = "first", name = "a", arguments = {} } },
+                {}, 10,
+                { memory_pending = { iteration = 1, by_call = { second = { { type = "fact", text = "two" } } } } },
+                { "first", "second" }
+            )
+            local one_at, two_at
+            for index, event in ipairs(events) do
+                if event == "memory:one" then one_at = index end
+                if event == "memory:two" then two_at = index end
+            end
+            test.not_nil(two_at, table.concat(events, ","))
+            test.is_true(one_at < two_at, table.concat(events, ","))
+        end)
+
+        it("writes added memory after every result of the round", function()
+            local events = run_round(
+                {
+                    first = { result = { _control = { memory = { add = { { type = "fact", text = "x" } } } } } },
+                    second = { result = { ok = true } },
+                },
+                { { id = "first", name = "a", arguments = {} }, { id = "second", name = "b", arguments = {} } }
+            )
+            local memory_at, last_result_at
+            for index, event in ipairs(events) do
+                if event == "memory:x" then memory_at = index end
+                if event:sub(1, 7) == "result:" then last_result_at = index end
+            end
+            test.not_nil(memory_at, "the memory is added")
+            test.is_true(memory_at > last_result_at, table.concat(events, ","))
+        end)
+    end)
+
     describe("behavior policy settlement", function()
         it("settles sibling outcomes before policies on a successful finish", function()
             local n, recorded = make_recording_node()
             n.update_metadata = function() end
+            n.metadata = function() return {} end
             n.yield = function() return true end
             local complete, result, err = agent_node._test.finalize_iteration(
                 n, {}, {}, 1, 10, 0, "any", "finish",
