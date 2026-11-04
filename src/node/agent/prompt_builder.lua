@@ -7,21 +7,22 @@ local consts = require("consts")
 local prompt_builder = {}
 local mt = { __index = prompt_builder }
 
-local function row_id(row)
+function prompt_builder.row_id(row)
     if type(row) ~= "table" then
         return ""
     end
     return tostring(row.data_id or "")
 end
 
-local function sort_history_rows(history_rows)
+-- UUID v7 order is write order, regardless of created_at resolution across backends.
+function prompt_builder.sort_history_rows(history_rows)
     table.sort(history_rows, function(a, b)
-        return row_id(a) < row_id(b)
+        return prompt_builder.row_id(a) < prompt_builder.row_id(b)
     end)
     return history_rows
 end
 
-local function find_latest_checkpoint_marker(history_rows)
+function prompt_builder.find_latest_checkpoint_marker(history_rows)
     for i = #history_rows, 1, -1 do
         local item = history_rows[i]
         if item.type == agent_consts.DATA_TYPE.AGENT_MEMORY
@@ -34,23 +35,6 @@ local function find_latest_checkpoint_marker(history_rows)
     return nil
 end
 
-local function is_structured_result_row(row)
-    if type(row) ~= "table" then
-        return false
-    end
-
-    local metadata = row.metadata or {}
-    if type(metadata.tool_call_id) ~= "string" or metadata.tool_call_id == "" then
-        return false
-    end
-    if type(metadata.tool_name) ~= "string" or metadata.tool_name == "" then
-        return false
-    end
-
-    return row.type == agent_consts.DATA_TYPE.AGENT_OBSERVATION
-        or row.type == agent_consts.DATA_TYPE.AGENT_DELEGATION
-end
-
 -- The turn context note follows the initial input, which every request sends,
 -- so it stays with the input when a checkpoint drops the rows around it.
 function prompt_builder.is_turn_context_row(row)
@@ -60,16 +44,27 @@ function prompt_builder.is_turn_context_row(row)
         and row.metadata.turn_context == true
 end
 
+-- An audit row records what the host did; the model never received it.
+function prompt_builder.is_audit_row(row)
+    return type(row) == "table"
+        and row.type == agent_consts.DATA_TYPE.AGENT_OBSERVATION
+        and type(row.metadata) == "table"
+        and row.metadata.checkpoint_skipped == true
+end
+
+-- The checkpoint summary replaces every row up to the cut, so a request carries
+-- the turn note, the marker and the rows after the cut. A checkpoint runs only
+-- between rounds, so the cut never separates a call from its result.
 function prompt_builder.apply_latest_marker(history_rows)
     if not history_rows or #history_rows == 0 then
-        return history_rows or {}, nil
+        return history_rows or {}
     end
 
-    sort_history_rows(history_rows)
+    prompt_builder.sort_history_rows(history_rows)
 
-    local latest_marker = find_latest_checkpoint_marker(history_rows)
+    local latest_marker = prompt_builder.find_latest_checkpoint_marker(history_rows)
     if not latest_marker then
-        return history_rows, nil
+        return history_rows
     end
 
     local cut_before = tostring((latest_marker.metadata or {}).checkpoint_before_data_id or "")
@@ -81,15 +76,13 @@ function prompt_builder.apply_latest_marker(history_rows)
     end
     filtered[#filtered + 1] = latest_marker
     for _, item in ipairs(history_rows) do
-        if item ~= latest_marker and not prompt_builder.is_turn_context_row(item) then
-            local keep = row_id(item) > cut_before or is_structured_result_row(item)
-            if keep then
-                filtered[#filtered + 1] = item
-            end
+        if item ~= latest_marker and not prompt_builder.is_turn_context_row(item)
+            and prompt_builder.row_id(item) > cut_before then
+            filtered[#filtered + 1] = item
         end
     end
 
-    return filtered, latest_marker
+    return filtered
 end
 
 local function clone_table(tbl)
@@ -167,6 +160,14 @@ local function extract_message_meta(metadata, provider_metadata_override)
     return nil
 end
 
+-- A developer row keeps its own message: the builder merges adjacent messages of
+-- one role, which would rewrite an earlier one when a turn stores no assistant row.
+local function positional_meta(metadata)
+    local message_meta = extract_message_meta(metadata) or {}
+    message_meta.preserve_position = true
+    return message_meta
+end
+
 function prompt_builder.new(dataflow_id, node_id, node_path)
     if not dataflow_id then
         return nil, "dataflow_id is required"
@@ -235,7 +236,7 @@ function prompt_builder:_load_conversation_history()
         end
         append_rows(self._history_override)
         append_rows(self._pending_history)
-        sort_history_rows(history)
+        prompt_builder.sort_history_rows(history)
         return history, nil
     end
 
@@ -276,15 +277,8 @@ function prompt_builder:_load_conversation_history()
         return merged_history, nil
     end
 
-    -- sort by UUID v7 data_id; matches recovery ordering and is monotonic
-    -- regardless of created_at resolution ties across backends.
-    sort_history_rows(merged_history)
-
-    -- find the latest checkpoint marker (if any). checkpoint writes an
-    -- AGENT_MEMORY row with metadata.checkpoint_marker = true and records
-    -- the history cut-line as metadata.checkpoint_before_data_id. rows at or
-    -- before the cut-line are dropped, except structured function results
-    -- which stay visible so the next turn keeps tool-call continuity.
+    -- The latest checkpoint marker records the cut line as
+    -- metadata.checkpoint_before_data_id.
     local filtered = prompt_builder.apply_latest_marker(merged_history)
     return filtered, nil
 end
@@ -378,8 +372,7 @@ function prompt_builder:_format_observation(obs_item, builder)
     else
         local feedback_content = tostring(content)
         if feedback_content and feedback_content ~= "" then
-            local message_meta = extract_message_meta(metadata)
-            builder:add_developer(feedback_content, message_meta)
+            builder:add_developer(feedback_content, positional_meta(metadata))
         end
     end
 
@@ -393,7 +386,7 @@ function prompt_builder:_format_memory(memory_item, builder)
     end
 
     local metadata = memory_item.metadata or {}
-    local message_meta = extract_message_meta(metadata)
+    local message_meta = positional_meta(metadata)
     if metadata.role == "system" then
         builder:add_system(content, message_meta)
     else
@@ -429,8 +422,7 @@ function prompt_builder:_format_delegation(delegation_item, builder)
         builder:add_function_result(tool_name, result_content, tool_call_id, result_options)
     else
         local delegation_text = "Delegation result: " .. tostring(content)
-        local message_meta = extract_message_meta(metadata)
-        builder:add_developer(delegation_text, message_meta)
+        builder:add_developer(delegation_text, positional_meta(metadata))
     end
 
     return nil
@@ -449,6 +441,9 @@ function prompt_builder:_format_input(content, builder)
 end
 
 function prompt_builder:format_history_item(item, builder)
+    if prompt_builder.is_audit_row(item) then
+        return nil
+    end
     if item.type == consts.DATA_TYPE.NODE_INPUT then
         local content, err = self:_parse_json_content(item.content, item.content_type)
         if err then return err end

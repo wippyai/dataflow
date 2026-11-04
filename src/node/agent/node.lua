@@ -184,6 +184,7 @@ local RUN_CONTEXT_CONTRACT = "wippy.agent:run_context"
 local DEFAULT_RUN_CONTEXT_BINDING = "userspace.dataflow.node.agent.run_context:binding"
 local DEFAULT_CHECKPOINT_FUNCTION_ENV = "userspace.dataflow.env:checkpoint_function_id"
 local TURN_CONTEXT_KEY = "turn_context"
+local CONVERSATION_INPUT_KEY = "conversation_input"
 
 local OUTCOME = {
     CONTINUES = "continues",
@@ -297,6 +298,7 @@ type StepNote = {
     role: string,
     content: string,
     metadata: table,
+    lifecycle_phase: string?,
 }
 
 local NOTE_ROLES = { system = true, developer = true }
@@ -327,9 +329,8 @@ local function lifecycle_notes(result: table?, phase: string, agent_id: any): ({
                         .. "lifecycle messages must be developer or system notes",
                         phase, tostring(agent_id), tostring(role))
                 end
-                local metadata = positional_metadata(message.metadata)
-                metadata.lifecycle_phase = phase
-                table.insert(notes, { role = role, content = content, metadata = metadata })
+                table.insert(notes, { role = role, content = content,
+                    metadata = positional_metadata(message.metadata), lifecycle_phase = phase })
             end
         end
     end
@@ -421,65 +422,10 @@ local function decode_json_content(content: any, content_type: any)
     return decoded
 end
 
-local function checkpoint_row_id(row)
-    if type(row) ~= "table" then
-        return ""
-    end
-    return tostring(row.data_id or "")
-end
-
-local function sort_checkpoint_rows(history_rows)
-    table.sort(history_rows, function(a, b)
-        return checkpoint_row_id(a) < checkpoint_row_id(b)
-    end)
-    return history_rows
-end
-
-local function find_latest_checkpoint_marker(history_rows)
-    for i = #history_rows, 1, -1 do
-        local item = history_rows[i]
-        if item.type == agent_consts.DATA_TYPE.AGENT_MEMORY
-           and item.metadata
-           and item.metadata.checkpoint_marker == true then
-            return item
-        end
-    end
-
-    return nil
-end
-
-local function is_structured_result_row(row)
-    if type(row) ~= "table" then
-        return false
-    end
-
-    local metadata = row.metadata or {}
-    if type(metadata.tool_call_id) ~= "string" or metadata.tool_call_id == "" then
-        return false
-    end
-    if type(metadata.tool_name) ~= "string" or metadata.tool_name == "" then
-        return false
-    end
-
-    return row.type == agent_consts.DATA_TYPE.AGENT_OBSERVATION
-        or row.type == agent_consts.DATA_TYPE.AGENT_DELEGATION
-end
-
-local function last_checkpoint_data_id(history_rows)
-    local latest = ""
-    for _, row in ipairs(history_rows or {}) do
-        local rid = checkpoint_row_id(row)
-        if rid > latest then
-            latest = rid
-        end
-    end
-    return latest
-end
-
 local function checkpoint_source_rows(history_rows)
     local source_rows = {}
     for _, row in ipairs(history_rows or {}) do
-        if not is_structured_result_row(row) and not prompt_builder.is_turn_context_row(row) then
+        if not prompt_builder.is_turn_context_row(row) and not prompt_builder.is_audit_row(row) then
             source_rows[#source_rows + 1] = row
         end
     end
@@ -770,26 +716,24 @@ local function persisted_action_id(n, action_key): (string?, string?)
     return row.data_id, nil
 end
 
-local function store_step_notes(n, notes: {StepNote}, iteration): any
+local function store_step_notes(n, notes: {StepNote}, iteration)
     for index, note in ipairs(notes) do
-        local _, data_err = n:data(agent_consts.DATA_TYPE.AGENT_MEMORY, note.content, {
+        n:data(agent_consts.DATA_TYPE.AGENT_MEMORY, note.content, {
             key = iteration .. "_note_" .. index,
             content_type = consts.CONTENT_TYPE.TEXT,
             node_id = n.node_id,
             metadata = {
                 iteration = iteration,
                 role = note.role,
-                lifecycle_phase = note.metadata.lifecycle_phase,
+                lifecycle_phase = note.lifecycle_phase,
                 llm_meta = note.metadata
             }
         })
-        if data_err then return data_err end
     end
-    return nil
 end
 
--- Rendered once, before the first request, and committed so every later request
--- and any restart replays the same minute.
+-- The stored row decides: a start before the first commit renders the note, and
+-- every start after it replays the minute the first request sent.
 local function store_turn_context(n, agent_instance: any): any
     local note, render_err = turn_context.render(agent_instance.agent_options, time.now())
     if render_err then
@@ -806,7 +750,7 @@ local function store_turn_context(n, agent_instance: any): any
     if stored then
         return nil
     end
-    local _, data_err = n:data(agent_consts.DATA_TYPE.AGENT_MEMORY, note, {
+    n:data(agent_consts.DATA_TYPE.AGENT_MEMORY, note, {
         key = TURN_CONTEXT_KEY,
         content_type = consts.CONTENT_TYPE.TEXT,
         node_id = n.node_id,
@@ -816,11 +760,27 @@ local function store_turn_context(n, agent_instance: any): any
             llm_meta = { preserve_position = true }
         }
     })
-    if data_err then
-        return data_err
-    end
     local _, yield_err = n:yield()
     return yield_err
+end
+
+-- The fold is the first user message of every request, so the first start pins it.
+-- It commits with the node's first commit; a start before that sent nothing that
+-- an output depends on and folds again.
+local function pin_conversation_input(n, folded: string): string
+    local stored = n:query()
+        :with_nodes(n.node_id)
+        :with_data_types(agent_consts.DATA_TYPE.AGENT_INPUT)
+        :all()
+    if stored and stored[1] then
+        return stored[1].content
+    end
+    n:data(agent_consts.DATA_TYPE.AGENT_INPUT, folded, {
+        key = CONVERSATION_INPUT_KEY,
+        content_type = consts.CONTENT_TYPE.TEXT,
+        node_id = n.node_id,
+    })
+    return folded
 end
 
 local function extract_checkpoint_scenario_id(history_rows)
@@ -939,6 +899,7 @@ local function maybe_checkpoint_history(n, config, session_context, agent_instan
     end
 
     local history_rows = (n:query() :: any)
+        :fetch_options({ replace_references = true })
         :with_nodes(n.node_id)
         :with_data_types(
             agent_consts.DATA_TYPE.AGENT_ACTION,
@@ -952,7 +913,7 @@ local function maybe_checkpoint_history(n, config, session_context, agent_instan
         return nil, nil
     end
 
-    sort_checkpoint_rows(history_rows)
+    prompt_builder.sort_history_rows(history_rows)
 
     local latest_action = nil
     for i = #history_rows, 1, -1 do
@@ -974,12 +935,12 @@ local function maybe_checkpoint_history(n, config, session_context, agent_instan
         return nil, nil
     end
 
-    local cut_before = last_checkpoint_data_id(history_rows)
+    local cut_before = prompt_builder.row_id(history_rows[#history_rows])
     if cut_before == "" then
         return nil, nil
     end
 
-    local latest_marker = find_latest_checkpoint_marker(history_rows)
+    local latest_marker = prompt_builder.find_latest_checkpoint_marker(history_rows)
     if latest_marker
        and tostring((latest_marker.metadata or {}).checkpoint_before_data_id or "") == cut_before then
         if compact_requested then n:update_metadata({ checkpoint_requested = false }) end
@@ -991,16 +952,8 @@ local function maybe_checkpoint_history(n, config, session_context, agent_instan
         return nil, nil
     end
 
-    local retained_result_count = 0
-    for _, row in ipairs(history_rows) do
-        if is_structured_result_row(row) then
-            retained_result_count = retained_result_count + 1
-        end
-    end
-
-    -- Build a serialization-safe projection of history for the summarizer.
-    -- The function only receives rows that will actually be checkpointed; structured
-    -- call results remain in the prompt to preserve tool/result continuity.
+    -- A serialization-safe projection of the rows the summary replaces, calls and
+    -- results together.
     local history_payload = {}
     for i, row in ipairs(source_rows) do
         history_payload[i] = {
@@ -1050,7 +1003,6 @@ local function maybe_checkpoint_history(n, config, session_context, agent_instan
                 iteration = checkpoint_iteration,
                 prompt_tokens = prompt_tokens,
                 history_count = #history_payload,
-                retained_result_count = retained_result_count,
                 checkpoint_before_data_id = cut_before
             },
             history = history_payload,
@@ -1088,7 +1040,6 @@ local function maybe_checkpoint_history(n, config, session_context, agent_instan
                 iteration = checkpoint_iteration,
                 prompt_tokens = prompt_tokens,
                 history_count = #history_payload,
-                retained_result_count = retained_result_count,
                 checkpoint_before_data_id = cut_before,
                 history = history_payload,
                 options = checkpoint_cfg,
@@ -1127,7 +1078,6 @@ local function maybe_checkpoint_history(n, config, session_context, agent_instan
         checkpoint_history_count = #history_payload,
         checkpoint_first_data_id = tostring((source_rows[1] or {}).data_id or ""),
         checkpoint_last_data_id = tostring((source_rows[#source_rows] or {}).data_id or ""),
-        checkpoint_retained_result_count = retained_result_count,
         checkpoint_source_action_data_id = tostring(latest_action.data_id or ""),
         checkpoint_function_id = func_id,
         checkpoint_source = checkpoint_source,
@@ -1983,13 +1933,10 @@ local function finalize_iteration(n, agent_ctx, session_context, iteration, max_
     )
 
     append_control_delegations(delegate_calls, control_delegations)
-    queue_iteration_warning(n, iteration, max_iterations)
-    if #prepared > 0 then n:update_metadata({ behavior_pending = { iteration = iteration, controls = prepared } }) end
-    local _, persist_err = n:yield()
-    if persist_err then return nil, nil, persist_err end
-
     local has_delegations = #delegate_calls > 0
 
+    -- A switch commits with the results that carry it: the stored results no longer
+    -- hold the directive, so recovery could not apply it again.
     if has_delegations then
         if #control_responses > 0 then
             local _changes_summary, changes_err = control_handler.apply_control_responses(control_responses, agent_ctx, n)
@@ -1997,7 +1944,26 @@ local function finalize_iteration(n, agent_ctx, session_context, iteration, max_
                 return nil, nil, changes_err
             end
         end
+    elseif #control_responses > 0 then
+        local changes_err = run_control_response_commands(control_responses, agent_ctx, n, iteration)
+        if changes_err then
+            return nil, nil, changes_err
+        end
+    end
 
+    -- Host text follows every result of the round; between a call and its result
+    -- it makes the request invalid.
+    local function queue_round_text()
+        control_handler.queue_memory_additions(control_responses, n, iteration)
+        queue_iteration_warning(n, iteration, max_iterations)
+    end
+
+    if not has_delegations then queue_round_text() end
+    if #prepared > 0 then n:update_metadata({ behavior_pending = { iteration = iteration, controls = prepared } }) end
+    local _, persist_err = n:yield()
+    if persist_err then return nil, nil, persist_err end
+
+    if has_delegations then
         local delegation_infos = delegation_handler.create_delegation_batch(
             { delegate_calls = delegate_calls },
             n,
@@ -2011,13 +1977,9 @@ local function finalize_iteration(n, agent_ctx, session_context, iteration, max_
         end
 
         delegation_handler.map_delegation_results_to_conversation(delegation_results, n, iteration)
+        queue_round_text()
         local _, delegation_persist_err = n:yield()
         if delegation_persist_err then return nil, nil, delegation_persist_err end
-    elseif #control_responses > 0 then
-        local changes_err = run_control_response_commands(control_responses, agent_ctx, n, iteration)
-        if changes_err then
-            return nil, nil, changes_err
-        end
     end
 
     if #prepared > 0 then
@@ -2260,10 +2222,22 @@ local function run(args)
         }, input_err)
     end
 
-    if agent_id_override then
-        n:update_config({ agent = agent_id_override })
+    local saved_state = ((args.node or {}).metadata or {}).state or {}
 
-        n:update_metadata({ title = agent_ref.resolve(agent_id_override).title })
+    -- Inputs choose the agent and model until the node's first commit, which stores
+    -- that choice; after it the config holds the selection, including any switch.
+    if saved_state.agent_id ~= nil then
+        agent_id_override = nil
+        model_override = config.model or model_override
+    else
+        if agent_id_override then
+            n:update_config({ agent = agent_id_override })
+
+            n:update_metadata({ title = agent_ref.resolve(agent_id_override).title })
+        end
+        if model_override then
+            n:update_config({ model = model_override })
+        end
     end
 
     model_override = model_override or config.model or config.arena.model
@@ -2359,12 +2333,11 @@ local function run(args)
         }, "Failed to initialize prompt builder")
     end
 
-    builder:with_arena_config(config.arena):with_initial_input(input_data)
+    builder:with_arena_config(config.arena):with_initial_input(pin_conversation_input(n, input_data))
     local caller = tool_caller.new()
     -- The tool calls of one model turn run concurrently, as in the session host.
     caller:set_strategy(tool_caller.STRATEGY.PARALLEL)
 
-    local saved_state = ((args.node or {}).metadata or {}).state or {}
     local iteration = saved_state.current_iteration or 0
     local max_iterations = max_iterations_override or config.arena.max_iterations or agent_consts.DEFAULTS.MAX_ITERATIONS
     local min_iterations = config.arena.min_iterations or agent_consts.DEFAULTS.MIN_ITERATIONS
@@ -2790,14 +2763,7 @@ local function run(args)
             update_node_progress(n, iteration, max_iterations, total_tokens, tool_calls_count, status_msg, agent_id,
                 model_name, unproductive_steps, route_pin)
 
-            local notes_store_err = store_step_notes(n, step_notes, iteration)
-            if notes_store_err then
-                local notes_store_message = "Failed to store step notes: " .. error_message(notes_store_err, "unknown")
-                return fail_with_lifecycle({
-                    code = agent_consts.ERROR.AGENT_EXEC_FAILED,
-                    message = notes_store_message
-                }, notes_store_message, REASON.HOST_FAILED, iteration)
-            end
+            store_step_notes(n, step_notes, iteration)
             local truncated_action_key = store_agent_action(n, agent_result, iteration, agent_id, model_name,
                 exit_tool_name, {})
 
@@ -2856,14 +2822,7 @@ local function run(args)
         update_node_progress(n, iteration, max_iterations, total_tokens, tool_calls_count, status_msg, agent_id,
             model_name, unproductive_steps, route_pin)
 
-        local notes_store_err = store_step_notes(n, step_notes, iteration)
-        if notes_store_err then
-            local notes_store_message = "Failed to store step notes: " .. error_message(notes_store_err, "unknown")
-            return fail_with_lifecycle({
-                code = agent_consts.ERROR.AGENT_EXEC_FAILED,
-                message = notes_store_message
-            }, notes_store_message, REASON.HOST_FAILED, iteration)
-        end
+        store_step_notes(n, step_notes, iteration)
         local action_key = store_agent_action(n, agent_result, iteration, agent_id, model_name, exit_tool_name, {})
         local proposed_controls = {}
         for _, summary in ipairs({ before_result or {}, after_result or {} }) do

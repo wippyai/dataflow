@@ -21,6 +21,25 @@ local function handler(input)
         }
     end
 
+    if type(input.memory_add) == "string" then
+        return {
+            accepted = true,
+            _control = { memory = { add = { { type = "fact", text = input.memory_add } } } }
+        }
+    end
+
+    if type(input.delegate_to) == "string" then
+        return {
+            _control = {
+                delegate = { {
+                    agent_id = input.delegate_to,
+                    input_data = { scenario_id = input.scenario_id .. "-child", mode = "text_final" },
+                    tool_calling = "auto",
+                } }
+            }
+        }
+    end
+
     local child_node_id = uuid.v7()
     return {
         accepted = true,

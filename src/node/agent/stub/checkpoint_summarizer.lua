@@ -35,6 +35,13 @@ local function handler(args)
             if type(row.metadata) == "table" and row.metadata.turn_context == true then
                 helpers.set_metric(scenario_id, "checkpoint_saw_turn_context", 1)
             end
+            if type(row.metadata) == "table" and row.metadata.checkpoint_skipped == true then
+                helpers.set_metric(scenario_id, "checkpoint_saw_audit_row", 1)
+            end
+            if type(row.metadata) == "table" and type(row.metadata.tool_call_id) == "string" then
+                helpers.bump_metric(scenario_id, "checkpoint_result_rows", 1)
+                helpers.set_metric(scenario_id, "checkpoint_last_result_content", tostring(row.content))
+            end
         end
         helpers.set_metric(scenario_id, "last_checkpoint_history_count", history_count)
         helpers.set_metric(scenario_id, "last_checkpoint_prompt_tokens", prompt_tokens)

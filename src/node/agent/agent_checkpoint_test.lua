@@ -9,72 +9,7 @@ local agent_consts = require("agent_consts")
 local prompt_builder = require("prompt_builder")
 local prompt = require("prompt")
 local env = require("env")
-
-local function row_id(row)
-    if type(row) ~= "table" then
-        return ""
-    end
-    return tostring(row.data_id or "")
-end
-
-local function sort_history_rows(history)
-    table.sort(history, function(a, b)
-        return row_id(a) < row_id(b)
-    end)
-    return history
-end
-
-local function is_structured_result_row(row)
-    if type(row) ~= "table" then
-        return false
-    end
-
-    local metadata = row.metadata or {}
-    if type(metadata.tool_call_id) ~= "string" or metadata.tool_call_id == "" then
-        return false
-    end
-    if type(metadata.tool_name) ~= "string" or metadata.tool_name == "" then
-        return false
-    end
-
-    return row.type == agent_consts.DATA_TYPE.AGENT_OBSERVATION
-        or row.type == agent_consts.DATA_TYPE.AGENT_DELEGATION
-end
-
-local function apply_latest_marker(history)
-    if not history or #history == 0 then
-        return history or {}
-    end
-
-    sort_history_rows(history)
-
-    local latest_marker = nil
-    for i = #history, 1, -1 do
-        local row = history[i]
-        if row.type == agent_consts.DATA_TYPE.AGENT_MEMORY
-           and row.metadata and row.metadata.checkpoint_marker == true then
-            latest_marker = row
-            break
-        end
-    end
-
-    if not latest_marker then
-        return history
-    end
-
-    local cut_before = tostring((latest_marker.metadata or {}).checkpoint_before_data_id or "")
-    local filtered = { latest_marker }
-    for _, row in ipairs(history) do
-        if row ~= latest_marker then
-            local keep = row_id(row) > cut_before or is_structured_result_row(row)
-            if keep then
-                filtered[#filtered + 1] = row
-            end
-        end
-    end
-
-    return filtered
-end
+local recovery_helpers = require("recovery_helpers")
 
 local function define_tests()
     describe("Agent Checkpoint Tests", function()
@@ -288,7 +223,7 @@ local function define_tests()
             for i, row in ipairs(history) do
                 copy[i] = row
             end
-            return apply_latest_marker(copy)
+            return prompt_builder.apply_latest_marker(copy)
         end
 
         local function find_message_by_role(messages, role)
@@ -349,16 +284,20 @@ local function define_tests()
             test.eq(count_checkpoint_markers(history), 1)
             test.eq(get_metrics(workflow.scenario_id).checkpoint_calls, 1)
             test.eq(latest_checkpoint_marker(history).metadata.checkpoint_reason, "compaction_requested")
-            local filtered = apply_latest_marker(history)
+            local filtered = prompt_builder.apply_latest_marker(history)
+            local kept_ids = {}
+            for _, row in ipairs(filtered) do kept_ids[row.data_id] = true end
+            local cut = latest_checkpoint_marker(history).metadata.checkpoint_before_data_id
+            local summarized = 0
             for _, row in ipairs(history) do
-                if is_structured_result_row(row) then
-                    local kept = false
-                    for _, remaining in ipairs(filtered) do
-                        if remaining.data_id == row.data_id then kept = true end
-                    end
-                    test.is_true(kept, "compaction preserves every structured tool result")
+                if type((row.metadata or {}).tool_call_id) == "string" and row.data_id <= cut then
+                    test.is_nil(kept_ids[row.data_id], "a result before the cut leaves with its call")
+                    summarized = summarized + 1
                 end
             end
+            test.gt(summarized, 0, "the scenario cuts a tool round")
+            test.eq(tonumber(recovery_helpers.get_metric(workflow.scenario_id, "checkpoint_result_rows", 0)), summarized,
+                "the summarizer receives every result the cut removes")
         end)
 
         it("uses the post-control agent's checkpoint provider even on a final response", function()
@@ -581,10 +520,7 @@ local function define_tests()
             for _, row in ipairs(filtered) do
                 if row ~= latest_marker then
                     local row_after_cut = tostring(row.data_id or "") > cut_before
-                    test.is_true(
-                        row_after_cut or is_structured_result_row(row),
-                        "filtered rows are either after the cut or retained structured results"
-                    )
+                    test.is_true(row_after_cut, "every kept row is after the cut")
                 end
             end
 
@@ -675,10 +611,7 @@ local function define_tests()
             for _, row in ipairs(filtered) do
                 if row ~= latest_marker then
                     local row_after_cut = tostring(row.data_id or "") > cut_before
-                    test.is_true(
-                        row_after_cut or is_structured_result_row(row),
-                        "filtered row is after the cut line or intentionally retained as a result row"
-                    )
+                    test.is_true(row_after_cut, "every kept row is after the cut")
                 end
             end
 

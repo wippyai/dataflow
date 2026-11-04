@@ -40,19 +40,8 @@ local function host_ids(args)
     return dataflow_id, node_id, nil
 end
 
-local function row_id(row)
-    if type(row) ~= "table" then
-        return ""
-    end
-    return tostring(row.data_id or "")
-end
-
-local function sort_rows(rows)
-    table.sort(rows, function(a, b)
-        return row_id(a) < row_id(b)
-    end)
-    return rows
-end
+local row_id = prompt_builder.row_id
+local sort_rows = prompt_builder.sort_history_rows
 
 local function selector(args): Selector
     local raw = type(args) == "table" and args.selector or nil
@@ -89,7 +78,8 @@ local function load_history_rows(dataflow_id, node_id)
             row.content_type = row.ref_content_type
             input_key = row.discriminator or row.ref_key or row.key or "default"
         end
-        if row.type ~= consts.DATA_TYPE.NODE_INPUT or prompt_builder.is_conversation_input(input_key) then
+        if not prompt_builder.is_audit_row(row)
+            and (row.type ~= consts.DATA_TYPE.NODE_INPUT or prompt_builder.is_conversation_input(input_key)) then
             rows[#rows + 1] = row
         end
     end
@@ -101,7 +91,7 @@ local function slice_rows(rows, sel: Selector)
     local source = copy_rows(rows)
 
     if mode == "since_checkpoint" then
-        return sort_rows((prompt_builder.apply_latest_marker(source)))
+        return sort_rows(prompt_builder.apply_latest_marker(source))
     end
 
     if mode == "checkpoint" then

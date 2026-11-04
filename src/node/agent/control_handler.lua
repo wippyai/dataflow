@@ -115,19 +115,10 @@ function control_handler.process_memory_operations(control, node_sdk, iteration)
         table.insert(memory_changes, { action = "compact" })
     end
 
+    -- The row itself waits for the end of the round: see queue_memory_additions.
     if control.memory.add then
         for _, memory_item in ipairs(control.memory.add) do
             if memory_item.type and memory_item.text then
-                node_sdk:data(agent_consts.DATA_TYPE.AGENT_MEMORY, memory_item.text, {
-                    key = memory_item.type .. "_" .. iteration,
-                    discriminator = memory_item.type,
-                    node_id = node_sdk.node_id,
-                    metadata = {
-                        memory_type = memory_item.type,
-                        created_by_control = true,
-                        iteration = iteration
-                    }
-                })
                 table.insert(memory_changes, {
                     action = "add",
                     type = memory_item.type,
@@ -155,17 +146,55 @@ function control_handler.process_memory_operations(control, node_sdk, iteration)
         end
     end
 
+    -- Only rows added here can be removed: any other row may be a call, a result or
+    -- a note a stored output depends on.
     if control.memory.delete then
+        local removable = {}
+        for _, row in ipairs(node_sdk:find_data(agent_consts.DATA_TYPE.AGENT_MEMORY) or {}) do
+            if type(row.metadata) == "table" and row.metadata.created_by_control == true then
+                removable[row.data_id] = true
+            end
+        end
         for _, memory_id in ipairs(control.memory.delete) do
-            node_sdk:delete_data(memory_id)
-            table.insert(memory_changes, {
-                action = "delete",
-                memory_id = memory_id
-            })
+            if removable[memory_id] then
+                node_sdk:delete_data(memory_id)
+                table.insert(memory_changes, {
+                    action = "delete",
+                    memory_id = memory_id
+                })
+            else
+                table.insert(memory_changes, {
+                    action = "delete",
+                    memory_id = memory_id,
+                    error = "Memory delete refused: " .. tostring(memory_id) .. " was not added by a memory directive"
+                })
+            end
         end
     end
 
     return memory_changes
+end
+
+-- Called after every result of the round is written, so an added row cannot land
+-- between a call and its result.
+function control_handler.queue_memory_additions(control_responses, node_sdk, iteration)
+    for _, response in ipairs(control_responses) do
+        local control = response._original_control or {}
+        for _, memory_item in ipairs(control.memory and control.memory.add or {}) do
+            if memory_item.type and memory_item.text then
+                node_sdk:data(agent_consts.DATA_TYPE.AGENT_MEMORY, memory_item.text, {
+                    key = memory_item.type .. "_" .. iteration,
+                    discriminator = memory_item.type,
+                    node_id = node_sdk.node_id,
+                    metadata = {
+                        memory_type = memory_item.type,
+                        created_by_control = true,
+                        iteration = iteration
+                    }
+                })
+            end
+        end
+    end
 end
 
 -- Process artifact creation
@@ -376,6 +405,12 @@ function control_handler.apply_control_responses(control_responses, agent_contex
     }
 
     for _, response in ipairs(control_responses) do
+        for _, change in ipairs(response.changes_applied and response.changes_applied.memory or {}) do
+            if change.error then
+                table.insert(changes_summary.errors, change.error)
+            end
+        end
+
         -- Handle agent changes. Persisted to node config so a re-run/recovery loads
         -- the new agent (config.agent is read at node startup). switch_to_agent also
         -- resets any active trait/tool overlays, so it must run before they are set.

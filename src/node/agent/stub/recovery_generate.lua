@@ -1,4 +1,5 @@
 local helpers = require("helpers")
+local time = require("time")
 
 local function response_tokens(prompt_tokens, completion_tokens)
     return {
@@ -222,10 +223,10 @@ local function handler(contract_args)
     end
 
     if scenario.mode == "behavior_restart" then
-        if result_count == 0 then
-            return tool_call_response(scenario.scenario_id, 1, scenario.tool_delay_ms, 13, 8)
-        end
         if helpers.count_text_matches(messages, "BEHAVIOR-RESTART-TARGET") == 0 then
+            if llm_calls == 1 then
+                return tool_call_response(scenario.scenario_id, 1, scenario.tool_delay_ms, 13, 8)
+            end
             return nil, "recovered proposal ran the previous agent"
         end
         return final_response(scenario.scenario_id, scenario.mode, result_count, 9, 4)
@@ -244,7 +245,7 @@ local function handler(contract_args)
 
     -- Two tool calls in one turn, each holding its worker for tool_delay_ms.
     if scenario.mode == "two_tools_one_turn" then
-        if result_count == 0 then
+        if llm_calls == 1 then
             local first = tool_call_response(scenario.scenario_id, 1, scenario.tool_delay_ms, base_prompt or 13, 8)
             local second = tool_call_response(scenario.scenario_id, 2, scenario.tool_delay_ms, base_prompt or 13, 8)
             table.insert(first.result.tool_calls, second.result.tool_calls[1])
@@ -299,14 +300,24 @@ local function handler(contract_args)
     -- Tool rounds whose responses each carry one thinking block; the round named
     -- by switch_at calls the control tool to change the agent.
     if scenario.mode == "thinking_rounds" then
+        if scenario.slow_request == llm_calls then
+            time.sleep(tostring(scenario.slow_ms) .. "ms")
+        end
+        local tokens = scenario.checkpoint_at == llm_calls and 500 or base_prompt or 9
+        local control_args = nil
+        if scenario.switch_at == llm_calls then
+            control_args = { switch_agent = scenario.switch_agent }
+        elseif scenario.delegate_at == llm_calls then
+            control_args = { delegate_to = scenario.delegate_to }
+        elseif scenario.memory_at == llm_calls then
+            control_args = { memory_add = "added at " .. tostring(llm_calls) }
+        end
         local response
         if llm_calls <= (tonumber(scenario.rounds) or 1) then
-            local switching = scenario.switch_at == llm_calls
-            response = tool_call_response(scenario.scenario_id, llm_calls, 0, base_prompt or 9, 4,
-                switching and "recovery_control_tool" or "recovery_tool",
-                switching and { switch_agent = scenario.switch_agent } or nil)
+            response = tool_call_response(scenario.scenario_id, llm_calls, 0, tokens, 4,
+                control_args and "recovery_control_tool" or "recovery_tool", control_args)
         else
-            response = final_response(scenario.scenario_id, scenario.mode, result_count, base_prompt or 9, 4)
+            response = final_response(scenario.scenario_id, scenario.mode, result_count, tokens, 4)
         end
         response.metadata = {
             thinking_blocks = {
@@ -432,8 +443,8 @@ local function handler(contract_args)
     -- exceed config.checkpoint.token_threshold.
     if scenario.mode == "checkpoint_stress" then
         local max_steps = tonumber(scenario.max_steps) or 3
-        if result_count < max_steps then
-            return tool_call_response(scenario.scenario_id, result_count + 1,
+        if llm_calls <= max_steps then
+            return tool_call_response(scenario.scenario_id, llm_calls,
                 scenario.tool_delay_ms, base_prompt or 500, 8)
         end
 

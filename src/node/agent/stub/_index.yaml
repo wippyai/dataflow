@@ -25,6 +25,8 @@ entries:
     comment: Deterministic LLM generator for agent recovery tests
     test_only: true
   source: file://recovery_generate.lua
+  modules:
+  - time
   imports:
     helpers: userspace.dataflow.node.agent.stub:recovery_helpers
   method: handler

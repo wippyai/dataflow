@@ -56,6 +56,67 @@ local function define_tests()
         end)
     end)
 
+    describe("round commit", function()
+        local function run_round(tool_results, tool_calls, delegate_calls, max_iterations)
+            local events = {}
+            local n = {
+                node_id = "test-node",
+                data = function(_self, data_type, _content, opts)
+                    local meta = opts and opts.metadata or {}
+                    table.insert(events, data_type == agent_consts.DATA_TYPE.AGENT_MEMORY and "memory"
+                        or meta.tool_call_id and ("result:" .. meta.tool_call_id)
+                        or "feedback")
+                end,
+                update_metadata = function() end,
+                update_config = function() table.insert(events, "config") end,
+                yield = function() table.insert(events, "yield"); return true end,
+                metadata = function() return {} end,
+            }
+            local agent_ctx = {
+                switch_to_agent = function() return true end,
+                current_model = "model",
+            }
+            local _, _, err = agent_node._test.finalize_iteration(
+                n, agent_ctx, {}, 1, max_iterations or 10, 0, "auto", nil,
+                { tool_calls = tool_calls }, delegate_calls or {}, tool_results, {}, {}, {}
+            )
+            test.is_nil(err)
+            return events
+        end
+
+        it("commits a control switch together with the results of its round", function()
+            local events = run_round(
+                { switch = { result = { _control = { config = { agent = "agent:next" } } } } },
+                { { id = "switch", name = "switch", arguments = {} } }
+            )
+            local config_at, yield_at
+            for index, event in ipairs(events) do
+                if event == "config" and not config_at then config_at = index end
+                if event == "yield" and not yield_at then yield_at = index end
+            end
+            test.not_nil(config_at, "the switch is applied")
+            test.not_nil(yield_at, "the round is committed")
+            test.is_true(config_at < yield_at, "the first commit carries the switch: " .. table.concat(events, ","))
+        end)
+
+        it("writes added memory after every result of the round", function()
+            local events = run_round(
+                {
+                    first = { result = { _control = { memory = { add = { { type = "fact", text = "x" } } } } } },
+                    second = { result = { ok = true } },
+                },
+                { { id = "first", name = "a", arguments = {} }, { id = "second", name = "b", arguments = {} } }
+            )
+            local memory_at, last_result_at
+            for index, event in ipairs(events) do
+                if event == "memory" then memory_at = index end
+                if event:sub(1, 7) == "result:" then last_result_at = index end
+            end
+            test.not_nil(memory_at, "the memory is added")
+            test.is_true(memory_at > last_result_at, table.concat(events, ","))
+        end)
+    end)
+
     describe("behavior policy settlement", function()
         it("settles sibling outcomes before policies on a successful finish", function()
             local n, recorded = make_recording_node()

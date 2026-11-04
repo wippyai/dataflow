@@ -2,6 +2,7 @@ local consts = {}
 
 -- Data Types
 consts.DATA_TYPE = {
+    AGENT_INPUT = "agent.input",
     AGENT_ACTION = "agent.action",
     AGENT_OBSERVATION = "agent.observation",
     AGENT_MEMORY = "agent.memory",

@@ -624,6 +624,7 @@ entries:
       - uuid
       - funcs
     imports:
+      recovery_helpers: userspace.dataflow.node.agent.stub:recovery_helpers
       agent_consts: userspace.dataflow.node.agent:consts
       client: userspace.dataflow:client
       consts: userspace.dataflow:consts

@@ -170,10 +170,14 @@ with an authorized database handle. The library is not a public HTTP endpoint.
 
 ## Stable request prefix
 
-Each request an agent node sends extends the previous one: everything sent
-before the model's output is stored where it was sent and replayed unchanged, so
-the provider cache and earlier thinking blocks stay valid. This requires Agent
-0.5.10 and LLM 0.5.13 or later.
+While nothing below edits it, each request an agent node sends extends the
+previous one: everything sent before the model's output is stored where it was
+sent and replayed unchanged, so the provider cache and earlier thinking blocks
+stay valid. This requires Agent 0.5.10 and LLM 0.5.13 or later.
+
+- **User message.** The fold of the node's conversation inputs is stored once as
+  an `agent.input` row with the node's first commit and replayed on every start,
+  so an input that arrives later does not change it.
 
 - **Memory recall.** An agent with a memory contract recalls on each eligible
   step and returns the note in `context_notes`. The notes are stored, in order,
@@ -195,21 +199,49 @@ the provider cache and earlier thinking blocks stay valid. This requires Agent
   round keeps its blocks. A checkpoint's cut is the newest row at that moment, so
   every action row that survives it was produced after the marker: the default
   fingerprint comparison is sufficient and the node passes no `thinking_is_current`.
+- **Checkpoints.** A checkpoint runs between rounds, after every call has its
+  result. The summary replaces every row up to the cut, calls and results together,
+  and a request carries the turn note, the marker and the rows after the cut. A
+  skipped checkpoint leaves an audit observation that stays out of the prompt and
+  of the summary.
 - **Lifecycle notes.** Messages from `activate` and `before_step` are sent as
-  positional notes after the history and stored once, where they were first sent:
-  `agent.memory` rows with `metadata.role` set to `developer` or `system`,
+  positional notes after the history and stored, with the step's output, where they
+  were sent: `agent.memory` rows with `metadata.role` set to `developer` or `system`,
   `metadata.lifecycle_phase`, and `preserve_position` in `metadata.llm_meta`. They
   are appended, never rebuilt, so `before_step` adds one set of notes per step and
   an activation note stays in the history after the step that activated the agent.
+  `activate` fires again when a restarted node resumes, so its note is written again
+  at the new position; the earlier note and the prefix are untouched, and a handler
+  that wants one note per run keeps that state itself, as for any at-least-once hook.
   A system note is positional and no longer joins the top-level system prompt. A
   lifecycle message in any other role fails the node with an error naming the phase,
   the agent and the role: a host note must not speak as either party.
+
+These edit the prefix by design. The prompt cache restarts at the edit, and the
+requests after it extend each other again:
+
+- A checkpoint replaces the rows up to its cut with the summary.
+- An agent switch or a trait, tool or overlay change replaces the top-level system
+  text or the tool list; the fingerprint strips the earlier thinking blocks.
+- `_control.memory.clear` and `_control.memory.delete` remove rows the memory
+  directive added. A delete of any other row fails the node, so neither can take away
+  a call, a result or a note.
+- A step that a crash interrupts before its commit is lost with its notes; the
+  restarted node sends that step again from the last committed row.
+
+A selection is durable: `agent_id` and `model` inputs choose only until the node's
+first commit, a `_control.config` switch commits with the results that carry it,
+and a restart keeps the stored selection. `_control.memory.add` rows follow every
+result of their round; an add from a round whose delegation is interrupted by a
+crash is not written.
 
 After upgrading, a run stored by an earlier version restarts its cache once when it
 resumes: its earlier steps sent lifecycle notes that were never stored, and its
 action rows carry no `prefix_fingerprint`, so their thinking blocks are stripped
 from the next request (except those of a tool round in progress). A resumed run
-past its first iteration gets no turn context note; its input was already sent.
+past its first iteration gets no turn context note, because its input was already
+sent, and its fold is stored at that resume. Results kept past an earlier checkpoint
+leave the prompt on that resume too.
 
 ## Live execution authority
 

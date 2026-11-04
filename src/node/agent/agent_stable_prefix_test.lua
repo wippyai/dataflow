@@ -37,6 +37,8 @@ type RunOptions = {
     node_metadata: table?,
     max_iterations: number?,
     no_input: boolean?,
+    named_inputs: {[string]: any}?,
+    config: table?,
 }
 
 -- Runs an agent node to its end. Every request the model receives is recorded.
@@ -62,6 +64,7 @@ local function run_node(options: RunOptions)
                     agent = options.agent or AGENT,
                     active_traits = options.traits,
                     checkpoint = options.checkpoint,
+                    model = options.config and options.config.model,
                     show_tool_calls = false,
                     data_targets = {
                         { data_type = consts.DATA_TYPE.WORKFLOW_OUTPUT, key = "result",
@@ -113,6 +116,19 @@ local function run_node(options: RunOptions)
             },
         })
     end
+    for key, content in pairs(options.named_inputs or {}) do
+        table.insert(commands, {
+            type = consts.COMMAND_TYPES.CREATE_DATA,
+            payload = {
+                data_id = uuid.v7(),
+                data_type = consts.DATA_TYPE.NODE_INPUT,
+                node_id = node_id,
+                key = key,
+                content = content,
+                content_type = consts.CONTENT_TYPE.TEXT,
+            },
+        })
+    end
     if options.extra_commands then
         for _, command in ipairs(options.extra_commands(node_id)) do
             table.insert(commands, command)
@@ -152,32 +168,16 @@ local function text_of(message)
     return table.concat(parts, "")
 end
 
-local function without_markers(request)
-    local messages = {}
-    for _, message in ipairs(request) do
-        if message.role ~= "cache_marker" then
-            messages[#messages + 1] = message
-        end
-    end
-    return messages
-end
-
--- What the provider prefix binds: everything but the metadata, which carries
--- thinking blocks the agent may strip from older turns.
-local function signature_of(message)
-    local copy = {}
-    for key, value in pairs(message) do
-        if key ~= "metadata" then copy[key] = value end
-    end
-    local encoded = json.encode(copy)
-    return encoded
-end
+local without_markers = recovery_helpers.conversation
+local signature_of = recovery_helpers.signature
 
 local function assert_extends(earlier, later, label)
-    local before, after = without_markers(earlier), without_markers(later)
-    test.gt(#after, #before, label .. ": the later request is longer")
-    for index, message in ipairs(before) do
-        test.eq(signature_of(after[index]), signature_of(message), label .. ": message " .. tostring(index))
+    test.is_nil(recovery_helpers.extension_error(earlier, later), label)
+end
+
+local function assert_paired(requests)
+    for index, request in ipairs(requests) do
+        test.is_nil(recovery_helpers.pairing_error(request), "request " .. tostring(index))
     end
 end
 
@@ -229,6 +229,25 @@ local function block_texts(request)
     end
     table.sort(order)
     return table.concat(order, ",")
+end
+
+local function node_row(run)
+    return node_reader.with_dataflow(run.dataflow_id):with_nodes(run.node_id):one()
+end
+
+local function data_row(node_id, data_type, key, content, metadata)
+    return {
+        type = consts.COMMAND_TYPES.CREATE_DATA,
+        payload = {
+            data_id = uuid.v7(),
+            data_type = data_type,
+            node_id = node_id,
+            key = key,
+            content = content,
+            content_type = type(content) == "table" and consts.CONTENT_TYPE.JSON or consts.CONTENT_TYPE.TEXT,
+            metadata = metadata,
+        },
+    }
 end
 
 local function node_error(run)
@@ -435,6 +454,229 @@ local function define_tests()
         end)
     end)
 
+    describe("checkpoints", function()
+        local CHECKPOINT = { token_threshold = 100, function_id = STUB .. "checkpoint_summarizer" }
+
+        it("sends no result without its call after a cut and summarizes the results", function()
+            local run = run_node({ input = { rounds = 4, checkpoint_at = 2 }, checkpoint = CHECKPOINT })
+            test.eq(run.status, consts.STATUS.COMPLETED_SUCCESS)
+            local requests = requests_of(run)
+            test.eq(#requests, 5)
+            assert_paired(requests)
+            test.is_nil(find_message(requests[3], function(message) return message.role == "function_result" end),
+                "the first request after the cut carries no earlier result")
+            test.eq(tonumber(recovery_helpers.get_metric(run.scenario_id, "checkpoint_result_rows", 0)), 2)
+        end)
+
+        it("extends and keeps thinking in the requests after a cut", function()
+            local run = run_node({ input = { rounds = 4, checkpoint_at = 2 }, checkpoint = CHECKPOINT })
+            test.eq(run.status, consts.STATUS.COMPLETED_SUCCESS)
+            local requests = requests_of(run)
+            test.eq(#requests, 5)
+            test.is_nil(recovery_helpers.prefix_error(requests[1], requests[2]))
+            assert_extends(requests[3], requests[4], "the second request after the cut")
+            assert_extends(requests[4], requests[5], "the third request after the cut")
+            test.eq(block_texts(requests[3]), "")
+            test.eq(block_texts(requests[4]), "block-3")
+            test.eq(block_texts(requests[5]), "block-3,block-4")
+        end)
+
+        it("closes a round of parallel calls before it cuts", function()
+            local run = run_node({
+                input = { mode = "two_tools_one_turn", prompt_tokens = 500 },
+                checkpoint = CHECKPOINT,
+            })
+            test.eq(run.status, consts.STATUS.COMPLETED_SUCCESS, node_error(run))
+            local markers = 0
+            for _, row in ipairs(rows_of(run, agent_consts.DATA_TYPE.AGENT_MEMORY)) do
+                if row.metadata.checkpoint_marker == true then markers = markers + 1 end
+            end
+            test.gt(markers, 0, "the scenario checkpoints")
+            assert_paired(requests_of(run))
+        end)
+
+        it("closes a delegation before it cuts and summarizes the delegate's answer", function()
+            local run = run_node({
+                input = { rounds = 2, delegate_at = 1, delegate_to = AGENT, checkpoint_at = 1 },
+                checkpoint = CHECKPOINT,
+            })
+            test.eq(run.status, consts.STATUS.COMPLETED_SUCCESS, node_error(run))
+            assert_paired(requests_of(run))
+            test.eq(tonumber(recovery_helpers.get_metric(run.scenario_id, "checkpoint_result_rows", 0)), 1)
+            local content = tostring(recovery_helpers.get_metric(run.scenario_id, "checkpoint_last_result_content", ""))
+            test.is_true(string.find(content, "final:text_final", 1, true) ~= nil, content)
+        end)
+
+        it("keeps a skipped checkpoint's audit row out of the conversation", function()
+            local run = run_node({
+                input = { rounds = 2, prompt_tokens = 500 },
+                checkpoint = { token_threshold = 100, function_id = STUB .. "no_such_summarizer" },
+            })
+            test.eq(run.status, consts.STATUS.COMPLETED_SUCCESS)
+
+            local skipped = 0
+            for _, row in ipairs(rows_of(run, agent_consts.DATA_TYPE.AGENT_OBSERVATION)) do
+                if row.metadata.checkpoint_skipped == true then skipped = skipped + 1 end
+            end
+            test.gt(skipped, 0, "the audit row exists")
+
+            local requests = requests_of(run)
+            test.eq(#requests, 3)
+            assert_each_request_extends_the_last(requests)
+
+            local history = run_context.get_history({
+                host = { dataflow_id = run.dataflow_id, node_id = run.node_id },
+            })
+            for _, event in ipairs(history.events or {}) do
+                test.not_nil(event.role, "each history event is a conversation message")
+            end
+        end)
+    end)
+
+    describe("agent selection", function()
+        local TARGET_MODEL = "recovery-auto-test-model"
+        local INPUT_MODEL = "recovery-test-model"
+
+        it("applies input overrides on the first start and persists them", function()
+            local run = run_node({
+                input = { rounds = 1 },
+                named_inputs = { agent_id = TIME_AGENT, model = INPUT_MODEL },
+            })
+            test.eq(run.status, consts.STATUS.COMPLETED_SUCCESS, node_error(run))
+            local node = node_row(run)
+            test.eq(node.config.agent, TIME_AGENT)
+            test.eq(node.config.model, INPUT_MODEL)
+        end)
+
+        it("keeps a persisted selection over the inputs on a restart", function()
+            local run = run_node({
+                agent = TARGET_AGENT,
+                config = { model = TARGET_MODEL },
+                input = { rounds = 1 },
+                node_metadata = { state = { current_iteration = 1, agent_id = TARGET_AGENT, model = TARGET_MODEL } },
+                named_inputs = { agent_id = AGENT, model = INPUT_MODEL },
+            })
+            test.eq(run.status, consts.STATUS.COMPLETED_SUCCESS, node_error(run))
+            local action = rows_of(run, agent_consts.DATA_TYPE.AGENT_ACTION)[1]
+            test.eq(action.metadata.agent_id, TARGET_AGENT)
+            test.eq(action.metadata.model, TARGET_MODEL)
+        end)
+
+        it("keeps the input model of a run stored before the selection was persisted", function()
+            local run = run_node({
+                agent = TARGET_AGENT,
+                input = { rounds = 1 },
+                node_metadata = { state = { current_iteration = 1, agent_id = TARGET_AGENT, model = TARGET_MODEL } },
+                named_inputs = { model = TARGET_MODEL },
+            })
+            test.eq(run.status, consts.STATUS.COMPLETED_SUCCESS, node_error(run))
+            local action = rows_of(run, agent_consts.DATA_TYPE.AGENT_ACTION)[1]
+            test.eq(action.metadata.model, TARGET_MODEL)
+        end)
+    end)
+
+    describe("iteration warnings", function()
+        it("stays out of the space between a call and a delegate's result", function()
+            local run = run_node({
+                input = { rounds = 1, delegate_at = 1, delegate_to = AGENT },
+                max_iterations = 3,
+            })
+            test.eq(run.status, consts.STATUS.COMPLETED_SUCCESS, node_error(run))
+            assert_paired(requests_of(run))
+            local warned = false
+            for _, row in ipairs(rows_of(run, agent_consts.DATA_TYPE.AGENT_OBSERVATION)) do
+                if row.metadata.remaining_iterations == 2 then warned = true end
+            end
+            test.is_true(warned, "the warning is written")
+        end)
+    end)
+
+    describe("conversation input", function()
+        it("stores the fold once", function()
+            local run = run_node({ input = { rounds = 2 } })
+            test.eq(run.status, consts.STATUS.COMPLETED_SUCCESS)
+            local rows = rows_of(run, agent_consts.DATA_TYPE.AGENT_INPUT)
+            test.eq(#rows, 1)
+            local _, user = find_message(requests_of(run)[1], function(message) return message.role == "user" end)
+            test.eq(rows[1].content, text_of(user))
+        end)
+
+        it("replays the stored fold when an input arrives later", function()
+            local scenario = { scenario_id = "stable-prefix-fold-" .. uuid.v7(), capture_requests = true,
+                mode = "thinking_rounds", rounds = 1 }
+            local stored = '<input key="default">\n' .. json.encode(scenario) .. '\n</input>'
+            local run = run_node({
+                input = scenario,
+                extra_inputs = { "arrived_later" },
+                node_metadata = { state = { current_iteration = 1 } },
+                extra_commands = function(node_id)
+                    return { data_row(node_id, agent_consts.DATA_TYPE.AGENT_INPUT, "conversation_input", stored) }
+                end,
+            })
+            test.eq(run.status, consts.STATUS.COMPLETED_SUCCESS, node_error(run))
+            run.scenario_id = scenario.scenario_id
+            local _, user = find_message(requests_of(run)[1], function(message) return message.role == "user" end)
+            test.eq(text_of(user), stored)
+            test.eq(#rows_of(run, agent_consts.DATA_TYPE.AGENT_INPUT), 1)
+        end)
+
+        it("resumes a run stored before the fold and before fingerprints", function()
+            local scenario_action = { result = "Requesting tool step 0", tool_calls = {
+                { id = "stored-call", name = "recovery_tool", arguments = { scenario_id = "stored", step = 0 } },
+            } }
+            local run = run_node({
+                agent = TIME_AGENT,
+                input = { rounds = 1 },
+                node_metadata = { state = { current_iteration = 1 } },
+                extra_commands = function(node_id)
+                    return {
+                        data_row(node_id, agent_consts.DATA_TYPE.AGENT_ACTION, "1_action", scenario_action, {
+                            iteration = 1,
+                            finish_reason = "tool_call",
+                            llm_meta = { thinking_blocks = {
+                                { type = "thinking", thinking = "stored-block", signature = "signature" },
+                            } },
+                        }),
+                        data_row(node_id, agent_consts.DATA_TYPE.AGENT_OBSERVATION, "1_recovery_tool", { ok = true }, {
+                            iteration = 1, tool_call_id = "stored-call", tool_name = "recovery_tool",
+                        }),
+                    }
+                end,
+            })
+            test.eq(run.status, consts.STATUS.COMPLETED_SUCCESS, node_error(run))
+            test.eq(#rows_of(run, agent_consts.DATA_TYPE.AGENT_MEMORY), 0, "no turn note is added after the fact")
+            test.eq(#rows_of(run, agent_consts.DATA_TYPE.AGENT_INPUT), 1, "the fold is pinned from here on")
+            local requests = requests_of(run)
+            test.eq(#requests, 2)
+            test.eq(block_texts(requests[1]), "stored-block", "the round in progress keeps its blocks")
+            test.eq(block_texts(requests[2]), "block-1", "blocks with no fingerprint are stale after it")
+            assert_extends(requests[1], requests[2], "the resumed request")
+        end)
+    end)
+
+    describe("feedback rows", function()
+        it("stay separate messages across an empty turn", function()
+            local run = run_node({ input = { mode = "empty_until_limit" }, max_iterations = 8 })
+            local requests = requests_of(run)
+            test.gt(#requests, 2, "the scenario repeats empty turns")
+            for index = 2, #requests do
+                test.is_nil(recovery_helpers.prefix_error(requests[index - 1], requests[index]),
+                    "request " .. tostring(index))
+            end
+        end)
+    end)
+
+    describe("memory directives", function()
+        it("adds memory after the round's results", function()
+            local run = run_node({ input = { rounds = 2, memory_at = 1 } })
+            test.eq(run.status, consts.STATUS.COMPLETED_SUCCESS, node_error(run))
+            local requests = requests_of(run)
+            assert_paired(requests)
+            test.not_nil(find_message(requests[2], with_text("added at 1")), "the model reads the added memory")
+            assert_each_request_extends_the_last(requests)
+        end)
+    end)
+
     describe("lifecycle notes", function()
         it("keeps a note at the position it was sent", function()
             local run = run_node({ traits = { STUB .. "lifecycle_notes_trait" }, input = { rounds = 2 } })
@@ -460,10 +702,7 @@ local function define_tests()
                 test.eq(activation, 1, "the activation note is stored once")
             end
 
-            local stored = {}
-            for _, row in ipairs(rows_of(run, agent_consts.DATA_TYPE.AGENT_MEMORY)) do
-                stored[#stored + 1] = row
-            end
+            local stored = rows_of(run, agent_consts.DATA_TYPE.AGENT_MEMORY)
             test.eq(#stored, 1 + 2 * 3, "one activation note and two notes per step")
             test.eq(stored[1].metadata.lifecycle_phase, "activate")
             test.eq(stored[2].metadata.lifecycle_phase, "before_step")

@@ -99,6 +99,93 @@ function helpers.get_request(scenario_id, request_number)
     return encoded and json.decode(encoded) or nil
 end
 
+function helpers.conversation(request)
+    local messages = {}
+    for _, message in ipairs(request or {}) do
+        if message.role ~= "cache_marker" then
+            messages[#messages + 1] = message
+        end
+    end
+    return messages
+end
+
+-- What the provider prefix binds: everything but the metadata, which carries
+-- thinking blocks the agent may strip from older turns.
+function helpers.signature(message)
+    local copy = {}
+    for key, value in pairs(message) do
+        if key ~= "metadata" then copy[key] = value end
+    end
+    local encoded = json.encode(copy)
+    return encoded
+end
+
+local function is_hoisted_system(message)
+    return message.role == "system" and not (message.metadata and message.metadata.preserve_position)
+end
+
+-- Returns an error text unless later starts with every message of earlier. An
+-- agent switch replaces the top-level system text by design, so options.ignore_system
+-- compares the conversation without it.
+function helpers.prefix_error(earlier, later, options)
+    local before, after = helpers.conversation(earlier), helpers.conversation(later)
+    if options and options.ignore_system then
+        local keep_before, keep_after = {}, {}
+        for _, message in ipairs(before) do
+            if not is_hoisted_system(message) then keep_before[#keep_before + 1] = message end
+        end
+        for _, message in ipairs(after) do
+            if not is_hoisted_system(message) then keep_after[#keep_after + 1] = message end
+        end
+        before, after = keep_before, keep_after
+    end
+    if #after <= #before then
+        return "the later request is not longer: " .. #before .. " -> " .. #after
+    end
+    for index, message in ipairs(before) do
+        if helpers.signature(after[index]) ~= helpers.signature(message) then
+            return "message " .. index .. " changed: " .. helpers.signature(message)
+                .. " -> " .. helpers.signature(after[index])
+        end
+    end
+    return nil, after[#before + 1]
+end
+
+-- Returns an error text unless later extends earlier with the response to earlier
+-- as the very next message: nothing can enter the history that was not sent.
+function helpers.extension_error(earlier, later, options)
+    local prefix_err, next_message = helpers.prefix_error(earlier, later, options)
+    if prefix_err then
+        return prefix_err
+    end
+    if next_message.role ~= "assistant" then
+        return "expected the response right after the request, got " .. helpers.signature(next_message)
+    end
+    return nil
+end
+
+-- Returns an error text unless each function result answers a call of the same
+-- turn, with no other message between them.
+function helpers.pairing_error(request)
+    local open = {}
+    for index, message in ipairs(helpers.conversation(request)) do
+        if message.role == "function_call" then
+            open[message.function_call.id] = true
+        elseif message.role == "function_result" then
+            if not open[message.function_call_id] then
+                return "message " .. index .. " is a result without its call: " .. tostring(message.function_call_id)
+            end
+            open[message.function_call_id] = nil
+        elseif next(open) then
+            return "message " .. index .. " sits between a call and its result: " .. helpers.signature(message)
+        end
+    end
+    if next(open) then
+        return "a call has no result: " .. tostring(next(open))
+    end
+    return nil
+end
+
 function helpers.get_metric(scenario_id, metric_name, default_value)
     local s = helpers.get_store()
     local value = s:get(helpers.metric_key(scenario_id, metric_name))

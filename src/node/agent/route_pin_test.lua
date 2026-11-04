@@ -134,6 +134,7 @@ local function define_tests()
                     inputs = function() return {} end,
                     metadata = function() return {} end,
                     query = function() return query end,
+                    data = function() end,
                     update_metadata = function(_, metadata) progress = metadata.state end,
                     fail = function(_, _, message) return message end,
                 }
