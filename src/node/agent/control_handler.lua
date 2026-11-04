@@ -3,6 +3,7 @@ local uuid = require("uuid")
 local agent_consts = require("agent_consts")
 local consts = require("consts")
 local behavior_controls = require("behavior_controls")
+local delegation_handler = require("delegation_handler")
 
 local control_handler = {}
 
@@ -384,7 +385,7 @@ function control_handler.process_control_directive(tool_result, node_sdk, iterat
     if control.delegate then
         control_response.delegate = control.delegate
         for _, delegation in ipairs(control.delegate) do
-            if delegation.input_data == nil then
+            if not delegation_handler.has_input(delegation) then
                 control_response.delegate_error = "Delegation to " .. tostring(delegation.agent_id)
                     .. " has no input_data: a child node with no input never starts"
             end

@@ -232,7 +232,28 @@ local function normalize_event(row, formatter, calls)
     }, nil
 end
 
-local function content_length(event)
+local function action_arguments_length(row)
+    if row.type ~= agent_consts.DATA_TYPE.AGENT_ACTION then
+        return 0
+    end
+    local action = decode_json(row.content)
+    if type(action) ~= "table" then
+        return 0
+    end
+    local length = 0
+    for _, list in ipairs({ action.tool_calls or {}, action.delegate_calls or {} }) do
+        for _, call in ipairs(list) do
+            local arguments = call.arguments
+            if type(arguments) ~= "string" then
+                arguments = json.encode(arguments) or ""
+            end
+            length = length + #arguments
+        end
+    end
+    return length
+end
+
+local function content_length(event, row)
     local content = event.raw_content or event.content or ""
     if type(content) ~= "string" then
         local encoded = json.encode(content)
@@ -249,12 +270,11 @@ local function content_length(event)
         end
         length = length + #result
     end
-    return length
+    return length + action_arguments_length(row)
 end
 
--- max_chars is a hard bound. Over it, the latest summary and the newest rows survive,
--- and what they leave room for goes to the turn note and the input, which every request
--- sends anyway. Host-side readers of a long run want where it is now.
+-- Rows accumulate from the oldest until the bound, as the contract states. The input and
+-- turn note take what room is left, so a long input cannot empty the selection.
 local function clamp_rows(rows, events, max_chars)
     local limit = tonumber(max_chars)
     if not limit or limit <= 0 then
@@ -264,49 +284,35 @@ local function clamp_rows(rows, events, max_chars)
     local keep = {}
     local total = 0
     local truncated = false
-    local function take(index)
-        local next_total = total + content_length(events[index])
-        if next_total > limit then
-            truncated = true
-            return false
-        end
-        total = next_total
-        keep[index] = true
-        return true
-    end
-    local function is_input_side(row)
-        return prompt_builder.is_kept_by_checkpoint(row) or row.type == consts.DATA_TYPE.NODE_INPUT
-    end
-
-    local marker = prompt_builder.find_latest_checkpoint_marker(rows)
     for index, row in ipairs(rows) do
-        if row == marker then take(index) end
-    end
-    for index = #rows, 1, -1 do
-        if rows[index] ~= marker and not is_input_side(rows[index]) and not take(index) then
-            break
+        if not prompt_builder.is_kept_by_checkpoint(row) then
+            local next_total = total + content_length(events[index], row)
+            if next_total > limit then
+                truncated = true
+                break
+            end
+            total = next_total
+            keep[index] = true
         end
     end
-    for index = #rows, 1, -1 do
-        if is_input_side(rows[index]) then take(index) end
-    end
-
-    -- A result whose call fell outside the bound has no place in a prompt.
-    local kept_rows = {}
-    local kept_events = {}
-    local past_orphans = false
     for index, row in ipairs(rows) do
-        if keep[index] then
-            local orphan = events[index].role == "function" and not past_orphans
-            if events[index].role == "assistant" then past_orphans = true end
-            if orphan then
+        if prompt_builder.is_kept_by_checkpoint(row) then
+            local next_total = total + content_length(events[index], row)
+            if next_total > limit then
                 truncated = true
             else
-                kept_rows[#kept_rows + 1] = row
-                kept_events[#kept_events + 1] = events[index]
+                total = next_total
+                keep[index] = true
             end
-        elseif not is_input_side(row) and row ~= marker then
-            truncated = true
+        end
+    end
+
+    local kept_rows = {}
+    local kept_events = {}
+    for index, row in ipairs(rows) do
+        if keep[index] then
+            kept_rows[#kept_rows + 1] = row
+            kept_events[#kept_events + 1] = events[index]
         end
     end
     return kept_rows, kept_events, truncated

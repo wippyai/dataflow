@@ -214,10 +214,11 @@ stay valid. This requires Agent 0.5.10 and LLM 0.5.13 or later.
   The host sets no limit of its own. `max_memory_chars` (default 8192) caps the stored
   summary in characters, never splitting one. The default summarizer states the
   budget it has on every summary. Unless the options give `max_tokens`, it uses the
-  smallest of twice `max_memory_chars`, half the model's context window and 32000, and
-  any `max_tokens` is capped by the model's output limit. The stated budget is the
-  smaller of `max_memory_chars` and that value. On a class route only the first model's
-  limits count. A longer summary is cut at the cap and recorded in the marker's
+  smallest of twice `max_memory_chars`, an eighth of the model's context window and
+  16000, and any `max_tokens` is capped by the model's output limit. The stated budget is
+  the smaller of `max_memory_chars` and three quarters of that value, because thinking
+  and dense text share the cap. On a class route only the first model's limits count. A
+  summary with no visible characters is a failed checkpoint too. A longer summary is cut at the cap and recorded in the marker's
   `checkpoint_memory_truncated`. A summary the model cut off at its `max_tokens` is a
   failed checkpoint with no cut: a skipped checkpoint, or a node failure when
   `strict`. A failed checkpoint is tried again when new rows arrive, not for the same
@@ -225,8 +226,11 @@ stay valid. This requires Agent 0.5.10 and LLM 0.5.13 or later.
   older unanswered call is summarized with its round. The
   `since_checkpoint` run context selector reads the same cut, in request order, and
   also returns the input and the turn note, which a summary does not replace. In every
-  mode `max_chars` is a hard bound: over it the latest summary and the newest rows stay,
-  the input and the note get what room is left, and `truncated` is set. A
+  mode `max_chars` is a hard bound that counts call arguments: rows accumulate from the
+  oldest, so `since_id` and `range` page forward, and the list is empty if the first row
+  exceeds it. The input and the note take what room is left, and `truncated` is set if
+  anything is dropped. `get_prompt` with `window`, `since_id`, `range` or `max_chars` is a
+  view and may hold a call without its result; do not send it to a provider. A
   skipped checkpoint leaves an audit observation that stays out of the prompt and of
   the summary.
 - **Empty input.** A node with no conversation input pins its `arena.prompt` as the
@@ -267,7 +271,10 @@ is settled on recovery: `round_settled` is missing, so the iteration warning is 
 if it is not stored and `after_execute` wrappers run for the whole round. A run stored
 before `round_settled` gets this once on resume. After a kill with calls still unresolved,
 `after_execute` sees only the calls recovery runs: a call whose result committed before
-the kill is not shown to it again, so wrappers are not at-least-once per call.
+the kill is not shown to it again, so wrappers are not at-least-once per call. A round
+settled on recovery shows the wrapper its calls in the live shape, and results from the
+stored rows, which cannot recover everything: `true` reads back as 1 on SQLite, and a
+`{success = false}` result is stored as its error text rather than its table.
 
 A selection is durable: `agent_id` and `model` inputs choose only until the node's
 first commit, which stores the choice in the config, a `_control.config` switch commits with the results that carry it,

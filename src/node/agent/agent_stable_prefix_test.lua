@@ -48,6 +48,7 @@ type RunOptions = {
     max_iterations: number?,
     no_input: boolean?,
     no_prompt: boolean?,
+    prompt: string?,
     min_iterations: number?,
     named_inputs: {[string]: any}?,
     config: table?,
@@ -83,7 +84,7 @@ local function run_node(options: RunOptions)
                             content_type = consts.CONTENT_TYPE.TEXT },
                     },
                     arena = {
-                        prompt = not options.no_prompt and "Run the stable prefix scenario." or nil,
+                        prompt = options.prompt or (not options.no_prompt and "Run the stable prefix scenario." or nil),
                         max_iterations = options.max_iterations or 8,
                         min_iterations = options.min_iterations,
                         tool_calling = "auto",
@@ -894,31 +895,67 @@ local function define_tests()
         it("states the memory budget on the first summary too", function()
             local system, max_tokens = stated_budget({}, FIRST)
             test.is_true(string.find(system, "8192", 1, true) ~= nil, system)
-            test.eq(max_tokens, 16384)
+            test.eq(max_tokens, 16000)
         end)
 
         it("states what fits when an explicit max_tokens is smaller", function()
             local system, max_tokens = stated_budget({ max_tokens = 1000 }, EARLIER)
             test.eq(max_tokens, 1000, "explicit max_tokens is honoured")
-            test.is_true(string.find(system, "fit in 1000 characters", 1, true) ~= nil, system)
+            test.is_true(string.find(system, "fit in 750 characters", 1, true) ~= nil, system)
         end)
 
         it("states what fits under the model's output limit", function()
             local system, max_tokens = stated_budget({ model = "recovery-small-output-model" }, FIRST)
             test.eq(max_tokens, 1000)
-            test.is_true(string.find(system, "fit in 1000 characters", 1, true) ~= nil, system)
+            test.is_true(string.find(system, "fit in 750 characters", 1, true) ~= nil, system)
         end)
 
-        it("reserves at most half of a small context window", function()
+        it("reserves an eighth of a small context window", function()
             local system, max_tokens = stated_budget({ model = "recovery-small-window-model" }, FIRST)
-            test.eq(max_tokens, 500)
-            test.is_true(string.find(system, "fit in 500 characters", 1, true) ~= nil, system)
+            test.eq(max_tokens, 125)
+            test.is_true(string.find(system, "fit in 93 characters", 1, true) ~= nil, system)
         end)
 
-        it("sends no unbounded default to a model with no limits", function()
+        it("caps the default for a call that does not stream", function()
             local system, max_tokens = stated_budget({ max_memory_chars = 100000 }, FIRST)
-            test.eq(max_tokens, 32000)
-            test.is_true(string.find(system, "fit in 32000 characters", 1, true) ~= nil, system)
+            test.eq(max_tokens, 16000)
+            test.is_true(string.find(system, "fit in 12000 characters", 1, true) ~= nil, system)
+        end)
+
+        it("compacts a large history on a 16000 token window", function()
+            local run = run_node({
+                input = { rounds = 22, checkpoint_at = 22, pad = 2000 },
+                checkpoint = { token_threshold = 100, function_id = "userspace.dataflow.node.agent:checkpoint",
+                    model = "recovery-16k-window-model" },
+                max_iterations = 30,
+            })
+            test.eq(run.status, consts.STATUS.COMPLETED_SUCCESS, node_error(run))
+            for _, row in ipairs(rows_of(run, agent_consts.DATA_TYPE.AGENT_OBSERVATION)) do
+                test.is_true(row.metadata.checkpoint_skipped ~= true, tostring(row.content))
+            end
+            local markers = 0
+            for _, row in ipairs(rows_of(run, agent_consts.DATA_TYPE.AGENT_MEMORY)) do
+                if row.metadata.checkpoint_marker == true then markers = markers + 1 end
+            end
+            test.eq(markers, 1)
+            test.eq(recovery_helpers.get_metric(run.node_id, "summarizer_max_tokens", nil), 2000)
+        end)
+
+        it("fails a whitespace summary with no cut", function()
+            local run = run_node({
+                input = { rounds = 2, prompt_tokens = 500 },
+                checkpoint = { token_threshold = 100, function_id = STUB .. "blank_summarizer" },
+            })
+            test.eq(run.status, consts.STATUS.COMPLETED_SUCCESS, node_error(run))
+            for _, row in ipairs(rows_of(run, agent_consts.DATA_TYPE.AGENT_MEMORY)) do
+                test.is_true(row.metadata.checkpoint_marker ~= true, "no cut")
+            end
+            local _, call_err = funcs.new():call("userspace.dataflow.node.agent:checkpoint", {
+                dataflow_id = uuid.v7(), node_id = uuid.v7(), options = { model = "recovery-test-model" },
+                history = { { data_id = "1", type = agent_consts.DATA_TYPE.AGENT_OBSERVATION,
+                    content = "BLANK-SUMMARY", metadata = {} } },
+            })
+            test.not_nil(call_err, "the default summarizer reports it")
         end)
 
         local DEFAULT_SUMMARIZER = "userspace.dataflow.node.agent:checkpoint"
@@ -1289,7 +1326,7 @@ local function define_tests()
         end
 
         for _, mode in ipairs({ "since_checkpoint", "all", "window" }) do
-            it("keeps the newest rows over a long input in " .. mode .. " under max_chars", function()
+            it("keeps the rows over a long input in " .. mode .. " under max_chars", function()
                 local run = run_node({ input = { rounds = 3, padding = string.rep("p", 4000) } })
                 test.eq(run.status, consts.STATUS.COMPLETED_SUCCESS, node_error(run))
                 local history = run_context.get_history({
@@ -1300,13 +1337,57 @@ local function define_tests()
                 test.is_true(history.truncated, "the dropped input is reported")
                 test.is_true(chars_of(history) <= 1000, "max_chars is a hard bound: " .. tostring(chars_of(history)))
                 test.is_true(history.events[1].role ~= "user", "the input is what is dropped")
-                test.is_true(history.events[1].role ~= "function", "no result is left without its call")
                 local actions = rows_of(run, agent_consts.DATA_TYPE.AGENT_ACTION)
-                test.eq(history.events[#history.events].id, actions[#actions].data_id, "the newest row survives")
+                test.eq(history.events[1].id, actions[1].data_id, "rows accumulate from the oldest")
             end)
         end
 
-        it("keeps the summary over older rows under max_chars", function()
+        it("adds the input when it fits in the room the rows leave", function()
+            local run = run_node({ input = { rounds = 1 } })
+            test.eq(run.status, consts.STATUS.COMPLETED_SUCCESS, node_error(run))
+            local history = run_context.get_history({
+                host = { dataflow_id = run.dataflow_id, node_id = run.node_id },
+                selector = { mode = "since_checkpoint", max_chars = 100000 },
+            })
+            test.eq(history.events[1].role, "user")
+            test.is_false(history.truncated)
+        end)
+
+        it("returns an empty list when the first row exceeds max_chars", function()
+            local run = run_node({ input = { rounds = 1 } })
+            test.eq(run.status, consts.STATUS.COMPLETED_SUCCESS, node_error(run))
+            local history = run_context.get_history({
+                host = { dataflow_id = run.dataflow_id, node_id = run.node_id },
+                selector = { mode = "all", max_chars = 2 },
+            })
+            test.eq(#history.events, 0)
+            test.is_true(history.truncated)
+        end)
+
+        it("pages through since_id from where the last page ended", function()
+            local run = run_node({ input = { rounds = 3 } })
+            test.eq(run.status, consts.STATUS.COMPLETED_SUCCESS, node_error(run))
+            local host = { dataflow_id = run.dataflow_id, node_id = run.node_id }
+            local all = run_context.get_history({ host = host, selector = { mode = "all" } })
+            local from = all.events[1].id
+            local page = run_context.get_history({ host = host, selector = { mode = "since_id", from_id = from, max_chars = 150 } })
+            test.gt(#page.events, 0)
+            test.is_true(page.truncated)
+            test.eq(page.events[1].id, all.events[2].id, "the page starts right after from_id")
+        end)
+
+        it("charges an action's call arguments against max_chars", function()
+            local run = run_node({ input = { rounds = 1, pad = 3000 } })
+            test.eq(run.status, consts.STATUS.COMPLETED_SUCCESS, node_error(run))
+            local built = run_context.get_prompt({
+                host = { dataflow_id = run.dataflow_id, node_id = run.node_id },
+                selector = { mode = "all", max_chars = 1000 },
+            })
+            test.is_nil(string.find(json.encode(built.messages), string.rep("p", 2000), 1, true),
+                "a selection under the bound holds no larger arguments")
+        end)
+
+        it("keeps the first summary in reach under max_chars", function()
             local run = run_node({
                 input = { rounds = 4, checkpoint_at = 2, padding = string.rep("p", 4000) },
                 checkpoint = { token_threshold = 100, function_id = STUB .. "checkpoint_summarizer" },
@@ -1320,7 +1401,7 @@ local function define_tests()
             for _, event in ipairs(history.events) do
                 if string.find(tostring(event.raw_content), "checkpointed", 1, true) then found = true end
             end
-            test.is_true(found, "the summary survives")
+            test.is_true(found, "the summary is the oldest row after the input")
             test.is_true(history.truncated)
         end)
 
@@ -1331,6 +1412,12 @@ local function define_tests()
             for _, event in ipairs(history.events) do
                 test.is_true(event.role ~= nil and event.role ~= "user", "no empty input event")
             end
+        end)
+
+        it("does not pin a whitespace arena prompt", function()
+            local run = run_node({ no_input = true, prompt = " \n ", extra_inputs = { "context" } })
+            test.eq(run.status, consts.STATUS.COMPLETED_FAILURE)
+            test.is_true(string.find(node_error(run), "nothing to send", 1, true) ~= nil, node_error(run))
         end)
 
         it("pins the arena prompt when the fold is empty", function()
@@ -1635,7 +1722,45 @@ local function define_tests()
             test.eq(#payload.tool_calls, 1, "the exit call is not a tool")
             test.eq(payload.tool_calls[1].id, "stored")
             test.eq(payload.tool_results.stored.result, "123", "text stays text")
-            test.eq(payload.tool_results.stored.tool_call.id, "stored")
+            test.eq(payload.tool_results.stored.tool_call.call_id, "stored")
+        end)
+
+        it("builds the recovered tool_call in the live shape", function()
+            local live_run = run_node({ traits = { STUB .. "round_wrapper_trait" }, input = { rounds = 1 } })
+            test.eq(live_run.status, consts.STATUS.COMPLETED_SUCCESS, node_error(live_run))
+            local live_payload = wrapper_payload(live_run, 1)
+            local live_call_id = live_payload.tool_calls[1].id
+            local live = live_payload.tool_results[live_call_id].tool_call
+            local action = rows_of(live_run, agent_consts.DATA_TYPE.AGENT_ACTION)[1]
+            local stored = type(action.content) == "string" and json.decode(action.content) or action.content
+
+            local run = run_node({
+                input = { rounds = 0 }, max_iterations = 3,
+                traits = { STUB .. "round_wrapper_trait" },
+                node_metadata = { state = { current_iteration = 1, agent_id = AGENT } },
+                extra_commands = function(node_id)
+                    return {
+                        data_row(node_id, agent_consts.DATA_TYPE.AGENT_ACTION, "1_action", stored,
+                            { iteration = 1, finish_reason = "tool_call" }),
+                        data_row(node_id, agent_consts.DATA_TYPE.AGENT_OBSERVATION, "1_recovery_tool", { ok = true }, {
+                            iteration = 1, tool_call_id = live_call_id, tool_name = "recovery_tool" }),
+                    }
+                end,
+            })
+            test.eq(run.status, consts.STATUS.COMPLETED_SUCCESS, node_error(run))
+            local recovered = wrapper_payload(run, 1).tool_results[live_call_id].tool_call
+            for key in pairs(live) do
+                test.not_nil(recovered[key], "the recovered call has " .. key)
+            end
+            local function encoded(value)
+                local text = json.encode(value)
+                return text
+            end
+            test.eq(encoded(recovered.args), encoded(live.args))
+            test.eq(encoded(recovered.meta), encoded(live.meta))
+            for _, key in ipairs({ "call_id", "name", "registry_id", "valid" }) do
+                test.eq(recovered[key], live[key], key)
+            end
         end)
 
         it("gives after_execute no calls on a round without any", function()

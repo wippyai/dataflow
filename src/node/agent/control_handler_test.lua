@@ -351,6 +351,14 @@ local function define_tests()
                 test.is_true(tostring(apply_err):find("input_data", 1, true) ~= nil, tostring(apply_err))
             end)
 
+            it("refuses a delegate whose input is false", function()
+                local n = make_node({})
+                local _, response = control_handler.process_control_directive(
+                    { _control = { delegate = { { agent_id = "agent:child", input_data = false } } } }, n, 1)
+                local _, apply_err = control_handler.apply_control_responses({ response }, {}, n)
+                test.not_nil(apply_err)
+            end)
+
             it("treats a delete of a row that is gone as done", function()
                 local n = make_node({}, {})
 

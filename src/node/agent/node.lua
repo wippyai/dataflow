@@ -1132,7 +1132,7 @@ local function maybe_checkpoint_history(n, config, session_context, agent_instan
         memory_text = summary_result
     end
 
-    if type(memory_text) ~= "string" or memory_text == "" then
+    if type(memory_text) ~= "string" or not memory_text:match("%S") then
         return failed("checkpoint provider returned empty memory")
     end
 
@@ -2102,6 +2102,33 @@ end
 -- A kill after the last per-call commit and before finalize's commit leaves a resolved
 -- round with no iteration warning and no after_execute proposals. Replay is at-least-once,
 -- as for every wrapper; a run stored without round_settled gets it once on resume.
+-- A recovered call in the shape the caller validated it to, so after_execute sees what it
+-- sees live. The context and provider data are those stored with the call.
+local function validated_call(tool_call: any): table
+    local validated = {
+        call_id = tool_call.id,
+        name = tool_call.name,
+        args = tool_call.arguments,
+        registry_id = tool_call.registry_id,
+        context = tool_call.context,
+        provider_metadata = tool_call.provider_metadata,
+        meta = {},
+        valid = false,
+    }
+    if tool_call.arguments_error then
+        validated.error = "Failed to parse arguments: " .. tool_call.arguments_error
+        return validated
+    end
+    local schema, schema_err = tools.get_tool_schema(tool_call.registry_id)
+    if schema_err then
+        validated.error = "Failed to get tool schema: " .. tostring(schema_err)
+        return validated
+    end
+    validated.meta = schema and schema.meta or {}
+    validated.valid = true
+    return validated
+end
+
 local function settle_recovered_round(n, caller, agent_instance, action_payload, iteration, max_iterations,
                                       proposed_controls, agent_id, model_name, run_context_binding, exit_tool_name)
     local tool_calls = split_exit_tool_calls(action_payload.content.tool_calls, exit_tool_name)
@@ -2123,7 +2150,7 @@ local function settle_recovered_round(n, caller, agent_instance, action_payload,
             tool_results[tool_call.id] = {
                 result = not metadata.is_error and content or nil,
                 error = metadata.is_error and content or nil,
-                tool_call = tool_call,
+                tool_call = validated_call(tool_call),
             }
         end
     end
@@ -2508,7 +2535,7 @@ local function run(args)
 
     -- An empty fold cannot be a user turn; the arena prompt is the node's instruction.
     local first_message = input_data
-    if first_message == "" and type(config.arena.prompt) == "string" then
+    if first_message == "" and type(config.arena.prompt) == "string" and config.arena.prompt:match("%S") then
         first_message = config.arena.prompt
     end
     builder:with_arena_config(config.arena):with_initial_input(pin_conversation_input(n, pinned_input, first_message))

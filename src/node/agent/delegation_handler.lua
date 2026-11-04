@@ -143,6 +143,11 @@ local function find_existing_child(parent_node_sdk, tool_call_id, iteration)
     return without_iteration
 end
 
+-- A child node with no input never starts.
+function delegation_handler.has_input(delegation)
+    return delegation.input_data ~= nil and delegation.input_data ~= false
+end
+
 function delegation_handler.create_child_node(parent_node_sdk, delegation, delegation_index, session_context)
     local existing_child_id = find_existing_child(parent_node_sdk, delegation.tool_call_id, delegation.iteration)
     local child_id = existing_child_id or uuid.v7()
@@ -195,7 +200,7 @@ function delegation_handler.create_child_node(parent_node_sdk, delegation, deleg
             }
         })
 
-        if delegation.input_data then
+        if delegation_handler.has_input(delegation) then
             parent_node_sdk:data("node.input", delegation.input_data, {
                 node_id = child_id,
                 key = ""

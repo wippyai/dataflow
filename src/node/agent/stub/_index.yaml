@@ -205,6 +205,24 @@ entries:
   providers:
   - id: userspace.dataflow.node.agent.stub:recovery_provider
     provider_model: recovery-test-model
+- name: recovery_16k_window_model
+  kind: registry.entry
+  meta:
+    name: recovery-16k-window-model
+    type: llm.model
+    test_only: true
+    comment: A model with the context window of a small deployment
+  max_tokens: 16000
+  providers:
+  - id: userspace.dataflow.node.agent.stub:recovery_provider
+    provider_model: recovery-test-model
+- name: blank_summarizer
+  kind: function.lua
+  meta:
+    test_only: true
+    comment: Returns a summary with no visible characters
+  source: file://blank_summarizer.lua
+  method: handler
 - name: multibyte_summarizer
   kind: function.lua
   meta:

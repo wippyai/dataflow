@@ -46,6 +46,7 @@ entries:
       behavior_controls: wippy.agent:behavior_controls
       agent_consts: userspace.dataflow.node.agent:consts
       consts: userspace.dataflow:consts
+      delegation_handler: userspace.dataflow.node.agent:delegation_handler
 
   # userspace.dataflow.node.agent:control_handler_test
   - name: control_handler_test

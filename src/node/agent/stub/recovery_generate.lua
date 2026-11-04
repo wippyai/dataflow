@@ -112,6 +112,9 @@ local function handler(contract_args)
             summary.result.content = string.rep("x", math.min(wanted, limit * 4))
             if wanted > limit * 4 then summary.finish_reason = "length" end
         end
+        if helpers.count_text_matches(messages, "BLANK-SUMMARY") > 0 then
+            summary.result.content = "  \n "
+        end
         if helpers.count_text_matches(messages, "TRUNCATE-SUMMARY") > 0 then
             summary.finish_reason = "length"
         end
@@ -397,10 +400,14 @@ local function handler(contract_args)
             table.insert(memory.result.tool_calls, delegate.result.tool_calls[1])
             return memory
         end
+        if tonumber(scenario.pad) then
+            control_args = nil
+        end
         local response
         if llm_calls <= (tonumber(scenario.rounds) or 1) then
             response = tool_call_response(scenario.scenario_id, llm_calls, 0, tokens, 4,
-                control_args and "recovery_control_tool" or "recovery_tool", control_args)
+                control_args and "recovery_control_tool" or "recovery_tool",
+                control_args or (tonumber(scenario.pad) and { pad = string.rep("p", tonumber(scenario.pad)) } or nil))
         else
             response = final_response(scenario.scenario_id, scenario.mode, result_count, tokens, 4)
         end

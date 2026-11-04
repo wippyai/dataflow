@@ -6,7 +6,8 @@ local CONFIG = {
     model = "class:fast",
     temperature = 0.2,
     max_row_chars = 2000,
-    max_tokens_ceiling = 32000,
+    -- Above this, providers advise streaming, and this call does not stream.
+    max_tokens_ceiling = 16000,
 }
 
 local function positive_number(value: any, fallback: any): any
@@ -28,17 +29,17 @@ local function config_from_args(args)
     local window = positive_number(type(card) == "table" and card.max_tokens, nil)
     local max_tokens = positive_number(options.max_tokens, nil)
     if not max_tokens then
-        -- Only a cap, but admission reserves all of it against the context window.
+        -- Admission reserves all of it against the window; the rest is for the prompt.
         max_tokens = math.min(max_memory_chars * 2, CONFIG.max_tokens_ceiling)
-        if window then max_tokens = math.min(max_tokens, math.floor(window / 2)) end
+        if window then max_tokens = math.min(max_tokens, math.floor(window / 8)) end
     end
     if output_limit then max_tokens = math.min(max_tokens, output_limit) end
     return {
         model = model,
         temperature = tonumber(options.temperature) or CONFIG.temperature,
         max_tokens = max_tokens,
-        -- A summary fits at one token per character.
-        summary_budget = math.floor(math.min(max_memory_chars, max_tokens)),
+        -- Thinking and dense text share the cap.
+        summary_budget = math.floor(math.min(max_memory_chars, max_tokens * 3 / 4)),
         max_row_chars = positive_number(options.max_row_chars, CONFIG.max_row_chars),
     }
 end
@@ -130,7 +131,7 @@ local function handler(args)
         temperature = cfg.temperature,
         max_tokens = cfg.max_tokens,
     })
-    if err or not response or type(response.result) ~= "string" or response.result == "" then
+    if err or not response or type(response.result) ~= "string" or not response.result:match("%S") then
         return nil, "failed to generate checkpoint: " .. tostring(err or "empty result")
     end
     if response.finish_reason == output.FINISH_REASON.LENGTH then
