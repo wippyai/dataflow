@@ -1501,6 +1501,17 @@ local function update_tool_viz_nodes(n, tool_results, tool_call_to_node_id, pers
     end
 end
 
+local function cancel_unfinished_tool_viz_nodes(n, finished_call_ids, tool_call_to_node_id)
+    for call_id, viz_node_id in pairs(tool_call_to_node_id) do
+        if not finished_call_ids[call_id] then
+            n:command({
+                type = consts.COMMAND_TYPES.UPDATE_NODE,
+                payload = { node_id = viz_node_id, status = consts.STATUS.CANCELLED }
+            })
+        end
+    end
+end
+
 -- Provider responses are external input. Validate call metadata before any
 -- phase uses it for routing, persistence, invocation, or observation keys.
 -- In particular, do not turn a malformed call into an observation with an
@@ -1821,7 +1832,7 @@ end
 -- directive stays with the after-batch pass, which applies directives in model
 -- order. In a round with an exit call a valid finish drops sibling
 -- observations, so only argument failures, which that rule keeps, commit early.
--- Returns the listener and the set of call ids it committed.
+-- Returns the listener, committed call ids, and calls with queued visualization results.
 local function tool_result_persister(n, iteration, tool_calls: {ToolCall}, has_exit_call: boolean,
                                      tool_call_to_node_id, show_tool_calls)
     local calls_by_id = {}
@@ -1829,6 +1840,7 @@ local function tool_result_persister(n, iteration, tool_calls: {ToolCall}, has_e
         calls_by_id[tool_call.id] = tool_call
     end
     local persisted: {[string]: boolean} = {}
+    local finished_viz_calls: {[string]: boolean} = {}
 
     local function listener(call_id, result)
         local tool_call = calls_by_id[call_id]
@@ -1841,6 +1853,7 @@ local function tool_result_persister(n, iteration, tool_calls: {ToolCall}, has_e
         end
         if show_tool_calls then
             update_tool_viz_nodes(n, { [call_id] = result }, tool_call_to_node_id)
+            finished_viz_calls[call_id] = true
         end
         record_tool_observation(n, iteration, tool_call, result_data.result, result_data.error, tool_call_to_node_id)
         local pending = (n:metadata() or {}).memory_pending
@@ -1859,7 +1872,7 @@ local function tool_result_persister(n, iteration, tool_calls: {ToolCall}, has_e
         return true, nil
     end
 
-    return listener, persisted
+    return listener, persisted, finished_viz_calls
 end
 
 local function tools_were_attempted(agent_result)
@@ -2302,10 +2315,11 @@ local function recover_persisted_action(n, agent_ctx, agent_instance, caller, se
     end
     local tool_call_to_node_id = create_tool_viz_nodes(n, effective_tool_calls, action_iteration, show_tool_calls,
         exit_tool_name, committed_node_ids)
-    local result_listener, persisted_call_ids = tool_result_persister(n, action_iteration, effective_tool_calls,
+    local result_listener, persisted_call_ids, finished_viz_calls = tool_result_persister(n, action_iteration, effective_tool_calls,
         #exit_tool_calls > 0, tool_call_to_node_id, show_tool_calls)
     local tool_results, execute_err = execute_tools(caller, session_context, validated_tools, result_listener)
     if execute_err then
+        cancel_unfinished_tool_viz_nodes(n, finished_viz_calls, tool_call_to_node_id)
         return false, nil, action_iteration, execute_err
     end
     local combined_controls = {}
@@ -3139,10 +3153,11 @@ local function run(args)
 
         local tool_call_to_node_id = create_tool_viz_nodes(n, effective_tool_calls, iteration, show_tool_calls,
             exit_tool_name)
-        local result_listener, persisted_call_ids = tool_result_persister(n, iteration, effective_tool_calls,
+        local result_listener, persisted_call_ids, finished_viz_calls = tool_result_persister(n, iteration, effective_tool_calls,
             #exit_tool_calls > 0, tool_call_to_node_id, show_tool_calls)
         local tool_results, execute_err = execute_tools(caller, run_session_context, validated_tools, result_listener)
         if execute_err then
+            cancel_unfinished_tool_viz_nodes(n, finished_viz_calls, tool_call_to_node_id)
             return fail_with_lifecycle({
                 code = agent_consts.ERROR.AGENT_EXEC_FAILED,
                 message = execute_err

@@ -511,6 +511,88 @@ local function define_tests()
             test.eq(per_iteration[2], 1, "the second turn's call has its own observation")
         end)
 
+        for _, path in ipairs({ "live", "recovery" }) do
+            it("releases visualization workers after a " .. path .. " per-call commit failure", function()
+                local scenario_id = "tool-viz-refused-" .. uuid.v7()
+                local dataflow_id, node_id = create_workflow({
+                    scenario_id = scenario_id, mode = "commit_failure_round",
+                }, true)
+                local first_id = helpers.call_id(scenario_id, 1)
+                local refused_id = helpers.call_id(scenario_id, 2)
+                if path == "recovery" then
+                    local ok, result = run_node(dataflow_id, node_id, function()
+                        return #call_observations(dataflow_id, node_id) == 1
+                    end)
+                    test.is_false(ok, "recovery starts after the first call commits")
+                    test.contains(tostring(result), "interrupt after commit")
+                    test.eq(call_observations(dataflow_id, node_id)[1].metadata.tool_call_id, first_id)
+                end
+
+                local handler_id = uuid.v7()
+                local row = node_reader.with_dataflow(dataflow_id):with_nodes(node_id):one()
+                local config = row.config
+                config.refused_call_id = refused_id
+                config.error_targets = { {
+                    data_type = consts.DATA_TYPE.NODE_INPUT, node_id = handler_id, key = "default",
+                } }
+                local _, setup_err = commit.execute(dataflow_id, uuid.v7(), {
+                    { type = consts.COMMAND_TYPES.UPDATE_NODE, payload = {
+                        node_id = node_id, node_type = STUB .. "commit_failure_node",
+                        status = consts.STATUS.PENDING, config = config,
+                    } },
+                    { type = consts.COMMAND_TYPES.CREATE_NODE, payload = {
+                        node_id = handler_id, node_type = "userspace.dataflow.node.func:node",
+                        status = consts.STATUS.PENDING,
+                        config = { func_id = "userspace.dataflow.node.func:test_func" },
+                    } },
+                }, { publish = false })
+                test.is_nil(setup_err)
+                local c = client.new()
+                local _, start_err = c:start(dataflow_id)
+                test.is_nil(start_err)
+
+                local agent_row, handler_row
+                for _ = 1, 100 do
+                    agent_row = node_reader.with_dataflow(dataflow_id):with_nodes(node_id):one()
+                    if agent_row.status == consts.STATUS.COMPLETED_FAILURE then break end
+                    time.sleep("50ms")
+                end
+                for _ = 1, 40 do
+                    handler_row = node_reader.with_dataflow(dataflow_id):with_nodes(handler_id):one()
+                    if handler_row.status == consts.STATUS.COMPLETED_SUCCESS then break end
+                    time.sleep("50ms")
+                end
+                local tool_nodes = node_reader.with_dataflow(dataflow_id):with_parent_nodes(node_id)
+                    :with_node_types("tool.call"):all()
+                local handler_inputs = rows(dataflow_id, handler_id, consts.DATA_TYPE.NODE_INPUT)
+                local running, by_call = 0, {}
+                for _, tool_node in ipairs(tool_nodes) do
+                    by_call[tool_node.metadata.tool_call_id] = tool_node
+                    if tool_node.status == consts.STATUS.RUNNING then running = running + 1 end
+                end
+                if handler_row.status ~= consts.STATUS.COMPLETED_SUCCESS then c:cancel(dataflow_id) end
+
+                test.eq(agent_row.status, consts.STATUS.COMPLETED_FAILURE)
+                test.contains(agent_row.metadata.status_message, "Tool result listener failed for " .. refused_id)
+                test.contains(agent_row.metadata.status_message, "commit refused")
+                test.eq(#handler_inputs, 1, "the error handler has its required input")
+                test.eq(#tool_nodes, 12, "each call has one visualization row")
+                test.eq(by_call[first_id].status, consts.STATUS.COMPLETED_SUCCESS, "the committed result stays successful")
+                test.eq(by_call[refused_id].status, consts.STATUS.COMPLETED_FAILURE, "the queued error result stays failed")
+                test.eq(by_call[refused_id].metadata.error_message, "tool failure before commit refusal")
+                test.eq(metric_number(scenario_id, "tool_attempts:" .. first_id), 1, "recovery keeps the committed call")
+                test.eq(helpers.get_metrics(scenario_id).llm_calls, 1, "the failed round makes no further model request")
+                test.eq(running, 0, path .. " commit failure leaves RUNNING tool.call rows and a ready handler "
+                    .. handler_row.status)
+                test.eq(handler_row.status, consts.STATUS.COMPLETED_SUCCESS, "the error handler runs through the orchestrator")
+                for step = 3, 12 do
+                    test.eq(by_call[helpers.call_id(scenario_id, step)].status, consts.STATUS.CANCELLED,
+                        "unfinished visualization " .. step .. " is cancelled")
+                end
+                test.eq(#rows(dataflow_id, handler_id, consts.DATA_TYPE.NODE_RESULT), 1, "the handler produces a result")
+            end)
+        end
+
         it("fails the round when a finished call's observation cannot be committed", function()
             local scenario_id = "tool-recovery-refused-" .. uuid.v7()
             local fast_id = helpers.call_id(scenario_id, 1)

@@ -1,6 +1,17 @@
 version: '1.0'
 namespace: userspace.dataflow.node.agent.stub
 entries:
+- name: commit_failure_node
+  kind: process.lua
+  meta:
+    test_only: true
+  source: file://commit_failure_node.lua
+  imports:
+    agent_node: userspace.dataflow.node.agent:node
+    node_sdk: userspace.dataflow:node
+    consts: userspace.dataflow:consts
+    agent_consts: userspace.dataflow.node.agent:consts
+  method: run
 - name: recovery_store
   kind: store.memory
   meta:

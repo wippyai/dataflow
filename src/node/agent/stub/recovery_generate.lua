@@ -284,6 +284,16 @@ local function handler(contract_args)
         return final_response(scenario.scenario_id, scenario.mode, result_count, 9, 4)
     end
 
+    if scenario.mode == "commit_failure_round" then
+        local response = tool_call_response(scenario.scenario_id, 1, 0, 13, 8)
+        for step = 2, 12 do
+            local call = tool_call_response(scenario.scenario_id, step, step == 2 and 200 or 10000, 13, 8,
+                "recovery_tool", { fail_message = step == 2 and "tool failure before commit refusal" or nil })
+            table.insert(response.result.tool_calls, call.result.tool_calls[1])
+        end
+        return response
+    end
+
     if scenario.mode == "scalar_tools" then
         if result_count == 0 then
             local response = tool_call_response(scenario.scenario_id, 1, 0, 13, 8)
