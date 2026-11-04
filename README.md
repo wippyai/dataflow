@@ -276,6 +276,13 @@ settled on recovery shows the wrapper its calls in the live shape, and results f
 stored rows, which cannot recover everything: `true` reads back as 1 on SQLite, and a
 `{success = false}` result is stored as its error text rather than its table.
 
+A `_control` directive that creates command children commits the child set before it
+can wait on them, and recovery collects their output. `_control.artifacts` take their ids
+from the call and its position, so a call that recovery runs again stores each artifact
+once and the first stored content stands. A call can return one `_control.delegate`:
+each delegate's result answers the call, so a call returning several fails the node with
+an error naming it, and `input_data` is required.
+
 A selection is durable: `agent_id` and `model` inputs choose only until the node's
 first commit, which stores the choice in the config, a `_control.config` switch commits with the results that carry it,
 and a restart keeps the stored selection. `_control.memory.add` rows follow every

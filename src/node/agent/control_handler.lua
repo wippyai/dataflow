@@ -198,32 +198,37 @@ function control_handler.queue_memory_additions(additions, node_sdk, iteration)
 end
 
 -- Process artifact creation
-function control_handler.process_artifacts(control, node_sdk, iteration)
+-- A re-run call returns its artifacts again, so their ids come from the call. The stored
+-- artifact stands: a re-run that returns other content changes nothing.
+function control_handler.process_artifacts(control, node_sdk, iteration, call_id)
     if not control.artifacts then
         return {}
     end
 
     local artifact_changes = {}
 
-    for _, artifact in ipairs(control.artifacts) do
+    for index, artifact in ipairs(control.artifacts) do
         if artifact.content then
             local content_type = artifact.content_type or consts.CONTENT_TYPE.TEXT
-            local artifact_id = uuid.v7()
+            local artifact_id = uuid.v5(node_sdk.node_id, string.format("%s:%s:%d", tostring(iteration),
+                tostring(call_id), index))
             local title = artifact.title or "Untitled"
 
-            node_sdk:data(consts.DATA_TYPE.ARTIFACT, artifact.content, {
-                data_id = artifact_id,
-                key = title,
-                content_type = content_type,
-                node_id = node_sdk.node_id,
-                metadata = {
-                    title = title,
-                    comment = artifact.description,
-                    artifact_type = artifact.type or "inline",
-                    created_in_control = true,
-                    iteration = iteration
-                }
-            })
+            if not node_sdk:query():with_data(artifact_id):one() then
+                node_sdk:data(consts.DATA_TYPE.ARTIFACT, artifact.content, {
+                    data_id = artifact_id,
+                    key = title,
+                    content_type = content_type,
+                    node_id = node_sdk.node_id,
+                    metadata = {
+                        title = title,
+                        comment = artifact.description,
+                        artifact_type = artifact.type or "inline",
+                        created_in_control = true,
+                        iteration = iteration
+                    }
+                })
+            end
 
             table.insert(artifact_changes, {
                 artifact_id = artifact_id,
@@ -300,7 +305,7 @@ end
 
 -- Process a single control directive from tool result
 -- Returns: cleaned_result, control_response
-function control_handler.process_control_directive(tool_result, node_sdk, iteration)
+function control_handler.process_control_directive(tool_result, node_sdk, iteration, call_id)
     if type(tool_result) ~= "table" or not tool_result._control then
         return tool_result, nil
     end
@@ -336,7 +341,7 @@ function control_handler.process_control_directive(tool_result, node_sdk, iterat
     end
 
     -- Process artifact creation
-    local artifact_changes = control_handler.process_artifacts(control, node_sdk, iteration)
+    local artifact_changes = control_handler.process_artifacts(control, node_sdk, iteration, call_id)
     if #artifact_changes > 0 then
         control_response.changes_applied.artifacts = artifact_changes
     end
@@ -384,6 +389,11 @@ function control_handler.process_control_directive(tool_result, node_sdk, iterat
     -- Handle delegate requests - pass through the entire delegate array
     if control.delegate then
         control_response.delegate = control.delegate
+        -- Each delegate's result answers the call, and a call takes one result.
+        if #control.delegate > 1 then
+            control_response.delegate_error = "Call " .. tostring(call_id) .. " returned "
+                .. tostring(#control.delegate) .. " delegates; a call can delegate to one agent"
+        end
         for _, delegation in ipairs(control.delegate) do
             if not delegation_handler.has_input(delegation) then
                 control_response.delegate_error = "Delegation to " .. tostring(delegation.agent_id)

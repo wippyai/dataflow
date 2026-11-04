@@ -89,12 +89,44 @@ local function handler(input)
                 content = { message = "child-output-" .. tostring(index), delay_ms = tonumber(input.child_delay_ms) or 6000 },
                 content_type = consts.CONTENT_TYPE.JSON } })
         end
+        local run_node_ids = {}
+        for _, command in ipairs(commands) do
+            if command.type == consts.COMMAND_TYPES.CREATE_NODE then
+                table.insert(run_node_ids, command.payload.node_id)
+            end
+        end
         return {
             accepted = true,
             _control = {
                 memory = input.commands_memory
                     and { add = { { type = "fact", text = input.commands_memory } } } or nil,
                 commands = commands,
+                yield = input.commands_yield and { user_context = { run_node_ids = run_node_ids } } or nil,
+            },
+        }
+    end
+
+    if type(input.delegate_with_artifact) == "string" then
+        return {
+            _control = {
+                artifacts = { { title = "Report", content = "report body", type = "inline" } },
+                delegate = { {
+                    agent_id = input.delegate_with_artifact,
+                    input_data = input.delegate_input,
+                    tool_calling = "auto",
+                } },
+            },
+        }
+    end
+
+    if type(input.two_delegates) == "string" then
+        local child_input = { scenario_id = input.scenario_id .. "-child", mode = "text_final" }
+        return {
+            _control = {
+                delegate = {
+                    { agent_id = input.two_delegates, input_data = child_input, tool_calling = "auto" },
+                    { agent_id = input.two_delegates, input_data = child_input, tool_calling = "auto" },
+                },
             },
         }
     end

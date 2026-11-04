@@ -360,6 +360,12 @@ local function handler(contract_args)
             control_args = { commands_memory = "added at " .. tostring(llm_calls), child_delay_ms = scenario.child_delay_ms }
         elseif scenario.delegate_without_input_at == llm_calls then
             control_args = { delegate_without_input = scenario.delegate_to }
+        elseif scenario.commands_yield_at == llm_calls then
+            control_args = { commands_children = 1, commands_yield = true, child_delay_ms = scenario.child_delay_ms }
+        elseif scenario.artifact_delegate_at == llm_calls then
+            control_args = { delegate_with_artifact = scenario.delegate_to, delegate_input = scenario.delegate_input }
+        elseif scenario.two_delegates_at == llm_calls then
+            control_args = { two_delegates = scenario.delegate_to }
         elseif scenario.two_children_at == llm_calls then
             control_args = { commands_children = 2, child_delay_ms = 10 }
         end

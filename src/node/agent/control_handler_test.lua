@@ -351,6 +351,38 @@ local function define_tests()
                 test.is_true(tostring(apply_err):find("input_data", 1, true) ~= nil, tostring(apply_err))
             end)
 
+            it("refuses several delegates for one call, naming it", function()
+                local n = make_node({})
+                local _, response = control_handler.process_control_directive({ _control = { delegate = {
+                    { agent_id = "agent:a", input_data = "x" },
+                    { agent_id = "agent:b", input_data = "y" },
+                } } }, n, 1, "call-7")
+                local _, apply_err = control_handler.apply_control_responses({ response }, {}, n)
+                test.not_nil(apply_err)
+                test.is_true(tostring(apply_err):find("call-7", 1, true) ~= nil, tostring(apply_err))
+            end)
+
+            it("gives an artifact the same id on a re-run and stores it once", function()
+                local n = make_node({})
+                local directive = { artifacts = { { title = "A", content = "one" }, { title = "B", content = "two" } } }
+                local first = control_handler.process_artifacts(directive, n, 2, "call-1")
+                local function same_node(rows)
+                    local other = make_node({}, rows)
+                    other.node_id = n.node_id
+                    return other
+                end
+                local again_node = same_node({ { data_id = first[1].artifact_id }, { data_id = first[2].artifact_id } })
+                local again = control_handler.process_artifacts(directive, again_node, 2, "call-1")
+                test.eq(again[1].artifact_id, first[1].artifact_id)
+                test.eq(again[2].artifact_id, first[2].artifact_id)
+                test.is_true(first[1].artifact_id ~= first[2].artifact_id)
+                test.eq(#queued_of_type(again_node, consts.COMMAND_TYPES.CREATE_DATA), 0, "the stored row stands")
+                local other_call = control_handler.process_artifacts(directive, same_node(), 2, "call-2")
+                test.is_true(other_call[1].artifact_id ~= first[1].artifact_id)
+                local other_round = control_handler.process_artifacts(directive, same_node(), 3, "call-1")
+                test.is_true(other_round[1].artifact_id ~= first[1].artifact_id)
+            end)
+
             it("refuses a delegate whose input is false", function()
                 local n = make_node({})
                 local _, response = control_handler.process_control_directive(

@@ -1632,6 +1632,14 @@ local function define_tests()
             test.is_nil(recovery_helpers.prefix_error(requests[1], requests[2]))
         end)
 
+        it("fails a call that returns several delegates, naming the call", function()
+            local run = run_node({ input = { rounds = 1, two_delegates_at = 1, delegate_to = AGENT } })
+            test.eq(run.status, consts.STATUS.COMPLETED_FAILURE)
+            test.is_true(string.find(node_error(run), recovery_helpers.call_id(run.scenario_id, 1), 1, true) ~= nil,
+                node_error(run))
+            test.eq(#requests_of(run), 1, "no request carries two results for one call")
+        end)
+
         it("fails a delegate with no input instead of waiting forever", function()
             local run = run_node({ input = { rounds = 1, delegate_without_input_at = 1, delegate_to = AGENT } })
             test.eq(run.status, consts.STATUS.COMPLETED_FAILURE)

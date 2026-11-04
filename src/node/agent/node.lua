@@ -1320,9 +1320,6 @@ local function resume_control_commands(n, child_node_ids, iteration)
 end
 
 local function run_control_response_commands(control_responses, agent_ctx, n, iteration)
-    local _changes_summary, changes_err = control_handler.apply_control_responses(control_responses, agent_ctx, n)
-    if changes_err then return changes_err end
-
     local created_node_ids = {}
     for _, response in ipairs(control_responses) do
         if response.changes_applied and response.changes_applied.commands and response.changes_applied.created_nodes then
@@ -1332,16 +1329,22 @@ local function run_control_response_commands(control_responses, agent_ctx, n, it
         end
     end
 
-    if #created_node_ids == 0 then return nil end
+    -- Persist the exact child set in the same commit that creates it, ahead of any
+    -- yield directive. A restarted Agent must resume this DAG and collect its output,
+    -- not ask the model to compose a replacement.
+    if #created_node_ids > 0 then
+        n:update_metadata({
+            agent_pending = {
+                iteration = iteration,
+                child_node_ids = created_node_ids
+            }
+        })
+    end
 
-    -- Persist the exact child set in the same commit that creates it. A restarted
-    -- Agent must resume this DAG, not ask the model to compose a replacement.
-    n:update_metadata({
-        agent_pending = {
-            iteration = iteration,
-            child_node_ids = created_node_ids
-        }
-    })
+    local _changes_summary, changes_err = control_handler.apply_control_responses(control_responses, agent_ctx, n)
+    if changes_err then return changes_err end
+
+    if #created_node_ids == 0 then return nil end
 
     local resume_err = resume_control_commands(n, created_node_ids, iteration)
     if resume_err then
@@ -1777,7 +1780,7 @@ local function process_tool_results(n, tool_results, iteration, exit_tool_name, 
                 local tool_error = result_data.error
 
                 local cleaned_result, control_response = control_handler.process_control_directive(
-                    tool_result, n, iteration
+                    tool_result, n, iteration, call_id
                 )
                 if control_response then
                     control_response.tool_call_id = call_id

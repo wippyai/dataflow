@@ -319,6 +319,22 @@ function M.create_round_settle()
     return hold_runtime()
 end
 
+function M.create_round_yield_commands()
+    prepare_runtime()
+    create_round_text_workflow({ scenario_id = "round-yield-commands", mode = "thinking_rounds", rounds = 1,
+        commands_yield_at = 1, child_delay_ms = 6000 })
+    return hold_runtime()
+end
+
+function M.create_round_artifact()
+    prepare_runtime()
+    create_round_text_workflow({ scenario_id = "round-artifact", mode = "thinking_rounds", rounds = 1,
+        artifact_delegate_at = 1, delegate_to = STUB .. "recovery_test_agent",
+        delegate_input = { scenario_id = "round-artifact-child", mode = "thinking_rounds", rounds = 0,
+            slow_request = 1, slow_ms = 6000 } })
+    return hold_runtime()
+end
+
 function M.create()
     prepare_runtime()
     local template = (flow.template() :: any):func("userspace.dataflow.node.func:test_func")
