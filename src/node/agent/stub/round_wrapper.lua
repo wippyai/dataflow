@@ -21,6 +21,10 @@ local function apply(payload)
     if scenario_id == "round-settle" and helpers.bump_metric(scenario_id, "wrapper_attempts", 1) == 1 then
         time.sleep("60s")
     end
+    if scenario_id == "round-double-kill"
+        and helpers.bump_metric(scenario_id, "wrapper_attempts", 1) == 2 then
+        time.sleep("60s")
+    end
     return { _control = { context = { session = { set = { settled_by = "wrapper" } } } } }
 end
 

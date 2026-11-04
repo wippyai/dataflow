@@ -56,6 +56,24 @@ local function define_tests()
         end)
     end)
 
+    describe("scalar observations", function()
+        it("queues false, zero, empty and nil through the text path in the batch pass", function()
+            for _, item in ipairs({ { value = false, text = "false" }, { value = 0, text = "0" },
+                { value = "", text = "" }, { text = "nil" } }) do
+                local n, recorded = make_recording_node()
+                local _, _, _, _, err = agent_node._test.process_tool_results(n,
+                    { scalar = { result = item.value } }, 1, nil,
+                    { tool_calls = { { id = "scalar", name = "scalar" } } }, {}, {}, {})
+                test.is_nil(err)
+                local row = find_by_tool_call_id(recorded, "scalar")
+                test.not_nil(row)
+                test.eq(row.content, item.text, "scalar observation is text")
+                test.eq(row.opts.content_type, "text/plain")
+                test.is_false(row.opts.metadata.is_error)
+            end
+        end)
+    end)
+
     describe("round commit", function()
         local function run_round(tool_results, tool_calls, delegate_calls, max_iterations, node_metadata, action_call_ids)
             local events = {}

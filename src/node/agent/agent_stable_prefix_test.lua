@@ -1891,6 +1891,24 @@ local function define_tests()
         end)
     end)
 
+    describe("scalar tool results", function()
+        it("completes the workflow and sends false, zero, empty and nil results in the next request", function()
+            local run = run_node({ input = { mode = "scalar_tools" } })
+            test.eq(run.status, consts.STATUS.COMPLETED_SUCCESS, node_error(run))
+            local requests = requests_of(run)
+            test.eq(#requests, 2)
+            assert_paired(requests)
+            for step, expected in ipairs({ "false", "0", "", "nil" }) do
+                local call_id = recovery_helpers.call_id(run.scenario_id, step)
+                local _, message = find_message(requests[2], function(item)
+                    return item.role == "function_result" and item.function_call_id == call_id
+                end)
+                test.not_nil(message, "the next request contains result " .. step)
+                test.eq(text_of(message), expected, "scalar result " .. step)
+            end
+        end)
+    end)
+
     describe("memory directives", function()
         it("clears the pending additions with the delegate's result", function()
             local child = "stable-prefix-child-" .. uuid.v7()

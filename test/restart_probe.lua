@@ -366,6 +366,16 @@ function M.create_round_rerun()
     return hold_runtime()
 end
 
+function M.create_round_double_kill()
+    prepare_runtime()
+    create_round_text_workflow({ scenario_id = "round-double-kill", mode = "thinking_rounds", rounds = 1,
+        capture_requests = true, delegate_once_at = 1, delegate_memory = "superseded",
+        delegate_to = STUB .. "recovery_test_agent",
+        delegate_input = { scenario_id = "round-double-kill-child", mode = "thinking_rounds", rounds = 0,
+            slow_request = 1, slow_ms = 6000 } }, { STUB .. "round_wrapper_trait" })
+    return hold_runtime()
+end
+
 function M.create_round_yield()
     prepare_runtime()
     create_round_text_workflow({ scenario_id = "round-yield", mode = "thinking_rounds", rounds = 1,

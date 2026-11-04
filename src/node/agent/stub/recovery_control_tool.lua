@@ -146,6 +146,7 @@ local function handler(input)
     if type(input.delegate_to) == "string" then
         return {
             _control = {
+                memory = input.delegate_memory and { add = { { type = "fact", text = input.delegate_memory } } } or nil,
                 delegate = { {
                     agent_id = input.delegate_to,
                     input_data = input.delegate_input or { scenario_id = input.scenario_id .. "-child", mode = "text_final" },

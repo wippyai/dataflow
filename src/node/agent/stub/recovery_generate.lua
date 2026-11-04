@@ -284,6 +284,20 @@ local function handler(contract_args)
         return final_response(scenario.scenario_id, scenario.mode, result_count, 9, 4)
     end
 
+    if scenario.mode == "scalar_tools" then
+        if result_count == 0 then
+            local response = tool_call_response(scenario.scenario_id, 1, 0, 13, 8)
+            response.result.tool_calls = {}
+            for step, kind in ipairs({ "false", "zero", "empty", "nil" }) do
+                local call = tool_call_response(scenario.scenario_id, step, 0, 13, 8, "recovery_tool",
+                    { scalar_kind = kind })
+                table.insert(response.result.tool_calls, call.result.tool_calls[1])
+            end
+            return response
+        end
+        return final_response(scenario.scenario_id, scenario.mode, result_count, 9, 4)
+    end
+
     -- Two tool calls in one turn, each holding its worker for tool_delay_ms.
     if scenario.mode == "two_tools_one_turn" then
         if llm_calls == 1 then
@@ -398,7 +412,8 @@ local function handler(contract_args)
             local memory = tool_call_response(scenario.scenario_id, 1, 0, tokens, 4, "recovery_control_tool",
                 { memory_add = "added at " .. tostring(llm_calls) })
             local delegate = tool_call_response(scenario.scenario_id, 2, 0, tokens, 4, "recovery_control_tool",
-                { delegate_to = scenario.delegate_to, delegate_input = scenario.delegate_input, delegate_once = true })
+                { delegate_to = scenario.delegate_to, delegate_input = scenario.delegate_input, delegate_once = true,
+                    delegate_memory = scenario.delegate_memory })
             table.insert(memory.result.tool_calls, delegate.result.tool_calls[1])
             return memory
         end

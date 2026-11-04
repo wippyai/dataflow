@@ -6,11 +6,12 @@ test_dir="$repo_dir/test"
 db_file="$test_dir/.wippy/restart-proof.db"
 phase1_log="$test_dir/.wippy/restart-phase1.log"
 phase2_log="$test_dir/.wippy/restart-phase2.log"
+phase3_log="$test_dir/.wippy/restart-phase3.log"
 runtime_pid=""
 restart_wippy="${WIPPY:-wippy}"
 dialect="${DATAFLOW_RESTART_DIALECT:-sqlite}"
 scenario="${DATAFLOW_RESTART_SCENARIO:-rolling}"
-case "$scenario" in rolling|behavior|parallel_tools|stable_prefix|round_children|round_delegate|round_both|round_rerun|round_yield|round_settle|round_yield_commands|round_artifact|round_command_delegate|round_yield_delegate) ;; *) echo "unsupported restart scenario" >&2; exit 1 ;; esac
+case "$scenario" in rolling|behavior|parallel_tools|stable_prefix|round_children|round_delegate|round_both|round_rerun|round_double_kill|round_yield|round_settle|round_yield_commands|round_artifact|round_command_delegate|round_yield_delegate) ;; *) echo "unsupported restart scenario" >&2; exit 1 ;; esac
 pg_host="${DATAFLOW_PG_HOST:-127.0.0.1}"
 pg_port="${DATAFLOW_PG_PORT:-5432}"
 pg_database="${DATAFLOW_PG_DATABASE:-dataflow_restart_test}"
@@ -66,6 +67,9 @@ start_runtime() {
         behavior) set -- --profile restart_behavior ;;
         parallel_tools) set -- --profile restart_parallel_tools ;;
         stable_prefix) set -- --profile restart_stable_prefix ;;
+        round_double_kill)
+            set -- --profile restart_round_rerun \
+                --override "app:restart_probe.create:method=create_round_double_kill" ;;
         round_command_delegate|round_yield_delegate)
             set -- --profile restart_round_children \
                 --override "app:restart_probe.create:method=create_$scenario" \
@@ -87,7 +91,7 @@ start_runtime() {
     runtime_pid=$!
 }
 
-rm -f "$db_file" "$db_file-wal" "$db_file-shm" "$phase1_log" "$phase2_log"
+rm -f "$db_file" "$db_file-wal" "$db_file-shm" "$phase1_log" "$phase2_log" "$phase3_log"
 
 if [ "$dialect" = "postgres" ]; then
     PGPASSWORD="$pg_password" dropdb --if-exists --force \
@@ -317,6 +321,47 @@ while [ "$attempts" -lt 200 ]; do
 done
 [ -n "$second_epoch" ] || { echo "new runtime epoch did not take ownership" >&2; exit 1; }
 
+if [ "$scenario" = "round_double_kill" ]; then
+    if [ "$dialect" = "postgres" ]; then
+        result_call="d.metadata->>'tool_call_id'"
+        metric_text="convert_from(s.store_value, 'UTF8')"
+    else
+        result_call="json_extract(d.metadata, '$.tool_call_id')"
+        metric_text="CAST(s.store_value AS TEXT)"
+    fi
+    interrupted=""
+    attempts=0
+    while [ "$attempts" -lt 200 ]; do
+        interrupted=$(query "SELECT COUNT(*) FROM dataflow_nodes n
+            WHERE n.dataflow_id = '$dataflow_id' AND n.parent_node_id IS NULL
+              AND EXISTS (SELECT 1 FROM dataflow_data d WHERE d.node_id = n.node_id
+                  AND d.type = 'agent.observation' AND $result_call = 'call-round-double-kill-2')
+              AND EXISTS (SELECT 1 FROM restart_recovery_store s
+                  WHERE s.store_key = 'agent_recovery:round-double-kill:wrapper_attempts' AND $metric_text = '2');" 2>/dev/null || true)
+        [ "$interrupted" = "1" ] && break
+        attempts=$((attempts + 1))
+        sleep 0.1
+    done
+    [ "$interrupted" = "1" ] || { echo "recovery did not reach the second crash boundary" >&2; exit 1; }
+    kill -KILL "$runtime_pid"
+    wait "$runtime_pid" 2>/dev/null || true
+    runtime_pid=""
+    killed_epoch="$second_epoch"
+    start_runtime restart_observe "$phase3_log"
+    second_epoch=""
+    attempts=0
+    while [ "$attempts" -lt 200 ]; do
+        second_epoch=$(query "SELECT owner_epoch FROM dataflow_activations
+            WHERE dataflow_id = '$dataflow_id' AND owner_epoch IS NOT NULL
+              AND owner_epoch <> '$killed_epoch' AND owner_epoch <> '$first_epoch';" 2>/dev/null || true)
+        [ -n "$second_epoch" ] && break
+        attempts=$((attempts + 1))
+        sleep 0.1
+    done
+    [ -n "$second_epoch" ] || { echo "third runtime did not take ownership" >&2; exit 1; }
+    echo "double SIGKILL epochs: $first_epoch -> $killed_epoch -> $second_epoch"
+fi
+
 completed=""
 attempts=0
 while [ "$attempts" -lt 250 ]; do
@@ -397,6 +442,21 @@ if [ "${scenario#round_}" != "$scenario" ]; then
             echo "recovered command output did not reach a paired request: ${verdict:-no verdict}" >&2
             exit 1
         }
+    fi
+    if [ "$scenario" = "round_double_kill" ]; then
+        if [ "$dialect" = "postgres" ]; then
+            pending_expr="metadata->>'memory_pending'"
+            request_text="convert_from(store_value, 'UTF8')"
+        else
+            pending_expr="json_extract(metadata, '$.memory_pending')"
+            request_text="CAST(store_value AS TEXT)"
+        fi
+        pending=$(query "SELECT $pending_expr FROM dataflow_nodes WHERE dataflow_id = '$dataflow_id' AND parent_node_id IS NULL;")
+        case "$pending" in false|0) ;; *) echo "pending memory was not cleared: $pending" >&2; exit 1 ;; esac
+        request=$(query "SELECT $request_text FROM restart_recovery_store
+            WHERE store_key = 'agent_recovery:round-double-kill:request:2';")
+        case "$request" in *'\"text\":\"added at 1\"'*) ;; *) echo "the next request lost surviving memory" >&2; exit 1 ;; esac
+        case "$request" in *'\"text\":\"superseded\"'*) echo "the next request contains replaced memory" >&2; exit 1 ;; esac
     fi
     if [ "$scenario" = "round_settle" ]; then
         if [ "$dialect" = "postgres" ]; then

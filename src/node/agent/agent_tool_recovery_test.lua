@@ -153,6 +153,86 @@ end
 
 local function define_tests()
     describe("agent tool round recovery", function()
+        it("recovers committed scalar results without repeating tools", function()
+            local scenario_id = "scalar-recovery-" .. uuid.v7()
+            local dataflow_id, node_id = create_workflow({ scenario_id = scenario_id, mode = "scalar_tools" })
+            local first_ok, first_result = run_node(dataflow_id, node_id, function()
+                return #call_observations(dataflow_id, node_id) == 4
+            end)
+            test.is_false(first_ok, "the run stops after all four scalar observations commit: " .. tostring(first_result))
+            test.contains(tostring(first_result), "interrupt after commit")
+            local ok, result = run_node(dataflow_id, node_id)
+            test.is_true(ok, tostring(result))
+            test.is_true(result.success, tostring(result.message))
+            for step, expected in ipairs({ "false", "0", "", "nil" }) do
+                local call_id = helpers.call_id(scenario_id, step)
+                test.eq(metric_number(scenario_id, "tool_attempts:" .. call_id), 1,
+                    "recovery keeps scalar result " .. step)
+                test.eq(helpers.get_metric(scenario_id, "result_text:" .. call_id), expected)
+            end
+            for _, row in ipairs(call_observations(dataflow_id, node_id)) do
+                test.eq(row.content_type, consts.CONTENT_TYPE.TEXT)
+                test.is_false(row.metadata.is_error)
+            end
+        end)
+
+        local function recover_memory_twice(replace_own_memory)
+            local scenario_id = "memory-double-recovery-" .. uuid.v7()
+            local first_id = helpers.call_id(scenario_id, 1)
+            local second_id = helpers.call_id(scenario_id, 2)
+            local dataflow_id, node_id = create_workflow({ scenario_id = scenario_id, mode = "thinking_rounds",
+                rounds = 1, delegate_once_at = 1, delegate_to = STUB .. "recovery_test_agent",
+                delegate_memory = replace_own_memory and "superseded" or nil })
+            local function metadata()
+                return node_reader.with_dataflow(dataflow_id):with_nodes(node_id):one().metadata
+            end
+            local first_ok, first_result = run_node(dataflow_id, node_id, function()
+                return type(metadata().memory_pending) == "table"
+            end)
+            test.is_false(first_ok)
+            test.contains(tostring(first_result), "interrupt after commit")
+            test.eq(metadata().memory_pending.by_call[first_id][1].text, "added at 1")
+            if replace_own_memory then
+                test.eq(metadata().memory_pending.by_call[second_id][1].text, "superseded")
+            end
+            local second_ok, second_result = run_node(dataflow_id, node_id, function()
+                return #call_observations(dataflow_id, node_id) == 2
+            end)
+            test.is_false(second_ok)
+            test.contains(tostring(second_result), "interrupt after commit")
+            if replace_own_memory then
+                test.is_nil(metadata().memory_pending.by_call[second_id],
+                    "the re-run result commits its replacement pending entry")
+            end
+            test.eq(metadata().memory_pending.by_call[first_id][1].text, "added at 1")
+            local settlement_ok, settlement_result = run_node(dataflow_id, node_id, function()
+                return metadata().round_settled == 1
+            end)
+            test.is_false(settlement_ok)
+            test.contains(tostring(settlement_result), "interrupt after commit")
+            local memories = rows(dataflow_id, node_id, agent_consts.DATA_TYPE.AGENT_MEMORY)
+            local facts = {}
+            for _, row in ipairs(memories) do
+                if row.discriminator == "fact" then facts[#facts + 1] = row.content end
+            end
+            test.eq(#facts, 1, "settlement commits the surviving pending memory")
+            test.eq(facts[1], "added at 1")
+            test.eq(metadata().memory_pending, false, "the same commit clears pending memory")
+            local ok, result = run_node(dataflow_id, node_id)
+            test.is_true(ok, tostring(result))
+            test.is_true(result.success, tostring(result.message))
+            local after = rows(dataflow_id, node_id, agent_consts.DATA_TYPE.AGENT_MEMORY)
+            test.eq(#after, #memories, "recovery does not duplicate settled memory")
+        end
+
+        it("settles surviving pending memory atomically after two interruptions", function()
+            recover_memory_twice(false)
+        end)
+
+        it("persists a re-run call's replacement pending entry with its observation", function()
+            recover_memory_twice(true)
+        end)
+
         it("fails the node naming the artifact when its deterministic id cannot be generated", function()
             local dataflow_id, node_id = create_workflow({
                 scenario_id = "artifact-id-failure-" .. uuid.v7(), mode = "thinking_rounds", rounds = 1, artifact_at = 1,

@@ -1656,8 +1656,8 @@ local function record_tool_observation(n, iteration, tool_call, content, tool_er
     local obs_content = content
     if tool_error ~= nil then
         obs_content = tool_error_text(tool_error)
-    elseif obs_content == nil then
-        obs_content = "nil"
+    elseif type(obs_content) ~= "table" then
+        obs_content = tostring(obs_content)
     end
 
     n:data(agent_consts.DATA_TYPE.AGENT_OBSERVATION, obs_content, {
@@ -1847,6 +1847,14 @@ local function tool_result_persister(n, iteration, tool_calls: {ToolCall}, has_e
             update_tool_viz_nodes(n, { [call_id] = result }, tool_call_to_node_id)
         end
         record_tool_observation(n, iteration, tool_call, result_data.result, result_data.error, tool_call_to_node_id)
+        local pending = (n:metadata() or {}).memory_pending
+        if type(pending) == "table" and pending.iteration == iteration and (pending.by_call or {})[call_id] then
+            local by_call = {}
+            for pending_call_id, items in pairs(pending.by_call) do
+                if pending_call_id ~= call_id then by_call[pending_call_id] = items end
+            end
+            n:update_metadata({ memory_pending = { iteration = iteration, by_call = by_call } })
+        end
         local submitted, submit_err = n:submit()
         if not submitted then
             return nil, error_message(submit_err, "unknown")
@@ -2178,6 +2186,13 @@ local function settle_recovered_round(n, caller, agent_instance, action_payload,
     local prepared, prepare_err = behavior_controls.prepare(controls)
     if not prepared then return nil, prepare_err end
 
+    local additions = round_memory_additions(n, iteration, {
+        action_call_ids = action_call_ids(action_payload.content.tool_calls),
+    }, {})
+    control_handler.queue_memory_additions(additions, n, iteration)
+    if type((n:metadata() or {}).memory_pending) == "table" then
+        n:update_metadata({ memory_pending = false })
+    end
     local stored_warning = n:query()
         :with_nodes(n.node_id)
         :with_data_types(agent_consts.DATA_TYPE.AGENT_OBSERVATION)
