@@ -18,6 +18,7 @@ local agent_consts = require("agent_consts")
 local consts = require("consts")
 local tools = require("tools")
 local funcs = require("funcs")
+local node_reader = require("node_reader")
 
 type ToolCall = {
     id: string,
@@ -66,6 +67,9 @@ type LifecyclePayload = {
 local function error_message(error_value: any, fallback: string)
     if type(error_value) == "string" then
         return error_value
+    end
+    if type(error_value) == "userdata" then
+        return (error_value :: error):message()
     end
     if type(error_value) == "table" then
         local error_table = error_value :: any
@@ -1064,7 +1068,9 @@ local function load_latest_agent_action(n)
     return nil
 end
 
-local function load_observed_tool_call_ids(n)
+-- Call ids are unique within one turn only, so a call is resolved by an
+-- observation of its own iteration.
+local function load_observed_tool_call_ids(n, iteration)
     local observed_ids = {}
     local observations = n:query()
         :with_nodes(n.node_id)
@@ -1073,7 +1079,7 @@ local function load_observed_tool_call_ids(n)
 
     for _, observation in ipairs(observations or {}) do
         local metadata = observation.metadata or {}
-        if metadata.tool_call_id then
+        if metadata.tool_call_id and metadata.iteration == iteration then
             observed_ids[metadata.tool_call_id] = true
         end
     end
@@ -1277,7 +1283,33 @@ local function get_tool_title_by_registry_id(registry_id, tool_name)
     return tool_name
 end
 
-local function create_tool_viz_nodes(n, tool_calls: { ToolCall }?, iteration, show_tool_calls, exit_tool_name)
+-- The tool call nodes already committed for one round, by call id.
+local function load_tool_viz_nodes(n, iteration): ({[string]: string}?, string?)
+    local rows, read_err = (node_reader.with_dataflow(n.dataflow_id) :: any)
+        :with_parent_nodes(n.node_id)
+        :with_node_types("tool.call")
+        :all()
+    if read_err then
+        return nil, "Failed to load tool call nodes: " .. error_message(read_err, "unknown")
+    end
+    local node_ids: {[string]: string} = {}
+    for _, row in ipairs(rows or {}) do
+        local metadata = row.metadata or {}
+        if metadata.iteration == iteration and type(metadata.tool_call_id) == "string" then
+            node_ids[metadata.tool_call_id] = row.node_id
+        end
+    end
+    return node_ids, nil
+end
+
+-- A call listed in `committed_node_ids` keeps the node a previous run created
+-- for it; every other call gets a new node.
+local function tool_error_text(tool_error: any): string
+    return error_message(tool_error, "Tool call failed")
+end
+
+local function create_tool_viz_nodes(n, tool_calls: { ToolCall }?, iteration, show_tool_calls, exit_tool_name,
+                                     committed_node_ids: {[string]: string}?)
     local tool_call_to_node_id = {}
 
     if show_tool_calls == false or not tool_calls or #tool_calls == 0 then
@@ -1286,6 +1318,12 @@ local function create_tool_viz_nodes(n, tool_calls: { ToolCall }?, iteration, sh
 
     for _, tool_call in ipairs(tool_calls) do
         if exit_tool_name and tool_call.name == exit_tool_name then
+            goto continue
+        end
+
+        local committed_node_id = committed_node_ids and committed_node_ids[tool_call.id]
+        if committed_node_id then
+            tool_call_to_node_id[tool_call.id] = committed_node_id
             goto continue
         end
 
@@ -1330,14 +1368,14 @@ local function create_tool_viz_nodes(n, tool_calls: { ToolCall }?, iteration, sh
     return tool_call_to_node_id
 end
 
-local function update_tool_viz_nodes(n, tool_results, tool_call_to_node_id)
+local function update_tool_viz_nodes(n, tool_results, tool_call_to_node_id, persisted_call_ids)
     if not tool_results or not tool_call_to_node_id then
         return
     end
 
     for call_id, result_data in pairs(tool_results) do
         local viz_node_id = tool_call_to_node_id[call_id]
-        if viz_node_id then
+        if viz_node_id and not (persisted_call_ids and persisted_call_ids[call_id]) then
             local tool_result = result_data.result
             local tool_error = result_data.error
 
@@ -1358,7 +1396,7 @@ local function update_tool_viz_nodes(n, tool_results, tool_call_to_node_id)
                     status = final_status,
                     metadata = {
                         has_error = tool_error ~= nil,
-                        error_message = tool_error,
+                        error_message = tool_error ~= nil and tool_error_text(tool_error) or nil,
                         output_size_bytes = output_size
                     }
                 }
@@ -1433,9 +1471,14 @@ local function prepare_tools(agent_result: { tool_calls: { ToolCall }? }, caller
     return validated_tools, effective_tool_calls, nil
 end
 
-local function execute_tools(caller, session_context, validated_tools)
-    local tool_results = caller:execute(session_context or {}, validated_tools)
-    return tool_results or {}
+local function execute_tools(caller, session_context, validated_tools, result_listener)
+    caller:set_result_listener(result_listener)
+    local tool_results, execute_err = caller:execute(session_context or {}, validated_tools)
+    caller:set_result_listener(nil)
+    if execute_err then
+        return nil, "Failed to persist tool result: " .. error_message(execute_err, "unknown")
+    end
+    return tool_results or {}, nil
 end
 
 local function configure_tool_wrappers(caller, agent_instance, n, agent_id, model_name, iteration, outcome: ToolWrapperOutcome?,
@@ -1504,8 +1547,56 @@ local function exit_schema_violation(schema: any, arguments: any): string?
     return nil
 end
 
+-- A call whose arguments failed to parse reports that failure as its result.
+local function call_result(tool_call, result_data)
+    if tool_call.arguments_error then
+        return { error = "Failed to parse arguments: " .. tool_call.arguments_error }
+    end
+    return result_data
+end
+
+local function record_tool_observation(n, iteration, tool_call, content, tool_error, tool_call_to_node_id)
+    local call_id = tool_call.id
+    local obs_content = content
+    if tool_error ~= nil then
+        obs_content = tool_error_text(tool_error)
+    elseif obs_content == nil then
+        obs_content = "nil"
+    end
+
+    n:data(agent_consts.DATA_TYPE.AGENT_OBSERVATION, obs_content, {
+        key = iteration .. "_" .. tool_call.name,
+        content_type = type(obs_content) == "table" and consts.CONTENT_TYPE.JSON or
+            consts.CONTENT_TYPE.TEXT,
+        node_id = n.node_id,
+        metadata = {
+            iteration = iteration,
+            tool_call_id = call_id,
+            tool_name = tool_call.name,
+            is_error = tool_error ~= nil
+        }
+    })
+
+    local viz_node_id = tool_error ~= nil and tool_call_to_node_id and tool_call_to_node_id[call_id] or nil
+    if viz_node_id then
+        -- Declared alongside the observation just recorded; both flush in one
+        -- durable commit. A consumed child failure is not workflow-terminal
+        -- evidence; the consuming parent's own outcome is.
+        n:command({
+            type = consts.COMMAND_TYPES.UPDATE_NODE,
+            payload = {
+                node_id = viz_node_id,
+                metadata = { error_observed = true }
+            }
+        })
+    end
+end
+
+-- Calls in `persisted_call_ids` already committed their observation as they
+-- finished; the round records the remaining calls in model order.
 local function process_tool_results(n, tool_results, iteration, exit_tool_name, agent_result: any, arena_config,
-                                    session_context, tool_call_to_node_id, settle_completed_round: boolean?)
+                                    session_context, tool_call_to_node_id, settle_completed_round: boolean?,
+                                    persisted_call_ids: {[string]: boolean}?)
     local control_responses = {}
     local control_delegations = {}
     local task_complete = false
@@ -1591,10 +1682,11 @@ local function process_tool_results(n, tool_results, iteration, exit_tool_name, 
     if agent_result.tool_calls then
         for _, tool_call in ipairs(agent_result.tool_calls) do
             local call_id = tool_call.id
-            local result_data = tool_results[call_id]
-            if tool_call.arguments_error then
-                result_data = { error = "Failed to parse arguments: " .. tool_call.arguments_error }
-            elseif task_complete and not settle_completed_round then
+            if persisted_call_ids and persisted_call_ids[call_id] then
+                goto next_tool_result
+            end
+            local result_data = call_result(tool_call, tool_results[call_id])
+            if not tool_call.arguments_error and task_complete and not settle_completed_round then
                 goto next_tool_result
             end
 
@@ -1620,41 +1712,7 @@ local function process_tool_results(n, tool_results, iteration, exit_tool_name, 
                 end
 
                 if not (control_response and control_response.delegate) then
-                    local obs_content = cleaned_result or tool_error
-                    if obs_content == nil then
-                        obs_content = "nil"
-                    end
-
-                    local tool_key = iteration .. "_" .. tool_call.name
-
-                    n:data(agent_consts.DATA_TYPE.AGENT_OBSERVATION, obs_content, {
-                        key = tool_key,
-                        content_type = type(obs_content) == "table" and consts.CONTENT_TYPE.JSON or
-                            consts.CONTENT_TYPE.TEXT,
-                        node_id = n.node_id,
-                        metadata = {
-                            iteration = iteration,
-                            tool_call_id = call_id,
-                            tool_name = tool_call.name,
-                            is_error = tool_error ~= nil
-                        }
-                    })
-
-                    local viz_node_id = tool_error ~= nil and tool_call_to_node_id and
-                        tool_call_to_node_id[call_id] or nil
-                    if viz_node_id then
-                        -- Declared alongside the observation just recorded; both
-                        -- flush in one durable commit. A consumed child failure
-                        -- is not workflow-terminal evidence; the consuming
-                        -- parent's own outcome is.
-                        n:command({
-                            type = consts.COMMAND_TYPES.UPDATE_NODE,
-                            payload = {
-                                node_id = viz_node_id,
-                                metadata = { error_observed = true }
-                            }
-                        })
-                    end
+                    record_tool_observation(n, iteration, tool_call, cleaned_result, tool_error, tool_call_to_node_id)
                 end
             end
             ::next_tool_result::
@@ -1662,6 +1720,44 @@ local function process_tool_results(n, tool_results, iteration, exit_tool_name, 
     end
 
     return control_responses, control_delegations, task_complete, final_result
+end
+
+-- Commits each call's observation as soon as the call finishes, so a restart
+-- re-runs only the calls still in flight. A result carrying a control
+-- directive stays with the after-batch pass, which applies directives in model
+-- order. In a round with an exit call a valid finish drops sibling
+-- observations, so only argument failures, which that rule keeps, commit early.
+-- Returns the listener and the set of call ids it committed.
+local function tool_result_persister(n, iteration, tool_calls: {ToolCall}, has_exit_call: boolean,
+                                     tool_call_to_node_id, show_tool_calls)
+    local calls_by_id = {}
+    for _, tool_call in ipairs(tool_calls) do
+        calls_by_id[tool_call.id] = tool_call
+    end
+    local persisted: {[string]: boolean} = {}
+
+    local function listener(call_id, result)
+        local tool_call = calls_by_id[call_id]
+        if not tool_call or (has_exit_call and not tool_call.arguments_error) then
+            return true, nil
+        end
+        local result_data = call_result(tool_call, result)
+        if type(result_data.result) == "table" and result_data.result._control then
+            return true, nil
+        end
+        if show_tool_calls then
+            update_tool_viz_nodes(n, { [call_id] = result }, tool_call_to_node_id)
+        end
+        record_tool_observation(n, iteration, tool_call, result_data.result, result_data.error, tool_call_to_node_id)
+        local submitted, submit_err = n:submit()
+        if not submitted then
+            return nil, error_message(submit_err, "unknown")
+        end
+        persisted[call_id] = true
+        return true, nil
+    end
+
+    return listener, persisted
 end
 
 local function tools_were_attempted(agent_result)
@@ -1763,7 +1859,7 @@ end
 
 local function finalize_iteration(n, agent_ctx, session_context, iteration, max_iterations, min_iterations, tool_calling,
                                   exit_tool_name, agent_result: any, delegate_calls: any, tool_results, arena_config,
-                                  tool_call_to_node_id, proposed_controls)
+                                  tool_call_to_node_id, proposed_controls, persisted_call_ids: {[string]: boolean}?)
     local calls_valid, calls_err = validate_tool_calls(agent_result and agent_result.tool_calls)
     if not calls_valid then
         return nil, nil, {
@@ -1782,7 +1878,8 @@ local function finalize_iteration(n, agent_ctx, session_context, iteration, max_
         arena_config,
         session_context,
         tool_call_to_node_id,
-        #prepared > 0
+        #prepared > 0,
+        persisted_call_ids
     )
 
     append_control_delegations(delegate_calls, control_delegations)
@@ -1804,7 +1901,8 @@ local function finalize_iteration(n, agent_ctx, session_context, iteration, max_
         local delegation_infos = delegation_handler.create_delegation_batch(
             { delegate_calls = delegate_calls },
             n,
-            session_context
+            session_context,
+            iteration
         )
 
         local delegation_results, delegation_err = delegation_handler.execute_delegation_batch(delegation_infos, n)
@@ -1887,7 +1985,7 @@ local function recover_persisted_action(n, agent_ctx, agent_instance, caller, se
         end
     end
 
-    local observed_tool_call_ids = load_observed_tool_call_ids(n)
+    local observed_tool_call_ids = load_observed_tool_call_ids(n, action_iteration)
     local unresolved_tool_calls, unresolved_delegate_calls = collect_unresolved_calls(action_payload, observed_tool_call_ids)
 
     local has_unresolved_work = (#unresolved_tool_calls > 0) or (#unresolved_delegate_calls > 0)
@@ -1930,15 +2028,28 @@ local function recover_persisted_action(n, agent_ctx, agent_instance, caller, se
         return false, nil, action_iteration, "Tool validation failed: " .. error_message(validate_err, "unknown")
     end
 
+    local committed_node_ids = nil
+    if show_tool_calls then
+        local load_err
+        committed_node_ids, load_err = load_tool_viz_nodes(n, action_iteration)
+        if load_err then
+            return false, nil, action_iteration, load_err
+        end
+    end
     local tool_call_to_node_id = create_tool_viz_nodes(n, effective_tool_calls, action_iteration, show_tool_calls,
-        exit_tool_name)
-    local tool_results = execute_tools(caller, session_context, validated_tools)
+        exit_tool_name, committed_node_ids)
+    local result_listener, persisted_call_ids = tool_result_persister(n, action_iteration, effective_tool_calls,
+        #exit_tool_calls > 0, tool_call_to_node_id, show_tool_calls)
+    local tool_results, execute_err = execute_tools(caller, session_context, validated_tools, result_listener)
+    if execute_err then
+        return false, nil, action_iteration, execute_err
+    end
     local combined_controls = {}
     for _, control in ipairs(proposed_controls) do combined_controls[#combined_controls + 1] = control end
     for _, control in ipairs(caller:get_wrapper_controls()) do combined_controls[#combined_controls + 1] = control end
 
     if show_tool_calls then
-        update_tool_viz_nodes(n, tool_results, tool_call_to_node_id)
+        update_tool_viz_nodes(n, tool_results, tool_call_to_node_id, persisted_call_ids)
     end
 
     local recovered_tool_calls = {} :: { ToolCall }
@@ -1974,7 +2085,8 @@ local function recover_persisted_action(n, agent_ctx, agent_instance, caller, se
         tool_results,
         config.arena,
         tool_call_to_node_id,
-        combined_controls
+        combined_controls,
+        persisted_call_ids
     )
 
     if finalize_err then
@@ -2149,6 +2261,8 @@ local function run(args)
 
     builder:with_arena_config(config.arena):with_initial_input(input_data)
     local caller = tool_caller.new()
+    -- The tool calls of one model turn run concurrently, as in the session host.
+    caller:set_strategy(tool_caller.STRATEGY.PARALLEL)
 
     local saved_state = ((args.node or {}).metadata or {}).state or {}
     local iteration = saved_state.current_iteration or 0
@@ -2660,11 +2774,19 @@ local function run(args)
 
         local tool_call_to_node_id = create_tool_viz_nodes(n, effective_tool_calls, iteration, show_tool_calls,
             exit_tool_name)
-        local tool_results = execute_tools(caller, run_session_context, validated_tools)
+        local result_listener, persisted_call_ids = tool_result_persister(n, iteration, effective_tool_calls,
+            #exit_tool_calls > 0, tool_call_to_node_id, show_tool_calls)
+        local tool_results, execute_err = execute_tools(caller, run_session_context, validated_tools, result_listener)
+        if execute_err then
+            return fail_with_lifecycle({
+                code = agent_consts.ERROR.AGENT_EXEC_FAILED,
+                message = execute_err
+            }, execute_err, REASON.HOST_FAILED, iteration)
+        end
         for _, control in ipairs(caller:get_wrapper_controls()) do proposed_controls[#proposed_controls + 1] = control end
 
         if show_tool_calls then
-            update_tool_viz_nodes(n, tool_results, tool_call_to_node_id)
+            update_tool_viz_nodes(n, tool_results, tool_call_to_node_id, persisted_call_ids)
         end
 
         local finalized_tool_calls = {} :: { ToolCall }
@@ -2693,7 +2815,8 @@ local function run(args)
             tool_results,
             config.arena,
             tool_call_to_node_id,
-            proposed_controls
+            proposed_controls,
+            persisted_call_ids
         )
         if finalize_err then
             if type(finalize_err) == "table" then

@@ -82,6 +82,7 @@ local function handler(contract_args)
     local result_count = helpers.count_function_results(messages)
 
     local llm_calls = helpers.bump_metric(scenario.scenario_id, "llm_calls", 1)
+    helpers.record_function_results(scenario.scenario_id, messages)
     for _, message in ipairs(messages or {}) do
         local text = message.content and message.content[1] and message.content[1].text
         if type(text) == "string" and (
@@ -153,6 +154,26 @@ local function handler(contract_args)
         }
     end
 
+    -- The tool reports its failure as data: { success = false, error = ... }.
+    if scenario.mode == "soft_failing_tool_then_final" then
+        if result_count == 0 then
+            return tool_call_response(scenario.scenario_id, 1, scenario.tool_delay_ms, base_prompt or 13, 8, "recovery_tool", {
+                soft_fail_message = scenario.soft_fail_message
+            })
+        end
+
+        return final_response(scenario.scenario_id, scenario.mode, result_count, base_prompt or 9, 4)
+    end
+
+    -- Two turns issue the same call id, as a provider that reuses ids does.
+    if scenario.mode == "reused_call_id_then_final" then
+        if result_count < 2 then
+            return tool_call_response(scenario.scenario_id, 1, scenario.tool_delay_ms, base_prompt or 13, 8)
+        end
+
+        return final_response(scenario.scenario_id, scenario.mode, result_count, base_prompt or 9, 4)
+    end
+
     if scenario.mode == "failing_tool_then_final" then
         if result_count == 0 then
             return tool_call_response(scenario.scenario_id, 1, scenario.tool_delay_ms, base_prompt or 13, 8, "recovery_tool", {
@@ -216,6 +237,37 @@ local function handler(contract_args)
             return truncated
         end
         return final_response(scenario.scenario_id, scenario.mode, result_count, 9, 4)
+    end
+
+    -- Two tool calls in one turn, each holding its worker for tool_delay_ms.
+    if scenario.mode == "two_tools_one_turn" then
+        if result_count == 0 then
+            local first = tool_call_response(scenario.scenario_id, 1, scenario.tool_delay_ms, base_prompt or 13, 8)
+            local second = tool_call_response(scenario.scenario_id, 2, scenario.tool_delay_ms, base_prompt or 13, 8)
+            table.insert(first.result.tool_calls, second.result.tool_calls[1])
+            return first
+        end
+
+        return final_response(scenario.scenario_id, scenario.mode, result_count, base_prompt or 9, 4)
+    end
+
+    -- One turn with a fast and a slow call; the final answer reports how many
+    -- times each call ran, keyed by its original call id.
+    if scenario.mode == "fast_and_slow_one_turn" then
+        if result_count == 0 then
+            local fast = tool_call_response(scenario.scenario_id, 1, scenario.fast_delay_ms, base_prompt or 13, 8)
+            local slow = tool_call_response(scenario.scenario_id, 2, scenario.slow_delay_ms, base_prompt or 13, 8)
+            table.insert(fast.result.tool_calls, slow.result.tool_calls[1])
+            return fast
+        end
+
+        local final = final_response(scenario.scenario_id, scenario.mode, result_count, base_prompt or 9, 4)
+        final.result.content = string.format("%s:fast=%d:slow=%d", final.result.content,
+            tonumber(helpers.get_metric(scenario.scenario_id,
+                "tool_attempts:" .. helpers.call_id(scenario.scenario_id, 1), 0)) or 0,
+            tonumber(helpers.get_metric(scenario.scenario_id,
+                "tool_attempts:" .. helpers.call_id(scenario.scenario_id, 2), 0)) or 0)
+        return final
     end
 
     if scenario.mode == "single_tool_then_final" then

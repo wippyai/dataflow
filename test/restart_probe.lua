@@ -3,6 +3,7 @@ local funcs = require("funcs")
 local uuid = require("uuid")
 local client = require("client")
 local consts = require("consts")
+local sql = require("sql")
 
 local M = {}
 
@@ -14,6 +15,45 @@ local function hold_runtime()
         local event = result.value
         if event and event.kind == process.event.CANCEL then return end
     end
+end
+
+-- One agent turn with a fast and a slow call. The runtime is killed after the
+-- fast call's observation commits; the recovery metrics live in app:db so the
+-- second runtime reports how often each call ran.
+local function create_parallel_tools_workflow()
+    local db = assert(sql.get("app:db"))
+    local bytes = db:type() == "postgres" and "BYTEA" or "BLOB"
+    local _, table_err = db:execute("CREATE TABLE IF NOT EXISTS restart_recovery_store ("
+        .. "store_key TEXT PRIMARY KEY, store_value " .. bytes .. " NOT NULL, expires_at TIMESTAMP NULL)")
+    db:release()
+    if table_err then error(table_err) end
+
+    local node_id, input_id = uuid.v7(), uuid.v7()
+    local c = client.new()
+    local id, err = c:create_workflow({
+        { type = consts.COMMAND_TYPES.CREATE_NODE, payload = {
+            node_id = node_id, node_type = "userspace.dataflow.node.agent:node", status = consts.STATUS.PENDING,
+            config = {
+                agent = "userspace.dataflow.node.agent.stub:recovery_test_agent", show_tool_calls = false,
+                data_targets = {{ data_type = consts.DATA_TYPE.WORKFLOW_OUTPUT, key = "result", content_type = consts.CONTENT_TYPE.TEXT }},
+                arena = { prompt = "Complete the restart scenario.", max_iterations = 4, tool_calling = "auto",
+                    tools = { "userspace.dataflow.node.agent.stub:recovery_tool" } },
+            },
+        } },
+        { type = consts.COMMAND_TYPES.CREATE_DATA, payload = {
+            data_id = input_id, data_type = consts.DATA_TYPE.WORKFLOW_INPUT,
+            content = { scenario_id = "parallel-restart", mode = "fast_and_slow_one_turn",
+                fast_delay_ms = 300, slow_delay_ms = 9000 },
+            content_type = consts.CONTENT_TYPE.JSON,
+        } },
+        { type = consts.COMMAND_TYPES.CREATE_DATA, payload = {
+            data_id = uuid.v7(), data_type = consts.DATA_TYPE.NODE_INPUT, node_id = node_id, key = input_id,
+            content = "", content_type = consts.CONTENT_TYPE.REFERENCE,
+        } },
+    })
+    if not id then error(err or "parallel tools workflow creation failed") end
+    local started, start_err = c:start(id)
+    if not started then error(start_err or "parallel tools workflow start failed") end
 end
 
 local function create_behavior_workflow()
@@ -59,6 +99,12 @@ end
 function M.create_behavior()
     prepare_runtime()
     create_behavior_workflow()
+    return hold_runtime()
+end
+
+function M.create_parallel_tools()
+    prepare_runtime()
+    create_parallel_tools_workflow()
     return hold_runtime()
 end
 

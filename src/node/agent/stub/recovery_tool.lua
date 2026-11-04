@@ -12,6 +12,7 @@ local function handler(input)
     local call_id = ctx.get("call_id") or helpers.call_id(scenario_id, step)
 
     helpers.bump_metric(scenario_id, "tool_attempts", 1)
+    helpers.bump_metric(scenario_id, "tool_attempts:" .. tostring(call_id), 1)
 
     local effect_key = "effect_applied:" .. tostring(call_id)
     local effect_applied = false
@@ -21,13 +22,19 @@ local function handler(input)
         effect_applied = true
     end
 
+    helpers.set_metric(scenario_id, "tool_started:" .. tostring(call_id), time.now():unix_nano())
     local delay_ms = tonumber(input.delay_ms) or 0
     if delay_ms > 0 then
         time.sleep(tostring(delay_ms) .. "ms")
     end
+    helpers.set_metric(scenario_id, "tool_finished:" .. tostring(call_id), time.now():unix_nano())
 
     if type(input.fail_message) == "string" and input.fail_message ~= "" then
         return nil, input.fail_message
+    end
+
+    if type(input.soft_fail_message) == "string" and input.soft_fail_message ~= "" then
+        return { success = false, error = input.soft_fail_message }
     end
 
     return {

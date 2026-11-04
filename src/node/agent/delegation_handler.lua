@@ -5,6 +5,8 @@ local agent_consts = require("agent_consts")
 local data_reader = require("data_reader")
 local node_reader = require("node_reader")
 
+local AGENT_NODE_TYPE = "userspace.dataflow.node.agent:node"
+
 local delegation_handler = {}
 
 delegation_handler._agent_ref = nil
@@ -110,30 +112,39 @@ local function extract_error_message(result_content, discriminator)
     return "Delegation failed"
 end
 
--- Finds an already-created child node for a delegation tool_call_id under this parent.
--- Used so a recovery re-issue resumes the existing in-flight child agent instead of
--- minting a duplicate that re-runs the delegated work.
-local function find_existing_child(parent_node_sdk, tool_call_id)
+-- Finds the agent child already created for a delegation under this parent, so a
+-- recovery re-issue resumes it instead of minting a duplicate that re-runs the
+-- delegated work. Call ids are unique within one turn only, so a child belongs to
+-- the call of its own iteration. A child persisted without an iteration matches by
+-- call id alone: resuming it is the only way to avoid repeating its work.
+local function find_existing_child(parent_node_sdk, tool_call_id, iteration)
     if not tool_call_id or tool_call_id == "" then
         return nil
     end
 
     local rows = (node_reader.with_dataflow(parent_node_sdk.dataflow_id) :: any)
         :with_parent_nodes(parent_node_sdk.node_id)
+        :with_node_types(AGENT_NODE_TYPE)
         :all()
 
+    local without_iteration = nil
     for _, row in ipairs(rows or {}) do
         local meta = row.metadata or {}
         if meta.tool_call_id == tool_call_id then
-            return row.node_id
+            if meta.iteration == iteration then
+                return row.node_id
+            end
+            if meta.iteration == nil then
+                without_iteration = without_iteration or row.node_id
+            end
         end
     end
 
-    return nil
+    return without_iteration
 end
 
 function delegation_handler.create_child_node(parent_node_sdk, delegation, delegation_index, session_context)
-    local existing_child_id = find_existing_child(parent_node_sdk, delegation.tool_call_id)
+    local existing_child_id = find_existing_child(parent_node_sdk, delegation.tool_call_id, delegation.iteration)
     local child_id = existing_child_id or uuid.v7()
     local result_key = "delegation_result_" .. delegation_index
 
@@ -165,7 +176,8 @@ function delegation_handler.create_child_node(parent_node_sdk, delegation, deleg
 
     local metadata = {
         title = agent_info.title,
-        tool_call_id = delegation.tool_call_id
+        tool_call_id = delegation.tool_call_id,
+        iteration = delegation.iteration
     }
 
     -- Only create the child (and seed its input) when it does not already exist; on a
@@ -175,7 +187,7 @@ function delegation_handler.create_child_node(parent_node_sdk, delegation, deleg
             type = "CREATE_NODE",
             payload = {
                 node_id = child_id,
-                node_type = "userspace.dataflow.node.agent:node",
+                node_type = AGENT_NODE_TYPE,
                 parent_node_id = parent_node_sdk.node_id,
                 status = "pending",
                 config = child_config,
@@ -204,7 +216,8 @@ function delegation_handler.create_child_node(parent_node_sdk, delegation, deleg
     }
 end
 
-function delegation_handler.process_delegate_calls(agent_result, parent_node_sdk, delegation_index, session_context)
+function delegation_handler.process_delegate_calls(agent_result, parent_node_sdk, delegation_index, session_context,
+                                                   iteration)
     if not agent_result.delegate_calls or #agent_result.delegate_calls == 0 then
         return {}
     end
@@ -222,6 +235,7 @@ function delegation_handler.process_delegate_calls(agent_result, parent_node_sdk
             context            = delegate_call.context,
             delegate_tool_name = delegate_call.name,
             tool_call_id       = delegate_call.id,
+            iteration          = iteration,
             traits             = delegate_call.traits,
             tools              = delegate_call.tools,
             exit_schema        = delegate_call.exit_schema
@@ -236,13 +250,13 @@ function delegation_handler.process_delegate_calls(agent_result, parent_node_sdk
     return delegation_infos
 end
 
-function delegation_handler.create_delegation_batch(agent_result, parent_node_sdk, session_context)
+function delegation_handler.create_delegation_batch(agent_result, parent_node_sdk, session_context, iteration)
     local delegation_infos = {}
     local delegation_index = 1
 
     if agent_result and agent_result.delegate_calls then
         local delegate_infos = delegation_handler.process_delegate_calls(agent_result, parent_node_sdk, delegation_index,
-            session_context)
+            session_context, iteration)
         for _, info in ipairs(delegate_infos) do
             table.insert(delegation_infos, info)
             delegation_index = delegation_index + 1

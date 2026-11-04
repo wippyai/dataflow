@@ -133,6 +133,7 @@ entries:
       - uuid
     imports:
       delegation_handler: userspace.dataflow.node.agent:delegation_handler
+      agent_node: userspace.dataflow.node.agent:node
       client: userspace.dataflow:client
       node: userspace.dataflow:node
       node_reader: userspace.dataflow.persist:node_reader
@@ -169,6 +170,7 @@ entries:
       - funcs
     imports:
       agent_ref: userspace.dataflow:agent_ref
+      node_reader: userspace.dataflow.persist:node_reader
       tools: wippy.agent.discovery:tools
       agent_consts: userspace.dataflow.node.agent:consts
       agent_context: wippy.agent:context
@@ -309,6 +311,48 @@ entries:
       client: userspace.dataflow:client
       consts: userspace.dataflow:consts
       test: wippy.test:test
+    method: run_tests
+
+  - name: agent_parallel_tools_test
+    kind: function.lua
+    meta:
+      name: Agent parallel tool calls
+      type: test
+      comment: The tool calls of one model turn run concurrently.
+      group: Workflow / Agent Node
+      timeout: "120s"
+    source: file://agent_parallel_tools_test.lua
+    modules:
+      - uuid
+      - time
+      - funcs
+    imports:
+      client: userspace.dataflow:client
+      consts: userspace.dataflow:consts
+      test: wippy.test:test
+    method: run_tests
+
+  - name: agent_tool_recovery_test
+    kind: function.lua
+    meta:
+      name: Agent tool round recovery
+      type: test
+      comment: A recovered tool round runs its unresolved calls concurrently and keeps stored results.
+      group: Workflow / Agent Node
+      timeout: "120s"
+    source: file://agent_tool_recovery_test.lua
+    modules: [uuid, time, process]
+    imports:
+      test: wippy.test:test
+      client: userspace.dataflow:client
+      commit: userspace.dataflow.persist:commit
+      consts: userspace.dataflow:consts
+      data_reader: userspace.dataflow.persist:data_reader
+      node_reader: userspace.dataflow.persist:node_reader
+      node_sdk: userspace.dataflow:node
+      agent_node: userspace.dataflow.node.agent:node
+      agent_consts: userspace.dataflow.node.agent:consts
+      recovery_helpers: userspace.dataflow.node.agent.stub:recovery_helpers
     method: run_tests
 
   - name: agent_after_persist_test
