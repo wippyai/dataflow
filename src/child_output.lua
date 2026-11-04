@@ -131,7 +131,9 @@ function child_output.outputs_from_yield_results(n, yield_results)
                     seen_output_ids[data_id] = true
                 end
             end
-        elseif row.node_id and not seen_fallback_node_ids[row.node_id] then
+        end
+        if (type(content) ~= "table" or (content.recovered == true and content.data_ids == nil))
+            and row.node_id and not seen_fallback_node_ids[row.node_id] then
             table.insert(fallback_node_ids, row.node_id)
             seen_fallback_node_ids[row.node_id] = true
         end
@@ -156,6 +158,16 @@ function child_output.outputs_from_yield_results(n, yield_results)
     end)
     if not output_ok then
         return nil, prefixed_error("Failed to query child output data: ", output_rows_or_err, "unknown")
+    end
+
+    local fallback_rows, fallback_err = child_output.query_node_outputs(n, fallback_node_ids)
+    if fallback_err then
+        return nil, fallback_err
+    end
+    for _, row in ipairs(fallback_rows or {}) do
+        if not seen_output_ids[row.data_id] then
+            table.insert(output_rows_or_err, row)
+        end
     end
 
     return output_rows_or_err, nil

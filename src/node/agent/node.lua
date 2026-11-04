@@ -1398,12 +1398,12 @@ local function load_tool_viz_nodes(n, iteration): ({[string]: string}?, string?)
     return node_ids, nil
 end
 
--- A call listed in `committed_node_ids` keeps the node a previous run created
--- for it; every other call gets a new node.
 local function tool_error_text(tool_error: any): string
     return error_message(tool_error, "Tool call failed")
 end
 
+-- A call listed in `committed_node_ids` keeps its existing node;
+-- every other call gets a new node.
 local function create_tool_viz_nodes(n, tool_calls: { ToolCall }?, iteration, show_tool_calls, exit_tool_name,
                                      committed_node_ids: {[string]: string}?)
     local tool_call_to_node_id = {}
