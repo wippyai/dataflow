@@ -10,7 +10,7 @@ runtime_pid=""
 restart_wippy="${WIPPY:-wippy}"
 dialect="${DATAFLOW_RESTART_DIALECT:-sqlite}"
 scenario="${DATAFLOW_RESTART_SCENARIO:-rolling}"
-case "$scenario" in rolling|behavior|parallel_tools) ;; *) echo "unsupported restart scenario" >&2; exit 1 ;; esac
+case "$scenario" in rolling|behavior|parallel_tools|stable_prefix) ;; *) echo "unsupported restart scenario" >&2; exit 1 ;; esac
 pg_host="${DATAFLOW_PG_HOST:-127.0.0.1}"
 pg_port="${DATAFLOW_PG_PORT:-5432}"
 pg_database="${DATAFLOW_PG_DATABASE:-dataflow_restart_test}"
@@ -65,6 +65,7 @@ start_runtime() {
     case "$scenario" in
         behavior) set -- --profile restart_behavior ;;
         parallel_tools) set -- --profile restart_parallel_tools ;;
+        stable_prefix) set -- --profile restart_stable_prefix ;;
         *) set -- ;;
     esac
     if [ "$dialect" = "postgres" ]; then
@@ -113,6 +114,20 @@ while [ "$attempts" -lt 200 ]; do
                           AND d.type = 'agent.observation' AND $fast_call)
               AND NOT EXISTS (SELECT 1 FROM dataflow_data d WHERE d.dataflow_id = a.dataflow_id
                               AND d.type = 'agent.observation' AND $slow_call)
+            LIMIT 1;" 2>/dev/null || true)
+    elif [ "$scenario" = "stable_prefix" ]; then
+        # The switch is committed and the first request of the new agent is in flight,
+        # with no action stored for it.
+        if [ "$dialect" = "postgres" ]; then
+            target_predicate="n.config->>'agent' = 'userspace.dataflow.node.agent.stub:stable_prefix_switch_target_agent'"
+        else
+            target_predicate="json_extract(n.config, '$.agent') = 'userspace.dataflow.node.agent.stub:stable_prefix_switch_target_agent'"
+        fi
+        phase1=$(query "SELECT a.dataflow_id || '|' || a.owner_epoch
+            FROM dataflow_activations a JOIN dataflow_nodes n ON n.dataflow_id = a.dataflow_id
+            WHERE a.desired_active AND n.status = 'running' AND $target_predicate
+              AND (SELECT COUNT(*) FROM dataflow_data d WHERE d.node_id = n.node_id AND d.type = 'agent.action') = 1
+              AND EXISTS (SELECT 1 FROM restart_recovery_store s WHERE s.store_key = 'agent_recovery:prefix-restart:request:2')
             LIMIT 1;" 2>/dev/null || true)
     elif [ "$scenario" = "behavior" ]; then
         if [ "$dialect" = "postgres" ]; then
@@ -214,7 +229,7 @@ done
 [ "$rolling_refilled" = "1" ] || { echo "rolling window did not refill before the slow iteration completed" >&2; exit 1; }
 
 fi
-if [ "$scenario" = "behavior" ] || [ "$scenario" = "parallel_tools" ]; then
+if [ "$scenario" = "behavior" ] || [ "$scenario" = "parallel_tools" ] || [ "$scenario" = "stable_prefix" ]; then
     # Interrupt only this disposable runtime while its persisted round is pending.
     kill -KILL "$runtime_pid"
     wait "$runtime_pid" 2>/dev/null || true
@@ -233,6 +248,21 @@ preserved=$(query "
 ")
 [ "$preserved" = "1" ] || { echo "graceful runtime shutdown destroyed active intent" >&2; exit 1; }
 
+if [ "$scenario" = "stable_prefix" ]; then
+    # An input that arrives after the first request must not change the user message.
+    if [ "$dialect" = "postgres" ]; then
+        late_content="convert_to('late-input-text', 'UTF8')"
+        now_value="now()"
+    else
+        late_content="CAST('late-input-text' AS BLOB)"
+        now_value="CAST(strftime('%s', 'now') AS INTEGER)"
+    fi
+    query "INSERT INTO dataflow_data (data_id, dataflow_id, node_id, type, key, content, content_type, created_at)
+        SELECT '019a0000-0000-7000-8000-000000000001', n.dataflow_id, n.node_id, 'node.input', 'arrived_later',
+               $late_content, 'text/plain', $now_value
+        FROM dataflow_nodes n WHERE n.dataflow_id = '$dataflow_id';"
+fi
+
 start_runtime restart_observe "$phase2_log"
 
 second_epoch=""
@@ -241,7 +271,6 @@ while [ "$attempts" -lt 200 ]; do
     second_epoch=$(query "
         SELECT owner_epoch FROM dataflow_activations
         WHERE dataflow_id = '$dataflow_id'
-          AND desired_active
           AND owner_epoch IS NOT NULL
           AND owner_epoch <> '$first_epoch';
     " 2>/dev/null || true)
@@ -277,6 +306,32 @@ done
     tail -120 "$phase2_log" >&2 || true
     exit 1
 }
+
+if [ "$scenario" = "stable_prefix" ]; then
+    verdict=""
+    attempts=0
+    while [ "$attempts" -lt 100 ]; do
+        verdict=$(query "SELECT verdict FROM restart_prefix_verdict LIMIT 1;" 2>/dev/null || true)
+        [ -n "$verdict" ] && break
+        attempts=$((attempts + 1))
+        sleep 0.1
+    done
+    [ "$verdict" = "ok" ] || {
+        echo "requests across the restart do not extend each other: ${verdict:-no verdict}" >&2
+        tail -40 "$phase2_log" >&2 || true
+        exit 1
+    }
+    fold_rows=$(query "SELECT COUNT(*) FROM dataflow_data WHERE dataflow_id = '$dataflow_id' AND type = 'agent.input';")
+    turn_notes=$(query "SELECT COUNT(*) FROM dataflow_data WHERE dataflow_id = '$dataflow_id' AND type = 'agent.memory' AND key = 'turn_context';")
+    skipped=$(query "SELECT COUNT(*) FROM dataflow_data WHERE dataflow_id = '$dataflow_id' AND type = 'agent.observation' AND key LIKE '%_checkpoint_skipped';")
+    workflows=$(query "SELECT COUNT(*) FROM dataflows;")
+    [ "$fold_rows|$turn_notes|$workflows" = "1|1|1" ] && [ "$skipped" -gt 0 ] || {
+        echo "stable prefix rows are wrong: $fold_rows|$turn_notes|$skipped|$workflows" >&2
+        exit 1
+    }
+    echo "$dialect stable prefix restart proof passed: $dataflow_id $first_epoch -> $second_epoch"
+    exit 0
+fi
 
 if [ "$scenario" = "parallel_tools" ]; then
     if [ "$dialect" = "postgres" ]; then

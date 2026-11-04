@@ -94,8 +94,9 @@ entries:
       comment: Creates a bounded rolling workflow for the external two-runtime restart proof.
       default_host: app:processes
     source: file://restart_probe.lua
-    modules: [funcs, uuid, sql]
+    modules: [funcs, uuid, sql, time]
     imports:
+      recovery_helpers: userspace.dataflow.node.agent.stub:recovery_helpers
       flow: userspace.dataflow.flow:flow
       client: userspace.dataflow:client
       consts: userspace.dataflow:consts
@@ -108,8 +109,9 @@ entries:
       comment: Keeps the second runtime alive while the overseer recovers the persisted workflow.
       default_host: app:processes
     source: file://restart_probe.lua
-    modules: [funcs, uuid, sql]
+    modules: [funcs, uuid, sql, time]
     imports:
+      recovery_helpers: userspace.dataflow.node.agent.stub:recovery_helpers
       flow: userspace.dataflow.flow:flow
       client: userspace.dataflow:client
       consts: userspace.dataflow:consts

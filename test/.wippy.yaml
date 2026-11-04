@@ -46,6 +46,16 @@ profiles:
       "userspace.dataflow.node.agent.stub:recovery_store:id_column_name": store_key
       "userspace.dataflow.node.agent.stub:recovery_store:payload_column_name": store_value
       "userspace.dataflow.node.agent.stub:recovery_store:expire_column_name": expires_at
+  restart_stable_prefix:
+    override:
+      "app:restart_probe.create:method": create_stable_prefix
+      "app:restart_probe.observe:method": observe_stable_prefix
+      "userspace.dataflow.node.agent.stub:recovery_store:kind": store.sql
+      "userspace.dataflow.node.agent.stub:recovery_store:database": app:db
+      "userspace.dataflow.node.agent.stub:recovery_store:table_name": restart_recovery_store
+      "userspace.dataflow.node.agent.stub:recovery_store:id_column_name": store_key
+      "userspace.dataflow.node.agent.stub:recovery_store:payload_column_name": store_value
+      "userspace.dataflow.node.agent.stub:recovery_store:expire_column_name": expires_at
   restart_observe:
     override:
       "app.await_authority:tokens_storage:kind": store.sql
