@@ -94,7 +94,9 @@ local function handler(input)
             } })
             table.insert(commands, { type = consts.COMMAND_TYPES.CREATE_DATA, payload = {
                 data_id = uuid.v7(), data_type = consts.DATA_TYPE.NODE_INPUT, node_id = child, key = "default",
-                content = { message = "child-output-" .. tostring(index), delay_ms = tonumber(input.child_delay_ms) or 6000 },
+                content = { message = "child-output-" .. tostring(index),
+                    delay_ms = input.child_delays and input.child_delays[index] or tonumber(input.child_delay_ms) or 6000,
+                    should_fail = input.failing_child == index },
                 content_type = consts.CONTENT_TYPE.JSON } })
         end
         local run_node_ids = {}

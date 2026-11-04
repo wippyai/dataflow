@@ -1541,6 +1541,39 @@ local function define_tests()
     end)
 
     describe("command children", function()
+        for _, fails in ipairs({ false, true }) do
+            it("waits for staggered command children alongside a delegation" .. (fails and " when one fails" or ""), function()
+                local run = run_node({ input = {
+                    rounds = 1, command_delegate_at = 1, commands_children = 2,
+                    child_delays = { 10, 1200 }, failing_child = fails and 2 or nil,
+                    delegate_to = AGENT,
+                    delegate_input = { scenario_id = "staggered-delegate-" .. uuid.v7(), mode = "thinking_rounds",
+                        rounds = 0, slow_request = 1, slow_ms = 400 },
+                } })
+                local observations = rows_of(run, agent_consts.DATA_TYPE.AGENT_OBSERVATION)
+                local key = fails and "1_commands_error" or "1_commands_output"
+                local outputs = {}
+                for _, row in ipairs(observations) do
+                    if row.key == key then outputs[#outputs + 1] = row end
+                end
+                test.eq(#outputs, 1, "one terminal command observation is persisted")
+                if fails then
+                    test.contains(outputs[1].content, "Intentional semantic failure")
+                    test.eq(run.status, consts.STATUS.COMPLETED_FAILURE, node_error(run))
+                else
+                    test.contains(json.encode(outputs[1].content), "child-output-2", "the slower child's output is collected")
+                    test.eq(run.status, consts.STATUS.COMPLETED_SUCCESS, node_error(run))
+                    local requests = requests_of(run)
+                    test.eq(#requests, 2)
+                    test.not_nil(find_message(requests[2], with_text("child-output-1")))
+                    test.not_nil(find_message(requests[2], with_text("child-output-2")))
+                    assert_paired(requests)
+                    assert_each_request_extends_the_last(requests)
+                end
+                test.eq(node_row(run).metadata.agent_pending, false, "all terminal children clear pending state")
+            end)
+        end
+
         for _, scenario in ipairs({
             { name = "command children alongside a delegation", command_delegate_at = 1, output = "child-output-1" },
             { name = "yield.commands children", yield_commands_at = 1, output = "slow" },

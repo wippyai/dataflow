@@ -184,20 +184,35 @@ function child_output.resume_children(n, child_node_ids, collect_children_result
         return nil, nil
     end
 
-    local existing, existing_err = collect_children_result(n, child_node_ids)
-    if existing_err then
-        return nil, existing_err
-    end
-    if existing ~= nil then
-        return existing, nil
-    end
-
-    local yield_result, yield_err = n:yield({ run_nodes = child_node_ids })
-    if yield_err then
-        return nil, prefixed_error("Failed to resume children: ", yield_err, "unknown")
+    local ok, rows, query_err = pcall(function()
+        return (n:query() :: any)
+            :with_nodes(child_node_ids)
+            :with_data_types(child_output._deps.consts.DATA_TYPE.NODE_RESULT)
+            :all()
+    end)
+    if not ok or query_err then
+        return nil, prefixed_error("Failed to query child results: ", ok and query_err or rows, "unknown")
     end
 
-    return collect_children_result(n, child_node_ids, yield_result)
+    local yield_results = {}
+    for _, row in ipairs(rows or {}) do
+        if row.node_id and row.data_id then
+            yield_results[row.node_id] = row.data_id
+        end
+    end
+
+    for _, node_id in ipairs(child_node_ids) do
+        if not yield_results[node_id] then
+            local yield_err
+            yield_results, yield_err = n:yield({ run_nodes = child_node_ids })
+            if yield_err then
+                return nil, prefixed_error("Failed to resume children: ", yield_err, "unknown")
+            end
+            break
+        end
+    end
+
+    return collect_children_result(n, child_node_ids, yield_results)
 end
 
 return child_output

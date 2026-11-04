@@ -397,7 +397,9 @@ local function handler(contract_args)
         if scenario.command_delegate_at == llm_calls then
             local commands = tool_call_response(scenario.scenario_id, 1, 0, tokens, 4, "recovery_control_tool",
                 scenario.yield_commands and { yield_child_ms = scenario.child_delay_ms or 10 }
-                    or { commands_children = 1, child_delay_ms = scenario.child_delay_ms or 10 })
+                    or { commands_children = scenario.commands_children or 1,
+                        child_delay_ms = scenario.child_delay_ms or 10,
+                        child_delays = scenario.child_delays, failing_child = scenario.failing_child })
             local delegate = tool_call_response(scenario.scenario_id, 2, 0, tokens, 4, "recovery_control_tool",
                 { delegate_to = scenario.delegate_to, delegate_input = scenario.delegate_input })
             table.insert(commands.result.tool_calls, delegate.result.tool_calls[1])

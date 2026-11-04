@@ -1277,12 +1277,9 @@ end
 
 local function collect_control_outputs(n, child_node_ids, yield_results)
     local output_data, output_err = child_output.collect_outputs(n, child_node_ids, yield_results)
-    if output_err then return nil, output_err end
-    if (type(yield_results) ~= "table" or next(yield_results) == nil)
-        and (not output_data or #output_data == 0) then
-        return nil, nil
-    end
-    return output_data or {}, nil
+    -- This callback runs after every recorded child has a terminal result.
+    n:update_metadata({ agent_pending = false })
+    return output_data, output_err
 end
 
 local function resume_control_commands(n, child_node_ids, iteration)
@@ -1314,7 +1311,6 @@ local function resume_control_commands(n, child_node_ids, iteration)
         })
     end
 
-    n:update_metadata({ agent_pending = false })
     local _, flush_err = n:yield()
     return flush_err
 end

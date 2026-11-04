@@ -37,7 +37,8 @@ local function make_reader(state)
             state.output_query_count = state.output_query_count + 1
             if state.queried_data_type == consts.DATA_TYPE.NODE_RESULT then
                 local rows = {}
-                for _, data_id in ipairs(state.queried_data_ids or {}) do
+                local data_ids = state.queried_data_ids or (state.result_available and { "child-result-1" }) or {}
+                for _, data_id in ipairs(data_ids) do
                     if data_id == "child-result-1" then
                         table.insert(rows, {
                             data_id = "child-result-1",
@@ -316,6 +317,7 @@ local function define_tests()
             local state = make_state(function()
                 return true
             end)
+            state.result_available = true
 
             func._deps.node = {
                 new = function()

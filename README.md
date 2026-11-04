@@ -278,7 +278,7 @@ before `round_settled` gets this once on resume. After a kill with calls still u
 `after_execute` sees only the calls recovery runs: a call whose result committed before
 the kill is not shown to it again, so wrappers are not at-least-once per call. A round
 settled on recovery shows the wrapper its calls in the live shape, and results from the
-stored rows, which cannot recover everything: `true` reads back as 1 on SQLite, and a
+stored rows, which cannot recover everything: `true` reads back as 1 on SQLite, a scalar such as `false` reads back as its text, and a
 `{success = false}` result is stored as its error text rather than its table.
 
 A `_control` directive that creates children through `commands` or `yield.commands`

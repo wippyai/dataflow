@@ -3,15 +3,16 @@ set -eu
 
 repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 test_dir="$repo_dir/test"
-db_file="$test_dir/.wippy/restart-proof.db"
-phase1_log="$test_dir/.wippy/restart-phase1.log"
-phase2_log="$test_dir/.wippy/restart-phase2.log"
-phase3_log="$test_dir/.wippy/restart-phase3.log"
+output_dir="${DATAFLOW_RESTART_DIR:-$test_dir/.wippy}"
+db_file="$output_dir/restart-proof.db"
+phase1_log="$output_dir/restart-phase1.log"
+phase2_log="$output_dir/restart-phase2.log"
+phase3_log="$output_dir/restart-phase3.log"
 runtime_pid=""
 restart_wippy="${WIPPY:-wippy}"
 dialect="${DATAFLOW_RESTART_DIALECT:-sqlite}"
 scenario="${DATAFLOW_RESTART_SCENARIO:-rolling}"
-case "$scenario" in rolling|behavior|parallel_tools|stable_prefix|round_children|round_delegate|round_both|round_rerun|round_double_kill|round_yield|round_settle|round_yield_commands|round_artifact|round_command_delegate|round_yield_delegate) ;; *) echo "unsupported restart scenario" >&2; exit 1 ;; esac
+case "$scenario" in rolling|behavior|parallel_tools|stable_prefix|round_children|round_delegate|round_both|round_rerun|round_double_kill|round_yield|round_settle|round_yield_commands|round_artifact|round_command_delegate|round_yield_delegate|round_staggered_children) ;; *) echo "unsupported restart scenario" >&2; exit 1 ;; esac
 pg_host="${DATAFLOW_PG_HOST:-127.0.0.1}"
 pg_port="${DATAFLOW_PG_PORT:-5432}"
 pg_database="${DATAFLOW_PG_DATABASE:-dataflow_restart_test}"
@@ -70,7 +71,7 @@ start_runtime() {
         round_double_kill)
             set -- --profile restart_round_rerun \
                 --override "app:restart_probe.create:method=create_round_double_kill" ;;
-        round_command_delegate|round_yield_delegate)
+        round_command_delegate|round_yield_delegate|round_staggered_children)
             set -- --profile restart_round_children \
                 --override "app:restart_probe.create:method=create_$scenario" \
                 --override "app:restart_probe.observe:method=observe_$scenario" ;;
@@ -86,7 +87,7 @@ start_runtime() {
             --set "vars.postgres_password=$pg_password" >"$runtime_log" 2>&1 &
     else
         "$restart_wippy" run -s --config "${DATAFLOW_RESTART_CONFIG:-.wippy.yaml}" --profile sqlite --profile "$restart_profile" "$@" \
-            --set vars.sqlite_file=./.wippy/restart-proof.db >"$runtime_log" 2>&1 &
+            --set "vars.sqlite_file=$db_file" >"$runtime_log" 2>&1 &
     fi
     runtime_pid=$!
 }
@@ -146,9 +147,17 @@ while [ "$attempts" -lt 200 ]; do
               AND EXISTS (SELECT 1 FROM dataflow_data d WHERE d.dataflow_id = a.dataflow_id AND d.type = 'agent.observation')
               AND EXISTS (SELECT 1 FROM restart_recovery_store s WHERE s.store_key = 'agent_recovery:round-settle:wrapper_attempts')
             LIMIT 1;" 2>/dev/null || true)
-    elif [ "$scenario" = "round_command_delegate" ]; then
+    elif [ "$scenario" = "round_command_delegate" ] || [ "$scenario" = "round_staggered_children" ]; then
+        completed_child=""
+        if [ "$scenario" = "round_staggered_children" ]; then
+            completed_child="AND EXISTS (SELECT 1 FROM dataflow_data r JOIN dataflow_nodes c ON c.node_id = r.node_id
+                WHERE c.dataflow_id = a.dataflow_id AND c.parent_node_id IS NOT NULL
+                  AND c.type = 'userspace.dataflow.node.func:node' AND c.status = 'completed'
+                  AND r.type = 'node.result')"
+        fi
         phase1=$(query "SELECT a.dataflow_id || '|' || a.owner_epoch
             FROM dataflow_activations a WHERE a.desired_active
+              $completed_child
               AND EXISTS (SELECT 1 FROM dataflow_nodes c WHERE c.dataflow_id = a.dataflow_id
                           AND c.parent_node_id IS NOT NULL AND c.type = 'userspace.dataflow.node.func:node'
                           AND c.status = 'running')
@@ -416,20 +425,32 @@ if [ "${scenario#round_}" != "$scenario" ]; then
     warnings=$(query "SELECT COUNT(*) FROM dataflow_data d JOIN dataflow_nodes n ON n.node_id = d.node_id
         WHERE d.dataflow_id = '$dataflow_id' AND d.type = 'agent.observation' AND d.key = '1_iterations_warning' AND n.parent_node_id IS NULL;")
     expected_added=1
-    case "$scenario" in round_settle|round_yield_commands|round_artifact|round_command_delegate|round_yield_delegate) expected_added=0 ;; esac
+    case "$scenario" in round_settle|round_yield_commands|round_artifact|round_command_delegate|round_yield_delegate|round_staggered_children) expected_added=0 ;; esac
     [ "$added|$warnings" = "$expected_added|1" ] || {
         echo "the round's text did not survive the restart: added=$added warnings=$warnings" >&2
         exit 1
     }
-    if [ "$scenario" = "round_command_delegate" ] || [ "$scenario" = "round_yield_delegate" ]; then
+    if [ "$scenario" = "round_command_delegate" ] || [ "$scenario" = "round_yield_delegate" ] \
+        || [ "$scenario" = "round_staggered_children" ]; then
         outputs=$(query "SELECT COUNT(*) FROM dataflow_data WHERE dataflow_id = '$dataflow_id'
             AND type = 'agent.observation' AND key = '1_commands_output';")
         children=$(query "SELECT COUNT(*) FROM dataflow_nodes WHERE dataflow_id = '$dataflow_id'
             AND parent_node_id IS NOT NULL;")
-        [ "$outputs|$children" = "1|2" ] || {
+        expected_children=2
+        if [ "$scenario" = "round_staggered_children" ]; then expected_children=3; fi
+        [ "$outputs|$children" = "1|$expected_children" ] || {
             echo "delegating round lost command output or duplicated children: outputs=$outputs children=$children" >&2
             exit 1
         }
+        if [ "$scenario" = "round_staggered_children" ]; then
+            if [ "$dialect" = "postgres" ]; then
+                pending_expr="metadata->>'agent_pending'"
+            else
+                pending_expr="json_extract(metadata, '$.agent_pending')"
+            fi
+            pending=$(query "SELECT $pending_expr FROM dataflow_nodes WHERE dataflow_id = '$dataflow_id' AND parent_node_id IS NULL;")
+            case "$pending" in false|0) ;; *) echo "pending commands were not cleared: $pending" >&2; exit 1 ;; esac
+        fi
         verdict=""
         attempts=0
         while [ "$attempts" -lt 100 ]; do
