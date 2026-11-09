@@ -1881,9 +1881,9 @@ local function tool_result_persister(n, iteration, tool_calls: {ToolCall}, has_e
     return listener, persisted, finished_viz_calls
 end
 
-local function tools_were_attempted(agent_result)
-    if agent_result.tool_calls and #agent_result.tool_calls > 0 then
-        return true
+local function tools_were_attempted(agent_result, exit_tool_name: string?)
+    for _, tool_call in ipairs(agent_result.tool_calls or {}) do
+        if not exit_tool_name or tool_call.name ~= exit_tool_name then return true end
     end
 
     if agent_result.delegate_calls and #agent_result.delegate_calls > 0 then
@@ -1968,16 +1968,13 @@ local function check_completion(tool_calling, agent_result: any, iteration, min_
     return task_complete, final_result, feedback ~= nil
 end
 
--- A turn is unproductive when it calls nothing and settles nothing: no tool or
--- delegate call, and no answer its tool_calling mode accepts as final. It is
--- exactly the turn check_completion answers with feedback (or, under "none",
--- silently rejects). Warm-up turns below min_iterations never settle the task
--- by design, so they are exempt. The verdict depends on the model's turn alone,
--- which lets the count be persisted in the same commit as the turn itself.
-local function is_unproductive_turn(tool_calling, agent_result: any, iteration, min_iterations)
-    if iteration < min_iterations or tools_were_attempted(agent_result) then
+-- Exit calls settle the task only after validation. An accepted exit completes
+-- before the stall check; a rejected exit-only turn consumes the allowance.
+local function is_unproductive_turn(tool_calling, agent_result: any, iteration, min_iterations, exit_tool_name: string?)
+    if iteration < min_iterations or tools_were_attempted(agent_result, exit_tool_name) then
         return false
     end
+    if tools_were_attempted(agent_result) then return true end
 
     if tool_calling == agent_consts.TOOL_CALLING.NONE or tool_calling == agent_consts.TOOL_CALLING.AUTO then
         return not has_usable_result(agent_result.result)
@@ -3084,7 +3081,7 @@ local function run(args)
 
         total_tokens = accumulate_tokens(total_tokens, agent_result.tokens)
 
-        if is_unproductive_turn(tool_calling, agent_result, iteration, min_iterations) then
+        if is_unproductive_turn(tool_calling, agent_result, iteration, min_iterations, exit_tool_name) then
             unproductive_steps = unproductive_steps + 1
         else
             unproductive_steps = 0
