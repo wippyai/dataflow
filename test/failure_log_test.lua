@@ -4,6 +4,7 @@ local logger = require("logger")
 local client = require("client")
 local consts = require("consts")
 local node_reader = require("node_reader")
+local commit = require("commit")
 
 local function define_tests()
     describe("Failure log reporter", function()
@@ -48,9 +49,47 @@ local function define_tests()
                 test.eq(c:get_status(dataflow_id), handled and consts.STATUS.COMPLETED_SUCCESS or consts.STATUS.COMPLETED_FAILURE)
                 local node = node_reader.with_dataflow(dataflow_id):with_nodes(node_id):one()
                 test.eq(node.status, consts.STATUS.COMPLETED_FAILURE)
-                logger:info("failure log probe", { dataflow_id = dataflow_id, node_id = node_id, workflow_failed = not handled })
+                logger:info("failure log probe", { dataflow_id = dataflow_id, node_id = node_id, workflow_failed = not handled,
+                    node_type = "userspace.dataflow.node.func:node", error_kind = "FUNCTION_EXECUTION_FAILED" })
             end)
         end
+        it("logs a failed tool call consumed by a successful agent", function()
+            local c = test.not_nil(client.new()) :: any
+            local node_id = uuid.v7()
+            local dataflow_id, create_err = c:create_workflow({
+                {type = consts.COMMAND_TYPES.CREATE_NODE, payload = {
+                    node_id = node_id, node_type = "userspace.dataflow.node.agent:node",
+                    status = consts.STATUS.PENDING,
+                    config = {
+                        agent = "userspace.dataflow.node.agent.stub:recovery_test_agent",
+                        arena = {prompt = "Run the tool.", max_iterations = 4,
+                            tools = {"userspace.dataflow.node.agent.stub:recovery_tool"}},
+                        data_targets = {{data_type = consts.DATA_TYPE.WORKFLOW_OUTPUT}},
+                    },
+                }},
+                {type = consts.COMMAND_TYPES.CREATE_DATA, payload = {
+                    data_id = uuid.v7(), node_id = node_id, key = "default",
+                    data_type = consts.DATA_TYPE.NODE_INPUT,
+                    content = {scenario_id = uuid.v7(), mode = "failing_tool_then_final",
+                        fail_message = "Service unavailable"},
+                }},
+            })
+            test.is_nil(create_err)
+            local result, execute_err = c:execute(dataflow_id)
+            test.is_nil(execute_err)
+            test.is_true(result.success)
+            local nodes = node_reader.with_dataflow(dataflow_id):with_node_types("tool.call"):all()
+            test.eq(#nodes, 1)
+            test.eq(nodes[1].status, consts.STATUS.COMPLETED_FAILURE)
+            local _, replay_err = commit.execute(dataflow_id, uuid.v7(), {
+                {type = consts.COMMAND_TYPES.UPDATE_NODE, payload = {
+                    node_id = nodes[1].node_id, status = consts.STATUS.COMPLETED_FAILURE,
+                }},
+            })
+            test.is_nil(replay_err)
+            logger:info("failure log probe", {dataflow_id = dataflow_id, node_id = nodes[1].node_id,
+                workflow_failed = false, node_type = "tool.call", error_kind = "NodeFailed"})
+        end)
     end)
 end
 

@@ -1098,18 +1098,6 @@ local function handle_process_event(state: OrchestratorState, event: any)
     end
     local exit_info = state.workflow_state:handle_process_exit(from_pid, success, terminal_result)
 
-    if not success and (exit_info or (parked_node and parked_node.status == consts.STATUS.COMPLETED_FAILURE)) then
-        local failure = type(terminal_result) == "table" and
-            (terminal_result.error or terminal_result) or terminal_result
-        logger:warn("Node failed", {
-            dataflow_id = state.dataflow_id,
-            node_id = node_id,
-            node_type = parked_node and parked_node.type,
-            error_kind = type(failure) == "table" and (failure.code or failure.kind) or "NodeFailed",
-            error_message = type(failure) == "table" and failure.message or tostring(failure),
-        })
-    end
-
     local _persist_result, persist_err = state.workflow_state:persist()
     if persist_err then
         -- The failed batch stays queued; the next persist on this state

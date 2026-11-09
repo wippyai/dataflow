@@ -539,6 +539,19 @@ function commit.execute(dataflow_id, op_id, commands, options)
     for _, command_result in ipairs(result.results or {}) do
         local command = command_result.input or {}
         local payload = command.payload or {}
+        if command_result.failure then
+            local metadata = command_result.failure.metadata
+            if type(metadata) == "string" then metadata = json.decode(metadata) end
+            metadata = type(metadata) == "table" and metadata or {}
+            local failure = metadata.error or metadata.error_message
+            logger:warn("Node failed", {
+                dataflow_id = dataflow_id,
+                node_id = command_result.node_id,
+                node_type = command_result.failure.node_type,
+                error_kind = type(failure) == "table" and (failure.code or failure.kind) or "NodeFailed",
+                error_message = (type(failure) == "table" and failure.message or failure) or "Node failed",
+            })
+        end
         if command.type == consts.COMMAND_TYPES.COMPLETE_WORKFLOW and command_result.completed == true and
             payload.status == consts.STATUS.COMPLETED_FAILURE then
             local failure = (payload.metadata or {}).error

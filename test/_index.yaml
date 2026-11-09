@@ -11,6 +11,7 @@ entries:
     method: run_tests
     modules: [uuid, logger]
     imports:
+      commit: userspace.dataflow.persist:commit
       test: wippy.test:test
       client: userspace.dataflow:client
       consts: userspace.dataflow:consts

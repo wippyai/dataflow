@@ -24,7 +24,7 @@ for line in result.stdout.splitlines():
         continue
     records.append((line[:start], fields))
 probes = [fields for prefix, fields in records if "failure log probe" in prefix]
-assert len(probes) == 2, "native failure reporter emits its identifiers"
+assert len(probes) == 3, "native failure reporter emits its identifiers"
 for probe in probes:
     failures = [(prefix, fields) for prefix, fields in records
                 if fields.get("dataflow_id") == probe["dataflow_id"] and ("WARN" in prefix or "ERROR" in prefix)]
@@ -32,8 +32,8 @@ for probe in probes:
     assert len(node_failures) == 1, f"expected one node failure record, got {node_failures}"
     prefix, fields = node_failures[0]
     assert "WARN" in prefix
-    assert fields["node_type"] == "userspace.dataflow.node.func:node"
-    assert fields["error_kind"] == "FUNCTION_EXECUTION_FAILED"
+    assert fields["node_type"] == probe["node_type"]
+    assert fields["error_kind"] == probe["error_kind"]
     assert fields["error_message"] == "Service unavailable"
     workflow_failures = [(prefix, fields) for prefix, fields in failures if "node_id" not in fields]
     assert len(workflow_failures) == int(probe["workflow_failed"]), f"unexpected workflow failure records: {workflow_failures}"
