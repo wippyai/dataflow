@@ -5,6 +5,7 @@ local client = require("client")
 local consts = require("consts")
 local node_reader = require("node_reader")
 local commit = require("commit")
+local json = require("json")
 
 local function define_tests()
     describe("Failure log reporter", function()
@@ -89,6 +90,35 @@ local function define_tests()
             test.is_nil(replay_err)
             logger:info("failure log probe", {dataflow_id = dataflow_id, node_id = nodes[1].node_id,
                 workflow_failed = false, node_type = "tool.call", error_kind = "NodeFailed"})
+        end)
+        it("logs scalar defaults when structured errors carry no message", function()
+            local c = test.not_nil(client.new()) :: any
+            local node_id = uuid.v7()
+            local dataflow_id, create_err = c:create_workflow({
+                {type = consts.COMMAND_TYPES.CREATE_NODE, payload = {
+                    node_id = node_id, node_type = "tool.call", status = consts.STATUS.RUNNING,
+                }},
+            })
+            test.is_nil(create_err)
+            local _, node_err = commit.execute(dataflow_id, uuid.v7(), {
+                {type = consts.COMMAND_TYPES.UPDATE_NODE, payload = {
+                    node_id = node_id, status = consts.STATUS.COMPLETED_FAILURE,
+                    metadata = {error = {code = "NO_MESSAGE", details = {credential = "private-error-detail"}}},
+                }},
+            })
+            test.is_nil(node_err)
+            local activation, activation_err = commit.request_activation(dataflow_id, {}, {notify = false})
+            test.is_nil(activation_err)
+            local _, completion_err = commit.execute(dataflow_id, uuid.v7(), {
+                {type = consts.COMMAND_TYPES.COMPLETE_WORKFLOW, payload = {
+                    activation_generation = activation.generation, status = consts.STATUS.COMPLETED_FAILURE,
+                    metadata = {error = json.encode({details = {credential = "private-error-detail"}})},
+                }},
+            })
+            test.is_nil(completion_err)
+            logger:info("failure log probe", {dataflow_id = dataflow_id, node_id = node_id,
+                workflow_failed = true, node_type = "tool.call", error_kind = "NO_MESSAGE",
+                node_message = "Node failed", workflow_message = "Workflow failed"})
         end)
     end)
 end

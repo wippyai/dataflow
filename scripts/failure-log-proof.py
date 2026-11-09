@@ -24,7 +24,7 @@ for line in result.stdout.splitlines():
         continue
     records.append((line[:start], fields))
 probes = [fields for prefix, fields in records if "failure log probe" in prefix]
-assert len(probes) == 3, "native failure reporter emits its identifiers"
+assert len(probes) == 4, "native failure reporter emits its identifiers"
 for probe in probes:
     failures = [(prefix, fields) for prefix, fields in records
                 if fields.get("dataflow_id") == probe["dataflow_id"] and ("WARN" in prefix or "ERROR" in prefix)]
@@ -34,12 +34,12 @@ for probe in probes:
     assert "WARN" in prefix
     assert fields["node_type"] == probe["node_type"]
     assert fields["error_kind"] == probe["error_kind"]
-    assert fields["error_message"] == "Service unavailable"
+    assert fields["error_message"] == probe.get("node_message", "Service unavailable")
     workflow_failures = [(prefix, fields) for prefix, fields in failures if "node_id" not in fields]
     assert len(workflow_failures) == int(probe["workflow_failed"]), f"unexpected workflow failure records: {workflow_failures}"
     for prefix, fields in workflow_failures:
         assert "ERROR" in prefix
         assert fields["error_kind"] == "WorkflowFailed"
-        assert "Service unavailable" in fields["error_message"]
+        assert probe.get("workflow_message", "Service unavailable") in fields["error_message"]
     assert "private-error-detail" not in "\n".join(prefix + json.dumps(fields) for prefix, fields in failures)
 print("Failure log proof passes")

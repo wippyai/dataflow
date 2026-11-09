@@ -544,12 +544,14 @@ function commit.execute(dataflow_id, op_id, commands, options)
             if type(metadata) == "string" then metadata = json.decode(metadata) end
             metadata = type(metadata) == "table" and metadata or {}
             local failure = metadata.error or metadata.error_message
+            local failure_kind = type(failure) == "table" and (failure.code or failure.kind) or nil
+            local failure_message = type(failure) == "table" and failure.message or failure
             logger:warn("Node failed", {
                 dataflow_id = dataflow_id,
                 node_id = command_result.node_id,
                 node_type = command_result.failure.node_type,
-                error_kind = type(failure) == "table" and (failure.code or failure.kind) or "NodeFailed",
-                error_message = (type(failure) == "table" and failure.message or failure) or "Node failed",
+                error_kind = type(failure_kind) == "string" and failure_kind or "NodeFailed",
+                error_message = type(failure_message) == "string" and failure_message or "Node failed",
             })
         end
         if command.type == consts.COMMAND_TYPES.COMPLETE_WORKFLOW and command_result.completed == true and
@@ -559,10 +561,11 @@ function commit.execute(dataflow_id, op_id, commands, options)
                 local decoded = json.decode(failure)
                 if type(decoded) == "table" then failure = decoded end
             end
+            local failure_message = type(failure) == "table" and failure.message or failure
             logger:error("Workflow failed", {
                 dataflow_id = command_result.dataflow_id or dataflow_id,
                 error_kind = "WorkflowFailed",
-                error_message = (type(failure) == "table" and failure.message or failure) or "Workflow failed",
+                error_message = type(failure_message) == "string" and failure_message or "Workflow failed",
             })
         end
     end

@@ -9,7 +9,7 @@ entries:
       suite: dataflow
     source: file://failure_log_test.lua
     method: run_tests
-    modules: [uuid, logger]
+    modules: [uuid, logger, json]
     imports:
       commit: userspace.dataflow.persist:commit
       test: wippy.test:test
