@@ -1,3 +1,4 @@
+local logger = require("logger"):named("dataflow.commit")
 local sql = require("sql")
 local json = require("json")
 local uuid = require("uuid")
@@ -534,6 +535,24 @@ function commit.execute(dataflow_id, op_id, commands, options)
 
     -- Release the connection
     db:release()
+
+    for _, command_result in ipairs(result.results or {}) do
+        local command = command_result.input or {}
+        local payload = command.payload or {}
+        if command.type == consts.COMMAND_TYPES.COMPLETE_WORKFLOW and command_result.completed == true and
+            payload.status == consts.STATUS.COMPLETED_FAILURE then
+            local failure = (payload.metadata or {}).error
+            if type(failure) == "string" then
+                local decoded = json.decode(failure)
+                if type(decoded) == "table" then failure = decoded end
+            end
+            logger:error("Workflow failed", {
+                dataflow_id = command_result.dataflow_id or dataflow_id,
+                error_kind = "WorkflowFailed",
+                error_message = (type(failure) == "table" and failure.message or failure) or "Workflow failed",
+            })
+        end
+    end
 
     local wake_index_changed = result.wake_index_changed == true
     result.wake_index_changed = nil

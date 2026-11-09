@@ -2,6 +2,23 @@ version: "1.0"
 namespace: app
 
 entries:
+  - name: failure_log_test
+    kind: function.lua
+    meta:
+      type: test
+      suite: dataflow
+    source: file://failure_log_test.lua
+    method: run_tests
+    modules: [uuid, logger]
+    imports:
+      test: wippy.test:test
+      client: userspace.dataflow:client
+      consts: userspace.dataflow:consts
+      node_reader: userspace.dataflow.persist:node_reader
+    security:
+      actor: {id: dataflow.test}
+      policies: [app:test_policy]
+
   - name: large_scope_test
     kind: function.lua
     meta:
