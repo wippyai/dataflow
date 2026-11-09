@@ -568,9 +568,11 @@ local function handler(contract_args)
                     content = "",
                     tool_calls = {
                         {
-                            id = helpers.call_id(scenario.scenario_id, "finish"),
+                            id = helpers.call_id(scenario.scenario_id, scenario.finish_rejections and
+                                ("finish-" .. tostring(llm_calls)) or "finish"),
                             name = "finish",
-                            arguments = { answer = "finished:" .. tostring(scenario.scenario_id) }
+                            arguments = llm_calls <= (tonumber(scenario.finish_rejections) or 0) and {} or
+                                { answer = "finished:" .. tostring(scenario.scenario_id) }
                         }
                     }
                 },
