@@ -656,7 +656,7 @@ local function update_node_progress(n, iteration, max_iterations, total_tokens, 
     })
 end
 
-local function store_agent_action(n, agent_result, iteration, agent_id, model_name, exit_tool_name, control_metadata)
+local function store_agent_action(n, agent_result, iteration, agent_id, model_name, exit_tool_name, control_metadata, latency_ms)
     local action_content = {
         result = agent_result.result,
         tool_calls = agent_result.tool_calls,
@@ -685,6 +685,7 @@ local function store_agent_action(n, agent_result, iteration, agent_id, model_na
         model = model_name,
         tokens = agent_result.tokens,
         finish_reason = agent_result.finish_reason,
+        latency_ms = latency_ms,
         llm_meta = llm_meta,
         memory_recall_error = agent_result.memory_recall_error,
     }
@@ -2971,9 +2972,18 @@ local function run(args)
         if route_pin ~= nil then
             step_options.route = route_pin
         end
+        local step_started = time.now():unix_nano()
         local agent_result, step_err = agent_instance:step(prompt, step_options)
+        local step_latency_ms = math.floor((time.now():unix_nano() - step_started) / 1000000)
         local memory_recall_error = type(agent_result) == "table" and agent_result.memory_recall_error or nil
         if step_err then
+            n:data(agent_consts.DATA_TYPE.AGENT_ERROR, {message = tostring(step_err)}, {
+                key = iteration .. "_error", content_type = consts.CONTENT_TYPE.JSON, node_id = n.node_id,
+                metadata = {iteration = iteration, agent_id = agent_id, model = model_name,
+                    tokens = type(agent_result) == "table" and agent_result.tokens or nil,
+                    finish_reason = type(agent_result) == "table" and agent_result.finish_reason or nil,
+                    latency_ms = step_latency_ms, error_code = agent_consts.ERROR.AGENT_EXEC_FAILED}
+            })
             return fail_with_lifecycle({
                 code = agent_consts.ERROR.AGENT_EXEC_FAILED,
                 message = step_err,
@@ -3034,7 +3044,7 @@ local function run(args)
 
             store_step_notes(n, step_notes, iteration)
             local truncated_action_key = store_agent_action(n, agent_result, iteration, agent_id, model_name,
-                exit_tool_name, {})
+                exit_tool_name, {}, step_latency_ms)
 
             n:data(agent_consts.DATA_TYPE.AGENT_OBSERVATION, agent_consts.FEEDBACK.OUTPUT_TRUNCATED, {
                 key = iteration .. "_truncation_warning",
@@ -3092,7 +3102,7 @@ local function run(args)
             model_name, unproductive_steps, route_pin)
 
         store_step_notes(n, step_notes, iteration)
-        local action_key = store_agent_action(n, agent_result, iteration, agent_id, model_name, exit_tool_name, {})
+        local action_key = store_agent_action(n, agent_result, iteration, agent_id, model_name, exit_tool_name, {}, step_latency_ms)
         local proposed_controls = {}
         for _, summary in ipairs({ before_result or {}, after_result or {} }) do
             for _, control in ipairs(summary.controls or {}) do proposed_controls[#proposed_controls + 1] = control end

@@ -142,6 +142,10 @@ local function define_tests()
             test.eq(records[1].found_role, "assistant")
             test.eq(records[1].outcome_state, "continues")
             test.eq(actions[1].metadata.finish_reason, "length")
+            for _, action in ipairs(actions) do
+                test.not_nil(action.metadata.latency_ms)
+                test.is_true(action.metadata.latency_ms >= 0)
+            end
         end)
 
         it("keeps running when a non-strict after_persist binding fails", function()

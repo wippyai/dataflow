@@ -350,3 +350,5 @@ reach roots. Graph construction rejects targets outside the body, duplicate
 targets, body dependency cycles, and body edges returning to the iterator.
 Routes do not add executable nodes or outgoing body edges. Cycle retains its
 existing iteration limit and fails if continuation exceeds it.
+
+Agent action records retain optional `latency_ms` for the primary agent step, including truncated outcomes. A failed step writes one `agent.error` record with its message, iteration, agent/model identity, latency, `AGENT_EXEC_FAILED` code and any returned usage or finish reason. The node keeps its existing failure envelope and lifecycle behavior. These records use the existing workflow data table and follow workflow deletion; no new settings, tables or retry behavior are introduced.

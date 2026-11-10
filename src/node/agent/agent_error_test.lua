@@ -33,6 +33,12 @@ local function define_tests()
                     data_reader = { with_dataflow = function() return query end },
                     process = { listen = function() return {} end, send = function() return true end }
                 } :: any) :: any
+                local records = {}
+                local original_data = n.data
+                n.data = function(self, kind, value, options)
+                    if kind == agent_consts.DATA_TYPE.AGENT_ERROR then records[#records + 1] = {kind=kind, value=value, options=options} end
+                    return original_data(self, kind, value, options)
+                end
                 n.inputs = function() return {} end
                 local ctx = { current_model = instance.model, current_agent_id = instance.id,
                     configure_delegate_tools = function() end,
@@ -55,6 +61,13 @@ local function define_tests()
                 local encoded, encode_err = json.encode(result)
                 test.is_nil(encode_err)
                 local stored = json.decode(encoded)
+                test.eq(#records, 1)
+                test.eq(records[1].kind, agent_consts.DATA_TYPE.AGENT_ERROR)
+                local meta = records[1].options.metadata
+                test.eq(meta.model, "test_model"); test.eq(meta.iteration, 1)
+                test.eq(meta.error_code, agent_consts.ERROR.AGENT_EXEC_FAILED)
+                test.is_true(meta.latency_ms >= 0)
+                test.eq(records[1].value.message, "Model request failed")
                 test.is_false(stored.success)
                 test.eq(stored.error.code, agent_consts.ERROR.AGENT_EXEC_FAILED)
                 test.eq(stored.error.message, "Model request failed")
