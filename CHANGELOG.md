@@ -5,6 +5,13 @@
 * Preserve an agent node's successful fallback route across iterations and recovery, clearing it when the configured agent or model changes. Requires Agent 0.5.5 or later.
 * Wake an existing orchestrator when it claims a signal generation. A clean exit that released an older generation no longer fails newly activated work; actual owner crashes still fail without restarting the workflow.
 
+## [0.7.37](https://github.com/wippyai/dataflow/compare/v0.7.36...v0.7.37) (2026-11-11)
+
+
+### Bug Fixes
+
+* **agent:** retain native request failure outcomes and step latency ([#142](https://github.com/wippyai/dataflow/issues/142)) ([3751d7f](https://github.com/wippyai/dataflow/commit/3751d7f2ffa667a98efa4e38ef289e257a2f9339))
+
 ## [0.7.36](https://github.com/wippyai/dataflow/compare/v0.7.35...v0.7.36) (2026-11-09)
 
 
