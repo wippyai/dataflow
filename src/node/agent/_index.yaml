@@ -169,7 +169,9 @@ entries:
       - uuid
       - env
       - funcs
+      - logger
     imports:
+      retry: userspace.dataflow:retry
       agent_ref: userspace.dataflow:agent_ref
       node_reader: userspace.dataflow.persist:node_reader
       tools: wippy.agent.discovery:tools

@@ -1,5 +1,7 @@
 local json = require("json")
 local time = require("time")
+local logger = require("logger"):named("dataflow.agent")
+local retry = require("retry")
 local uuid = require("uuid")
 local env = require("env")
 local agent_ref = require("agent_ref")
@@ -2973,17 +2975,37 @@ local function run(args)
             step_options.route = route_pin
         end
         local step_started = time.now():unix_nano()
-        local agent_result, step_err = agent_instance:step(prompt, step_options)
+        local agent_result, step_err, step_details = agent_instance:step(prompt, step_options)
         local step_latency_ms = math.floor((time.now():unix_nano() - step_started) / 1000000)
         local memory_recall_error = type(agent_result) == "table" and agent_result.memory_recall_error or nil
         if step_err then
-            n:data(agent_consts.DATA_TYPE.AGENT_ERROR, {message = tostring(step_err)}, {
+            local cause = retry.extract_error(step_err)
+            local details = type(step_details) == "table" and step_details or {}
+            local native_details = type(cause.details) == "table" and cause.details or {}
+            local outcome = type(agent_result) == "table" and agent_result or details
+            local tokens = nil
+            if type(outcome.tokens) == "table" then
+                tokens = {}
+                for key, value in pairs(outcome.tokens) do
+                    if type(key) == "string" and type(value) == "number" and value == value
+                        and value ~= math.huge and value ~= -math.huge then
+                        tokens[key] = value
+                    end
+                end
+            end
+            local code = details.code or native_details.code
+            local _, record_err = n:persist_data(agent_consts.DATA_TYPE.AGENT_ERROR, {message = tostring(step_err)}, {
                 key = iteration .. "_error", content_type = consts.CONTENT_TYPE.JSON, node_id = n.node_id,
                 metadata = {iteration = iteration, agent_id = agent_id, model = model_name,
-                    tokens = type(agent_result) == "table" and agent_result.tokens or nil,
-                    finish_reason = type(agent_result) == "table" and agent_result.finish_reason or nil,
-                    latency_ms = step_latency_ms, error_code = agent_consts.ERROR.AGENT_EXEC_FAILED}
+                    tokens = tokens,
+                    finish_reason = type(outcome.finish_reason) == "string" and outcome.finish_reason or nil,
+                    latency_ms = step_latency_ms, error_code = agent_consts.ERROR.AGENT_EXEC_FAILED,
+                    error_kind = cause.kind, retryable = cause.retryable,
+                    code = (type(code) == "string" or type(code) == "number") and code or nil}
             })
+            if record_err then
+                logger:error("Failed to persist agent step failure", {error = tostring(record_err)})
+            end
             return fail_with_lifecycle({
                 code = agent_consts.ERROR.AGENT_EXEC_FAILED,
                 message = step_err,

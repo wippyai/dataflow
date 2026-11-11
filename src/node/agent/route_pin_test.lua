@@ -40,12 +40,12 @@ local function define_tests()
                     config = function() return config end,
                     inputs = function() return {} end,
                     query = function() return query end,
+                    persist_data = function(_, kind, content, options)
+                        failed_call = {content=content,metadata=options.metadata}
+                        return true
+                    end,
                     data = function(_, kind, content, options)
-                        if kind == agent_consts.DATA_TYPE.AGENT_ERROR then
-                            failed_call = {content=content,metadata=options.metadata}
-                        else
-                            feedback = { data_type = kind, content = content, key = options.key }
-                        end
+                        feedback = { data_type = kind, content = content, key = options.key }
                     end,
                     metadata = function() return metadata end,
                     update_metadata = function(_, update) for k,v in pairs(update) do metadata[k] = v end end,
@@ -141,6 +141,7 @@ local function define_tests()
                     inputs = function() return {} end,
                     metadata = function() return {} end,
                     query = function() return query end,
+                    persist_data = function() return true end,
                     data = function() end,
                     yield = function() return {}, nil end,
                     update_config = function() end,

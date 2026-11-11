@@ -482,6 +482,16 @@ function methods:data(data_type, content, options)
     return self, nil
 end
 
+-- Persist an independent row without submitting or retaining unrelated node commands.
+function methods:persist_data(data_type, content, options)
+    local command, err = build_data_command(self, data_type, content, options)
+    if err then return nil, err end
+    local result, persist_err = self._deps.commit.execute(self.dataflow_id, uuid.v7(), { command })
+    if not result then return nil, persist_err end
+    table.insert(self._created_data_ids, command.payload.data_id)
+    return self, nil
+end
+
 function methods.update_metadata(self: any, updates: any)
     if not updates or type(updates) ~= "table" then
         return self, nil
