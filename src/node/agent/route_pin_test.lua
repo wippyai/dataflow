@@ -28,7 +28,7 @@ local function define_tests()
                     { config = scenario.changes }
                 } } }
                 local action = { content = { result = "", tool_calls = {} }, metadata = { iteration = 1 } }
-                local query_kind, query_key, feedback
+                local query_kind, query_key, feedback, failed_call
                 local query = {}
                 query.with_nodes = function(self) return self end
                 query.with_data_types = function(self, kind) query_kind = kind; return self end
@@ -40,6 +40,10 @@ local function define_tests()
                     config = function() return config end,
                     inputs = function() return {} end,
                     query = function() return query end,
+                    persist_data = function(_, kind, content, options)
+                        failed_call = {content=content,metadata=options.metadata}
+                        return true
+                    end,
                     data = function(_, kind, content, options)
                         feedback = { data_type = kind, content = content, key = options.key }
                     end,
@@ -90,6 +94,9 @@ local function define_tests()
                     test.eq(selected, "new", "the first model step uses the replayed selection")
                     test.eq(feedback.key, "1_empty_result")
                     test.eq(feedback.content, agent_consts.FEEDBACK.EMPTY_RESULT)
+                    test.eq(failed_call.content.message, "probe complete")
+                    test.eq(failed_call.metadata.iteration, 2)
+                    test.eq(failed_call.metadata.error_code, agent_consts.ERROR.AGENT_EXEC_FAILED)
                     if scenario.drops_pin then test.is_nil(seen_options.route)
                     else test.eq(seen_options.route, pin) end
                 end
@@ -134,6 +141,7 @@ local function define_tests()
                     inputs = function() return {} end,
                     metadata = function() return {} end,
                     query = function() return query end,
+                    persist_data = function() return true end,
                     data = function() end,
                     yield = function() return {}, nil end,
                     update_config = function() end,
