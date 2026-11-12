@@ -8,7 +8,7 @@ local consts = require("consts")
 local M = {}
 type Map = { [string]: any }
 type FlowRecord = {dataflow_id: string, actor_id: string, actor_context: any?, status: string, metadata: Map}
-type PendingSignal = {node_id: string, type: string, yield_id: string}
+type PendingSignal = {node_id: string, type: string, yield_id: string, arm_ref: string?}
 
 local function failure(err: any, message: string, code: string, kind: string, retryable: boolean): error
     local details: Map = {code = code}
@@ -116,7 +116,8 @@ function M.pending_signal(dataflow_id: string, signal_id: string, node_type: str
                 return nil, failure(nil, "Signal wait context invalid", "DATAFLOW_SIGNAL_STATE_INVALID", errors.INTERNAL, false)
             end
             if wait.signal_id == signal_id and not satisfied[value.yield_id] then
-                return {node_id = row.node_id, type = node_type, yield_id = value.yield_id}, nil
+                return {node_id = row.node_id, type = node_type, yield_id = value.yield_id,
+                    arm_ref = type(wait.arm) == "table" and wait.arm.ref or nil}, nil
             end
         end
         ::continue::
