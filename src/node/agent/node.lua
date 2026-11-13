@@ -1,5 +1,7 @@
 local json = require("json")
 local time = require("time")
+local logger = require("logger"):named("dataflow.agent")
+local retry = require("retry")
 local uuid = require("uuid")
 local env = require("env")
 local agent_ref = require("agent_ref")
@@ -656,7 +658,7 @@ local function update_node_progress(n, iteration, max_iterations, total_tokens, 
     })
 end
 
-local function store_agent_action(n, agent_result, iteration, agent_id, model_name, exit_tool_name, control_metadata)
+local function store_agent_action(n, agent_result, iteration, agent_id, model_name, exit_tool_name, control_metadata, latency_ms)
     local action_content = {
         result = agent_result.result,
         tool_calls = agent_result.tool_calls,
@@ -685,6 +687,7 @@ local function store_agent_action(n, agent_result, iteration, agent_id, model_na
         model = model_name,
         tokens = agent_result.tokens,
         finish_reason = agent_result.finish_reason,
+        latency_ms = latency_ms,
         llm_meta = llm_meta,
         memory_recall_error = agent_result.memory_recall_error,
     }
@@ -1881,9 +1884,9 @@ local function tool_result_persister(n, iteration, tool_calls: {ToolCall}, has_e
     return listener, persisted, finished_viz_calls
 end
 
-local function tools_were_attempted(agent_result)
-    if agent_result.tool_calls and #agent_result.tool_calls > 0 then
-        return true
+local function tools_were_attempted(agent_result, exit_tool_name: string?)
+    for _, tool_call in ipairs(agent_result.tool_calls or {}) do
+        if not exit_tool_name or tool_call.name ~= exit_tool_name then return true end
     end
 
     if agent_result.delegate_calls and #agent_result.delegate_calls > 0 then
@@ -1968,16 +1971,13 @@ local function check_completion(tool_calling, agent_result: any, iteration, min_
     return task_complete, final_result, feedback ~= nil
 end
 
--- A turn is unproductive when it calls nothing and settles nothing: no tool or
--- delegate call, and no answer its tool_calling mode accepts as final. It is
--- exactly the turn check_completion answers with feedback (or, under "none",
--- silently rejects). Warm-up turns below min_iterations never settle the task
--- by design, so they are exempt. The verdict depends on the model's turn alone,
--- which lets the count be persisted in the same commit as the turn itself.
-local function is_unproductive_turn(tool_calling, agent_result: any, iteration, min_iterations)
-    if iteration < min_iterations or tools_were_attempted(agent_result) then
+-- Exit calls settle the task only after validation. An accepted exit completes
+-- before the stall check; a rejected exit-only turn consumes the allowance.
+local function is_unproductive_turn(tool_calling, agent_result: any, iteration, min_iterations, exit_tool_name: string?)
+    if iteration < min_iterations or tools_were_attempted(agent_result, exit_tool_name) then
         return false
     end
+    if tools_were_attempted(agent_result) then return true end
 
     if tool_calling == agent_consts.TOOL_CALLING.NONE or tool_calling == agent_consts.TOOL_CALLING.AUTO then
         return not has_usable_result(agent_result.result)
@@ -2974,9 +2974,38 @@ local function run(args)
         if route_pin ~= nil then
             step_options.route = route_pin
         end
-        local agent_result, step_err = agent_instance:step(prompt, step_options)
+        local step_started = time.now():unix_nano()
+        local agent_result, step_err, step_details = agent_instance:step(prompt, step_options)
+        local step_latency_ms = math.floor((time.now():unix_nano() - step_started) / 1000000)
         local memory_recall_error = type(agent_result) == "table" and agent_result.memory_recall_error or nil
         if step_err then
+            local cause = retry.extract_error(step_err)
+            local details = type(step_details) == "table" and step_details or {}
+            local native_details = type(cause.details) == "table" and cause.details or {}
+            local outcome = type(agent_result) == "table" and agent_result or details
+            local tokens = nil
+            if type(outcome.tokens) == "table" then
+                tokens = {}
+                for key, value in pairs(outcome.tokens) do
+                    if type(key) == "string" and type(value) == "number" and value == value
+                        and value ~= math.huge and value ~= -math.huge then
+                        tokens[key] = value
+                    end
+                end
+            end
+            local code = details.code or native_details.code
+            local _, record_err = n:persist_data(agent_consts.DATA_TYPE.AGENT_ERROR, {message = tostring(step_err)}, {
+                key = iteration .. "_error", content_type = consts.CONTENT_TYPE.JSON, node_id = n.node_id,
+                metadata = {iteration = iteration, agent_id = agent_id, model = model_name,
+                    tokens = tokens,
+                    finish_reason = type(outcome.finish_reason) == "string" and outcome.finish_reason or nil,
+                    latency_ms = step_latency_ms, error_code = agent_consts.ERROR.AGENT_EXEC_FAILED,
+                    error_kind = cause.kind, retryable = cause.retryable,
+                    code = (type(code) == "string" or type(code) == "number") and code or nil}
+            })
+            if record_err then
+                logger:error("Failed to persist agent step failure", {error = tostring(record_err)})
+            end
             return fail_with_lifecycle({
                 code = agent_consts.ERROR.AGENT_EXEC_FAILED,
                 message = step_err,
@@ -3037,7 +3066,7 @@ local function run(args)
 
             store_step_notes(n, step_notes, iteration)
             local truncated_action_key = store_agent_action(n, agent_result, iteration, agent_id, model_name,
-                exit_tool_name, {})
+                exit_tool_name, {}, step_latency_ms)
 
             n:data(agent_consts.DATA_TYPE.AGENT_OBSERVATION, agent_consts.FEEDBACK.OUTPUT_TRUNCATED, {
                 key = iteration .. "_truncation_warning",
@@ -3084,7 +3113,7 @@ local function run(args)
 
         total_tokens = accumulate_tokens(total_tokens, agent_result.tokens)
 
-        if is_unproductive_turn(tool_calling, agent_result, iteration, min_iterations) then
+        if is_unproductive_turn(tool_calling, agent_result, iteration, min_iterations, exit_tool_name) then
             unproductive_steps = unproductive_steps + 1
         else
             unproductive_steps = 0
@@ -3095,7 +3124,7 @@ local function run(args)
             model_name, unproductive_steps, route_pin)
 
         store_step_notes(n, step_notes, iteration)
-        local action_key = store_agent_action(n, agent_result, iteration, agent_id, model_name, exit_tool_name, {})
+        local action_key = store_agent_action(n, agent_result, iteration, agent_id, model_name, exit_tool_name, {}, step_latency_ms)
         local proposed_controls = {}
         for _, summary in ipairs({ before_result or {}, after_result or {} }) do
             for _, control in ipairs(summary.controls or {}) do proposed_controls[#proposed_controls + 1] = control end

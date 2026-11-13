@@ -1032,6 +1032,40 @@ local function define_tests()
                 test.eq(test_node._queued_commands[1].payload.data_type, consts.DATA_TYPE.NODE_OUTPUT)
             end)
 
+            for _, refused in ipairs({false, true}) do
+                it("persists independent data without changing queued commands: " .. tostring(refused), function()
+                    test_node:update_metadata({status_message = "pending"})
+                    local queued = test_node._queued_commands[1]
+                    local calls = 0
+                    mock_deps.commit.execute = function(dataflow_id, op_id, commands)
+                        calls = calls + 1
+                        test.eq(dataflow_id, test_node.dataflow_id)
+                        test.not_nil(op_id)
+                        test.eq(#commands, 1)
+                        test.eq(commands[1].type, consts.COMMAND_TYPES.CREATE_DATA)
+                        test.eq(commands[1].payload.data_id, "independent-row")
+                        test.eq(commands[1].payload.content.message, "observed")
+                        if refused then return nil, "write refused" end
+                        return {}
+                    end
+                    local result, err = test_node:persist_data("event", {message = "observed"}, {
+                        data_id = "independent-row", node_id = test_node.node_id
+                    })
+                    test.eq(calls, 1)
+                    test.eq(#test_node._queued_commands, 1)
+                    test.eq(test_node._queued_commands[1], queued)
+                    test.eq(#test_node:created_data_ids(), refused and 0 or 1)
+                    if refused then
+                        test.is_nil(result)
+                        test.eq(err, "write refused")
+                    else
+                        test.eq(result, test_node)
+                        test.is_nil(err)
+                        test.eq(test_node:created_data_ids()[1], "independent-row")
+                    end
+                end)
+            end
+
             it("should update metadata properly", function()
                 test.not_nil(test_node)
                 local result = test_node:update_metadata({ key1 = "value1", key2 = "value2" })

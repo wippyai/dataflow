@@ -350,3 +350,27 @@ reach roots. Graph construction rejects targets outside the body, duplicate
 targets, body dependency cycles, and body edges returning to the iterator.
 Routes do not add executable nodes or outgoing body edges. Cycle retains its
 existing iteration limit and fails if continuation exceeds it.
+
+Agent action records add optional `metadata.latency_ms` for the complete primary
+agent step, including truncated actions. A failed primary step adds one
+`agent.error` data record when persistence succeeds. This type is already declared
+in earlier releases, but those releases do not write it for other failure paths.
+Consumers listing all workflow records therefore see one additional row and
+`created_data_ids()` includes its ID; consumers filtering action or observation
+records retain their existing results.
+
+The error record contains the message, iteration, agent/model identity, latency
+and `metadata.error_code = AGENT_EXEC_FAILED`. Optional `metadata.error_kind`,
+`metadata.retryable` and `metadata.code` retain the native kind, retryability and
+reported failure code. Structured failure details supply optional numeric
+`metadata.tokens` and `metadata.finish_reason`; older agents omit unavailable
+fields. Arbitrary details, prompts and raw responses are not copied. A refused
+error-record write is logged and leaves the original node error, including its
+native details, unchanged.
+
+These records use the existing workflow data and commit tables and follow
+workflow deletion. Existing records and optional-metadata readers require no
+migration. Retention remains workflow-owned: for a fixed workflow lifetime,
+10x and 100x step volume produce 10x and 100x telemetry storage; workflows kept
+indefinitely have no finite steady-state size. This change adds no retention
+policy, table, setting or retry behavior.

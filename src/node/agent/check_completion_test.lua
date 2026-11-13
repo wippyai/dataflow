@@ -206,6 +206,19 @@ local function define_tests()
             test.is_false(is_unproductive_turn(AUTO, delegate_turn, 3, 1))
         end)
 
+        it("counts exit-only turns while ordinary tools and delegation remain productive", function()
+            local finish_turn = {result = "A partial answer", tool_calls = {{id = "1", name = "complete"}}}
+            test.is_true(is_unproductive_turn(AUTO, finish_turn, 3, 1, "complete"))
+            test.is_true(is_unproductive_turn(ANY, finish_turn, 3, 1, "complete"))
+            test.is_false(is_unproductive_turn(ANY, finish_turn, 1, 3, "complete"))
+            test.is_false(is_unproductive_turn(ANY, {
+                tool_calls = {{id = "1", name = "complete"}, {id = "2", name = "work"}},
+            }, 3, 1, "complete"))
+            test.is_false(is_unproductive_turn(ANY, {
+                tool_calls = finish_turn.tool_calls, delegate_calls = {{id = "2", name = "delegate"}},
+            }, 3, 1, "complete"))
+        end)
+
         it("does not count a warm-up turn below min_iterations", function()
             test.is_false(is_unproductive_turn(AUTO, { result = "" }, 1, 3))
             test.is_false(is_unproductive_turn(NONE, { result = "" }, 2, 3))

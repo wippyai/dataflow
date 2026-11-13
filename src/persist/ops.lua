@@ -365,6 +365,21 @@ handlers[constants.COMMAND_TYPES.UPDATE_NODE] = function(tx, dataflow_id, op_id,
         merge_metadata = true -- Default to merge
     end
 
+    local existing_result = {}
+    if payload.status == constants.STATUS.COMPLETED_FAILURE or (merge_metadata and payload.metadata) then
+        local query = sql.builder.select("status", "type", "metadata")
+            :from("dataflow_nodes")
+            :where("node_id = ?", payload.node_id)
+            :where("dataflow_id = ?", dataflow_id)
+        if payload.status == constants.STATUS.COMPLETED_FAILURE and tx:db_type() == "postgres" then
+            query = query:suffix("FOR UPDATE")
+        end
+        local existing_err
+        existing_result, existing_err = query:run_with(tx):query()
+        if existing_err then return nil, "Failed to read node before update: " .. existing_err end
+    end
+    local meta_val_for_db
+
     local update_query = sql.builder.update("dataflow_nodes")
         :where("node_id = ?", payload.node_id)
         :where("dataflow_id = ?", dataflow_id)
@@ -395,22 +410,7 @@ handlers[constants.COMMAND_TYPES.UPDATE_NODE] = function(tx, dataflow_id, op_id,
     end
 
     if payload.metadata ~= nil then
-        local meta_val_for_db
-
         if merge_metadata and payload.metadata then
-            -- Read existing metadata first for merging
-            local existing_query = sql.builder.select("metadata")
-                :from("dataflow_nodes")
-                :where("node_id = ?", payload.node_id)
-                :where("dataflow_id = ?", dataflow_id)
-
-            local existing_executor = existing_query:run_with(tx)
-            local existing_result, existing_err = existing_executor:query()
-
-            if existing_err then
-                return nil, "Failed to read existing metadata for merge: " .. existing_err
-            end
-
             -- Parse existing metadata
             local existing_metadata = {}
             if #existing_result > 0 and existing_result[1].metadata then
@@ -503,7 +503,12 @@ handlers[constants.COMMAND_TYPES.UPDATE_NODE] = function(tx, dataflow_id, op_id,
         changes_made = result.rows_affected > 0,
         op_id = op_id,
         rows_affected = result.rows_affected,
-        metadata_merged = merge_metadata
+        metadata_merged = merge_metadata,
+        failure = payload.status == constants.STATUS.COMPLETED_FAILURE and existing_result[1] and
+            existing_result[1].status ~= constants.STATUS.COMPLETED_FAILURE and result.rows_affected > 0 and {
+                node_type = payload.node_type or existing_result[1].type,
+                metadata = meta_val_for_db or existing_result[1].metadata,
+            } or nil,
     }
 end
 
