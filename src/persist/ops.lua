@@ -1,3 +1,4 @@
+local retention_guard = require("retention_guard")
 local sql = require("sql")
 local time = require("time")
 local uuid = require("uuid")
@@ -960,10 +961,24 @@ handlers[constants.COMMAND_TYPES.CREATE_WORKFLOW] = function(tx, dataflow_id, op
         end
     end
 
+    if payload.retain ~= nil and type(payload.retain) ~= "boolean" then
+        return nil, "retain must be a boolean"
+    end
+    local root_id = wf_id
+    if payload.parent_dataflow_id then
+        if payload.retain then return nil, "retain is only supported on family roots" end
+        local parent, parent_err = retention_guard.lock(tx, payload.parent_dataflow_id)
+        if parent_err then return nil, parent_err end
+        if not parent then return nil, "parent dataflow is not visible" end
+        root_id = parent.retention_root_id
+    end
+
     local insert_query = sql.builder.insert("dataflows")
         :set_map({
             dataflow_id = wf_id,
             parent_dataflow_id = payload.parent_dataflow_id or sql.as.null(),
+            retention_root_id = root_id or sql.as.null(),
+            retention_held = payload.retain == true and 1 or 0,
             actor_id = payload.actor_id,
             actor_context = payload.actor_context or sql.as.null(),
             type = payload.type,
@@ -1346,6 +1361,18 @@ function ops.execute(tx, dataflow_id, op_id, commands)
 
         if type(handler) ~= "function" then
             return nil, "Handler for command type " .. command.type .. " is not a function at index " .. i
+        end
+
+        if command.type ~= constants.COMMAND_TYPES.CREATE_WORKFLOW then
+            local payload = command.payload or {}
+            local flow, fence_err = retention_guard.lock(tx, dataflow_id)
+            if fence_err then return nil, fence_err end
+            if not flow then return nil, "Workflow not found or no changes applied" end
+            if payload.dataflow_id and payload.dataflow_id ~= dataflow_id then
+                local target, target_err = retention_guard.lock(tx, payload.dataflow_id)
+                if target_err then return nil, target_err end
+                if not target then return nil, "Workflow not found or no changes applied" end
+            end
         end
 
         -- Pass the same op_id to all handlers in this batch

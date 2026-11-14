@@ -1,3 +1,4 @@
+local retention_guard = require("retention_guard")
 local logger = require("logger"):named("dataflow.commit")
 local sql = require("sql")
 local json = require("json")
@@ -269,6 +270,18 @@ function commit.tx_execute(tx, dataflow_id, op_id, commands, options)
     -- Generate operation ID if not provided
     op_id = op_id or uuid.v7()
     options = options or {}
+
+    -- Lock before claiming pending commits as well as before applying writes.
+    local flow, fence_err = retention_guard.lock(tx, dataflow_id)
+    if fence_err then return nil, fence_err end
+    if not flow then
+        local creating = false
+        for _, command in ipairs(commands) do
+            if command.type == consts.COMMAND_TYPES.CREATE_WORKFLOW and
+                ((command.payload or {}).dataflow_id or dataflow_id) == dataflow_id then creating = true end
+        end
+        if not creating then return nil, "Workflow not found or no changes applied" end
+    end
 
     -- Preprocess commands to handle COMMIT_COMMAND
     local processed_commands = {}
@@ -691,6 +704,10 @@ function commit._create_commit_only(commit_id, dataflow_id, payload, metadata)
         db:release()
         return nil, "Failed to begin transaction: " .. err_tx
     end
+
+    local flow, fence_err = retention_guard.lock(tx, dataflow_id)
+    if not flow and not fence_err then fence_err = "dataflow not found" end
+    if fence_err then tx:rollback(); db:release(); return nil, fence_err end
 
     -- Insert the commit record only (don't update dataflow's last_commit_id)
     local insert_query = sql.builder.insert("dataflow_commits")

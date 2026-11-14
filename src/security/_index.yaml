@@ -177,7 +177,7 @@ entries:
   - name: retention
     kind: registry.entry
     meta:
-      comment: Module-owned authority for diagnostic retention; no actor reconstruction or process spawning.
+      comment: Module-owned authority for diagnostic and family retention; no actor reconstruction or process spawning.
 
   - name: retention.database
     kind: security.policy
@@ -193,6 +193,7 @@ entries:
     policy:
       resources:
         - userspace.dataflow.env:diagnostic_retention_days
+        - userspace.dataflow.env:flow_retention_days
         - userspace.dataflow.env:retention_interval_seconds
         - userspace.dataflow.env:retention_batch_size
         - userspace.dataflow.env:retention_db

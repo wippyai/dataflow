@@ -11,6 +11,7 @@ TEST_DB  := .wippy/test.db
 DATAFLOW_PG_HOST ?= 127.0.0.1
 DATAFLOW_PG_PORT ?= 5432
 DATAFLOW_PG_DATABASE ?= dataflow_test
+DATAFLOW_PG_UPGRADE_DATABASE ?= dataflow_retention_upgrade_test
 DATAFLOW_PG_USERNAME ?= dataflow
 DATAFLOW_PG_PASSWORD ?= dataflow
 WIPPY ?= wippy
@@ -29,6 +30,7 @@ test-postgres: test-static
 		--set "vars.postgres_host=$(DATAFLOW_PG_HOST)" \
 		--set "vars.postgres_port=$(DATAFLOW_PG_PORT)" \
 		--set "vars.postgres_database=$(DATAFLOW_PG_DATABASE)" \
+		--set "vars.postgres_upgrade_database=$(DATAFLOW_PG_UPGRADE_DATABASE)" \
 		--set "vars.postgres_username=$(DATAFLOW_PG_USERNAME)" \
 		--set "vars.postgres_password=$(DATAFLOW_PG_PASSWORD)"
 
@@ -92,4 +94,4 @@ verify-package:
 	WIPPY_TOKEN="$(PUBLISH_DRY_RUN_TOKEN)" $(WIPPY) publish --version "$$version" --dry-run
 
 clean:
-	cd $(TEST_DIR) && rm -f $(TEST_DB) $(TEST_DB)-wal $(TEST_DB)-shm
+	cd $(TEST_DIR) && rm -f $(TEST_DB) $(TEST_DB)-wal $(TEST_DB)-shm .wippy/retention-upgrade.db .wippy/retention-upgrade.db-wal .wippy/retention-upgrade.db-shm

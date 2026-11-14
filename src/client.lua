@@ -167,7 +167,9 @@ function methods:create_workflow(commands, options)
             type = workflow_type,
             actor_id = self._actor_id,
             actor_context = identity_row.actor_context,
-            metadata = metadata
+            metadata = metadata,
+            retain = options.retain,
+            parent_dataflow_id = options.parent_dataflow_id
         }
     }
 
@@ -184,6 +186,13 @@ function methods:create_workflow(commands, options)
     end
 
     return dataflow_id, nil
+end
+
+-- Owners release their root hold when deleting their retained record. Supplying
+-- the owner's SQL transaction makes release and owner deletion atomic.
+function methods:release(dataflow_id, options)
+    if type(dataflow_id) ~= "string" or dataflow_id == "" then return nil, "Workflow ID is required" end
+    return self._deps.dataflow_repo.release_hold(dataflow_id, self._actor_id, (options or {}).transaction)
 end
 
 -- Execute workflow synchronously

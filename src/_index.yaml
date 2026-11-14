@@ -319,6 +319,8 @@ entries:
         path: ".meta.target_db"
       - entry: userspace.dataflow.migrations:09_add_iteration_uniqueness_guard
         path: ".meta.target_db"
+      - entry: userspace.dataflow.migrations:10_retention_access_paths
+        path: ".meta.target_db"
       - entry: userspace.dataflow.runner:overseer.service
         path: ".lifecycle.depends_on +="
       - entry: userspace.dataflow.env:retention_db
@@ -369,7 +371,7 @@ entries:
   - name: retention_enabled
     kind: ns.requirement
     meta:
-      description: "Enable the optional native dataflow diagnostic retention service on this host."
+      description: "Enable the optional native dataflow retention service on this host."
     default: false
     targets:
       - entry: userspace.dataflow.retention:service
@@ -378,16 +380,25 @@ entries:
   - name: diagnostic_retention_days
     kind: ns.requirement
     meta:
-      description: "Days to keep intermediate dataflow diagnostics; 0 disables cleanup. Durable inputs, outputs and evidence are preserved."
+      description: "Days to keep intermediate dataflow diagnostics; 0 disables diagnostic cleanup."
     default: "30"
     targets:
       - entry: userspace.dataflow.env:diagnostic_retention_days
         path: .default
 
+  - name: flow_retention_days
+    kind: ns.requirement
+    meta:
+      description: "Days to keep terminal flow families: 0 disables, 30..36500; empty inherits diagnostics with a 30-day minimum."
+    default: ""
+    targets:
+      - entry: userspace.dataflow.env:flow_retention_days
+        path: .default
+
   - name: retention_interval_seconds
     kind: ns.requirement
     meta:
-      description: "Seconds between bounded retention batches (60..86400)."
+      description: "Seconds between draining retention passes (60..86400)."
     default: "3600"
     targets:
       - entry: userspace.dataflow.env:retention_interval_seconds
@@ -396,7 +407,7 @@ entries:
   - name: retention_batch_size
     kind: ns.requirement
     meta:
-      description: "Maximum rows removed per diagnostic table per sweep (1..1000)."
+      description: "Maximum candidate/child rows per page (1..1000)."
     default: "500"
     targets:
       - entry: userspace.dataflow.env:retention_batch_size
