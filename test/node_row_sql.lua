@@ -1,6 +1,6 @@
 local M = { builder = {} }
 
-function M.get()
+function M.get(): (any, any)
     return {
         release = function() end,
         type = function() return "sqlite", nil end,

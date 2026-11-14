@@ -4,7 +4,7 @@ entries:
   - name: sweeper
     kind: library.lua
     meta:
-      comment: Bounded diagnostic retention for terminal workflow families; preserves durable results and evidence.
+      comment: Indexed diagnostic draining and bounded terminal family retention.
     source: file://sweeper.lua
     modules: [time]
 
@@ -14,10 +14,16 @@ entries:
       type: test
       suite: Retention
     source: file://sweeper_test.lua
-    modules: [sql, uuid, time]
+    modules: [sql, uuid, time, registry]
     imports:
       test: wippy.test:test
       sweeper: userspace.dataflow.retention:sweeper
+      ops: userspace.dataflow.persist:ops
+      client: userspace.dataflow:client
+      commit: userspace.dataflow.persist:commit
+      commit_repo: userspace.dataflow.persist:commit_repo
+      activation_repo: userspace.dataflow.persist:activation_repo
+      dataflow_repo: userspace.dataflow.persist:dataflow_repo
     method: run_tests
 
   - name: process
@@ -31,7 +37,7 @@ entries:
   - name: service
     kind: process.service
     meta:
-      comment: Native opt-in diagnostic retention, configured through Dataflow dependency parameters.
+      comment: Native opt-in diagnostic and family retention, configured through Dataflow dependency parameters.
     process: userspace.dataflow.retention:process
     host: app:processes
     lifecycle:

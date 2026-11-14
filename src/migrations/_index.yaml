@@ -198,3 +198,36 @@ entries:
     imports:
       migration: wippy.migration:migration
     method: migrate
+
+  - name: 10_retention_access_paths
+    kind: function.lua
+    meta:
+      type: migration
+      tags: [dataflows, retention, indexes]
+      description: Backfill indexed family identity and fence paged retirement
+      depends_on: [ns:wippy.migration]
+      target_db: app:db
+      timestamp: "2026-11-13T22:00:00Z"
+    source: file://10_retention_access_paths.lua
+    imports:
+      migration: wippy.migration:migration
+    method: migrate
+
+  - name: migration_10_test
+    kind: function.lua
+    meta:
+      type: test
+      suite: Retention
+    source: file://migration_10_test.lua
+    modules: [sql, uuid]
+    imports:
+      test: wippy.test:test
+      migration_01: userspace.dataflow.migrations:01_create_dataflows_table
+      migration_02: userspace.dataflow.migrations:02_create_nodes_table
+      migration_03: userspace.dataflow.migrations:03_create_data_table
+      migration_05: userspace.dataflow.migrations:05_create_dataflow_commits_table
+      migration_07: userspace.dataflow.migrations:07_create_dataflow_wakes
+      migration_08: userspace.dataflow.migrations:08_create_dataflow_activations
+      migration_10: userspace.dataflow.migrations:10_retention_access_paths
+      sweeper: userspace.dataflow.retention:sweeper
+    method: run_tests

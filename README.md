@@ -123,7 +123,7 @@ no new automatic policy/evaluator calls or loop thresholds.
 [releases-page]: https://github.com/wippyai/dataflow/releases
 [packcli]: https://github.com/wippyai/wippy-releases/releases
 [modules-registry]: https://modules.wippy.ai
-# Optional diagnostic retention
+# Optional retention
 
 The host can enable native cleanup through its `wippy/dataflow` dependency:
 
@@ -133,42 +133,109 @@ parameters:
     value: true
   - name: userspace.dataflow:diagnostic_retention_days
     value: "30"
+  - name: userspace.dataflow:flow_retention_days
+    value: "30"
   - name: userspace.dataflow:retention_interval_seconds
     value: "300"
   - name: userspace.dataflow:retention_batch_size
     value: "1000"
 ```
 
-`retention_enabled` defaults to `false`: the optional process service does not
-start until the host enables it. The other defaults are 30 days, 3600 seconds,
-and 500 rows per table per batch. Setting days to `0` also disables deletion.
-Days accept integers 0–36500, intervals 60–86400 seconds, and batches 1–1000.
-The service uses the host's existing `target_db` and `process_host` bindings.
+`retention_enabled` defaults to `false`; the host must enable the service. Defaults
+are 30 diagnostic days, a matching flow window, 3600 seconds between passes, and
+500 candidates/children per page. Diagnostic days accept 0–36500; flow days accept
+0 or 30–36500. An empty flow setting inherits diagnostic days with a 30-day minimum;
+if diagnostics are disabled it also defaults to disabled. Explicit `0` disables
+that cleanup class. Intervals accept 60–86400 seconds, batches 1–1000. The service
+uses the host's `target_db` and `process_host` bindings.
 
-Cleanup starts 30 seconds after service startup and then runs on the configured
-interval. Each transaction removes at most one batch from each diagnostic table.
-It retries on the next interval after a database or configuration error; logs from
-`dataflow.retention` report the policy, candidate counts, and deleted counts.
+## Retention SPEC
 
-Only entire parent/child families whose flows are all terminal and older than the
-retention window qualify. Active, waiting, paused, recent, unknown-state, and
-unrooted families are preserved. PostgreSQL serializes eligibility with flow
-status changes and child insertion for each bounded transaction, using a 2-second
-lock timeout and a 30-second statement timeout; SQLite reserves its writer before
-reading eligibility. A busy database fails the batch safely and retries later.
+Cleanup starts 30 seconds after startup. A pass immediately continues through
+bounded transactions, yielding and checking cancellation between them, until the
+fixed-cutoff candidate pages are exhausted. It then waits the configured interval.
+Full pages continue; empty/partial pages end their range. Protected candidates
+advance a pass-local keyset cursor, so they cannot hide later eligible work.
+Empty/disabled passes are silent; a productive pass emits one info line. Errors
+emit an error and retry on the next interval. A retirement committed before an
+interruption resumes on the next enabled family-retention pass.
 
-The sweeper prunes applied commit history (except each flow's last commit) and
-intermediate `cycle.state`, `cycle.function_result`, `node.input`, `node.yield`,
-`node.yield.result`, and `parallel.progress` records. It preserves pending commits,
-flow and node summaries, flow inputs/outputs, node results/outputs, observations,
-actions, and evidence. Full diagnostic replay of pruned old flows is no longer
-available. This is **diagnostic retention**, not deletion of durable application
-records or all workflow history. PostgreSQL autovacuum makes deleted space
-reusable; the service does not run disruptive `VACUUM FULL` operations.
+Only rooted families whose members are all completed, failed, cancelled, or
+terminated and whose latest member update predates the window qualify. Unknown,
+NULL, active, waiting, paused, recent, unrooted, or invalid-date families remain.
+Family identity is immutable. Migration 10 backfills it on populated installations
+and installs indexed age ranges, family eligibility probes, and child page paths.
+SQLite uses indexed `julianday` expressions to handle timestamp offsets and
+fractional precision. Tied ages and later ages use separate seeks, avoiding a
+repeated prefix scan or sort. Runtime SQL never recursively constructs families.
 
-For an administrative preview, call the library
-`userspace.dataflow.retention:sweeper.run(db, {days=30, batch_size=1000, dry_run=true})`
-with an authorized database handle. The library is not a public HTTP endpoint.
+PostgreSQL locks candidate family roots rather than the flow table. Engine write
+paths acquire that root lock and check the fence in the writing transaction;
+SQLite reserves its writer before reading. Child creation locks the parent's root,
+then inserts the inherited `retention_root_id` in the same insert. An invisible
+uncommitted PostgreSQL parent is rejected before any foreign-key wait. There are
+no database triggers or stored procedures. Whole
+retirement durably fences a family before deleting its payload. Subsequent writes
+to that family fail. Each transaction selects/deletes at most the configured page
+size; eligibility uses indexed existence probes, independent of family size. Flow
+and node trees are removed from leaves upward after their payload pages are empty,
+so foreign-key cascades have no descendants left to delete. A malformed cross-flow
+node relationship fails cleanup visibly rather than cascading into another flow.
+PostgreSQL uses a 2-second lock timeout and 30-second statement timeout.
+
+Diagnostics retention removes applied commits except each flow's last commit, and
+`cycle.state`, `cycle.function_result`, `node.input`, `node.yield`,
+`node.yield.result`, and `parallel.progress`. Results, inputs/outputs, evidence,
+pending/last commits, summaries, activations and wakes remain until whole-family
+retention removes them all. The flow window has a 30-day minimum.
+
+An owner that reads terminal flow history must create its family root with
+`client:create_workflow(commands, {retain=true, ...})`. The hold is recorded in
+that insert, protects the whole family from retirement, and has no expiry. Only
+root creation accepts `retain=true`; descendants inherit the root's hold. Creation
+without `retain` (or with `retain=false`) makes a new root eligible after every
+member is terminal and older than the window. `retain` must be a boolean. Family
+identity cannot be changed through the engine API.
+
+When its own retention deletes the owner record, the creating actor calls
+`client:release(root_id, {transaction=tx})` in the same SQL transaction as that
+deletion. `tx` must target the engine database. Errors require rolling back the
+owner transaction; the method never commits or rolls back a supplied transaction.
+Without `transaction`, release runs its own transaction. Release is actor checked,
+root only, idempotent (including a missing flow), and does not refresh the flow's
+age. Release during a committed retirement fails until draining finishes. A
+reserved ID whose creation failed can therefore be released harmlessly.
+Releasing a hold permits retirement on the next eligible pass; disabling family
+retention still prevents deletion. Owners in a different database must retain a
+durable release obligation until the engine API succeeds; independent commits
+cannot provide atomic deletion and release.
+
+Migration 10 adds `retention_held` with default 1, conservatively holding every
+preexisting family, including terminal families. Engine-side type, metadata, age,
+and terminal status cannot prove that an installed owner has stopped reading;
+no legacy family is automatically declared unowned. Repeated installation does
+not reset an explicitly released hold. Unrooted legacy families remain ineligible.
+The engine never reads consumer tables. Holds preserve family payload; the
+existing diagnostic/applied-commit trimming policy still applies. Owners must
+adopt the create/release contract before enabling automatic family retention for
+new owner flows. Automations consume Workflow outputs; Blocks resumes pending
+signals in nonterminal families. Concurrent explicit administrative teardown is
+outside retention's ownership and may cause the current pass to retry.
+
+The library `userspace.dataflow.retention:sweeper.run(db, options)` drains one pass.
+Use `{days=30, flow_days=30, batch_size=1000, dry_run=true}` for diagnostic candidate
+counts without deletion. Dry runs also validate family eligibility but do not claim
+families. Use `flow_days=0` to retain flow payload indefinitely while trimming
+intermediate diagnostics. This library requires an authorized SQL handle and is
+not an HTTP endpoint. PostgreSQL autovacuum makes deleted space reusable; cleanup
+does not run `VACUUM FULL`. Database capacity and storage reclamation still require
+host operation; protected/live data is deliberately retained.
+
+Retention regression tests run in `make test-sqlite` and `make test-postgres`.
+The PostgreSQL harness needs two disposable databases owned by the test role:
+`DATAFLOW_PG_DATABASE` (default `dataflow_test`) and
+`DATAFLOW_PG_UPGRADE_DATABASE` (default `dataflow_retention_upgrade_test`). The
+populated-upgrade test recreates its own tables only in the second database.
 
 ## Stable request prefix
 
@@ -372,5 +439,5 @@ These records use the existing workflow data and commit tables and follow
 workflow deletion. Existing records and optional-metadata readers require no
 migration. Retention remains workflow-owned: for a fixed workflow lifetime,
 10x and 100x step volume produce 10x and 100x telemetry storage; workflows kept
-indefinitely have no finite steady-state size. This change adds no retention
-policy, table, setting or retry behavior.
+indefinitely have no finite steady-state size. Enabled whole-family retention
+removes this telemetry with its terminal flow after the configured window.

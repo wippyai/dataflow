@@ -2,6 +2,14 @@ version: "1.0"
 namespace: userspace.dataflow.persist
 
 entries:
+  - name: retention_guard
+    kind: library.lua
+    meta:
+      private: true
+      comment: Transactional application family fence shared by engine writers.
+    source: file://retention_guard.lua
+    modules: [sql]
+
   - name: activation_repo
     kind: library.lua
     meta:
@@ -10,6 +18,7 @@ entries:
     source: file://activation_repo.lua
     modules: [sql, json]
     imports:
+      retention_guard: userspace.dataflow.persist:retention_guard
       dataflow_consts: userspace.dataflow:consts
 
   - name: activation_repo_test
@@ -49,6 +58,7 @@ entries:
       - time
       - security
     imports:
+      retention_guard: userspace.dataflow.persist:retention_guard
       activation_repo: userspace.dataflow.persist:activation_repo
       commit_repo: userspace.dataflow.persist:commit_repo
       dataflow_consts: userspace.dataflow:consts
@@ -71,6 +81,7 @@ entries:
       - json
       - time
     imports:
+      retention_guard: userspace.dataflow.persist:retention_guard
       encoding: userspace.dataflow.persist:encoding
 
   # userspace.dataflow.persist:commit_repo_test
@@ -179,6 +190,7 @@ entries:
       - json
       - time
     imports:
+      retention_guard: userspace.dataflow.persist:retention_guard
       dataflow_consts: userspace.dataflow:consts
 
   # userspace.dataflow.persist:dataflow_repo_test
@@ -215,6 +227,7 @@ entries:
     source: file://wake_repo.lua
     modules: [sql]
     imports:
+      retention_guard: userspace.dataflow.persist:retention_guard
       dataflow_consts: userspace.dataflow:consts
 
   - name: wake_repo_test
@@ -284,6 +297,7 @@ entries:
       - uuid
       - json
     imports:
+      retention_guard: userspace.dataflow.persist:retention_guard
       activation_repo: userspace.dataflow.persist:activation_repo
       dataflow_consts: userspace.dataflow:consts
       encoding: userspace.dataflow.persist:encoding

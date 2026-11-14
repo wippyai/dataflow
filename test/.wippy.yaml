@@ -7,6 +7,7 @@ vars:
   postgres_host: 127.0.0.1
   postgres_port: "5432"
   postgres_database: dataflow_test
+  postgres_upgrade_database: dataflow_retention_upgrade_test
   postgres_username: dataflow
   postgres_password: dataflow
 profiles:
@@ -25,6 +26,13 @@ profiles:
       "app:db:pool.max_open": 32
       "app:db:pool.max_idle": 8
       "app:db:options.sslmode": disable
+      "app:retention_upgrade_db:kind": db.sql.postgres
+      "app:retention_upgrade_db:host": "${postgres_host}"
+      "app:retention_upgrade_db:port": "${postgres_port}"
+      "app:retention_upgrade_db:database": "${postgres_upgrade_database}"
+      "app:retention_upgrade_db:username": "${postgres_username}"
+      "app:retention_upgrade_db:password": "${postgres_password}"
+      "app:retention_upgrade_db:options.sslmode": disable
   restart_create:
     override:
       "app.await_authority:tokens_storage:kind": store.sql
@@ -264,3 +272,5 @@ override:
   "userspace.dataflow.node.agent:agent_tool_calling_default_test:security.policies": [app:test_policy]
   "userspace.dataflow.template:iteration_routes_test:security.actor.id": dataflow.test
   "userspace.dataflow.template:iteration_routes_test:security.policies": [app:test_policy]
+  "userspace.dataflow.migrations:migration_10_test:security.actor.id": dataflow.test
+  "userspace.dataflow.migrations:migration_10_test:security.policies": [app:test_policy]
