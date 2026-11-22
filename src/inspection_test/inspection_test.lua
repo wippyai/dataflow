@@ -39,7 +39,8 @@ local function define_tests()
                 (data_id,dataflow_id,node_id,type,content,content_type,metadata,created_at)
                 VALUES ($1,$2,$3,$4,$5,$6,'{}',$7)]], {uuid.v7(), flow_id, node_id,
                 consts.DATA_TYPE.NODE_YIELD, assert(json.encode({yield_id = yield_id,
-                    yield_context = {wait_for_signal = true, signal_id = "signal"}})), consts.CONTENT_TYPE.JSON, now}))
+                    yield_context = {wait_for_signal = true, signal_id = "signal",
+                        arm = {ref = "inspection:review_arm", args = {}}}})), consts.CONTENT_TYPE.JSON, now}))
             db:release()
             local flow, flow_err = inspection.flow(flow_id)
             test.is_nil(flow_err)
@@ -47,6 +48,7 @@ local function define_tests()
             local node, err = inspection.pending_signal(flow_id, "signal", "inspection:wait")
             test.is_nil(err)
             test.eq(node.node_id, node_id)
+            test.eq(node.arm_ref, "inspection:review_arm")
             for _, args in ipairs({{flow_id, "other", "inspection:wait"}, {flow_id, "signal", "inspection:other"},
                 {uuid.v7(), "signal", "inspection:wait"}}) do
                 local absent, missing_err = inspection.pending_signal(args[1], args[2], args[3])
@@ -69,6 +71,23 @@ local function define_tests()
             local terminal, terminal_err = inspection.pending_signal(flow_id, "signal", "inspection:wait")
             test.is_nil(terminal)
             test.is_true(errors.is(terminal_err, errors.NOT_FOUND))
+        end)
+        test.it("returns the committed arm ref for the latest parked episode and nil for unarmed waits", function()
+            local old = yield_row("01", "node", "signal", "old")
+            old.content.yield_context.arm = {ref = "inspection:old_arm", args = {}}
+            local current = yield_row("02", "node", "signal", "current")
+            current.content.yield_context.arm = {ref = "inspection:review_arm", args = {private = "not exposed"}}
+            current.content = assert(json.encode(current.content))
+            fixture.state.rows = {current, old}
+            local pending, err = subject.pending_signal("flow", "signal", "inspection:wait")
+            test.is_nil(err)
+            test.eq(pending.arm_ref, "inspection:review_arm")
+            test.eq(pending.yield_id, "current")
+            test.is_nil((pending :: any).arm)
+            fixture.state.rows = {yield_row("03", "node", "signal", "unarmed"), current, old}
+            local unarmed, unarmed_err = subject.pending_signal("flow", "signal", "inspection:wait")
+            test.is_nil(unarmed_err)
+            test.is_nil(unarmed.arm_ref)
         end)
         test.it("returns typed absence and preserves legacy repository behavior", function()
             local missing_id = uuid.v7()
