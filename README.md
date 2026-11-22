@@ -146,17 +146,22 @@ and 500 rows per table per batch. Setting days to `0` also disables deletion.
 Days accept integers 0–36500, intervals 60–86400 seconds, and batches 1–1000.
 The service uses the host's existing `target_db` and `process_host` bindings.
 
-Cleanup starts 30 seconds after service startup and then runs on the configured
-interval. Each transaction removes at most one batch from each diagnostic table.
-It retries on the next interval after a database or configuration error; logs from
+Cleanup starts 30 seconds after service startup. Each pass steps through the
+oldest diagnostics with a fixed cutoff and waits the configured interval after
+the pass ends. Each transaction inspects and removes at most one batch of
+candidate rows from one table. The service yields between transactions and
+advances past protected candidates. It retries on the next interval after a
+database or configuration error; logs from
 `dataflow.retention` report the policy, candidate counts, and deleted counts.
 
 Only entire parent/child families whose flows are all terminal and older than the
 retention window qualify. Active, waiting, paused, recent, unknown-state, and
 unrooted families are preserved. PostgreSQL serializes eligibility with flow
-status changes and child insertion for each bounded transaction, using a 2-second
-lock timeout and a 30-second statement timeout; SQLite reserves its writer before
-reading eligibility. A busy database fails the batch safely and retries later.
+status changes and child insertion, using a 2-second lock timeout and a 30-second
+statement timeout. SQLite reserves its writer before reading eligibility and
+yields for 20 ms between pages. Eligibility follows the selected families' own
+parent links. A large family can require reading more members than the candidate
+page size. A busy database fails the current page and retries later.
 
 The sweeper prunes applied commit history (except each flow's last commit) and
 intermediate `cycle.state`, `cycle.function_result`, `node.input`, `node.yield`,

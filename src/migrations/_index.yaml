@@ -198,3 +198,34 @@ entries:
     imports:
       migration: wippy.migration:migration
     method: migrate
+
+  - name: 10_diagnostic_retention_indexes
+    kind: function.lua
+    meta:
+      type: migration
+      tags: [dataflows, retention, indexes]
+      description: Index diagnostic age and row identity for paged cleanup.
+      depends_on: [ns:wippy.migration]
+      target_db: app:db
+      timestamp: "2026-11-22T05:00:00Z"
+    source: file://10_diagnostic_retention_indexes.lua
+    imports:
+      migration: wippy.migration:migration
+    method: migrate
+
+  - name: migration_10_test
+    kind: function.lua
+    meta:
+      type: test
+      suite: Retention
+    source: file://migration_10_test.lua
+    modules: [sql, uuid]
+    imports:
+      test: wippy.test:test
+      migration_01: userspace.dataflow.migrations:01_create_dataflows_table
+      migration_02: userspace.dataflow.migrations:02_create_nodes_table
+      migration_03: userspace.dataflow.migrations:03_create_data_table
+      migration_05: userspace.dataflow.migrations:05_create_dataflow_commits_table
+      diagnostic_indexes: userspace.dataflow.migrations:10_diagnostic_retention_indexes
+      sweeper: userspace.dataflow.retention:sweeper
+    method: run_tests
