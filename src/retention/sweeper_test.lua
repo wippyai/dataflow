@@ -220,11 +220,17 @@ local function define_tests()
             test.is_nil(cli_err)
             local id, create_err = cli:create_workflow({}, { retain = true })
             test.is_nil(create_err)
-            ids[#ids + 1] = id
-            exec("UPDATE dataflows SET status='completed', updated_at=? WHERE dataflow_id=?", { old, id })
+            local implicit = assert(cli:create_workflow({}, { type = "workflow" }))
+            local unheld = assert(cli:create_workflow({}, { retain = false, type = "workflow" }))
+            for _, flow_id in ipairs({ id, implicit, unheld }) do
+                ids[#ids + 1] = flow_id
+                exec("UPDATE dataflows SET status='completed', updated_at=? WHERE dataflow_id=?", { old, flow_id })
+            end
             local stats, err = sweeper.run(db, { days = 0, flow_days = 30, batch_size = 2 })
             test.is_nil(err)
-            test.eq(stats.flows, 0)
+            test.eq(stats.flows, 1)
+            test.eq(count("dataflows", implicit), 1)
+            test.eq(count("dataflows", unheld), 0)
             local tx = db:begin()
             local released, release_err = cli:release(id, { transaction = tx })
             test.is_nil(release_err)

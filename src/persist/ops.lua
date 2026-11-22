@@ -978,7 +978,7 @@ handlers[constants.COMMAND_TYPES.CREATE_WORKFLOW] = function(tx, dataflow_id, op
             dataflow_id = wf_id,
             parent_dataflow_id = payload.parent_dataflow_id or sql.as.null(),
             retention_root_id = root_id or sql.as.null(),
-            retention_held = payload.retain == true and 1 or 0,
+            retention_held = not payload.parent_dataflow_id and payload.retain ~= false and 1 or 0,
             actor_id = payload.actor_id,
             actor_context = payload.actor_context or sql.as.null(),
             type = payload.type,

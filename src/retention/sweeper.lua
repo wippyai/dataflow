@@ -249,7 +249,7 @@ function M.run(db, options, yield_batch)
         while true do
             local page = transaction(function(query)
                 return candidate_page(query, "dataflows", "dataflow_id", "updated_at",
-                    "parent_dataflow_id IS NULL AND retention_root_id IS NOT NULL",
+                    "parent_dataflow_id IS NULL AND retention_root_id IS NOT NULL AND retention_held = 0",
                     "idx_retention_root_age", flow_cutoff, cursor)
             end)
             for _, row in ipairs(page) do

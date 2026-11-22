@@ -193,8 +193,8 @@ retention removes them all. The flow window has a 30-day minimum.
 An owner that reads terminal flow history must create its family root with
 `client:create_workflow(commands, {retain=true, ...})`. The hold is recorded in
 that insert, protects the whole family from retirement, and has no expiry. Only
-root creation accepts `retain=true`; descendants inherit the root's hold. Creation
-without `retain` (or with `retain=false`) makes a new root eligible after every
+root is held when `retain` is omitted or set to `true`. Descendants share the
+root's hold. A new root created with `retain=false` becomes eligible after every
 member is terminal and older than the window. `retain` must be a boolean. Family
 identity cannot be changed through the engine API.
 
