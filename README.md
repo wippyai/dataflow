@@ -27,7 +27,8 @@ previous route; recovery restores it only for the same configured agent and mode
 inspect durable flows and external signal waits. Declare it as a library import.
 `inspection.flow(dataflow_id)` returns the flow's ID, actor ID, opaque execution
 context, status and decoded metadata. `inspection.pending_signal(dataflow_id,
-signal_id, node_type)` returns the pending node and yield IDs for a node type that
+signal_id, node_type)` returns the pending node and yield IDs and the parked
+`arm_ref` (nil for an unarmed wait) for a node type that
 implements the signal-wait protocol. A declaration without a committed yield is
 absent; a committed result closes the current episode even while the node is
 still active. Only the latest UUID-v7 yield episode for each node is inspected,
