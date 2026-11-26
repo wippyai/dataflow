@@ -1,3 +1,4 @@
+local retention_guard = require("retention_guard")
 local sql = require("sql")
 local json = require("json")
 local consts = require("dataflow_consts")
@@ -162,6 +163,9 @@ end
 -- deadlock with a concurrent commit. Callers that cross the workflow/lifecycle
 -- boundary must establish this lock before either side is changed.
 function activation_repo.lock_workflow_tx(tx, dataflow_id)
+    local flow, fence_err = retention_guard.lock(tx, dataflow_id)
+    if not flow and not fence_err then fence_err = "dataflow not found" end
+    if fence_err then return nil, fence_err end
     local db_type, type_err = tx:db_type()
     if type_err then return nil, type_err end
     if db_type ~= sql.type.POSTGRES and db_type ~= "postgres" then
@@ -554,6 +558,9 @@ function activation_repo.register_yield_wake_tx(tx, dataflow_id, yield_id, wake_
     valid, validation_err = validate_timestamp(wake_at, "wake_at")
     if not valid then return nil, validation_err end
 
+    local flow, fence_err = retention_guard.lock(tx, dataflow_id)
+    if not flow and not fence_err then fence_err = "dataflow not found" end
+    if fence_err then return nil, fence_err end
     local result, write_err = tx_execute(tx, [[
         INSERT INTO dataflow_wakes(dataflow_id, wake_key, wake_at, activation_generation)
         VALUES (?, ?, ?, NULL)

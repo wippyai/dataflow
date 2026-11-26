@@ -1,3 +1,4 @@
+local retention_guard = require("retention_guard")
 local sql = require("sql")
 local json = require("json")
 local time = require("time")
@@ -103,6 +104,11 @@ function dataflow_repo.capture_context_if_empty(dataflow_id, actor_id, actor_con
         db:release()
         return nil, "Failed to detect database type: " .. tostring(type_err)
     end
+    local tx, begin_err = db:begin()
+    if begin_err then db:release(); return nil, begin_err end
+    local flow, fence_err = retention_guard.lock(tx, dataflow_id)
+    if not flow and not fence_err then fence_err = "dataflow not found" end
+    if fence_err then tx:rollback(); db:release(); return nil, fence_err end
     local empty_predicate = sql.builder.expr("(actor_context IS NULL OR actor_context = '')")
     if db_type == sql.type.POSTGRES or db_type == "postgres" then
         empty_predicate = sql.builder.expr("actor_context IS NULL")
@@ -113,8 +119,9 @@ function dataflow_repo.capture_context_if_empty(dataflow_id, actor_id, actor_con
         :where("dataflow_id = ?", dataflow_id)
         :where("actor_id = ?", actor_id)
         :where(empty_predicate)
-        :run_with(db):exec()
+        :run_with(tx):exec()
     if update_err then
+        tx:rollback()
         db:release()
         return nil, "Failed to capture workflow execution context: " .. tostring(update_err)
     end
@@ -127,11 +134,12 @@ function dataflow_repo.capture_context_if_empty(dataflow_id, actor_id, actor_con
         :where("dataflow_id = ?", dataflow_id)
         :where("actor_id = ?", actor_id)
         :limit(1)
-        :run_with(db):query()
+        :run_with(tx):query()
+    if query_err then tx:rollback(); db:release(); return nil, tostring(query_err) end
+    local _, commit_err = tx:commit()
+    if commit_err then tx:rollback() end
     db:release()
-    if query_err then
-        return nil, "Failed to read captured workflow execution context: " .. tostring(query_err)
-    end
+    if commit_err then return nil, commit_err end
     if not rows or not rows[1] then
         return nil, "Workflow not found or access denied"
     end
@@ -337,6 +345,38 @@ function dataflow_repo.list_children(parent_dataflow_id, filters)
         end
     end
     return result_dataflows
+end
+
+-- This public-client operation is idempotent, actor checked, and root only.
+-- The optional owner transaction must target the same engine database.
+function dataflow_repo.release_hold(dataflow_id, actor_id, transaction)
+    local db, tx = nil, transaction
+    if not tx then
+        local db_err
+        db, db_err = get_db()
+        if db_err then return nil, db_err end
+        local begin_err
+        tx, begin_err = db:begin()
+        if begin_err then db:release(); return nil, begin_err end
+    end
+    local flow, err = retention_guard.lock(tx, dataflow_id)
+    if not err and flow and flow.actor_id ~= actor_id then err = "Workflow not found or access denied" end
+    if not err and flow and flow.parent_dataflow_id then err = "only the family root hold can be released" end
+    if not err and flow then
+        local _, write_err = sql.builder.update("dataflows"):set("retention_held", 0)
+            :where("dataflow_id = ?", dataflow_id):run_with(tx):exec()
+        err = write_err
+    end
+    if db then
+        if err then tx:rollback() else
+            local _, commit_err = tx:commit()
+            err = commit_err
+            if err then tx:rollback() end
+        end
+        db:release()
+    end
+    if err then return nil, err end
+    return true, nil
 end
 
 return dataflow_repo

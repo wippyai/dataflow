@@ -198,3 +198,66 @@ entries:
     imports:
       migration: wippy.migration:migration
     method: migrate
+
+  - name: 10_diagnostic_data_age
+    kind: function.lua
+    meta:
+      type: migration
+      tags: [dataflows, retention, indexes]
+      description: Index diagnostic data by age and identity for paged cleanup.
+      depends_on: [ns:wippy.migration]
+      target_db: app:db
+      timestamp: "2026-11-22T05:00:00Z"
+    source: file://10_diagnostic_data_age.lua
+    imports:
+      migration: wippy.migration:migration
+    method: migrate
+
+  - name: 11_diagnostic_commit_age
+    kind: function.lua
+    meta:
+      type: migration
+      tags: [dataflows, retention, indexes]
+      description: Index applied commits by age and identity for paged cleanup.
+      depends_on: [ns:wippy.migration, userspace.dataflow.migrations:10_diagnostic_data_age]
+      target_db: app:db
+      timestamp: "2026-11-22T05:05:00Z"
+    source: file://11_diagnostic_commit_age.lua
+    imports:
+      migration: wippy.migration:migration
+    method: migrate
+
+  - name: 12_retention_access_paths
+    kind: function.lua
+    meta:
+      type: migration
+      tags: [dataflows, retention, indexes]
+      description: Backfill indexed family identity and fence paged retirement
+      depends_on: [userspace.dataflow.migrations:11_diagnostic_commit_age]
+      target_db: app:db
+      timestamp: "2026-11-23T22:00:00Z"
+    source: file://12_retention_access_paths.lua
+    imports:
+      migration: wippy.migration:migration
+    method: migrate
+
+  - name: migration_10_test
+    kind: function.lua
+    meta:
+      type: test
+      suite: Retention
+    source: file://migration_10_test.lua
+    modules: [sql, uuid]
+    imports:
+      test: wippy.test:test
+      migration_01: userspace.dataflow.migrations:01_create_dataflows_table
+      migration_02: userspace.dataflow.migrations:02_create_nodes_table
+      migration_03: userspace.dataflow.migrations:03_create_data_table
+      migration_05: userspace.dataflow.migrations:05_create_dataflow_commits_table
+      migration_07: userspace.dataflow.migrations:07_create_dataflow_wakes
+      migration_08: userspace.dataflow.migrations:08_create_dataflow_activations
+      migration_12: userspace.dataflow.migrations:12_retention_access_paths
+      diagnostic_data: userspace.dataflow.migrations:10_diagnostic_data_age
+      diagnostic_commits: userspace.dataflow.migrations:11_diagnostic_commit_age
+      sweeper: userspace.dataflow.retention:sweeper
+    method: run_tests

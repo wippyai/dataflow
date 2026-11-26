@@ -1,3 +1,4 @@
+local retention_guard = require("retention_guard")
 local sql = require("sql")
 local consts = require("dataflow_consts")
 
@@ -13,12 +14,20 @@ function wake_repo.clear(dataflow_id)
     if type(dataflow_id) ~= "string" or dataflow_id == "" then return nil, "dataflow_id is required" end
     local db, db_err = get_db()
     if db_err then return nil, db_err end
+    local tx, begin_err = db:begin()
+    if begin_err then db:release(); return nil, begin_err end
+    local flow, fence_err = retention_guard.lock(tx, dataflow_id)
+    if not flow and not fence_err then fence_err = "dataflow not found" end
+    if fence_err then tx:rollback(); db:release(); return nil, fence_err end
     local executor = sql.builder.delete("dataflow_wakes")
         :where("dataflow_id = ?", dataflow_id)
-        :run_with(db)
+        :run_with(tx)
     local _, write_err = executor:exec()
+    if write_err then tx:rollback(); db:release(); return nil, write_err end
+    local _, commit_err = tx:commit()
+    if commit_err then tx:rollback() end
     db:release()
-    if write_err then return nil, write_err end
+    if commit_err then return nil, commit_err end
     return true, nil
 end
 
@@ -53,13 +62,21 @@ function wake_repo.remove(dataflow_id, wake_key)
     if type(wake_key) ~= "string" or wake_key == "" then return nil, "wake_key is required" end
     local db, db_err = get_db()
     if db_err then return nil, db_err end
+    local tx, begin_err = db:begin()
+    if begin_err then db:release(); return nil, begin_err end
+    local flow, fence_err = retention_guard.lock(tx, dataflow_id)
+    if not flow and not fence_err then fence_err = "dataflow not found" end
+    if fence_err then tx:rollback(); db:release(); return nil, fence_err end
     local executor = sql.builder.delete("dataflow_wakes")
         :where("dataflow_id = ?", dataflow_id)
         :where("wake_key = ?", wake_key)
-        :run_with(db)
+        :run_with(tx)
     local _, write_err = executor:exec()
+    if write_err then tx:rollback(); db:release(); return nil, write_err end
+    local _, commit_err = tx:commit()
+    if commit_err then tx:rollback() end
     db:release()
-    if write_err then return nil, write_err end
+    if commit_err then return nil, commit_err end
     return true, nil
 end
 

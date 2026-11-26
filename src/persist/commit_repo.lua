@@ -1,3 +1,4 @@
+local retention_guard = require("retention_guard")
 local sql = require("sql")
 local json = require("json")
 local time = require("time")
@@ -103,6 +104,10 @@ function commit_repo.create(commit_id, dataflow_id, payload, metadata)
         db:release()
         return nil, "Failed to begin transaction: " .. err_tx
     end
+
+    local flow, fence_err = retention_guard.lock(tx, dataflow_id)
+    if not flow and not fence_err then fence_err = "dataflow not found" end
+    if fence_err then tx:rollback(); db:release(); return nil, fence_err end
 
     -- Insert the commit record
     local insert_query = sql.builder.insert("dataflow_commits")

@@ -41,6 +41,11 @@ entries:
     storage: userspace.dataflow.env:memory
     default: "30"
 
+  - name: flow_retention_days
+    kind: env.variable
+    storage: userspace.dataflow.env:memory
+    default: ""
+
   - name: retention_interval_seconds
     kind: env.variable
     storage: userspace.dataflow.env:memory
