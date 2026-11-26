@@ -319,6 +319,10 @@ entries:
         path: ".meta.target_db"
       - entry: userspace.dataflow.migrations:09_add_iteration_uniqueness_guard
         path: ".meta.target_db"
+      - entry: userspace.dataflow.migrations:10_diagnostic_data_age
+        path: ".meta.target_db"
+      - entry: userspace.dataflow.migrations:11_diagnostic_commit_age
+        path: ".meta.target_db"
       - entry: userspace.dataflow.runner:overseer.service
         path: ".lifecycle.depends_on +="
       - entry: userspace.dataflow.env:retention_db
@@ -387,7 +391,7 @@ entries:
   - name: retention_interval_seconds
     kind: ns.requirement
     meta:
-      description: "Seconds between bounded retention batches (60..86400)."
+      description: "Seconds between diagnostic retention passes (60..86400)."
     default: "3600"
     targets:
       - entry: userspace.dataflow.env:retention_interval_seconds
@@ -396,7 +400,7 @@ entries:
   - name: retention_batch_size
     kind: ns.requirement
     meta:
-      description: "Maximum rows removed per diagnostic table per sweep (1..1000)."
+      description: "Maximum diagnostic candidates per transaction (1..1000)."
     default: "500"
     targets:
       - entry: userspace.dataflow.env:retention_batch_size
