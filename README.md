@@ -146,6 +146,11 @@ and 500 rows per table per batch. Setting days to `0` also disables deletion.
 Days accept integers 0–36500, intervals 60–86400 seconds, and batches 1–1000.
 The service uses the host's existing `target_db` and `process_host` bindings.
 
+When upgrading a populated database, drain Dataflow writers before applying
+migrations 10 and 11. Each migration builds one index in its own transaction.
+These index builds can block writes on both PostgreSQL and SQLite, including
+when the retention service is disabled. Resume writers after both complete.
+
 Cleanup starts 30 seconds after service startup. Each pass steps through the
 oldest diagnostics with a fixed cutoff and waits the configured interval after
 the pass ends. Each transaction inspects and removes at most one batch of
