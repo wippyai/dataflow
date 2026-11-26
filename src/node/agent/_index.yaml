@@ -132,6 +132,7 @@ entries:
     source: file://delegation_handler_test.lua
     modules:
       - uuid
+      - contract
     imports:
       delegation_handler: userspace.dataflow.node.agent:delegation_handler
       agent_node: userspace.dataflow.node.agent:node

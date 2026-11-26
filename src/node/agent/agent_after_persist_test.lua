@@ -103,6 +103,12 @@ local function define_tests()
                 test.is_nil(record.history_error)
                 test.eq(record.event_id, actions[index].data_id, "event_id is the committed row id")
                 test.eq(record.found_role, "assistant", "range ending at event_id includes it")
+                test.eq((actions[index].metadata or {}).author.kind, "agent", "action stores its producer")
+                test.eq((actions[index].metadata or {}).author.id, STUB .. "recovery_test_agent",
+                    "action stores the producing agent identity")
+                test.eq((record.found_author or {}).kind, "agent", "history reads the persisted author")
+                test.eq((record.found_author or {}).id, STUB .. "recovery_test_agent",
+                    "history preserves the producing agent identity")
                 test.eq(record.found_key, actions[index].key)
                 test.eq(record.iteration, index)
             end

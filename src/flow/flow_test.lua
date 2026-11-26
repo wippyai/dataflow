@@ -1,6 +1,7 @@
 local test = require("test")
 local flow = require("flow")
 local compiler = require("compiler")
+local consts = require("consts")
 
 local function agent_node(graph: any, parent_required: boolean): any
     for _, node in pairs(graph.nodes) do
@@ -244,6 +245,23 @@ local function define_tests()
             parallel_node = test.not_nil(parallel_node)
             test.eq(parallel_node.config.batch_size, 2)
             test.eq(parallel_node.config.scheduling, "rolling")
+        end)
+
+        it("records workflow input as system-authored at compilation", function()
+            local builder = (flow.create() :: any):with_input("Compile this workflow")
+                :func("example.process")
+            local result, err = compiler.compile(builder.operations, {})
+            test.is_nil(err)
+
+            local input_command = nil
+            for _, command in ipairs(result.commands) do
+                if command.payload.data_type == consts.DATA_TYPE.WORKFLOW_INPUT then
+                    input_command = command
+                    break
+                end
+            end
+            input_command = test.not_nil(input_command)
+            test.eq(input_command.payload.metadata.author.kind, "system")
         end)
     end)
 end

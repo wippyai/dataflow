@@ -207,6 +207,15 @@ local REASON = {
     DATAFLOW_FINISHED = "dataflow_finished",
 }
 
+local function lifecycle_host_ref(n: any, iteration: any): table
+    return {
+        kind = "dataflow",
+        dataflow_id = n.dataflow_id,
+        node_id = n.node_id,
+        iteration = tonumber(iteration) or 0
+    }
+end
+
 local function context_with_agent_run(base_context: any, n: any, agent_id: any, model_name: any, iteration: any, binding: any): table
     local next_context = {}
     if type(base_context) == "table" then
@@ -222,12 +231,7 @@ local function context_with_agent_run(base_context: any, n: any, agent_id: any, 
         for k, v in pairs(metadata.session_context) do next_context[k] = v end
     end
 
-    local host = {
-        kind = "dataflow",
-        dataflow_id = n.dataflow_id,
-        node_id = n.node_id,
-        iteration = tonumber(iteration) or 0
-    }
+    local host = lifecycle_host_ref(n, iteration)
     local agent_info = {
         id = agent_id,
         model = model_name
@@ -245,15 +249,6 @@ local function context_with_agent_run(base_context: any, n: any, agent_id: any, 
     }
 
     return next_context
-end
-
-local function lifecycle_host_ref(n: any, iteration: any): table
-    return {
-        kind = "dataflow",
-        dataflow_id = n.dataflow_id,
-        node_id = n.node_id,
-        iteration = tonumber(iteration) or 0
-    }
 end
 
 local function lifecycle_agent_ref(agent_id: any, model_name: any): ToolWrapperAgentRef
@@ -682,6 +677,7 @@ local function store_agent_action(n, agent_result, iteration, agent_id, model_na
     llm_meta.prefix_fingerprint = agent_result.prefix_fingerprint
 
     local metadata = {
+        author = { kind = "agent", id = agent_id },
         iteration = iteration,
         agent_id = agent_id,
         model = model_name,
@@ -727,6 +723,7 @@ local function store_step_notes(n, notes: {StepNote}, iteration)
             node_id = n.node_id,
             metadata = {
                 iteration = iteration,
+                author = { kind = "system" },
                 role = note.role,
                 lifecycle_phase = note.lifecycle_phase,
                 llm_meta = note.metadata
@@ -758,6 +755,7 @@ local function store_turn_context(n, agent_instance: any): any
         content_type = consts.CONTENT_TYPE.TEXT,
         node_id = n.node_id,
         metadata = {
+            author = { kind = "system" },
             turn_context = true,
             role = "system",
             llm_meta = { preserve_position = true }
@@ -864,6 +862,7 @@ local function record_checkpoint_skip(n, iteration, reason)
         content_type = consts.CONTENT_TYPE.TEXT,
         node_id = n.node_id,
         metadata = {
+            author = { kind = "system" },
             iteration = iteration,
             checkpoint_skipped = true,
             checkpoint_error = error_message(reason, "")
@@ -1053,12 +1052,7 @@ local function maybe_checkpoint_history(n, config, session_context, agent_instan
     local binding_failed = false
 
     if has_binding then
-        local host = {
-            kind = "dataflow",
-            dataflow_id = n.dataflow_id,
-            node_id = n.node_id,
-            iteration = tonumber(iteration) or checkpoint_iteration
-        }
+        local host = lifecycle_host_ref(n, tonumber(iteration) or checkpoint_iteration)
         local agent = {
             id = agent_id,
             model = model_name
@@ -1152,6 +1146,7 @@ local function maybe_checkpoint_history(n, config, session_context, agent_instan
     local memory_truncated = #memory_text < original_memory_len
 
     local marker_metadata = {
+        author = { kind = "system" },
         iteration = checkpoint_iteration,
         checkpoint_marker = true,
         checkpoint_reason = compact_requested and "compaction_requested" or "token_threshold_exceeded",
@@ -1229,6 +1224,7 @@ local function queue_iteration_warning(n, iteration, max_iterations)
             content_type = consts.CONTENT_TYPE.TEXT,
             node_id = n.node_id,
             metadata = {
+                author = { kind = "system" },
                 iteration = iteration,
                 remaining_iterations = remaining_iterations
             }
@@ -1240,6 +1236,7 @@ local function queue_iteration_warning(n, iteration, max_iterations)
             content_type = consts.CONTENT_TYPE.TEXT,
             node_id = n.node_id,
             metadata = {
+                author = { kind = "system" },
                 iteration = iteration,
                 remaining_iterations = remaining_iterations
             }
@@ -1251,6 +1248,7 @@ local function queue_iteration_warning(n, iteration, max_iterations)
             content_type = consts.CONTENT_TYPE.TEXT,
             node_id = n.node_id,
             metadata = {
+                author = { kind = "system" },
                 iteration = iteration,
                 remaining_iterations = remaining_iterations
             }
@@ -1314,6 +1312,7 @@ local function resume_control_commands(n, child_node_ids, iteration)
             content_type = type(output_content) == "table" and consts.CONTENT_TYPE.JSON or consts.CONTENT_TYPE.TEXT,
             node_id = n.node_id,
             metadata = {
+                author = { kind = "system" },
                 iteration = iteration,
                 created_nodes = child_node_ids
             }
@@ -1369,7 +1368,7 @@ local function resume_pending_control_commands(n, iteration)
             key = iteration .. "_commands_error",
             content_type = consts.CONTENT_TYPE.TEXT,
             node_id = n.node_id,
-            metadata = { iteration = iteration, is_error = true }
+            metadata = { author = { kind = "system" }, iteration = iteration, is_error = true }
         })
     end
     return resume_err
@@ -1595,12 +1594,7 @@ end
 
 local function configure_tool_wrappers(caller, agent_instance, n, agent_id, model_name, iteration, outcome: ToolWrapperOutcome?,
                                       run_context_binding: string?)
-    local host = {
-        kind = "dataflow",
-        dataflow_id = string_or_nil(n.dataflow_id),
-        node_id = string_or_nil(n.node_id),
-        iteration = tonumber(iteration) or 0
-    } :: ToolWrapperHostRef
+    local host = lifecycle_host_ref(n, iteration) :: ToolWrapperHostRef
     local agent_ref = {
         id = string_or_nil(agent_id),
         model = string_or_nil(model_name)
@@ -1608,12 +1602,7 @@ local function configure_tool_wrappers(caller, agent_instance, n, agent_id, mode
     local binding_id = string_or_nil(run_context_binding) or DEFAULT_RUN_CONTEXT_BINDING
 
     local wrapper_context: ToolWrapperExecutionContext = {
-        host = {
-            kind = host.kind,
-            dataflow_id = host.dataflow_id,
-            node_id = host.node_id,
-            iteration = host.iteration
-        },
+        host = host,
         agent = agent_ref,
         run_context = {
             contract = RUN_CONTEXT_CONTRACT,
@@ -1683,6 +1672,7 @@ local function record_tool_observation(n, iteration, tool_call, content, tool_er
         node_id = n.node_id,
         metadata = {
             iteration = iteration,
+            author = { kind = "system" },
             tool_call_id = call_id,
             tool_name = tool_call.name,
             is_error = tool_error ~= nil
@@ -1731,6 +1721,7 @@ local function process_tool_results(n, tool_results, iteration, exit_tool_name, 
                             content_type = consts.CONTENT_TYPE.TEXT,
                             node_id = n.node_id,
                             metadata = {
+                                author = { kind = "system" },
                                 iteration = iteration,
                                 is_error = true,
                                 tool_call_id = original_tool_call.id,
@@ -1755,6 +1746,7 @@ local function process_tool_results(n, tool_results, iteration, exit_tool_name, 
                             content_type = consts.CONTENT_TYPE.TEXT,
                             node_id = n.node_id,
                             metadata = {
+                                author = { kind = "system" },
                                 iteration = iteration,
                                 is_error = true,
                                 tool_call_id = original_tool_call.id,
@@ -1774,6 +1766,7 @@ local function process_tool_results(n, tool_results, iteration, exit_tool_name, 
                             content_type = consts.CONTENT_TYPE.TEXT,
                             node_id = n.node_id,
                             metadata = {
+                                author = { kind = "system" },
                                 iteration = iteration,
                                 is_error = true,
                                 tool_call_id = original_tool_call.id,
@@ -1958,7 +1951,7 @@ local function record_completion_feedback(n, iteration, feedback, key_suffix)
         key = iteration .. key_suffix,
         content_type = consts.CONTENT_TYPE.TEXT,
         node_id = n.node_id,
-        metadata = { iteration = iteration }
+        metadata = { author = { kind = "system" }, iteration = iteration }
     })
 end
 
@@ -3073,6 +3066,7 @@ local function run(args)
                 content_type = consts.CONTENT_TYPE.TEXT,
                 node_id = n.node_id,
                 metadata = {
+                    author = { kind = "system" },
                     iteration = iteration,
                     truncated = true
                 }

@@ -189,6 +189,7 @@ function control_handler.queue_memory_additions(additions, node_sdk, iteration)
             discriminator = memory_item.type,
             node_id = node_sdk.node_id,
             metadata = {
+                author = { kind = "system" },
                 memory_type = memory_item.type,
                 created_by_control = true,
                 iteration = iteration

@@ -60,6 +60,18 @@ local function copy_rows(rows)
     return copied
 end
 
+local function merge_into(target, source)
+    if type(source) ~= "table" then
+        return target
+    end
+    for key, value in pairs(source) do
+        if type(key) == "string" then
+            target[key] = value
+        end
+    end
+    return target
+end
+
 local function load_history_rows(dataflow_id, node_id)
     local ok, rows_or_err = pcall(function()
         return data_reader.with_dataflow(dataflow_id)
@@ -74,11 +86,18 @@ local function load_history_rows(dataflow_id, node_id)
     local rows = {}
     local pin = nil
     for _, row in ipairs(rows_or_err or {}) do
+        local input_key = row.discriminator or row.key or "default"
+        if row.reference_row_id then
+            local source_metadata = row.ref_metadata or {}
+            local metadata = merge_into(merge_into({}, source_metadata), row.metadata)
+            metadata.author = source_metadata.author
+            row.metadata = metadata
+        end
         if row.type == agent_consts.DATA_TYPE.AGENT_INPUT then
             pin = row
         elseif not prompt_builder.is_audit_row(row)
             and (row.type ~= consts.DATA_TYPE.NODE_INPUT
-                or prompt_builder.is_conversation_input(row.discriminator or row.key or "default")) then
+                or prompt_builder.is_conversation_input(input_key)) then
             rows[#rows + 1] = row
         end
     end
@@ -219,9 +238,14 @@ local function normalize_event(row, formatter, calls)
             metadata.result = decode_json(row.content)
         end
     end
+    local author = metadata.author
+    if type(author) ~= "table" then
+        author = { kind = "unknown" }
+    end
     return {
         id = row_id(row),
         role = role,
+        author = author,
         content = content,
         raw_content = text,
         content_type = row.content_type,
@@ -374,17 +398,6 @@ local function node_row(dataflow_id, node_id)
     return row, nil
 end
 
-local function merge_into(target, source)
-    if type(source) ~= "table" then
-        return target
-    end
-    for key, value in pairs(source) do
-        if type(key) == "string" then
-            target[key] = value
-        end
-    end
-    return target
-end
 
 function M.get_context(args)
     local dataflow_id, node_id, id_err = host_ids(args)

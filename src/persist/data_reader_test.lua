@@ -105,7 +105,10 @@ local function define_tests()
                     key = "target_key",
                     content = "Target content value",
                     content_type = "text/plain",
-                    metadata = json.encode({ target_meta = "Target metadata value" }),
+                    metadata = json.encode({
+                        target_meta = "Target metadata value",
+                        author = {kind = "user", id = "user:source"},
+                    }),
                     created_at = now_ts
                 })
 
@@ -187,7 +190,10 @@ local function define_tests()
                     key = test_target_data_id,
                     content = "Reference to target",
                     content_type = "dataflow/reference",
-                    metadata = json.encode({ ref_created_at = now_ts })
+                    metadata = json.encode({
+                        ref_created_at = now_ts,
+                        author = {kind = "system"},
+                    })
                 }
             }
 
@@ -470,6 +476,21 @@ local function define_tests()
                 test.eq(item.ref_key, "target_key")
 
                 test.is_table(item.ref_metadata)
+                test.eq(item.ref_metadata.target_meta, "Target metadata value")
+            end)
+
+            it("replaces reference content while preserving reference-local metadata", function()
+                local item = data_reader.with_dataflow(test_dataflow_id)
+                    :with_data(test_reference_data_id)
+                    :fetch_options({ replace_references = true })
+                    :one()
+
+                test.not_nil(item)
+                test.eq(item.data_id, test_target_data_id)
+                test.eq(item.content, "Target content value")
+                test.not_nil(item.metadata.ref_created_at)
+                test.eq(item.metadata.author.kind, "system")
+                test.is_nil(item.metadata.target_meta)
                 test.eq(item.ref_metadata.target_meta, "Target metadata value")
             end)
 

@@ -156,6 +156,8 @@ function delegation_handler.create_child_node(parent_node_sdk, delegation, deleg
     local agent_info = get_agent_info(delegation.agent_id)
 
     local child_arena_context = merge_session_with_delegate_context(session_context, delegation.context)
+    local parent_id = type(delegation.context) == "table" and delegation.context.from_agent_id or nil
+    local author = type(parent_id) == "string" and parent_id ~= "" and {kind = "agent", id = parent_id} or {kind = "system"}
 
     local child_config = {
         agent = delegation.agent_id,
@@ -174,7 +176,8 @@ function delegation_handler.create_child_node(parent_node_sdk, delegation, deleg
             {
                 data_type = agent_consts.DATA_TYPE.AGENT_DELEGATION,
                 key = result_key,
-                node_id = child_id
+                node_id = child_id,
+                metadata = { author = { kind = "agent", id = delegation.agent_id } }
             }
         }
     }
@@ -203,7 +206,8 @@ function delegation_handler.create_child_node(parent_node_sdk, delegation, deleg
         if delegation_handler.has_input(delegation) then
             parent_node_sdk:data("node.input", delegation.input_data, {
                 node_id = child_id,
-                key = ""
+                key = "",
+                metadata = { author = author }
             })
         end
     end
@@ -382,6 +386,7 @@ function delegation_handler.map_delegation_results_to_conversation(delegation_re
                     node_id = parent_node_sdk.node_id,
                     content_type = "dataflow/reference",
                     metadata = {
+                        author = { kind = "agent", id = info.agent_id },
                         iteration = iteration,
                         tool_call_id = info.tool_call_id,
                         tool_name = info.delegate_tool_name
@@ -398,6 +403,7 @@ function delegation_handler.map_delegation_results_to_conversation(delegation_re
                     key = tool_key,
                     node_id = parent_node_sdk.node_id,
                     metadata = {
+                        author = { kind = "agent", id = info.agent_id },
                         iteration = iteration,
                         tool_call_id = info.tool_call_id,
                         tool_name = info.delegate_tool_name
@@ -414,6 +420,7 @@ function delegation_handler.map_delegation_results_to_conversation(delegation_re
                 key = tool_key,
                 node_id = parent_node_sdk.node_id,
                 metadata = {
+                    author = { kind = "agent", id = info.agent_id },
                     iteration = iteration,
                     tool_call_id = info.tool_call_id,
                     tool_name = info.delegate_tool_name,

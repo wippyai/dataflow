@@ -48,6 +48,8 @@ local function handle(args)
         session_context = {}
     end
 
+    local parent_id = session_context.from_agent_id
+    local author = type(parent_id) == "string" and parent_id ~= "" and { kind = "agent", id = parent_id } or { kind = "system" }
     local agent_title = agent_ref.resolve(target_agent).title
 
     -- Create dataflow client
@@ -93,7 +95,8 @@ local function handle(args)
                 data_id = input_data_id,
                 data_type = consts.DATA_TYPE.WORKFLOW_INPUT,
                 content = args.message,
-                content_type = consts.CONTENT_TYPE.TEXT
+                content_type = consts.CONTENT_TYPE.TEXT,
+                metadata = { author = author }
             }
         },
         {
