@@ -222,6 +222,10 @@ entries:
       comment: File-backed SQLite for tests, recreated each run via make test. An in-memory DB drops its schema under the parallel connections the recovery and signal suites open.
     file: ./.wippy/test.db
 
+  - name: retention_upgrade_db
+    kind: db.sql.sqlite
+    file: ./.wippy/retention-upgrade.db
+
   - name: env_storage
     kind: env.storage.file
     meta:

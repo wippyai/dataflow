@@ -41,10 +41,21 @@ function M.run()
                     if open_err then
                         logger:error("Retention database unavailable", { error = tostring(open_err) })
                     else
-                        local stats, sweep_err = sweeper.run(db, config)
+                        local cancelled = false
+                        local function yield_batch(pause)
+                            local ready = time.after(pause)
+                            local choice = channel.select({ events:case_receive(), ready:case_receive() })
+                            if choice.channel == events and choice.value.kind == process.event.CANCEL then
+                                cancelled = true
+                                return false
+                            end
+                            return true
+                        end
+                        local stats, sweep_err = sweeper.run(db, config, yield_batch)
                         db:release()
+                        if cancelled then return end
                         if sweep_err then
-                            logger:error("Dataflow retention batch failed", { error = tostring(sweep_err) })
+                            logger:error("Dataflow retention pass failed", { error = tostring(sweep_err) })
                         else
                             logger:info("Dataflow diagnostic retention batch completed", stats)
                         end

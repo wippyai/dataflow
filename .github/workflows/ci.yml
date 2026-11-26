@@ -72,6 +72,11 @@ jobs:
         run: |
           make install
           make verify-lock
+      - name: Create the diagnostic upgrade test database
+        if: matrix.database == 'postgres'
+        env:
+          POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
+        run: docker exec "$POSTGRES_CONTAINER" createdb -U dataflow dataflow_retention_upgrade_test
       - name: Run ${{ matrix.database }} tests
         env:
           WIPPY: ${{ steps.wippy.outputs.path }}
