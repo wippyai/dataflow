@@ -190,10 +190,9 @@ Diagnostics retention removes applied commits except each flow's last commit, an
 pending/last commits, summaries, activations and wakes remain until whole-family
 retention removes them all. The flow window has a 30-day minimum.
 
-An owner that reads terminal flow history must create its family root with
-`client:create_workflow(commands, {retain=true, ...})`. The hold is recorded in
-that insert, protects the whole family from retirement, and has no expiry. Only
-root is held when `retain` is omitted or set to `true`. Descendants share the
+Creating a family root with `client:create_workflow(commands, options)` records
+a hold by default. Explicit `retain=true` has the same effect. The hold protects
+the whole family and has no expiry. Descendants share the
 root's hold. A new root created with `retain=false` becomes eligible after every
 member is terminal and older than the window. `retain` must be a boolean. Family
 identity cannot be changed through the engine API.
