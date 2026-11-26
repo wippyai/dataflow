@@ -254,6 +254,7 @@ local function process_rows(rows, replace_references)
 
     for i, row in ipairs(rows) do
         if row.content_type == REFERENCE_CONTENT_TYPE and row.key ~= nil then
+            row.reference_row_id = row.data_id
             row.data_id = row.key
             row.content = row.ref_content
             row.content_type = row.ref_content_type

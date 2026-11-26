@@ -7,6 +7,7 @@ local commit = require("commit")
 local workflow_state = require("workflow_state")
 local consts = require("consts")
 local data_reader = require("data_reader")
+local func = require("func")
 
 local function rebind(query, db_type)
     if db_type ~= "postgres" then return query end
@@ -416,6 +417,123 @@ local function define_tests()
                 test.not_nil(node_result)
                 test.eq(node_result.discriminator, "result.success")
             end)
+
+            it("delivers output-only child completions to a recovered func parent", function()
+                local parent_id, child_id = uuid.v7(), uuid.v7()
+                local first_id, second_id = uuid.v7(), uuid.v7()
+                create_test_nodes(test_ctx.tx, test_ctx.dataflow_id :: string, {
+                    { node_id = parent_id, type = "userspace.dataflow.node.func:node",
+                        status = consts.STATUS.RUNNING,
+                        metadata = { func_pending = { child_node_ids = { child_id } } },
+                        config = { data_targets = {{ data_type = consts.DATA_TYPE.WORKFLOW_OUTPUT, key = "result" }} } },
+                    { node_id = child_id, parent_node_id = parent_id, type = "userspace.dataflow.node.func:node",
+                        status = consts.STATUS.RUNNING,
+                        config = { data_targets = {
+                            { data_type = consts.DATA_TYPE.NODE_OUTPUT, key = "first" },
+                            { data_type = consts.DATA_TYPE.NODE_OUTPUT, key = "second" },
+                            { data_type = consts.DATA_TYPE.NODE_OUTPUT, key = "first" },
+                        } } },
+                })
+                create_test_data(test_ctx.tx, test_ctx.dataflow_id :: string, {
+                    { data_id = first_id, node_id = child_id, type = consts.DATA_TYPE.NODE_OUTPUT,
+                        key = "first", content = '{"answer":"first"}' },
+                    { data_id = second_id, node_id = child_id, type = consts.DATA_TYPE.NODE_OUTPUT,
+                        key = "second", content = '{"answer":"second"}' },
+                    { node_id = child_id, type = consts.DATA_TYPE.NODE_OUTPUT,
+                        key = "unmatched", content = '{"answer":"unmatched"}' },
+                })
+                test_ctx.tx:commit()
+                test_ctx.db:release()
+                test_ctx.tx, test_ctx.db = nil, nil
+
+                local ws = test.not_nil(workflow_state.new(test_ctx.dataflow_id)) :: any
+                local _, load_err = ws:load_state()
+                test.is_nil(load_err)
+                local _, recovery_err = ws:recover()
+                test.is_nil(recovery_err)
+                test.eq(ws.nodes[child_id].status, consts.STATUS.COMPLETED_SUCCESS)
+
+                local completed = func.run({ dataflow_id = test_ctx.dataflow_id, node_id = parent_id,
+                    node = ws.nodes[parent_id] })
+                test.is_true(completed.success)
+                local _, apply_err = ws:process_commits(commit.get_pending_commits(test_ctx.dataflow_id))
+                test.is_nil(apply_err)
+                local output = data_reader.with_dataflow(test_ctx.dataflow_id :: string)
+                    :with_nodes(parent_id):with_data_types(consts.DATA_TYPE.WORKFLOW_OUTPUT):one()
+                test.not_nil(output)
+                local content = test.not_nil(json.decode(output.content)) :: any
+                test.eq(#content, 2, "func parent receives both recovered child outputs")
+                local answers = {}
+                for _, value in ipairs(content) do answers[value.answer] = true end
+                test.is_true(answers.first)
+                test.is_true(answers.second)
+
+                local result = data_reader.with_dataflow(test_ctx.dataflow_id :: string)
+                    :with_nodes(child_id):with_data_types(consts.DATA_TYPE.NODE_RESULT):one()
+                local envelope = test.not_nil(json.decode(result.content)) :: any
+                test.is_true(envelope.success)
+                test.is_true(envelope.recovered)
+                test.eq(#envelope.data_ids, 2, "only matched output ids are pinned, without duplicates")
+                local pinned = {}
+                for _, id in ipairs(envelope.data_ids) do pinned[id] = true end
+                test.is_true(pinned[first_id])
+                test.is_true(pinned[second_id])
+            end)
+
+            for _, pinned_sibling in ipairs({false, true}) do
+                it("resumes a func parent from a stored legacy recovered result: pinned sibling=" .. tostring(pinned_sibling), function()
+                    local parent_id, child_id, sibling_id = uuid.v7(), uuid.v7(), uuid.v7()
+                    local sibling_output_id = uuid.v7()
+                    create_test_nodes(test_ctx.tx, test_ctx.dataflow_id :: string, {
+                        { node_id = parent_id, type = "userspace.dataflow.node.func:node",
+                            status = consts.STATUS.RUNNING,
+                            metadata = { func_pending = { child_node_ids = { child_id, sibling_id } } },
+                            config = { data_targets = {{ data_type = consts.DATA_TYPE.WORKFLOW_OUTPUT, key = "result" }} } },
+                        { node_id = child_id, parent_node_id = parent_id, type = "userspace.dataflow.node.func:node",
+                            status = consts.STATUS.COMPLETED_SUCCESS },
+                        { node_id = sibling_id, parent_node_id = parent_id, type = "userspace.dataflow.node.func:node",
+                            status = consts.STATUS.COMPLETED_SUCCESS },
+                    })
+                    create_test_data(test_ctx.tx, test_ctx.dataflow_id :: string, {
+                        { node_id = child_id, type = consts.DATA_TYPE.NODE_RESULT,
+                            content = '{"recovered":true,"message":"Recovered from output"}' },
+                        { node_id = child_id, type = consts.DATA_TYPE.NODE_OUTPUT,
+                            key = "result", content = '{"answer":"legacy"}' },
+                        { node_id = sibling_id, type = consts.DATA_TYPE.NODE_RESULT,
+                            content = pinned_sibling
+                                and json.encode({ success = true, data_ids = { sibling_output_id } })
+                                or '{"success":true,"data_ids":[]}' },
+                        { data_id = sibling_output_id, node_id = sibling_id, type = consts.DATA_TYPE.NODE_OUTPUT,
+                            key = "result", content = '{"answer":"sibling"}' },
+                    })
+                    test_ctx.tx:commit()
+                    test_ctx.db:release()
+                    test_ctx.tx, test_ctx.db = nil, nil
+
+                    local ws = test.not_nil(workflow_state.new(test_ctx.dataflow_id)) :: any
+                    test.is_nil(select(2, ws:load_state()))
+                    test.is_nil(select(2, ws:recover()))
+                    test.eq(ws.nodes[child_id].status, consts.STATUS.COMPLETED_SUCCESS)
+
+                    local completed = func.run({ dataflow_id = test_ctx.dataflow_id, node_id = parent_id,
+                        node = ws.nodes[parent_id] })
+                    test.is_true(completed.success)
+                    test.is_nil(select(2, ws:process_commits(commit.get_pending_commits(test_ctx.dataflow_id))))
+                    local output = data_reader.with_dataflow(test_ctx.dataflow_id :: string)
+                        :with_nodes(parent_id):with_data_types(consts.DATA_TYPE.WORKFLOW_OUTPUT):one()
+                    test.not_nil(output)
+                    local content = test.not_nil(json.decode(output.content)) :: any
+                    if pinned_sibling then
+                        test.eq(#content, 2, "func parent receives legacy and pinned child outputs")
+                        local answers = {}
+                        for _, value in ipairs(content) do answers[value.answer] = true end
+                        test.is_true(answers.legacy)
+                        test.is_true(answers.sibling)
+                    else
+                        test.eq(content.answer, "legacy", "func parent receives legacy output without scanning the empty sibling envelope")
+                    end
+                end)
+            end
 
             it("resets downstream completed nodes and removes stale routed data when an upstream producer restarts", function()
                 local upstream_id: string = uuid.v7()

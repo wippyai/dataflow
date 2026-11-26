@@ -5,6 +5,48 @@
 * Preserve an agent node's successful fallback route across iterations and recovery, clearing it when the configured agent or model changes. Requires Agent 0.5.5 or later.
 * Wake an existing orchestrator when it claims a signal generation. A clean exit that released an older generation no longer fails newly activated work; actual owner crashes still fail without restarting the workflow.
 
+## [0.7.38](https://github.com/wippyai/dataflow/compare/v0.7.37...v0.7.38) (2026-11-22)
+
+
+### Bug Fixes
+
+* expose the parked arm reference in pending signal inspection ([#144](https://github.com/wippyai/dataflow/issues/144)) ([61b19ca](https://github.com/wippyai/dataflow/commit/61b19cad33742c513908f3dd89df4e11a3ce7e72))
+
+## [0.7.37](https://github.com/wippyai/dataflow/compare/v0.7.36...v0.7.37) (2026-11-11)
+
+
+### Bug Fixes
+
+* **agent:** retain native request failure outcomes and step latency ([#142](https://github.com/wippyai/dataflow/issues/142)) ([3751d7f](https://github.com/wippyai/dataflow/commit/3751d7f2ffa667a98efa4e38ef289e257a2f9339))
+
+## [0.7.36](https://github.com/wippyai/dataflow/compare/v0.7.35...v0.7.36) (2026-11-09)
+
+
+### Bug Fixes
+
+* count rejected finish turns toward the stall limit ([#140](https://github.com/wippyai/dataflow/issues/140)) ([c8587a4](https://github.com/wippyai/dataflow/commit/c8587a4a8055c3fcb3e82232df519bdb269d2205))
+* log node and workflow failures ([#139](https://github.com/wippyai/dataflow/issues/139)) ([f1eb535](https://github.com/wippyai/dataflow/commit/f1eb53515eacfa9847203cefcf2fa9674b4bbe74))
+
+## [0.7.35](https://github.com/wippyai/dataflow/compare/v0.7.34...v0.7.35) (2026-11-04)
+
+
+### Features
+
+* **agent:** adopt the stable request prefix ([#136](https://github.com/wippyai/dataflow/issues/136)) ([5963871](https://github.com/wippyai/dataflow/commit/5963871f24c551b6c087354e219bb13b56d98bb1))
+* **agent:** run the tool calls of one model turn concurrently ([#135](https://github.com/wippyai/dataflow/issues/135)) ([1ec7a44](https://github.com/wippyai/dataflow/commit/1ec7a4478748f69556a35ddf79c6aa31c7611d59))
+
+
+### Bug Fixes
+
+* **agent:** trigger checkpoints on the full context size ([#134](https://github.com/wippyai/dataflow/issues/134)) ([86a9da5](https://github.com/wippyai/dataflow/commit/86a9da5e8c8d497d1cf507328d1fd6db9dff08ab))
+
+## [0.7.34](https://github.com/wippyai/dataflow/compare/v0.7.33...v0.7.34) (2026-10-31)
+
+
+### Bug Fixes
+
+* normalize agent run context conversation history ([#129](https://github.com/wippyai/dataflow/issues/129)) ([42d71e3](https://github.com/wippyai/dataflow/commit/42d71e35b6f788757e62fc66d9f4ff3195af612c))
+
 ## [0.7.33](https://github.com/wippyai/dataflow/compare/v0.7.32...v0.7.33) (2026-10-29)
 
 

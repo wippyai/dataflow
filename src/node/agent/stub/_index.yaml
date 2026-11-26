@@ -1,6 +1,17 @@
 version: '1.0'
 namespace: userspace.dataflow.node.agent.stub
 entries:
+- name: commit_failure_node
+  kind: process.lua
+  meta:
+    test_only: true
+  source: file://commit_failure_node.lua
+  imports:
+    agent_node: userspace.dataflow.node.agent:node
+    node_sdk: userspace.dataflow:node
+    consts: userspace.dataflow:consts
+    agent_consts: userspace.dataflow.node.agent:consts
+  method: run
 - name: recovery_store
   kind: store.memory
   meta:
@@ -25,6 +36,8 @@ entries:
     comment: Deterministic LLM generator for agent recovery tests
     test_only: true
   source: file://recovery_generate.lua
+  modules:
+  - time
   imports:
     helpers: userspace.dataflow.node.agent.stub:recovery_helpers
   method: handler
@@ -103,6 +116,7 @@ entries:
   - uuid
   imports:
     consts: userspace.dataflow:consts
+    helpers: userspace.dataflow.node.agent.stub:recovery_helpers
   method: handler
 - name: recovery_metrics_reset
   kind: function.lua
@@ -148,6 +162,84 @@ entries:
   source: file://checkpoint_summarizer.lua
   imports:
     helpers: userspace.dataflow.node.agent.stub:recovery_helpers
+  method: handler
+- name: round_wrapper
+  kind: function.lua
+  meta:
+    test_only: true
+    comment: Tool wrapper a restart scenario kills the runtime inside
+  source: file://round_wrapper.lua
+  modules:
+  - json
+  - time
+  imports:
+    helpers: userspace.dataflow.node.agent.stub:recovery_helpers
+  method: apply
+- name: round_wrapper_binding
+  kind: contract.binding
+  meta:
+    test_only: true
+  contracts:
+  - contract: wippy.agent:tool_wrapper
+    methods:
+      apply: userspace.dataflow.node.agent.stub:round_wrapper
+- name: round_wrapper_trait
+  kind: registry.entry
+  meta:
+    type: agent.trait
+    test_only: true
+  data:
+    behaviors:
+    - id: round_wrapper
+      handles: [after_execute]
+      handlers:
+        tool_wrapper: userspace.dataflow.node.agent.stub:round_wrapper_binding
+- name: recovery_small_output_model
+  kind: registry.entry
+  meta:
+    name: recovery-small-output-model
+    type: llm.model
+    test_only: true
+    comment: A model whose output limit is below the default summary budget
+  output_tokens: 1000
+  providers:
+  - id: userspace.dataflow.node.agent.stub:recovery_provider
+    provider_model: recovery-test-model
+- name: recovery_small_window_model
+  kind: registry.entry
+  meta:
+    name: recovery-small-window-model
+    type: llm.model
+    test_only: true
+    comment: A model whose context window is below the default output reservation
+  max_tokens: 1000
+  providers:
+  - id: userspace.dataflow.node.agent.stub:recovery_provider
+    provider_model: recovery-test-model
+- name: recovery_16k_window_model
+  kind: registry.entry
+  meta:
+    name: recovery-16k-window-model
+    type: llm.model
+    test_only: true
+    comment: A model with the context window of a small deployment
+  max_tokens: 16000
+  providers:
+  - id: userspace.dataflow.node.agent.stub:recovery_provider
+    provider_model: recovery-test-model
+- name: blank_summarizer
+  kind: function.lua
+  meta:
+    test_only: true
+    comment: Returns a summary with no visible characters
+  source: file://blank_summarizer.lua
+  method: handler
+- name: multibyte_summarizer
+  kind: function.lua
+  meta:
+    test_only: true
+    comment: Returns a long summary of two-byte characters
+  source: file://multibyte_summarizer.lua
   method: handler
 - name: empty_memory_summarizer
   kind: function.lua
@@ -289,6 +381,120 @@ entries:
       handles: [recall]
       handlers:
         recall: userspace.dataflow.node.agent.stub:failing_memory_binding
+- name: note_memory
+  kind: function.lua
+  meta:
+    test_only: true
+    comment: Memory provider that recalls the first memory the conversation has not seen
+  source: file://note_memory.lua
+  method: recall
+- name: note_memory_binding
+  kind: contract.binding
+  meta:
+    test_only: true
+  contracts:
+  - contract: wippy.agent:memory
+    methods:
+      recall: userspace.dataflow.node.agent.stub:note_memory
+- name: recall_note_trait
+  kind: registry.entry
+  meta:
+    type: agent.trait
+    test_only: true
+  data:
+    behaviors:
+    - id: memory
+      handles: [recall]
+      handlers:
+        recall: userspace.dataflow.node.agent.stub:note_memory_binding
+- name: lifecycle_note_binding_fn
+  kind: function.lua
+  meta:
+    test_only: true
+    comment: Returns lifecycle messages in the roles its behavior options name per phase
+  source: file://lifecycle_notes.lua
+  modules:
+  - ctx
+  method: handler
+- name: lifecycle_note_binding
+  kind: contract.binding
+  meta:
+    test_only: true
+  contracts:
+  - contract: wippy.agent:lifecycle
+    methods:
+      apply: userspace.dataflow.node.agent.stub:lifecycle_note_binding_fn
+- name: lifecycle_notes_trait
+  kind: registry.entry
+  meta:
+    type: agent.trait
+    test_only: true
+  data:
+    behaviors:
+    - id: lifecycle_notes
+      handles: [activate, before_step]
+      handlers:
+        lifecycle: userspace.dataflow.node.agent.stub:lifecycle_note_binding
+      options:
+        activate: [developer]
+        before_step: [developer, system]
+- name: lifecycle_user_note_trait
+  kind: registry.entry
+  meta:
+    type: agent.trait
+    test_only: true
+  data:
+    behaviors:
+    - id: lifecycle_notes
+      handles: [before_step]
+      strict: true
+      handlers:
+        lifecycle: userspace.dataflow.node.agent.stub:lifecycle_note_binding
+      options:
+        before_step: [user]
+- name: lifecycle_assistant_note_trait
+  kind: registry.entry
+  meta:
+    type: agent.trait
+    test_only: true
+  data:
+    behaviors:
+    - id: lifecycle_notes
+      handles: [activate]
+      strict: true
+      handlers:
+        lifecycle: userspace.dataflow.node.agent.stub:lifecycle_note_binding
+      options:
+        activate: [assistant]
+- name: stable_prefix_time_agent
+  kind: registry.entry
+  meta:
+    type: agent.gen1
+    test_only: true
+  model: recovery-test-model
+  prompt: Follow the deterministic scenario encoded in the user input.
+  traits:
+  - id: wippy.agent.traits:time_aware
+    context:
+      timezone: UTC
+- name: stable_prefix_bad_time_agent
+  kind: registry.entry
+  meta:
+    type: agent.gen1
+    test_only: true
+  model: recovery-test-model
+  prompt: Follow the deterministic scenario encoded in the user input.
+  traits:
+  - id: wippy.agent.traits:time_aware
+    context:
+      timezone: Not/AZone
+- name: stable_prefix_switch_target_agent
+  kind: registry.entry
+  meta:
+    type: agent.gen1
+    test_only: true
+  model: recovery-test-model
+  prompt: A different system prompt, so the prefix fingerprint changes on this switch.
 - name: lifecycle_test_trait
   kind: registry.entry
   meta:

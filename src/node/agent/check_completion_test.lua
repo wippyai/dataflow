@@ -55,8 +55,9 @@ local function define_tests()
         end)
 
         it("does not complete tool_calling=none on whitespace", function()
-            local complete = check(agent_consts.TOOL_CALLING.NONE, { result = " \n\t " })
+            local complete, _, recorded = check(agent_consts.TOOL_CALLING.NONE, { result = " \n\t " })
             test.is_false(complete)
+            test.eq(#recorded, 1, "the next request needs a user turn after the text")
         end)
 
         it("does not complete tool_calling=none on a nil result", function()
@@ -158,7 +159,8 @@ local function define_tests()
             local complete, _, recorded = check(agent_consts.TOOL_CALLING.AUTO, { result = "final answer" },
                 { iteration = 1, min_iterations = 2 })
             test.is_false(complete)
-            test.eq(#recorded, 0)
+            test.eq(#recorded, 1, "the next request needs a user turn after the text")
+            test.eq(recorded[1].content, agent_consts.FEEDBACK.CONTINUE_WORKING)
         end)
     end)
 
@@ -202,6 +204,19 @@ local function define_tests()
             test.is_false(is_unproductive_turn(AUTO, tool_turn, 3, 1))
             test.is_false(is_unproductive_turn(ANY, tool_turn, 3, 1))
             test.is_false(is_unproductive_turn(AUTO, delegate_turn, 3, 1))
+        end)
+
+        it("counts exit-only turns while ordinary tools and delegation remain productive", function()
+            local finish_turn = {result = "A partial answer", tool_calls = {{id = "1", name = "complete"}}}
+            test.is_true(is_unproductive_turn(AUTO, finish_turn, 3, 1, "complete"))
+            test.is_true(is_unproductive_turn(ANY, finish_turn, 3, 1, "complete"))
+            test.is_false(is_unproductive_turn(ANY, finish_turn, 1, 3, "complete"))
+            test.is_false(is_unproductive_turn(ANY, {
+                tool_calls = {{id = "1", name = "complete"}, {id = "2", name = "work"}},
+            }, 3, 1, "complete"))
+            test.is_false(is_unproductive_turn(ANY, {
+                tool_calls = finish_turn.tool_calls, delegate_calls = {{id = "2", name = "delegate"}},
+            }, 3, 1, "complete"))
         end)
 
         it("does not count a warm-up turn below min_iterations", function()

@@ -38,6 +38,12 @@ local function define_tests()
                         } },
                     },
                 },
+            }, {
+                type = consts.COMMAND_TYPES.CREATE_DATA,
+                payload = {
+                    data_id = uuid.v7(), data_type = consts.DATA_TYPE.NODE_INPUT, node_id = node_id, key = "task",
+                    content = "Do the task.", content_type = consts.CONTENT_TYPE.TEXT,
+                },
             } })
             test.is_nil(create_err)
 
@@ -78,7 +84,7 @@ local function define_tests()
                         result = scenario.result or "rejected answer", tool_calls = scenario.exit and { {
                             id = "finish_first", name = "finish", arguments = { answer = "accepted exit" },
                         } } or {},
-                        truncated = scenario.truncated, finish_reason = scenario.truncated and "length" or "stop",
+                        truncated = scenario.truncated, finish_reason = scenario.finish_reason or (scenario.truncated and "length" or "stop"),
                     }
                 end
                 if arena.tool_calling == "any" then
@@ -171,7 +177,10 @@ local function define_tests()
                 if not scenario.accepted then
                     test.eq(steps[2].iteration, 2, "recovery resumes at the next iteration")
                     local history = json.encode(steps[2].messages)
-                    test.contains(history, scenario.result or "rejected answer", "the prior action stays in history")
+                    local prior_text = scenario.result or "rejected answer"
+                    if prior_text:match("%S") then
+                        test.contains(history, prior_text, "the prior action stays in history")
+                    end
                     if scenario.feedback then
                         local observations = rows(agent_consts.DATA_TYPE.AGENT_OBSERVATION)
                         test.eq(#observations, 1, "recovery keeps one feedback row")
@@ -201,8 +210,10 @@ local function define_tests()
         end
 
         for _, scenario in ipairs({
-            { name = "minimum iterations", min_iterations = 2 },
-            { name = "minimum iterations without tools", min_iterations = 2, tool_calling = "none" },
+            { name = "minimum iterations", min_iterations = 2, feedback = "1_continue_working",
+                feedback_text = agent_consts.FEEDBACK.CONTINUE_WORKING },
+            { name = "minimum iterations without tools", min_iterations = 2, tool_calling = "none",
+                feedback = "1_continue_working", feedback_text = agent_consts.FEEDBACK.CONTINUE_WORKING },
             { name = "required tool use", tool_calling = "any", feedback = "1_no_tools_called",
                 feedback_text = agent_consts.FEEDBACK.NO_TOOLS_CALLED .. " " ..
                     string.format(agent_consts.FEEDBACK.EXIT_AVAILABLE, "finish") },
@@ -215,6 +226,7 @@ local function define_tests()
                     string.format(agent_consts.FEEDBACK.EXIT_AVAILABLE, "finish") },
             { name = "whitespace output before feedback", result = "   ", feedback = "1_empty_result",
                 interrupt_after_action = true, feedback_text = agent_consts.FEEDBACK.EMPTY_RESULT },
+            { name = "accepted length-cut text", accepted = true, result = "accepted answer", finish_reason = "length" },
             { name = "accepted text", accepted = true, result = "accepted answer" },
             { name = "accepted text without tools", accepted = true, tool_calling = "none", result = "accepted answer" },
             { name = "accepted exit", accepted = true, tool_calling = "any", exit = true },

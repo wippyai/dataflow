@@ -41,6 +41,16 @@ local function make_node(initial_metadata, find_rows)
             return reader_chain
         end,
         fetch_options = function(_) return reader_chain end,
+        with_data = function(_, data_id)
+            reader_chain.selected_id = data_id
+            return reader_chain
+        end,
+        one = function()
+            for _, row in ipairs(find_rows or {}) do
+                if row.data_id == reader_chain.selected_id then return row end
+            end
+            return nil
+        end,
         all = function() return find_rows or {} end
     }
 
@@ -287,21 +297,28 @@ local function define_tests()
         end)
 
         describe("memory", function()
-            it("adds memory as AGENT_MEMORY data with discriminator", function()
+            it("adds memory as AGENT_MEMORY data after the round, not with the directive", function()
                 local n = make_node({})
 
-                local changes = control_handler.process_memory_operations(
-                    { memory = { add = { { type = "fact", text = "the sky is blue" } } } }, n, 3)
+                local directive = { memory = { add = { { type = "fact", text = "the sky is blue" } } } }
+                local changes = control_handler.process_memory_operations(directive, n, 3)
 
+                test.eq(#queued_of_type(n, consts.COMMAND_TYPES.CREATE_DATA), 0,
+                    "no row can land before the call's result")
+                test.eq(changes[1].action, "add")
+
+                control_handler.queue_memory_additions(directive.memory.add, n, 3)
                 local data_cmds = queued_of_type(n, consts.COMMAND_TYPES.CREATE_DATA)
                 test.eq(#data_cmds, 1, "one data command queued")
                 test.eq(data_cmds[1].payload.data_type, agent_consts.DATA_TYPE.AGENT_MEMORY)
                 test.eq(data_cmds[1].payload.discriminator, "fact", "discriminator set to memory type")
-                test.eq(changes[1].action, "add")
             end)
 
-            it("deletes memory by id via DELETE_DATA", function()
-                local n = make_node({})
+            it("deletes memory it added by id via DELETE_DATA", function()
+                local n = make_node({}, {
+                    { data_id = "mem-1", metadata = { created_by_control = true } },
+                    { data_id = "mem-2", metadata = { created_by_control = true } }
+                })
 
                 control_handler.process_memory_operations(
                     { memory = { delete = { "mem-1", "mem-2" } } }, n, 1)
@@ -310,6 +327,77 @@ local function define_tests()
                 test.eq(#del, 2, "two delete commands")
                 test.eq(del[1].payload.data_id, "mem-1")
                 test.eq(del[2].payload.data_id, "mem-2")
+            end)
+
+            it("refuses to delete a row the memory directive did not add", function()
+                local n = make_node({}, { { data_id = "note-1", metadata = {} }, { data_id = "action-1" } })
+
+                local _, response = control_handler.process_control_directive(
+                    { _control = { memory = { delete = { "note-1", "action-1" } } } }, n, 1)
+
+                test.eq(#queued_of_type(n, consts.COMMAND_TYPES.DELETE_DATA), 0)
+                local _, apply_err = control_handler.apply_control_responses({ response }, {}, n)
+                test.not_nil(apply_err, "the directive fails visibly")
+                test.is_true(tostring(apply_err):find("note-1", 1, true) ~= nil, tostring(apply_err))
+                test.is_true(tostring(apply_err):find("action-1", 1, true) ~= nil, tostring(apply_err))
+            end)
+
+            it("refuses a delegate with no input, which could never start", function()
+                local n = make_node({})
+                local _, response = control_handler.process_control_directive(
+                    { _control = { delegate = { { agent_id = "agent:child" } } } }, n, 1)
+                local _, apply_err = control_handler.apply_control_responses({ response }, {}, n)
+                test.not_nil(apply_err)
+                test.is_true(tostring(apply_err):find("input_data", 1, true) ~= nil, tostring(apply_err))
+            end)
+
+            it("refuses several delegates for one call, naming it", function()
+                local n = make_node({})
+                local _, response = control_handler.process_control_directive({ _control = { delegate = {
+                    { agent_id = "agent:a", input_data = "x" },
+                    { agent_id = "agent:b", input_data = "y" },
+                } } }, n, 1, "call-7")
+                local _, apply_err = control_handler.apply_control_responses({ response }, {}, n)
+                test.not_nil(apply_err)
+                test.is_true(tostring(apply_err):find("call-7", 1, true) ~= nil, tostring(apply_err))
+            end)
+
+            it("gives an artifact the same id on a re-run and stores it once", function()
+                local n = make_node({})
+                local directive = { artifacts = { { title = "A", content = "one" }, { title = "B", content = "two" } } }
+                local first = control_handler.process_artifacts(directive, n, 2, "call-1")
+                local again_node = make_node({}, { { data_id = first[1].artifact_id }, { data_id = first[2].artifact_id } }) :: any
+                again_node.node_id = n.node_id
+                local again = control_handler.process_artifacts(directive, again_node, 2, "call-1")
+                test.eq(again[1].artifact_id, first[1].artifact_id)
+                test.eq(again[2].artifact_id, first[2].artifact_id)
+                test.is_true(first[1].artifact_id ~= first[2].artifact_id)
+                test.eq(#queued_of_type(again_node, consts.COMMAND_TYPES.CREATE_DATA), 0, "the stored row stands")
+                local fresh_node = make_node({}) :: any
+                fresh_node.node_id = n.node_id
+                local other_call = control_handler.process_artifacts(directive, fresh_node, 2, "call-2")
+                test.is_true(other_call[1].artifact_id ~= first[1].artifact_id)
+                local other_round = control_handler.process_artifacts(directive, fresh_node, 3, "call-1")
+                test.is_true(other_round[1].artifact_id ~= first[1].artifact_id)
+            end)
+
+            it("refuses a delegate whose input is false", function()
+                local n = make_node({})
+                local _, response = control_handler.process_control_directive(
+                    { _control = { delegate = { { agent_id = "agent:child", input_data = false } } } }, n, 1)
+                local _, apply_err = control_handler.apply_control_responses({ response }, {}, n)
+                test.not_nil(apply_err)
+            end)
+
+            it("treats a delete of a row that is gone as done", function()
+                local n = make_node({}, {})
+
+                local _, response = control_handler.process_control_directive(
+                    { _control = { memory = { delete = { "already-gone" } } } }, n, 1)
+
+                test.eq(#queued_of_type(n, consts.COMMAND_TYPES.DELETE_DATA), 0)
+                local _, apply_err = control_handler.apply_control_responses({ response }, {}, n)
+                test.is_nil(apply_err, "a replayed delete does not fail the node")
             end)
 
             it("clears memory by type, deleting matching rows", function()
@@ -477,11 +565,13 @@ local function define_tests()
         describe("memory edge cases", function()
             it("skips memory items missing type or text", function()
                 local n = make_node({})
-                control_handler.process_memory_operations({ memory = { add = {
-                    { type = "ok", text = "valid" },
-                    { text = "no type" },
-                    { type = "no text" }
-                } } }, n, 1)
+                control_handler.queue_memory_additions(control_handler.memory_additions({ _original_control = {
+                    memory = { add = {
+                        { type = "ok", text = "valid" },
+                        { text = "no type" },
+                        { type = "no text" }
+                    } }
+                } }), n, 1)
                 test.eq(#queued_of_type(n, consts.COMMAND_TYPES.CREATE_DATA), 1, "only valid item stored")
             end)
 
@@ -494,14 +584,13 @@ local function define_tests()
             end)
 
             it("handles add, clear and delete in a single operation", function()
-                local n = make_node({}, { { data_id = "to-clear" } })
+                local n = make_node({}, { { data_id = "explicit-id", metadata = { created_by_control = true } } })
                 local changes = control_handler.process_memory_operations({ memory = {
                     add = { { type = "fact", text = "new" } },
                     clear = "fact",
                     delete = { "explicit-id" }
                 } }, n, 2)
 
-                test.eq(#queued_of_type(n, consts.COMMAND_TYPES.CREATE_DATA), 1, "added")
                 test.eq(#queued_of_type(n, consts.COMMAND_TYPES.DELETE_DATA), 2, "cleared row + explicit delete")
                 test.eq(#changes, 3, "three change entries")
             end)

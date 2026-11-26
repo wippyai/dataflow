@@ -18,7 +18,7 @@ local function define_tests()
         local function make_signal_wf(signal_id)
             local nid = uuid.v7()
             local did = uuid.v7()
-            return c:create_workflow({
+            local id, err = c:create_workflow({
                 { type = consts.COMMAND_TYPES.CREATE_NODE, payload = {
                     node_id = nid,
                     node_type = "userspace.dataflow.node.signal:node",
@@ -33,6 +33,8 @@ local function define_tests()
                     content = { task = "test" }, content_type = consts.CONTENT_TYPE.JSON, key = "default"
                 }}
             })
+            test.is_nil(err, "create signal workflow: " .. tostring(err))
+            return id
         end
 
         local function make_func_node(node_id, config)
@@ -145,13 +147,17 @@ local function define_tests()
             it("10 signals in rapid succession to same workflow", function()
                 local sid = "burst10-" .. uuid.v7()
                 local df_id = make_signal_wf(sid)
-                c:start(df_id)
+                local _, start_err = c:start(df_id)
+                test.is_nil(start_err, "workflow starts before burst: " .. tostring(start_err))
                 test.is_true(wait_running(df_id), "waiting before burst")
 
+                local refused = {}
                 for i = 1, 10 do
-                    c:signal(df_id, sid, { burst = i })
+                    local _, signal_err = c:signal(df_id, sid, { burst = i })
+                    if signal_err then refused[#refused + 1] = tostring(signal_err) end
                 end
-                test.is_true(wait_complete(df_id), "completes under burst")
+                test.is_true(wait_complete(df_id), "completes under burst; status=" .. tostring(c:get_status(df_id))
+                    .. "; signal errors=" .. json.encode(refused))
             end)
 
             it("10 wrong signals then 1 correct", function()

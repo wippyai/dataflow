@@ -259,11 +259,17 @@ function methods:_detect_running_node_recovery(node_id)
 
     local success_rows = self:_find_routed_data_matches(node_id, config.data_targets)
     if #success_rows > 0 then
+        local data_ids = {}
+        for _, row in ipairs(success_rows) do
+            table.insert(data_ids, row.data_id)
+        end
         return {
             status = consts.STATUS.COMPLETED_SUCCESS,
             synthetic_result = {
                 discriminator = "result.success",
                 content = {
+                    success = true,
+                    data_ids = data_ids,
                     recovered = true,
                     message = "Recovered completed node from durable output"
                 }

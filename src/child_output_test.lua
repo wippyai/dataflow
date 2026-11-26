@@ -55,6 +55,45 @@ end
 local YIELD_RESULTS = { ["child-1"] = "child-result-1" }
 
 local function define_tests()
+    describe("resuming children", function()
+        it("waits for every terminal result despite an existing output", function()
+            local rows = { envelope({ "child-answer-1" }), {
+                data_id = "child-answer-1", node_id = "child-1",
+                data_type = consts.DATA_TYPE.NODE_OUTPUT, content = "first",
+            } }
+            local n = make_node(rows) :: any
+            local waited = false
+            n.yield = function(_, options)
+                test.eq(#options.run_nodes, 2)
+                test.eq(options.run_nodes[1], "child-1")
+                test.eq(options.run_nodes[2], "child-2")
+                waited = true
+                rows[#rows + 1] = { data_id = "child-result-2", node_id = "child-2",
+                    data_type = consts.DATA_TYPE.NODE_RESULT, content = { success = true, data_ids = { "child-answer-2" } } }
+                rows[#rows + 1] = { data_id = "child-answer-2", node_id = "child-2",
+                    data_type = consts.DATA_TYPE.NODE_OUTPUT, content = "second" }
+                return { ["child-1"] = "child-result-1", ["child-2"] = "child-result-2" }
+            end
+            local outputs, err = child_output.resume_children(n, { "child-1", "child-2" }, child_output.collect_outputs)
+            test.is_true(waited, "an output does not prove that every child is terminal")
+            test.is_nil(err)
+            test.eq(#outputs, 2)
+        end)
+
+        it("reads a terminal failure even when a sibling has output", function()
+            local n = make_node({ envelope({ "child-answer-1" }), {
+                data_id = "child-answer-1", node_id = "child-1",
+                data_type = consts.DATA_TYPE.NODE_OUTPUT, content = "first",
+            }, {
+                data_id = "child-result-2", node_id = "child-2", data_type = consts.DATA_TYPE.NODE_RESULT,
+                content = { success = false, error = "second child failed" },
+            } }) :: any
+            n.yield = function() error("terminal children need no further yield") end
+            local _, err = child_output.resume_children(n, { "child-1", "child-2" }, child_output.collect_outputs)
+            test.eq(err, "second child failed", "the terminal result supplies the failure text")
+        end)
+    end)
+
     describe("collecting a child's output", function()
         it("collects the output rows the child pinned", function()
             local answer = {

@@ -6,6 +6,8 @@ local funcs = require("funcs")
 local client = require("client")
 local consts = require("consts")
 local data_reader = require("data_reader")
+local node_reader = require("node_reader")
+local agent_consts = require("agent_consts")
 
 local function as_table(content: any): table
     if type(content) == "table" then
@@ -57,7 +59,8 @@ local function define_tests()
 
         -- A hand-built node config that declares an exit_schema and leaves
         -- tool_calling unset, as configs written outside the flow builder do.
-        local function create_workflow(tool_calling: string?, model: string?, scenario_mode: string?)
+        local function create_workflow(tool_calling: string?, model: string?, scenario_mode: string?, options: any?)
+            options = options or {}
             local node_id = uuid.v7()
             local input_id = uuid.v7()
             local node_input_id = uuid.v7()
@@ -84,7 +87,8 @@ local function define_tests()
                                 tool_calling = tool_calling,
                                 tools = scenario_mode == "multiple_finish_then_retry"
                                     and { "userspace.dataflow.node.agent.stub:recovery_tool" } or nil,
-                                max_iterations = 3,
+                                max_iterations = options.max_iterations or 3,
+                                max_unproductive_steps = options.max_unproductive_steps,
                                 exit_schema = {
                                     type = "object",
                                     properties = { answer = { type = "string" } },
@@ -107,7 +111,8 @@ local function define_tests()
                     payload = {
                         data_id = input_id,
                         data_type = consts.DATA_TYPE.WORKFLOW_INPUT,
-                        content = { scenario_id = scenario_id, mode = scenario_mode or "finish_when_offered" },
+                        content = { scenario_id = scenario_id, mode = scenario_mode or "finish_when_offered",
+                            finish_rejections = options.finish_rejections },
                         content_type = consts.CONTENT_TYPE.JSON
                     }
                 },
@@ -130,6 +135,47 @@ local function define_tests()
             test.is_nil(err, "workflow created")
 
             return { dataflow_id = dataflow_id, node_id = node_id, scenario_id = scenario_id }
+        end
+
+        for _, mode in ipairs({"auto", "any"}) do
+            local allowance = mode == "auto" and 2 or 3
+            it("bounds repeated exit-schema rejections in " .. mode .. " mode", function()
+                local workflow = create_workflow(mode, nil, nil, {
+                    finish_rejections = 20, max_iterations = 10, max_unproductive_steps = allowance,
+                })
+                c:start(workflow.dataflow_id)
+                test.eq(wait_terminal(workflow.dataflow_id), consts.STATUS.COMPLETED_FAILURE)
+                test.eq(metric(workflow.scenario_id, "llm_calls"), allowance)
+                local node = node_reader.with_dataflow(workflow.dataflow_id):with_nodes(workflow.node_id):one()
+                test.eq(node.metadata.error.code, agent_consts.ERROR.UNPRODUCTIVE_STEPS)
+                test.eq(node.metadata.state.unproductive_steps, allowance)
+                local observations = data_reader.with_dataflow(workflow.dataflow_id):with_nodes(workflow.node_id)
+                    :with_data_types(agent_consts.DATA_TYPE.AGENT_OBSERVATION):all()
+                local rejections = 0
+                for _, row in ipairs(observations) do
+                    if row.metadata and row.metadata.exit_validation then
+                        rejections = rejections + 1
+                        test.contains(tostring(row.content), "missing required fields: answer")
+                    end
+                end
+                test.eq(rejections, allowance)
+            end)
+        end
+
+        for _, rejections in ipairs({1, 2}) do
+            it("accepts a corrected finish after " .. rejections .. " rejected calls", function()
+                local workflow = create_workflow("any", nil, nil, {
+                    finish_rejections = rejections, max_iterations = 10, max_unproductive_steps = 3,
+                })
+                c:start(workflow.dataflow_id)
+                test.eq(wait_terminal(workflow.dataflow_id), consts.STATUS.COMPLETED_SUCCESS)
+                test.eq(metric(workflow.scenario_id, "llm_calls"), rejections + 1)
+                local outputs = data_reader.with_dataflow(workflow.dataflow_id)
+                    :with_data_types(consts.DATA_TYPE.WORKFLOW_OUTPUT):with_data_keys("result")
+                    :fetch_options({replace_references = true}):all()
+                test.eq(#outputs, 1)
+                test.eq(as_table(outputs[1].content).answer, "finished:" .. workflow.scenario_id)
+            end)
         end
 
         it("offers the finish tool and completes on it when an exit_schema leaves tool_calling unset", function()

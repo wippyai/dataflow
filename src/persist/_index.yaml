@@ -42,6 +42,7 @@ entries:
       private: true
     source: file://commit.lua
     modules:
+      - logger
       - sql
       - json
       - uuid
