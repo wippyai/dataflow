@@ -2,7 +2,7 @@ local time = require("time")
 
 local M = {}
 local TERMINAL = "'completed','failed','cancelled','terminated'"
-local DIAGNOSTICS = "'cycle.state','cycle.function_result','node.input','node.yield','node.yield.result','parallel.progress'"
+local diagnostics = require("diagnostics")
 
 function M.validate(options)
     options = options or {}
@@ -51,7 +51,7 @@ function M.run(db, options, yield_batch)
     local function cutoff(days)
         return time.now():add(-days * 24 * time.HOUR):format(time.RFC3339NANO)
     end
-    local diagnostic_cutoff, flow_cutoff = cutoff(config.days), cutoff(config.flow_days)
+    local flow_cutoff = cutoff(config.flow_days)
     local cutoff_expr = postgres and "EXTRACT(EPOCH FROM CAST(? AS timestamp))" or "julianday(?)"
     local function call(executor, method, query, params)
         local result, call_err = executor[method](executor, rebind(query, postgres), params or {})
@@ -79,7 +79,7 @@ function M.run(db, options, yield_batch)
         -- The service supplies a cancellation-aware yield. Library callers also
         -- yield between transactions rather than monopolizing the SQL pool.
         if yield_batch then
-            if yield_batch() == false then error("retention cancelled") end
+            if yield_batch(postgres and "1ms" or "20ms") == false then error("retention cancelled") end
         else
             time.sleep("1ms")
         end
@@ -133,44 +133,6 @@ function M.run(db, options, yield_batch)
     local function root_row(query, root)
         return query("SELECT dataflow_id, retention_started, retention_held FROM dataflows WHERE dataflow_id = ?" .. lock, { root })[1]
     end
-    local function diagnostics(table_name, key, predicate, field, candidate_field)
-        local cursor
-        while true do
-            local rows = transaction(function(query, execute)
-                local index = field == "data" and "idx_retention_data_age" or "idx_retention_commit_age"
-                local page = candidate_page(query, table_name, key, "created_at", predicate,
-                    index, diagnostic_cutoff, cursor, ", dataflow_id")
-                local candidates, roots, flows = {}, {}, {}
-                for _, row in ipairs(page) do
-                    local f = query("SELECT retention_root_id, last_commit_id FROM dataflows WHERE dataflow_id = ?", { row.dataflow_id })[1]
-                    flows[row.dataflow_id] = f
-                    if f and f.retention_root_id then roots[f.retention_root_id] = true end
-                end
-                local ordered = {}
-                for root in pairs(roots) do ordered[#ordered + 1] = root end
-                table.sort(ordered)
-                for _, root in ipairs(ordered) do
-                    local f = root_row(query, root)
-                    roots[root] = f and not f.retention_started and safe(query, root, diagnostic_cutoff) or false
-                end
-                for _, row in ipairs(page) do
-                    local f = flows[row.dataflow_id]
-                    -- Read last_commit_id after the root lock, just like eligibility.
-                    if f and roots[f.retention_root_id] and field == "commits" then
-                        f = query("SELECT retention_root_id, last_commit_id FROM dataflows WHERE dataflow_id = ?", { row.dataflow_id })[1]
-                    end
-                    if f and roots[f.retention_root_id] and (field ~= "commits" or row[key] ~= f.last_commit_id) then
-                        candidates[#candidates + 1] = row
-                    end
-                end
-                stats[candidate_field] = stats[candidate_field] + #candidates
-                remove(execute, table_name, key, candidates, field)
-                return page
-            end)
-            if #rows < config.batch_size then return end
-            cursor = rows[#rows]
-        end
-    end
     local function drain_rows(table_name, key, flow, field)
         while true do
             local n = transaction(function(query, execute)
@@ -190,12 +152,15 @@ function M.run(db, options, yield_batch)
             local nodes = call(db, "query", "SELECT node_id FROM dataflow_nodes WHERE dataflow_id = ? ORDER BY node_id LIMIT 1", { flow })
             if #nodes == 0 then return end
             local stack = { nodes[1].node_id }
+            local visiting = { [nodes[1].node_id] = true }
             while #stack > 0 do
                 local id = stack[#stack]
                 local deleted = transaction(function(query, execute)
                     local child = query("SELECT node_id, dataflow_id FROM dataflow_nodes WHERE parent_node_id = ? ORDER BY node_id LIMIT 1", { id })[1]
                     if child then
                         if child.dataflow_id ~= flow then error("cross-flow node parent prevents bounded retention") end
+                        if visiting[child.node_id] then error("cycle in node parents prevents retention") end
+                        visiting[child.node_id] = true
                         stack[#stack + 1] = child.node_id
                         return false
                     end
@@ -205,7 +170,10 @@ function M.run(db, options, yield_batch)
                     remove(execute, "dataflow_nodes", "node_id", { { node_id = id } }, "nodes")
                     return true
                 end)
-                if deleted then stack[#stack] = nil end
+                if deleted then
+                    visiting[id] = nil
+                    stack[#stack] = nil
+                end
             end
         end
     end
@@ -233,10 +201,7 @@ function M.run(db, options, yield_batch)
         stats.families = stats.families + 1
     end
     local ok, failure = pcall(function()
-        if config.days > 0 then
-            diagnostics("dataflow_data", "data_id", "type IN (" .. DIAGNOSTICS .. ")", "data", "data_candidates")
-            diagnostics("dataflow_commits", "commit_id", "op_id IS NOT NULL", "commits", "commit_candidates")
-        end
+        if config.days > 0 and not diagnostics.scan(db, config, postgres, stats, yield_batch) then return end
         if config.flow_days == 0 then return end
         if not config.dry_run then
             while true do

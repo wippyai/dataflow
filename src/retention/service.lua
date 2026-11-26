@@ -42,8 +42,8 @@ function M.run()
                         logger:error("Retention database unavailable", { error = tostring(open_err) })
                     else
                         local cancelled = false
-                        local function yield_batch()
-                            local ready = time.after("1ns")
+                        local function yield_batch(pause)
+                            local ready = time.after(pause)
                             local choice = channel.select({ events:case_receive(), ready:case_receive() })
                             if choice.channel == events and choice.value.kind == process.event.CANCEL then
                                 cancelled = true

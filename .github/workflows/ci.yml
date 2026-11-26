@@ -72,7 +72,7 @@ jobs:
         run: |
           make install
           make verify-lock
-      - name: Create the populated-upgrade test database
+      - name: Create the diagnostic upgrade test database
         if: matrix.database == 'postgres'
         env:
           POSTGRES_CONTAINER: ${{ job.services.postgres.id }}

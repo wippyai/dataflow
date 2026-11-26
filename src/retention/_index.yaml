@@ -1,11 +1,18 @@
 version: "1.0"
 namespace: userspace.dataflow.retention
 entries:
+  - name: diagnostics
+    kind: library.lua
+    source: file://diagnostics.lua
+    modules: [time]
+
   - name: sweeper
     kind: library.lua
     meta:
       comment: Indexed diagnostic draining and bounded terminal family retention.
     source: file://sweeper.lua
+    imports:
+      diagnostics: userspace.dataflow.retention:diagnostics
     modules: [time]
 
   - name: sweeper_test

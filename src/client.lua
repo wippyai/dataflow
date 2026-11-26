@@ -168,8 +168,7 @@ function methods:create_workflow(commands, options)
             actor_id = self._actor_id,
             actor_context = identity_row.actor_context,
             metadata = metadata,
-            retain = options.retain,
-            parent_dataflow_id = options.parent_dataflow_id
+            retain = options.retain
         }
     }
 

@@ -15,12 +15,12 @@ local function define_tests()
     describe("Native diagnostic retention", function()
         local db, ids
         local old = "2000-01-01T00:00:00Z"
-        local function exec(q, params)
+        local function exec(q, params, executor)
             if tostring(db:type()) == "postgres" then
                 local n = 0
                 q = q:gsub("%?", function() n = n + 1; return "$" .. n end)
             end
-            local result, err = db:execute(q, params or {})
+            local result, err = (executor or db):execute(q, params or {})
             if err then error(tostring(err)) end
             return result
         end
@@ -61,6 +61,26 @@ local function define_tests()
                 payload = "{}", created_at = old })
             exec("UPDATE dataflows SET last_commit_id = ? WHERE dataflow_id = ?", { last, id })
             return id
+        end
+        local function backlog(flow_id, number, stamp)
+            local tx, begin_err = db:begin()
+            if begin_err then error(tostring(begin_err)) end
+            local ok, err = pcall(function()
+                for first = 1, number, 100 do
+                    local data, commits, placeholders = {}, {}, {}
+                    for _ = first, math.min(first + 99, number) do
+                        placeholders[#placeholders + 1] = "(?,?,?,?,?)"
+                        for _, v in ipairs({ uuid.v7(), flow_id, "node.input", "old input", stamp }) do data[#data + 1] = v end
+                        for _, v in ipairs({ uuid.v7(), flow_id, uuid.v7(), "{}", stamp }) do commits[#commits + 1] = v end
+                    end
+                    local values = table.concat(placeholders, ",")
+                    exec("INSERT INTO dataflow_data(data_id,dataflow_id,type,content,created_at) VALUES " .. values, data, tx)
+                    exec("INSERT INTO dataflow_commits(commit_id,dataflow_id,op_id,payload,created_at) VALUES " .. values, commits, tx)
+                end
+            end)
+            if not ok then tx:rollback(); error(tostring(err)) end
+            local _, commit_err = tx:commit()
+            if commit_err then tx:rollback(); error(tostring(commit_err)) end
         end
         before_each(function()
             local err
@@ -163,9 +183,24 @@ local function define_tests()
                 end
             end
         end)
+        it("stops a cyclic legacy node tree without following it indefinitely", function()
+            local root = flow("completed")
+            local node = uuid.v7()
+            insert("dataflow_nodes", { node_id = node, dataflow_id = root, parent_node_id = node,
+                type = "test", status = "completed", created_at = old, updated_at = old })
+            local pages = 0
+            local _, err = sweeper.run(db, { days = 0, flow_days = 30 }, function()
+                pages = pages + 1
+                return pages < 20
+            end)
+            test.contains(tostring(err), "cycle in node parents")
+            test.eq(count("dataflow_nodes", root), 1)
+            exec("DELETE FROM dataflow_nodes WHERE node_id = ?", { node })
+        end)
         it("uses bounded indexed candidate seeks, including tied ages and protected head pages", function()
             for _ = 1, 8 do flow("running") end
             local id = flow("completed")
+            for _ = 1, 6 do flow("completed") end
             local seen, tied_seek = {}, false
             local postgres = tostring(db:type()) == "postgres"
             local proxy = {}
@@ -195,7 +230,7 @@ local function define_tests()
                         test.is_true(description:find(postgres and "Sort" or "TEMP B-TREE", 1, true) == nil)
                         test.is_true(description:find("idx_retention_", 1, true) ~= nil)
                         seen[#seen + 1] = description
-                        if q:find("data_id >", 1, true) then tied_seek = true end
+                        if q:find("dataflow_id >", 1, true) then tied_seek = true end
                     end
                     local rows, e = tx:query(q, p)
                     if q:find(" AS age FROM ", 1, true) and rows then test.is_true(#rows <= 2) end
@@ -205,12 +240,53 @@ local function define_tests()
                 function wrapped:rollback() return tx:rollback() end
                 return wrapped
             end
-            local stats, err = sweeper.run(proxy, { days = 30, batch_size = 2 })
+            local stats, err = sweeper.run(proxy, { days = 0, flow_days = 30, batch_size = 2 })
             test.is_nil(err)
-            test.eq(stats.flows, 1)
+            test.eq(stats.flows, 7)
             test.is_true(#seen > 5)
             test.is_true(tied_seek)
             test.eq(count("dataflows", id), 0)
+        end)
+        it("yields outside the transaction and restarts safely after cancellation", function()
+            local id = flow("failed")
+            local stats, err = sweeper.run(db, { days = 30, flow_days = 0, batch_size = 1 }, function()
+                test.eq(count("dataflow_data", id), 5)
+                return false
+            end)
+            test.is_nil(err)
+            test.eq(stats.data, 1)
+            test.eq(stats.commits, 0)
+            test.eq(count("dataflow_data", id), 5)
+            local next_stats, next_err = sweeper.run(db, { days = 30, flow_days = 0, batch_size = 1 })
+            test.is_nil(next_err)
+            test.eq(next_stats.data, 1)
+            test.eq(next_stats.commits, 1)
+        end)
+        it("drains mixed retained history tiebreaks at the installed batch size", function()
+            local protected = flow("completed")
+            local waiting = flow("waiting", protected)
+            local eligible = flow("terminated")
+            backlog(protected, 1003, "1999-01-01T00:00:00Z")
+            backlog(eligible, 1004, old)
+            insert("dataflow_data", { data_id = uuid.v7(), dataflow_id = eligible, type = "node.input",
+                content = "recent input", created_at = time.now():format(time.RFC3339) })
+
+            local yielded = 0
+            local stats, err = sweeper.run(db, { days = 30, flow_days = 0, batch_size = 1000 }, function(pause)
+                test.is_true(pause == "1ms" or pause == "20ms")
+                yielded = yielded + 1
+                return true
+            end)
+            test.is_nil(err)
+            test.eq(stats.data, 1006)
+            test.eq(stats.commits, 1005)
+            test.is_true(yielded >= 4)
+            test.eq(count("dataflow_data", protected), 1009)
+            test.eq(count("dataflow_commits", protected), 1006)
+            test.eq(count("dataflow_data", waiting), 6)
+            test.eq(count("dataflow_data", eligible), 5)
+            test.eq(count("dataflow_commits", eligible), 2)
+            for _, id in ipairs({ protected, waiting, eligible }) do test.eq(count("dataflows", id), 1) end
         end)
         it("holds owner families at public creation and releases atomically with owner retention", function()
             local cli, cli_err = client.new({ commit = commit, dataflow_repo = dataflow_repo,
@@ -220,7 +296,11 @@ local function define_tests()
             test.is_nil(cli_err)
             local id, create_err = cli:create_workflow({}, { retain = true })
             test.is_nil(create_err)
-            local implicit = assert(cli:create_workflow({}, { type = "workflow" }))
+            -- Public creation always creates a root. Unknown caller options cannot attach it to another family.
+            local implicit = assert(cli:create_workflow({}, { type = "workflow", parent_dataflow_id = id }))
+            local roots = assert(sql.builder.select("retention_root_id"):from("dataflows")
+                :where("dataflow_id = ?", implicit):run_with(db):query())
+            test.eq(roots[1].retention_root_id, implicit)
             local unheld = assert(cli:create_workflow({}, { retain = false, type = "workflow" }))
             for _, flow_id in ipairs({ id, implicit, unheld }) do
                 ids[#ids + 1] = flow_id

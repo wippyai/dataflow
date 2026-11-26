@@ -1,4 +1,4 @@
-version: "0.7.37" # x-release-please-version
+version: "0.7.38" # x-release-please-version
 namespace: userspace.dataflow
 
 entries:
@@ -319,7 +319,11 @@ entries:
         path: ".meta.target_db"
       - entry: userspace.dataflow.migrations:09_add_iteration_uniqueness_guard
         path: ".meta.target_db"
-      - entry: userspace.dataflow.migrations:10_retention_access_paths
+      - entry: userspace.dataflow.migrations:10_diagnostic_data_age
+        path: ".meta.target_db"
+      - entry: userspace.dataflow.migrations:11_diagnostic_commit_age
+        path: ".meta.target_db"
+      - entry: userspace.dataflow.migrations:12_retention_access_paths
         path: ".meta.target_db"
       - entry: userspace.dataflow.runner:overseer.service
         path: ".lifecycle.depends_on +="

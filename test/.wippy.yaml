@@ -262,6 +262,8 @@ override:
   "userspace.dataflow:node_test:security.policies": [app:test_policy]
   "userspace.dataflow.retention:sweeper_test:security.actor.id": dataflow.test
   "userspace.dataflow.retention:sweeper_test:security.policies": [app:test_policy]
+  "userspace.dataflow.migrations:migration_10_test:security.actor.id": dataflow.test
+  "userspace.dataflow.migrations:migration_10_test:security.policies": [app:test_policy]
   "app.await_authority:test:security.actor.id": dataflow.test
   "app.await_authority:test:security.policies": [app:test_policy]
   "app.await_authority:setup:security.actor.id": dataflow.test
@@ -272,5 +274,3 @@ override:
   "userspace.dataflow.node.agent:agent_tool_calling_default_test:security.policies": [app:test_policy]
   "userspace.dataflow.template:iteration_routes_test:security.actor.id": dataflow.test
   "userspace.dataflow.template:iteration_routes_test:security.policies": [app:test_policy]
-  "userspace.dataflow.migrations:migration_10_test:security.actor.id": dataflow.test
-  "userspace.dataflow.migrations:migration_10_test:security.policies": [app:test_policy]

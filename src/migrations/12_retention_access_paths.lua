@@ -1,5 +1,4 @@
 local TERMINAL = "'completed','failed','cancelled','terminated'"
-local DIAGNOSTICS = "'cycle.state','cycle.function_result','node.input','node.yield','node.yield.result','parallel.progress'"
 
 local function execute(db, query)
     local _, err = db:execute(query)
@@ -37,8 +36,6 @@ local function install(db, postgres)
         return postgres and ("EXTRACT(EPOCH FROM " .. column_name .. ")") or ("julianday(" .. column_name .. ")")
     end
     local indexes = {
-        { "idx_retention_data_age", "dataflow_data(" .. age("created_at") .. ", data_id) WHERE type IN (" .. DIAGNOSTICS .. ")" },
-        { "idx_retention_commit_age", "dataflow_commits(" .. age("created_at") .. ", commit_id) WHERE op_id IS NOT NULL" },
         { "idx_retention_root_age", "dataflows(" .. age("updated_at") .. ", dataflow_id) WHERE parent_dataflow_id IS NULL AND retention_root_id IS NOT NULL AND retention_held = 0" },
         { "idx_retention_family_age", "dataflows(retention_root_id, " .. age("updated_at") .. ")" },
         { "idx_retention_family_active", "dataflows(retention_root_id) WHERE status IS NULL OR status NOT IN (" .. TERMINAL .. ")" },

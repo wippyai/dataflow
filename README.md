@@ -150,6 +150,8 @@ if diagnostics are disabled it also defaults to disabled. Explicit `0` disables
 that cleanup class. Intervals accept 60–86400 seconds, batches 1–1000. The service
 uses the host's `target_db` and `process_host` bindings.
 
+Drain all Dataflow writers before migrations 10 through 12. Migrations 10 and 11 build the diagnostic indexes. Migration 12 backfills family identity and builds the reclamation indexes. Resume writers on the upgraded module after all three migrations complete.
+
 ## Retention SPEC
 
 Cleanup starts 30 seconds after startup. A pass immediately continues through
@@ -164,13 +166,13 @@ interruption resumes on the next enabled family-retention pass.
 Only rooted families whose members are all completed, failed, cancelled, or
 terminated and whose latest member update predates the window qualify. Unknown,
 NULL, active, waiting, paused, recent, unrooted, or invalid-date families remain.
-Family identity is immutable. Migration 10 backfills it on populated installations
+Family identity is immutable. Migration 12 backfills it on populated installations
 and installs indexed age ranges, family eligibility probes, and child page paths.
 SQLite uses indexed `julianday` expressions to handle timestamp offsets and
 fractional precision. Tied ages and later ages use separate seeks, avoiding a
-repeated prefix scan or sort. Runtime SQL never recursively constructs families.
+repeated prefix scan or sort. Diagnostic eligibility follows the existing parent links.
 
-PostgreSQL locks candidate family roots rather than the flow table. Engine write
+Diagnostic pages keep their existing PostgreSQL table lock. Family reclamation locks candidate roots. Engine write
 paths acquire that root lock and check the fence in the writing transaction;
 SQLite reserves its writer before reading. Child creation locks the parent's root,
 then inserts the inherited `retention_root_id` in the same insert. An invisible
@@ -210,7 +212,7 @@ retention still prevents deletion. Owners in a different database must retain a
 durable release obligation until the engine API succeeds; independent commits
 cannot provide atomic deletion and release.
 
-Migration 10 adds `retention_held` with default 1, conservatively holding every
+Migration 12 adds `retention_held` with default 1, conservatively holding every
 preexisting family, including terminal families. Engine-side type, metadata, age,
 and terminal status cannot prove that an installed owner has stopped reading;
 no legacy family is automatically declared unowned. Repeated installation does
